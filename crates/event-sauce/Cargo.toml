@@ -35,6 +35,8 @@ tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
 anyhow.workspace = true
 chrono.workspace = true
 uuid.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 futures.workspace = true
+async-trait.workspace = true

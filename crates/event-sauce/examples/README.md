@@ -67,10 +67,52 @@ struct BankAccount {
 }
 ```
 
+### Task Management with Projections (`task-projections.rs`)
+
+A comprehensive example demonstrating how to build read models (projections) from event streams:
+
+- **Multiple Projections**: Building different views from the same events
+- **Event Filtering**: Subscribing to specific event types
+- **Checkpointing**: Tracking projection progress for resumability
+- **Async Streaming**: Processing events with backpressure
+- **Real-world Domain**: Task management with assignments and status changes
+
+```bash
+cargo run -p event-sauce --example task-projections --features "memory,projections"
+```
+
+**Key Features Demonstrated:**
+- Creating custom projection implementations
+- Using `ProjectionRunner` to execute projections
+- Checkpoint management with `CheckpointStore`
+- Event bus subscriptions with filters
+- Building multiple read models from same event stream
+- Idempotent event processing
+
+**Projections Implemented:**
+1. **TaskCountByStatusProjection** - Maintains counts by task status
+2. **TasksByAssigneeProjection** - Tracks which tasks are assigned to whom
+3. **CompletedTasksProjection** - Counts completed tasks
+
+**Example Output:**
+```
+📊 Task Count by Status:
+  - Todo: 1
+  - In Progress: 1
+  - Completed: 1
+
+👥 Tasks by Assignee:
+  - Alice: 2 task(s)
+  - Charlie: 1 task(s)
+
+✅ Completed Tasks: 1
+```
+
 ## Learning Path
 
 1. **Start here**: `bank-account.rs` - Learn the basics of aggregates and events
-2. **Coming soon**: More examples with projections, sagas, and persistence
+2. **Next**: `task-projections.rs` - Learn to build read models with projections
+3. **Coming soon**: More examples with sagas and persistence
 
 ## Tips
 

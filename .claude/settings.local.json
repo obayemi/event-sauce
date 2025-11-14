@@ -6,7 +6,8 @@
       "Bash(cargo llvm-cov:*)",
       "Bash(cargo run:*)",
       "Bash(jj status:*)",
-      "Bash(jj commit:*)"
+      "Bash(jj commit:*)",
+      "Bash(jj log:*)"
     ],
     "deny": [],
     "ask": []
