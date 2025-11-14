@@ -124,8 +124,7 @@ impl<S: Saga + 'static, E: EventBus + 'static> SagaRunner<S, E> {
                     Err(comp_err) => {
                         error!(saga = %saga_name, error = %comp_err, "Compensation failed");
                         Err(Error::CompensationFailed(format!(
-                            "Original error: {}, Compensation error: {}",
-                            e, comp_err
+                            "Original error: {e}, Compensation error: {comp_err}"
                         )))
                     }
                 }
@@ -134,11 +133,13 @@ impl<S: Saga + 'static, E: EventBus + 'static> SagaRunner<S, E> {
     }
 
     /// Returns the saga execution history
+    #[must_use] 
     pub fn history(&self) -> &[SagaStep] {
         &self.history
     }
 
     /// Returns a reference to the saga
+    #[must_use] 
     pub fn saga(&self) -> Arc<RwLock<S>> {
         Arc::clone(&self.saga)
     }

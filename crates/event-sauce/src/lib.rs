@@ -21,7 +21,7 @@
 //!
 //! - **Streaming first**: Memory-efficient event processing
 //! - **Type-safe**: Compile-time guarantees with derive macros
-//! - **Multiple backends**: PostgreSQL, SQLite, in-memory
+//! - **Multiple backends**: `PostgreSQL`, `SQLite`, in-memory
 //! - **100% test coverage**: Built with strict TDD
 //!
 //! ## TDD Philosophy
@@ -55,8 +55,9 @@ pub use event_sauce_projections;
 pub use event_sauce_sagas;
 
 /// Prelude module for convenient imports
+///
+/// Commonly used types and traits
 pub mod prelude {
-    //! Commonly used types and traits
 
     pub use event_sauce_core::*;
 
