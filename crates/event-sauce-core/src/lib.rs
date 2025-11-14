@@ -19,7 +19,9 @@
 #![warn(clippy::pedantic)]
 
 mod aggregate_id;
+mod domain_event;
 mod version;
 
 pub use aggregate_id::AggregateId;
+pub use domain_event::DomainEvent;
 pub use version::Version;
