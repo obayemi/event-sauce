@@ -10,6 +10,10 @@ description = "CLI tool for event-sauce projects"
 keywords = ["event-sourcing", "cli", "codegen"]
 categories = ["command-line-utilities", "development-tools"]
 
+[lib]
+name = "event_sauce_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "event-sauce"
 path = "src/main.rs"
@@ -19,7 +23,10 @@ clap.workspace = true
 indicatif.workspace = true
 console.workspace = true
 anyhow.workspace = true
-tokio = { workspace = true, features = ["macros", "rt"] }
+thiserror.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "fs"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 

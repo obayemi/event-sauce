@@ -1,0 +1,437 @@
+# Architecture Overview
+
+This document explains the architecture and design principles of event-sauce.
+
+## Table of Contents
+
+1. [Core Concepts](#core-concepts)
+2. [Crate Structure](#crate-structure)
+3. [Event Sourcing Flow](#event-sourcing-flow)
+4. [Backend Implementations](#backend-implementations)
+5. [Design Decisions](#design-decisions)
+6. [Performance Considerations](#performance-considerations)
+
+## Core Concepts
+
+### Event Sourcing Fundamentals
+
+Event sourcing is a pattern where state changes are stored as a sequence of events rather than just the current state. This provides:
+
+- **Complete audit trail** - Every change is recorded
+- **Time travel** - Reconstruct state at any point in time
+- **Event replay** - Rebuild state from events
+- **Event-driven architecture** - React to domain events
+
+### Key Components
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                       Application Layer                      │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
+│  │   Commands   │  │   Queries    │  │   Handlers   │      │
+│  └──────────────┘  └──────────────┘  └──────────────┘      │
+└────────────┬────────────────┬──────────────────┬────────────┘
+             │                │                   │
+┌────────────┴────────────────┴───────────────────┴────────────┐
+│                     event-sauce Core                          │
+│  ┌─────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐     │
+│  │Aggregate│  │  Event   │  │EventStore│  │ EventBus │     │
+│  │  Trait  │  │  Trait   │  │  Trait   │  │  Trait   │     │
+│  └─────────┘  └──────────┘  └──────────┘  └──────────┘     │
+└────────────┬────────────────┬──────────────────┬────────────┘
+             │                │                   │
+┌────────────┴────────────────┴───────────────────┴────────────┐
+│                    Backend Implementations                    │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐                   │
+│  │PostgreSQL│  │  SQLite  │  │ In-Memory│                   │
+│  └──────────┘  └──────────┘  └──────────┘                   │
+└───────────────────────────────────────────────────────────────┘
+```
+
+## Crate Structure
+
+event-sauce is organized as a workspace with focused crates:
+
+### event-sauce-core
+
+The foundation providing traits and types:
+
+- **Aggregate** - Root entity with identity and lifecycle
+- **DomainEvent** - Something that happened in the domain
+- **EventStore** - Persistence abstraction
+- **EventBus** - Pub/sub for events
+- **Version** - Optimistic concurrency control
+
+**Why separate?**
+- No dependencies on specific backends
+- Enables custom implementations
+- Clear contracts via traits
+- Testable without infrastructure
+
+### event-sauce-memory
+
+In-memory implementation for testing:
+
+- **MemoryEventStore** - HashMap-based storage
+- **MemoryEventBus** - Channel-based pub/sub
+- Fast, no I/O, deterministic
+- Perfect for unit tests
+
+### event-sauce-postgres
+
+Production-ready PostgreSQL backend:
+
+- **PostgresEventStore** - Durable event storage
+- **PostgresEventBus** - LISTEN/NOTIFY pub/sub
+- Optimistic concurrency via unique constraints
+- Streaming support for memory efficiency
+- Transaction support
+
+**Schema Design:**
+```sql
+CREATE TABLE events (
+    event_id UUID PRIMARY KEY,
+    stream_id VARCHAR(255) NOT NULL,
+    stream_type VARCHAR(100) NOT NULL,
+    event_type VARCHAR(100) NOT NULL,
+    aggregate_version BIGINT NOT NULL,
+    data JSONB NOT NULL,
+    metadata JSONB NOT NULL DEFAULT '{}',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    UNIQUE(stream_id, aggregate_version)
+);
+
+CREATE INDEX idx_events_stream ON events(stream_id, aggregate_version);
+CREATE INDEX idx_events_stream_type ON events(stream_type, created_at);
+CREATE INDEX idx_events_type ON events(event_type, created_at);
+```
+
+### event-sauce-macros
+
+Derive macros for reducing boilerplate:
+
+- **#[derive(Aggregate)]** - Implements Aggregate trait
+- **#[derive(Event)]** - Implements DomainEvent trait
+- Compile-time code generation
+- Type-safe and zero-runtime cost
+
+### event-sauce-projections
+
+Read model building:
+
+- **Projection** trait - Process events to build read models
+- **ProjectionRunner** - Manages projection lifecycle
+- **Checkpointing** - Track progress for resumability
+- State management helpers
+
+### event-sauce-cli
+
+Developer tooling:
+
+- Project scaffolding
+- Code generation
+- Database schema management
+- Reduces setup time
+
+### event-sauce (facade)
+
+Re-exports all crates with feature flags:
+
+```toml
+[dependencies]
+event-sauce = { version = "0.1", features = ["postgres", "projections"] }
+```
+
+## Event Sourcing Flow
+
+### 1. Command Execution
+
+```
+User Command
+    ↓
+Command Handler
+    ↓
+Load Aggregate (from EventStore)
+    ↓
+Execute Business Logic
+    ↓
+Generate Domain Events
+    ↓
+Save Events (to EventStore)
+    ↓
+Publish Events (via EventBus)
+    ↓
+Update Projections
+```
+
+### 2. State Reconstruction
+
+```
+Load Events from Stream
+    ↓
+Replay Events in Order
+    ↓
+Apply Each Event to Aggregate
+    ↓
+Result: Current State
+```
+
+### 3. Projection Building
+
+```
+Subscribe to EventBus
+    ↓
+Receive Event
+    ↓
+Update Read Model
+    ↓
+Save Checkpoint
+    ↓
+Repeat
+```
+
+## Backend Implementations
+
+### EventStore Trait
+
+```rust
+#[async_trait]
+pub trait EventStore: Send + Sync {
+    type Error;
+
+    // Append events with optimistic concurrency
+    async fn append(
+        &self,
+        stream_id: &str,
+        stream_type: &str,
+        expected_version: Version,
+        events: Vec<EventEnvelope>,
+    ) -> Result<(), Self::Error>;
+
+    // Load events from a specific stream
+    async fn load_stream(
+        &self,
+        stream_id: &str,
+        from_version: Version,
+    ) -> Result<impl Stream<Item = Result<EventEnvelope, Self::Error>> + Send, Self::Error>;
+
+    // Stream all events (for projections)
+    async fn stream_all(
+        &self,
+        from_position: Option<GlobalPosition>,
+    ) -> Result<impl Stream<Item = Result<EventEnvelope, Self::Error>> + Send, Self::Error>;
+}
+```
+
+### EventBus Trait
+
+```rust
+#[async_trait]
+pub trait EventBus: Send + Sync {
+    type Error;
+
+    // Publish events
+    async fn publish(&self, events: Vec<EventEnvelope>) -> Result<(), Self::Error>;
+
+    // Subscribe to events
+    async fn subscribe(
+        &self,
+        filter: EventFilter,
+    ) -> Result<impl Stream<Item = EventEnvelope> + Send, Self::Error>;
+}
+```
+
+## Design Decisions
+
+### Why Async?
+
+- **Non-blocking I/O** - Better resource utilization
+- **Scalability** - Handle many concurrent operations
+- **Modern Rust** - Aligns with ecosystem (Tokio, SQLx)
+- **Streaming** - Process large event streams efficiently
+
+### Why Traits?
+
+- **Abstraction** - Swap implementations easily
+- **Testing** - Mock stores for unit tests
+- **Extensibility** - Users can implement custom backends
+- **Clear contracts** - Well-defined interfaces
+
+### Why Optimistic Concurrency?
+
+```rust
+// Multiple users trying to modify same aggregate
+User A: Load counter (version 5) → increment → save (expects 5)
+User B: Load counter (version 5) → decrement → save (expects 5)
+
+// First write wins
+User A saves successfully → counter now at version 6
+User B fails with ConcurrencyConflict
+
+// User B must reload and retry
+User B: Load counter (version 6) → decrement → save (expects 6) → Success
+```
+
+Benefits:
+- No locks needed
+- Better performance
+- Natural fit for distributed systems
+- Explicit conflict handling
+
+### Why JSONB for Event Data?
+
+- **Flexibility** - Schema evolution without migrations
+- **Queryable** - PostgreSQL JSONB supports indexes and queries
+- **Human-readable** - Easy debugging and inspection
+- **Version-safe** - Old events remain readable
+
+### Why Workspace?
+
+- **Focused crates** - Single responsibility
+- **Optional features** - Only include what you need
+- **Independent versioning** - Core stable, backends evolve
+- **Clear boundaries** - Explicit dependencies
+
+## Performance Considerations
+
+### Snapshots
+
+For aggregates with many events:
+
+```rust
+// Instead of replaying 10,000 events every time
+load_snapshot(id, latest_version) // Fast
+    .then(load_events_after(latest_version)) // Only recent events
+```
+
+Snapshots trade:
+- (+) Fast load times
+- (-) Additional storage
+- (-) Complexity
+
+### Event Streaming
+
+Use async streams for memory efficiency:
+
+```rust
+let mut stream = store.load_stream(stream_id, 0).await?;
+
+while let Some(event) = stream.next().await {
+    // Process one event at a time
+    // Memory usage stays constant
+}
+```
+
+### Connection Pooling
+
+PostgreSQL backend uses SQLx connection pools:
+
+```rust
+let pool = PgPoolOptions::new()
+    .max_connections(20)
+    .connect(&database_url)
+    .await?;
+
+let store = PostgresEventStore::new(pool);
+```
+
+### Projection Strategies
+
+**Real-time Projections:**
+- Subscribe to EventBus
+- Update immediately
+- Good for critical read models
+
+**Batch Projections:**
+- Poll for new events periodically
+- Process in batches
+- Better for analytics
+
+## Testing Strategy
+
+### Unit Tests
+
+```rust
+#[test]
+fn test_business_logic() {
+    let mut counter = Counter::new(id);
+    counter.increment(5).unwrap();
+    assert_eq!(counter.value(), 5);
+}
+```
+
+### Integration Tests
+
+```rust
+#[tokio::test]
+async fn test_with_store() {
+    let store = MemoryEventStore::new();
+    // Test full flow
+}
+```
+
+### Property-Based Tests
+
+```rust
+#[proptest]
+fn test_invariants(operations: Vec<Operation>) {
+    // Verify invariants hold for any sequence
+}
+```
+
+## Extension Points
+
+### Custom Event Store
+
+```rust
+pub struct MyCustomStore;
+
+#[async_trait]
+impl EventStore for MyCustomStore {
+    // Implement trait methods
+}
+```
+
+### Custom Serialization
+
+```rust
+impl DomainEvent for MyEvent {
+    fn to_envelope(&self, stream_id: &str) -> Result<EventEnvelope> {
+        // Custom serialization logic
+    }
+
+    fn from_envelope(envelope: &EventEnvelope) -> Result<Self> {
+        // Custom deserialization logic
+    }
+}
+```
+
+### Custom Projections
+
+```rust
+#[async_trait]
+impl Projection for MyProjection {
+    async fn handle_event(&mut self, event: &EventEnvelope) -> Result<()> {
+        // Custom projection logic
+    }
+}
+```
+
+## Best Practices
+
+1. **Keep aggregates small** - One consistency boundary
+2. **Events are immutable** - Never modify historical events
+3. **Version events** - Plan for schema evolution
+4. **Use projections for reads** - Never query aggregates
+5. **Handle concurrency** - Retry on conflicts
+6. **Test with events** - Given/When/Then with events
+7. **Monitor performance** - Track event counts, load times
+8. **Plan for growth** - Consider snapshots early
+
+## Resources
+
+- [Getting Started Guide](getting-started.md)
+- [TDD Workflow](tdd-workflow.md)
+- [Examples](../examples/)
+- [API Documentation](https://docs.rs/event-sauce)
