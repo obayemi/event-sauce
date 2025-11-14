@@ -1,0 +1,27 @@
+[package]
+name = "event-sauce-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Core traits and types for event-sauce event sourcing library"
+keywords = ["event-sourcing", "cqrs", "ddd", "aggregate", "events"]
+categories = ["asynchronous", "database"]
+
+[dependencies]
+async-trait.workspace = true
+futures.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros", "rt", "rt-multi-thread"] }
+tokio-test.workspace = true
+proptest.workspace = true
+anyhow.workspace = true

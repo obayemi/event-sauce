@@ -1,0 +1,27 @@
+[package]
+name = "event-sauce-sagas"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Saga and process manager patterns for event-sauce"
+keywords = ["event-sourcing", "saga", "process-manager", "workflow"]
+categories = ["asynchronous"]
+
+[dependencies]
+event-sauce-core = { path = "../event-sauce-core", version = "0.1.0" }
+async-trait.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros", "rt"] }
+anyhow.workspace = true

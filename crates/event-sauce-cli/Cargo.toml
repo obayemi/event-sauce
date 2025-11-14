@@ -1,0 +1,29 @@
+[package]
+name = "event-sauce-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "CLI tool for event-sauce projects"
+keywords = ["event-sourcing", "cli", "codegen"]
+categories = ["command-line-utilities", "development-tools"]
+
+[[bin]]
+name = "event-sauce"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+indicatif.workspace = true
+console.workspace = true
+anyhow.workspace = true
+tokio = { workspace = true, features = ["macros", "rt"] }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+assert_cmd = "2.0"
+predicates = "3.1"
+tempfile = "3.14"

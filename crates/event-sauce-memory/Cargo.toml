@@ -1,0 +1,29 @@
+[package]
+name = "event-sauce-memory"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "In-memory implementation of event-sauce traits for testing"
+keywords = ["event-sourcing", "testing", "mock", "in-memory"]
+categories = ["asynchronous", "development-tools::testing"]
+
+[dependencies]
+event-sauce-core = { path = "../event-sauce-core", version = "0.1.0" }
+async-trait.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+parking_lot.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros", "rt", "rt-multi-thread"] }
+tokio-test.workspace = true
+proptest.workspace = true
+anyhow.workspace = true
