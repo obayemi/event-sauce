@@ -257,9 +257,14 @@ cargo llvm-cov --workspace --lcov --output-path coverage.lcov
 # View HTML report
 cargo llvm-cov --workspace --html
 open target/llvm-cov/html/index.html
+
+# Summary only
+cargo llvm-cov -p event-sauce-core --summary-only
 ```
 
-CI enforces 100% coverage - all PRs must maintain this standard.
+**Current Coverage: 97.78%** (103 tests) - See [`crates/event-sauce-core/COVERAGE.md`](crates/event-sauce-core/COVERAGE.md) for detailed coverage analysis and gap documentation.
+
+CI enforces minimum 95% coverage - all PRs must maintain this standard.
 
 ### Contributing
 
@@ -283,7 +288,7 @@ All contributions must:
 
 - [x] Phase 0: Repository setup with Jujutsu
 - [x] Phase 0.5: Workspace and crate structure
-- [x] **Phase 1: Core traits and types (event-sauce-core)** - ✅ 97 tests, 97.79% coverage
+- [x] **Phase 1: Core traits and types (event-sauce-core)** - ✅ 103 tests, 97.78% coverage ([details](crates/event-sauce-core/COVERAGE.md))
 - [ ] Phase 2: In-memory implementation (event-sauce-memory)
 - [ ] Phase 3: PostgreSQL backend (event-sauce-postgres)
 - [ ] Phase 4: Derive macros (event-sauce-macros)
