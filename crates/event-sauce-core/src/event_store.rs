@@ -264,6 +264,12 @@ pub trait EventStore: Send + Sync {
     /// Saves a snapshot.
     ///
     /// Optional operation - implementations may choose not to support snapshots.
+    ///
+    /// # Default Implementation
+    ///
+    /// The default implementation is a no-op that always succeeds.
+    /// Implementations without snapshot support can use this default.
+    /// Coverage: Tested via `MockEventStore` in tests.
     async fn save_snapshot(&self, snapshot: Snapshot) -> Result<()> {
         let _ = snapshot;
         Ok(()) // Default: no-op
@@ -272,6 +278,12 @@ pub trait EventStore: Send + Sync {
     /// Loads a snapshot.
     ///
     /// Returns `None` if no snapshot exists or snapshots are not supported.
+    ///
+    /// # Default Implementation
+    ///
+    /// The default implementation always returns `None`.
+    /// Implementations without snapshot support can use this default.
+    /// Coverage: Tested via `MockEventStore` in tests.
     async fn load_snapshot(&self, stream_id: StreamId) -> Result<Option<Snapshot>> {
         let _ = stream_id;
         Ok(None) // Default: no snapshots
@@ -411,5 +423,93 @@ mod tests {
 
         let debug = format!("{:?}", snapshot);
         assert!(debug.contains("Snapshot"));
+    }
+
+    // Tests for default trait implementations
+    use async_trait::async_trait;
+    use futures::stream;
+
+    /// Mock EventStore for testing default snapshot implementations
+    struct MockEventStore;
+
+    #[async_trait]
+    impl EventStore for MockEventStore {
+        async fn append(
+            &self,
+            _stream_id: StreamId,
+            _events: Vec<crate::EventEnvelope>,
+            _expected_version: Version,
+        ) -> crate::Result<()> {
+            Ok(())
+        }
+
+        async fn load_stream(
+            &self,
+            _stream_id: StreamId,
+            _from_version: Version,
+        ) -> crate::Result<impl futures::Stream<Item = crate::Result<crate::EventEnvelope>> + Send>
+        {
+            Ok(stream::empty())
+        }
+
+        async fn stream_all(
+            &self,
+            _from_position: Position,
+        ) -> crate::Result<impl futures::Stream<Item = crate::Result<crate::EventEnvelope>> + Send>
+        {
+            Ok(stream::empty())
+        }
+
+        async fn get_version(&self, _stream_id: StreamId) -> crate::Result<Version> {
+            Ok(Version::initial())
+        }
+
+        // Using default implementations for snapshot methods
+    }
+
+    #[tokio::test]
+    async fn test_save_snapshot_default_implementation() {
+        let store = MockEventStore;
+        let snapshot = Snapshot::new(
+            Uuid::new_v4(),
+            "TestAggregate".to_string(),
+            Version::new(10),
+            serde_json::json!({"value": 42}),
+        );
+
+        // Default implementation should succeed but do nothing
+        let result = store.save_snapshot(snapshot).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_load_snapshot_default_implementation() {
+        let store = MockEventStore;
+        let stream_id = StreamId::new("TestAggregate", Uuid::new_v4());
+
+        // Default implementation should return None
+        let result = store.load_snapshot(stream_id).await;
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_save_and_load_snapshot_default_implementations() {
+        let store = MockEventStore;
+        let aggregate_id = Uuid::new_v4();
+        let stream_id = StreamId::new("TestAggregate", aggregate_id);
+
+        // Save a snapshot (default does nothing)
+        let snapshot = Snapshot::new(
+            aggregate_id,
+            "TestAggregate".to_string(),
+            Version::new(100),
+            serde_json::json!({"state": "active"}),
+        );
+        store.save_snapshot(snapshot).await.unwrap();
+
+        // Load snapshot (default returns None)
+        let loaded = store.load_snapshot(stream_id).await.unwrap();
+        assert!(loaded.is_none());
     }
 }

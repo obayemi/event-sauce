@@ -172,6 +172,12 @@ pub trait Aggregate: Send + Sync {
     ///
     /// Used for event store organization and serialization.
     /// Defaults to the type name.
+    ///
+    /// # Coverage Note
+    ///
+    /// The `unwrap_or("Unknown")` fallback is defensive programming.
+    /// Rust's `type_name()` always returns a non-empty string, so `.last()`
+    /// will always return `Some(_)`. The fallback cannot be reached in practice.
     #[must_use]
     fn aggregate_type() -> &'static str
     where

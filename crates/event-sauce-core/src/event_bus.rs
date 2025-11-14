@@ -187,6 +187,12 @@ pub trait EventBus: Send + Sync {
     ///
     /// Implementations may batch or optimize multiple event publishing.
     ///
+    /// # Default Implementation
+    ///
+    /// The default implementation publishes events one by one.
+    /// Implementations can override this for true batching/optimization.
+    /// Coverage: Tested via `MockEventBus` in tests.
+    ///
     /// # Examples
     ///
     /// ```ignore
@@ -370,5 +376,78 @@ mod tests {
 
         assert!(filter.matches(&event1));
         assert!(!filter.matches(&event2));
+    }
+
+    // Tests for default trait implementations
+    use std::sync::{Arc, Mutex};
+
+    /// Mock EventBus for testing default publish_batch implementation
+    struct MockEventBus {
+        published: Arc<Mutex<Vec<EventEnvelope>>>,
+    }
+
+    impl MockEventBus {
+        fn new() -> Self {
+            Self {
+                published: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn published_events(&self) -> Vec<EventEnvelope> {
+            self.published.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl EventBus for MockEventBus {
+        async fn publish(&self, event: EventEnvelope) -> crate::Result<()> {
+            self.published.lock().unwrap().push(event);
+            Ok(())
+        }
+
+        async fn subscribe(
+            &self,
+            _filter: EventFilter,
+        ) -> crate::Result<impl futures::Stream<Item = EventEnvelope> + Send> {
+            Ok(futures::stream::empty())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_publish_batch_default_implementation() {
+        let bus = MockEventBus::new();
+        let event1 = create_test_envelope("Event1", "Aggregate1");
+        let event2 = create_test_envelope("Event2", "Aggregate2");
+        let event3 = create_test_envelope("Event3", "Aggregate3");
+
+        let events = vec![event1.clone(), event2.clone(), event3.clone()];
+        bus.publish_batch(events).await.unwrap();
+
+        let published = bus.published_events();
+        assert_eq!(published.len(), 3);
+        assert_eq!(published[0].event_type, "Event1");
+        assert_eq!(published[1].event_type, "Event2");
+        assert_eq!(published[2].event_type, "Event3");
+    }
+
+    #[tokio::test]
+    async fn test_publish_batch_empty() {
+        let bus = MockEventBus::new();
+        bus.publish_batch(vec![]).await.unwrap();
+
+        let published = bus.published_events();
+        assert_eq!(published.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_publish_batch_single_event() {
+        let bus = MockEventBus::new();
+        let event = create_test_envelope("SingleEvent", "SingleAggregate");
+
+        bus.publish_batch(vec![event.clone()]).await.unwrap();
+
+        let published = bus.published_events();
+        assert_eq!(published.len(), 1);
+        assert_eq!(published[0].event_type, "SingleEvent");
     }
 }
