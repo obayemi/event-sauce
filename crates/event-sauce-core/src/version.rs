@@ -3,6 +3,7 @@
 //! The `Version` type represents the version of an aggregate or event stream.
 //! It's used for optimistic concurrency control to prevent conflicting updates.
 
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 /// Version number for optimistic concurrency control.
@@ -20,7 +21,7 @@ use std::fmt;
 ///
 /// assert!(v2 > v1);
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct Version(i64);
 
 impl Version {
