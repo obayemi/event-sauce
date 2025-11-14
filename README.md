@@ -289,7 +289,7 @@ All contributions must:
 - [x] Phase 0: Repository setup with Jujutsu
 - [x] Phase 0.5: Workspace and crate structure
 - [x] **Phase 1: Core traits and types (event-sauce-core)** - ✅ 103 tests, 97.78% coverage ([details](crates/event-sauce-core/COVERAGE.md))
-- [ ] Phase 2: In-memory implementation (event-sauce-memory)
+- [x] **Phase 2: In-memory implementation (event-sauce-memory)** - ✅ 26 tests, 99.54% coverage
 - [ ] Phase 3: PostgreSQL backend (event-sauce-postgres)
 - [ ] Phase 4: Derive macros (event-sauce-macros)
 - [ ] Phase 5: Event bus and projections
@@ -324,6 +324,6 @@ Built with inspiration from:
 
 ---
 
-**Status**: 🚧 Phase 1 Complete - Core library ready with 97.79% coverage
+**Status**: 🚧 Phase 2 Complete - Core + In-Memory implementations ready (129 tests, 99%+ coverage)
 
 Built with ❤️ and strict TDD in Rust
