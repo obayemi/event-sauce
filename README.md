@@ -236,6 +236,27 @@ Projection building demonstration:
 cargo run -p event-sauce --example task-projections --features "memory,projections"
 ```
 
+#### 5. Saga Payment - Choreography Pattern
+Demonstrates saga pattern for distributed workflows:
+- Reacting to events across aggregates
+- Compensation logic for failures
+- Decentralized coordination
+
+```bash
+cargo run -p event-sauce --example saga-payment --features "memory,sagas"
+```
+
+#### 6. Process Manager - Orchestration Pattern
+Demonstrates process manager pattern for complex workflows:
+- Centralized workflow orchestration
+- Explicit state machine
+- Command generation and execution
+- Multi-step business processes
+
+```bash
+cargo run -p event-sauce --example process-manager-order --features "memory,sagas"
+```
+
 ### Quick Example
 
 Here's a complete, minimal example:
@@ -390,12 +411,13 @@ open target/llvm-cov/html/index.html
 cargo llvm-cov -p event-sauce-core --summary-only
 ```
 
-**Current Test Status: 231 tests across 6 crates**
+**Current Test Status: 269 tests across 7 crates**
 - Core: 103 tests, 97.78% coverage ([details](crates/event-sauce-core/COVERAGE.md))
 - Memory: 26 tests, 99.54% coverage
 - PostgreSQL: 27 tests (uses testcontainers - requires Docker)
 - Macros: 19 tests (9 Aggregate, 9 Event, 1 compile-fail suite with 5 UI tests)
 - Projections: 33 tests (26 unit + 7 integration), 98%+ coverage
+- Sagas: 38 tests (28 unit + 4 integration + 6 doctests), ~94% coverage
 - CLI: 23 tests (init, generate, db commands)
 
 The PostgreSQL tests use [testcontainers](https://github.com/testcontainers/testcontainers-rs) to automatically spin up isolated PostgreSQL instances. Tests run automatically in CI and locally with Docker installed.
@@ -497,9 +519,9 @@ event-sauce init --help
 - [x] **Phase 4: Derive macros (event-sauce-macros)** - ✅ 19 tests (#[derive(Aggregate)] and #[derive(Event)])
 - [x] **Phase 5: Projections (event-sauce-projections)** - ✅ 33 tests (Projection trait, ProjectionRunner, Checkpointing)
 - [ ] Phase 6: SQLite backend (deferred)
-- [ ] Phase 7: Saga patterns (deferred)
+- [x] **Phase 7: Saga and Process Manager patterns (event-sauce-sagas)** - ✅ 38 tests (Saga trait, ProcessManager trait, Runners, Integration tests)
 - [x] **Phase 8: CLI tooling (event-sauce-cli)** - ✅ 23 tests (init, generate, db commands)
-- [x] **Phase 9: Examples and documentation** - ✅ 4 examples, 3 comprehensive guides
+- [x] **Phase 9: Examples and documentation** - ✅ 6 examples, 3 comprehensive guides
 - [ ] Phase 10: v0.1.0 release
 
 ## License
