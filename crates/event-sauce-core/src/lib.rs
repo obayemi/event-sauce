@@ -18,6 +18,8 @@
 #![deny(clippy::all)]
 #![warn(clippy::pedantic)]
 
+mod aggregate_id;
 mod version;
 
+pub use aggregate_id::AggregateId;
 pub use version::Version;
