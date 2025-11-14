@@ -1,0 +1,13 @@
+error: Event can only be derived for enums
+  --> tests/ui/event_on_struct.rs:10:8
+   |
+10 | struct TestEvent {
+   |        ^^^^^^^^^
+
+warning: unused import: `event_sauce_core::DomainEvent`
+ --> tests/ui/event_on_struct.rs:4:5
+  |
+4 | use event_sauce_core::DomainEvent;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` on by default

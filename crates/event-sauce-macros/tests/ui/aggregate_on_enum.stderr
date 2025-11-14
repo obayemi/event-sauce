@@ -1,0 +1,13 @@
+error: Aggregate can only be derived for structs
+  --> tests/ui/aggregate_on_enum.rs:37:6
+   |
+37 | enum TestAggregate {
+   |      ^^^^^^^^^^^^^
+
+warning: unused import: `Aggregate`
+ --> tests/ui/aggregate_on_enum.rs:4:24
+  |
+4 | use event_sauce_core::{Aggregate, AggregateId, DomainEvent, Version};
+  |                        ^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` on by default

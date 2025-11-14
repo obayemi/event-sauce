@@ -205,8 +205,8 @@ cargo run --example counter
 
 - Rust 1.75+ (latest stable recommended)
 - Jujutsu (`cargo install jj-cli` or `brew install jj`)
-- PostgreSQL 16+ (for integration tests)
-- SQLite 3.40+ (for integration tests)
+- Docker (for PostgreSQL testcontainers)
+- SQLite 3.40+ (for integration tests - Phase 6)
 
 ### Setup
 
@@ -244,9 +244,11 @@ cargo test -- --nocapture
 # Integration tests only
 cargo test --test '*'
 
-# With PostgreSQL (requires running PostgreSQL)
-cargo test -p event-sauce-postgres -- --test-threads=1
+# PostgreSQL tests (requires Docker for testcontainers)
+cargo test -p event-sauce-postgres
 ```
+
+**Note**: PostgreSQL tests use testcontainers to automatically start PostgreSQL in Docker. Ensure Docker is running before executing these tests.
 
 ### Coverage Reporting
 
@@ -262,7 +264,14 @@ open target/llvm-cov/html/index.html
 cargo llvm-cov -p event-sauce-core --summary-only
 ```
 
-**Current Coverage: 97.78%** (103 tests) - See [`crates/event-sauce-core/COVERAGE.md`](crates/event-sauce-core/COVERAGE.md) for detailed coverage analysis and gap documentation.
+**Current Test Status: 208 tests across 5 crates**
+- Core: 103 tests, 97.78% coverage ([details](crates/event-sauce-core/COVERAGE.md))
+- Memory: 26 tests, 99.54% coverage
+- PostgreSQL: 27 tests (uses testcontainers - requires Docker)
+- Macros: 19 tests (9 Aggregate, 9 Event, 1 compile-fail suite with 5 UI tests)
+- Projections: 33 tests (26 unit + 7 integration), 98%+ coverage
+
+The PostgreSQL tests use [testcontainers](https://github.com/testcontainers/testcontainers-rs) to automatically spin up isolated PostgreSQL instances. Tests run automatically in CI and locally with Docker installed.
 
 CI enforces minimum 95% coverage - all PRs must maintain this standard.
 
@@ -290,9 +299,9 @@ All contributions must:
 - [x] Phase 0.5: Workspace and crate structure
 - [x] **Phase 1: Core traits and types (event-sauce-core)** - ✅ 103 tests, 97.78% coverage ([details](crates/event-sauce-core/COVERAGE.md))
 - [x] **Phase 2: In-memory implementation (event-sauce-memory)** - ✅ 26 tests, 99.54% coverage
-- [x] **Phase 3: PostgreSQL backend (event-sauce-postgres)** - ✅ Implementation complete (tests pending)
-- [ ] Phase 4: Derive macros (event-sauce-macros)
-- [ ] Phase 5: Event bus and projections
+- [x] **Phase 3: PostgreSQL backend (event-sauce-postgres)** - ✅ 27 tests (EventStore + EventBus with LISTEN/NOTIFY)
+- [x] **Phase 4: Derive macros (event-sauce-macros)** - ✅ 19 tests (#[derive(Aggregate)] and #[derive(Event)])
+- [x] **Phase 5: Projections (event-sauce-projections)** - ✅ 33 tests (Projection trait, ProjectionRunner, Checkpointing)
 - [ ] Phase 6: SQLite backend
 - [ ] Phase 7: Saga patterns
 - [ ] Phase 8: CLI tooling
@@ -324,6 +333,6 @@ Built with inspiration from:
 
 ---
 
-**Status**: 🚧 Phase 3 Complete - Core + In-Memory + PostgreSQL implementations ready
+**Status**: 🚧 Phase 5 Complete - Core + In-Memory + PostgreSQL + Derive Macros + Projections ready
 
 Built with ❤️ and strict TDD in Rust

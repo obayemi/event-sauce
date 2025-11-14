@@ -1,0 +1,15 @@
+error: Missing #[aggregate(id = "...", event = "...")] attribute
+  --> tests/ui/aggregate_missing_attribute.rs:35:10
+   |
+35 | #[derive(event_sauce_macros::Aggregate)]
+   |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: this error originates in the derive macro `event_sauce_macros::Aggregate` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unused import: `Aggregate`
+ --> tests/ui/aggregate_missing_attribute.rs:4:24
+  |
+4 | use event_sauce_core::{Aggregate, AggregateId, DomainEvent, Version};
+  |                        ^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` on by default

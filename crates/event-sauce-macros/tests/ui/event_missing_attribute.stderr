@@ -1,0 +1,15 @@
+error: Missing #[event(version = ...)] attribute
+ --> tests/ui/event_missing_attribute.rs:8:10
+  |
+8 | #[derive(event_sauce_macros::Event, Debug, Clone)]
+  |          ^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the derive macro `event_sauce_macros::Event` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unused import: `event_sauce_core::DomainEvent`
+ --> tests/ui/event_missing_attribute.rs:4:5
+  |
+4 | use event_sauce_core::DomainEvent;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` on by default
