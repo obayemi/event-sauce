@@ -18,11 +18,13 @@
 #![deny(clippy::all)]
 #![warn(clippy::pedantic)]
 
+mod aggregate;
 mod aggregate_id;
 mod domain_event;
 mod event_envelope;
 mod version;
 
+pub use aggregate::Aggregate;
 pub use aggregate_id::AggregateId;
 pub use domain_event::DomainEvent;
 pub use event_envelope::{EventEnvelope, EventMetadata};
