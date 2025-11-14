@@ -23,6 +23,7 @@ mod aggregate_id;
 mod domain_event;
 mod error;
 mod event_envelope;
+mod event_store;
 mod version;
 
 pub use aggregate::Aggregate;
@@ -30,4 +31,5 @@ pub use aggregate_id::AggregateId;
 pub use domain_event::DomainEvent;
 pub use error::{Error, Result};
 pub use event_envelope::{EventEnvelope, EventMetadata};
+pub use event_store::{EventStore, Position, Snapshot, StreamId};
 pub use version::Version;
