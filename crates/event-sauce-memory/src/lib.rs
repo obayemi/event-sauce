@@ -13,6 +13,8 @@
 #![deny(clippy::all)]
 #![warn(clippy::pedantic)]
 
+mod event_bus;
 mod event_store;
 
+pub use event_bus::InMemoryEventBus;
 pub use event_store::InMemoryEventStore;
