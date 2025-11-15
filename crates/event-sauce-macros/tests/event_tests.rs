@@ -9,6 +9,7 @@ use chrono::{DateTime, Utc};
 // Test: Simple enum with timestamp field
 #[derive(event_sauce_macros::Event, Debug, Clone)]
 #[event(version = 1)]
+#[allow(dead_code)]
 enum TestEvent {
     Created {
         id: String,
@@ -115,6 +116,7 @@ fn test_event_derive_is_send_sync() {
 // Test: Versioned event (version 2)
 #[derive(event_sauce_macros::Event, Debug, Clone)]
 #[event(version = 2)]
+#[allow(dead_code)]
 enum TestEventV2 {
     CreatedV2 {
         id: String,
@@ -138,6 +140,7 @@ fn test_event_derive_different_version() {
 // Test: Event with custom type name prefix
 #[derive(event_sauce_macros::Event, Debug, Clone)]
 #[event(version = 1, type_prefix = "Order")]
+#[allow(dead_code)]
 enum OrderEvent {
     Placed {
         order_id: String,

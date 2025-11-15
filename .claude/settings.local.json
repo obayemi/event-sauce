@@ -12,7 +12,8 @@
       "Bash(jj diff:*)",
       "Bash(find:*)",
       "Bash(cat:*)",
-      "Bash(cargo doc:*)"
+      "Bash(cargo doc:*)",
+      "Bash(RUST_BACKTRACE=1 cargo test:*)"
     ],
     "deny": [],
     "ask": []

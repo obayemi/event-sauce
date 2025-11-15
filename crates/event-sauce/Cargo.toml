@@ -40,3 +40,19 @@ serde_json.workspace = true
 thiserror.workspace = true
 futures.workspace = true
 async-trait.workspace = true
+
+[[example]]
+name = "saga-payment"
+required-features = ["memory", "sagas"]
+
+[[example]]
+name = "process-manager-order"
+required-features = ["memory", "sagas"]
+
+[[example]]
+name = "task-projections"
+required-features = ["memory", "projections"]
+
+[[example]]
+name = "bank-account"
+required-features = ["macros", "memory"]

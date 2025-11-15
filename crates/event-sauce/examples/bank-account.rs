@@ -38,6 +38,7 @@ impl AggregateId for AccountId {}
 /// Bank account events using the derive macro
 #[derive(DeriveEvent, Debug, Clone)]
 #[event(version = 1, type_prefix = "Account")]
+#[allow(dead_code)]
 enum AccountEvent {
     Opened {
         account_id: String,

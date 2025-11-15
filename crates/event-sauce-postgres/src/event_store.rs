@@ -83,11 +83,12 @@ impl EventStore for PostgresEventStore {
         )
         .bind(stream_id.aggregate_id())
         .bind(stream_id.aggregate_type())
-        .fetch_optional(&mut *tx)
+        .fetch_one(&mut *tx)
         .await
         .map_err(|e| Error::custom(format!("Failed to check version: {e}")))?;
 
-        let current_version = Version::new(current_version.unwrap_or(-1) + 1);
+        #[allow(clippy::cast_possible_truncation)]
+        let current_version = Version::new((current_version.unwrap_or(-1) + 1) as i32);
 
         if current_version != expected_version {
             return Err(Error::concurrency_conflict(expected_version, current_version));
@@ -96,7 +97,7 @@ impl EventStore for PostgresEventStore {
         // Insert events
         for (idx, event) in events.iter().enumerate() {
             #[allow(clippy::cast_possible_wrap)]
-            let stream_version = expected_version.as_i64() + idx as i64;
+            let stream_version = i64::from(expected_version.as_i32()) + idx as i64;
 
             sqlx::query(
                 "INSERT INTO events (
@@ -108,7 +109,7 @@ impl EventStore for PostgresEventStore {
             .bind(event.aggregate_id)
             .bind(&event.aggregate_type)
             .bind(&event.event_type)
-            .bind(event.event_version.as_i64())
+            .bind(event.event_version.as_i32())
             .bind(&event.event_data)
             .bind(stream_version)
             .bind(event.created_by)
@@ -141,7 +142,7 @@ impl EventStore for PostgresEventStore {
         )
         .bind(stream_id.aggregate_id())
         .bind(stream_id.aggregate_type())
-        .bind(from_version.as_i64())
+        .bind(i64::from(from_version.as_i32()))
         .fetch_all(&self.pool)
         .await
         .map_err(|e| Error::custom(format!("Failed to load stream: {e}")))?
@@ -180,11 +181,13 @@ impl EventStore for PostgresEventStore {
         )
         .bind(stream_id.aggregate_id())
         .bind(stream_id.aggregate_type())
-        .fetch_optional(&self.pool)
+        .fetch_one(&self.pool)
         .await
         .map_err(|e| Error::custom(format!("Failed to get version: {e}")))?;
 
-        Ok(Version::new(version.map_or(0, |v| v + 1)))
+        #[allow(clippy::cast_possible_truncation)]
+        let next_version = version.map_or(0, |v| v + 1) as i32;
+        Ok(Version::new(next_version))
     }
 
     async fn save_snapshot(&self, snapshot: Snapshot) -> Result<()> {
@@ -196,7 +199,7 @@ impl EventStore for PostgresEventStore {
         )
         .bind(snapshot.aggregate_id)
         .bind(&snapshot.aggregate_type)
-        .bind(snapshot.snapshot_version.as_i64())
+        .bind(i64::from(snapshot.snapshot_version.as_i32()))
         .bind(&snapshot.snapshot_data)
         .execute(&self.pool)
         .await
@@ -228,7 +231,7 @@ struct EventRow {
     aggregate_id: uuid::Uuid,
     aggregate_type: String,
     event_type: String,
-    event_version: i64,
+    event_version: i32,
     event_data: serde_json::Value,
     created_by: Option<uuid::Uuid>,
     created_at: chrono::DateTime<chrono::Utc>,
@@ -274,10 +277,13 @@ struct SnapshotRow {
 
 impl From<SnapshotRow> for Snapshot {
     fn from(row: SnapshotRow) -> Self {
+        #[allow(clippy::cast_possible_truncation)]
+        let snapshot_version = Version::new(row.snapshot_version as i32);
+
         Snapshot {
             aggregate_id: row.aggregate_id,
             aggregate_type: row.aggregate_type,
-            snapshot_version: Version::new(row.snapshot_version),
+            snapshot_version,
             snapshot_data: row.snapshot_data,
         }
     }
@@ -346,10 +352,14 @@ mod tests {
     }
 
     fn create_test_envelope(event_type: &str, aggregate_id: Uuid) -> EventEnvelope {
+        create_test_envelope_with_type(event_type, "User", aggregate_id)
+    }
+
+    fn create_test_envelope_with_type(event_type: &str, aggregate_type: &str, aggregate_id: Uuid) -> EventEnvelope {
         EventEnvelope::new(
             Uuid::new_v4(),
             aggregate_id,
-            "TestAggregate".to_string(),
+            aggregate_type.to_string(),
             event_type.to_string(),
             Version::new(1),
             json!({"data": "test"}),
@@ -451,7 +461,7 @@ mod tests {
         store
             .append(
                 stream2,
-                vec![create_test_envelope("OrderPlaced", id2)],
+                vec![create_test_envelope_with_type("OrderPlaced", "Order", id2)],
                 Version::initial(),
             )
             .await

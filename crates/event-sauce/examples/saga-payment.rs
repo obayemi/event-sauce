@@ -7,12 +7,15 @@
 
 use async_trait::async_trait;
 use event_sauce::event_sauce_memory::InMemoryEventBus;
-use event_sauce::event_sauce_sagas::{Result, Saga, SagaRunner};
+use event_sauce::event_sauce_sagas;
 use event_sauce::{EventBus, EventEnvelope, Version};
 use serde_json::json;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use uuid::Uuid;
+
+// Re-export saga types for convenience
+use event_sauce_sagas::{Result, Saga, SagaRunner};
 
 // ============================================================================
 // Payment Saga - Reacts to order and payment events

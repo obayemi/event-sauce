@@ -7,18 +7,22 @@
 
 use async_trait::async_trait;
 use event_sauce::event_sauce_memory::InMemoryEventBus;
-use event_sauce::event_sauce_sagas::{Command, CommandExecutor, ProcessManager, ProcessRunner, Result};
+use event_sauce::event_sauce_sagas;
 use event_sauce::{EventBus, EventEnvelope, Version};
 use serde_json::json;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
+// Re-export saga types for convenience
+use event_sauce_sagas::{Command, CommandExecutor, ProcessManager, ProcessRunner, Result};
+
 // ============================================================================
 // Commands - Actions the process manager can issue
 // ============================================================================
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 enum FulfillmentCommand {
     ProcessPayment { order_id: String, amount: f64 },
     ReserveInventory { order_id: String, items: Vec<String> },

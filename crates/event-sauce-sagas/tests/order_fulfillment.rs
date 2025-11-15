@@ -82,6 +82,7 @@ impl Saga for PaymentSaga {
 // ============================================================================
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 enum FulfillmentCommand {
     ProcessPayment { order_id: String, amount: f64 },
     CreateShipment { order_id: String },
@@ -184,6 +185,7 @@ struct TestEventBus {
 }
 
 impl TestEventBus {
+    #[allow(dead_code)]
     fn new() -> Self {
         Self {
             events: Arc::new(Mutex::new(Vec::new())),

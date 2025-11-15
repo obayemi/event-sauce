@@ -99,7 +99,8 @@ impl EventStore for InMemoryEventStore {
 
         // Check version for optimistic concurrency control
         #[allow(clippy::cast_possible_wrap)]
-        let current_version = Version::new(stream.len() as i64);
+        #[allow(clippy::cast_possible_truncation)]
+        let current_version = Version::new(stream.len() as i32);
         if current_version != expected_version {
             return Err(Error::concurrency_conflict(expected_version, current_version));
         }
@@ -127,7 +128,7 @@ impl EventStore for InMemoryEventStore {
             .map(|stream| {
                 stream
                     .iter()
-                    .skip(from_version.as_i64() as usize)
+                    .skip(from_version.as_i32() as usize)
                     .cloned()
                     .collect::<Vec<_>>()
             })
@@ -161,7 +162,10 @@ impl EventStore for InMemoryEventStore {
         let version = streams
             .get(&stream_id)
             .map_or(Version::initial(), |stream| {
-                Version::new(stream.len() as i64)
+                #[allow(clippy::cast_possible_truncation)]
+                {
+                    Version::new(stream.len() as i32)
+                }
             });
 
         Ok(version)

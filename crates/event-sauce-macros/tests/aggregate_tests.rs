@@ -27,6 +27,7 @@ impl AggregateId for TestCounterId {}
 
 // Define a simple event for testing
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 enum TestCounterEvent {
     Incremented { amount: i32, timestamp: DateTime<Utc> },
     Decremented { amount: i32, timestamp: DateTime<Utc> },

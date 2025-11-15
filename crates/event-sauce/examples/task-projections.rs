@@ -9,15 +9,18 @@
 //! Run with: `cargo run --example task-projections --features "memory,projections"`
 
 use async_trait::async_trait;
-use event_sauce_core::{EventBus, EventEnvelope, EventFilter, Result, Version};
-use event_sauce_memory::InMemoryEventBus;
-use event_sauce_projections::{
-    Checkpoint, CheckpointStore, InMemoryCheckpointStore, Projection, ProjectionRunner,
-};
+use event_sauce::{EventBus, EventEnvelope, EventFilter, Result, Version};
+use event_sauce::event_sauce_memory::InMemoryEventBus;
+use event_sauce::event_sauce_projections;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
+
+// Re-export projection types for convenience
+use event_sauce_projections::{
+    Checkpoint, CheckpointStore, InMemoryCheckpointStore, Projection, ProjectionRunner,
+};
 
 /// Task status enum
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -51,7 +54,7 @@ enum TaskEvent {
 }
 
 /// Helper function to create event envelopes
-fn create_event(event: TaskEvent, aggregate_id: Uuid, sequence: i64) -> EventEnvelope {
+fn create_event(event: TaskEvent, aggregate_id: Uuid, sequence: i32) -> EventEnvelope {
     let event_type = match &event {
         TaskEvent::Created { .. } => "TaskCreated",
         TaskEvent::StatusChanged { .. } => "TaskStatusChanged",
@@ -415,7 +418,7 @@ async fn main() -> Result<()> {
             move |event| {
                 let checkpoint_store = checkpoint_store.clone();
                 let event_id = event.id;
-                let seq = event.event_version.as_i64();
+                let seq = i64::from(event.event_version.as_i32());
                 async move {
                     let checkpoint = Checkpoint::new("tasks_by_assignee", event_id, seq);
                     checkpoint_store.save("tasks_by_assignee", checkpoint).await?;

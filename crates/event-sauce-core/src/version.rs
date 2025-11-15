@@ -22,7 +22,7 @@ use std::fmt;
 /// assert!(v2 > v1);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct Version(i64);
+pub struct Version(i32);
 
 impl Version {
     /// Creates a new version.
@@ -33,14 +33,14 @@ impl Version {
     /// use event_sauce_core::Version;
     ///
     /// let version = Version::new(0);
-    /// assert_eq!(version.as_i64(), 0);
+    /// assert_eq!(version.as_i32(), 0);
     /// ```
     #[must_use]
-    pub const fn new(value: i64) -> Self {
+    pub const fn new(value: i32) -> Self {
         Self(value)
     }
 
-    /// Returns the version as an i64.
+    /// Returns the version as an i32.
     ///
     /// # Examples
     ///
@@ -48,10 +48,10 @@ impl Version {
     /// use event_sauce_core::Version;
     ///
     /// let version = Version::new(42);
-    /// assert_eq!(version.as_i64(), 42);
+    /// assert_eq!(version.as_i32(), 42);
     /// ```
     #[must_use]
-    pub const fn as_i64(self) -> i64 {
+    pub const fn as_i32(self) -> i32 {
         self.0
     }
 
@@ -64,7 +64,7 @@ impl Version {
     ///
     /// let v1 = Version::new(5);
     /// let v2 = v1.next();
-    /// assert_eq!(v2.as_i64(), 6);
+    /// assert_eq!(v2.as_i32(), 6);
     /// ```
     #[must_use]
     pub const fn next(self) -> Self {
@@ -79,7 +79,7 @@ impl Version {
     /// use event_sauce_core::Version;
     ///
     /// let initial = Version::initial();
-    /// assert_eq!(initial.as_i64(), 0);
+    /// assert_eq!(initial.as_i32(), 0);
     /// ```
     #[must_use]
     pub const fn initial() -> Self {
@@ -93,13 +93,13 @@ impl fmt::Display for Version {
     }
 }
 
-impl From<i64> for Version {
-    fn from(value: i64) -> Self {
+impl From<i32> for Version {
+    fn from(value: i32) -> Self {
         Self(value)
     }
 }
 
-impl From<Version> for i64 {
+impl From<Version> for i32 {
     fn from(version: Version) -> Self {
         version.0
     }
@@ -112,20 +112,20 @@ mod tests {
     #[test]
     fn test_version_new() {
         let version = Version::new(42);
-        assert_eq!(version.as_i64(), 42);
+        assert_eq!(version.as_i32(), 42);
     }
 
     #[test]
     fn test_version_initial() {
         let version = Version::initial();
-        assert_eq!(version.as_i64(), 0);
+        assert_eq!(version.as_i32(), 0);
     }
 
     #[test]
     fn test_version_next() {
         let v1 = Version::new(5);
         let v2 = v1.next();
-        assert_eq!(v2.as_i64(), 6);
+        assert_eq!(v2.as_i32(), 6);
     }
 
     #[test]
@@ -135,10 +135,10 @@ mod tests {
         let v3 = v2.next();
         let v4 = v3.next();
 
-        assert_eq!(v1.as_i64(), 0);
-        assert_eq!(v2.as_i64(), 1);
-        assert_eq!(v3.as_i64(), 2);
-        assert_eq!(v4.as_i64(), 3);
+        assert_eq!(v1.as_i32(), 0);
+        assert_eq!(v2.as_i32(), 1);
+        assert_eq!(v3.as_i32(), 2);
+        assert_eq!(v4.as_i32(), 3);
     }
 
     #[test]
@@ -170,15 +170,15 @@ mod tests {
     }
 
     #[test]
-    fn test_version_from_i64() {
+    fn test_version_from_i32() {
         let version: Version = 42.into();
-        assert_eq!(version.as_i64(), 42);
+        assert_eq!(version.as_i32(), 42);
     }
 
     #[test]
-    fn test_version_into_i64() {
+    fn test_version_into_i32() {
         let version = Version::new(42);
-        let value: i64 = version.into();
+        let value: i32 = version.into();
         assert_eq!(value, 42);
     }
 

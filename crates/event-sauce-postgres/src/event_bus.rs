@@ -112,8 +112,9 @@ impl EventBus for PostgresEventBus {
             .map_err(|e| Error::custom(format!("Failed to serialize event: {e}")))?;
 
         // Send NOTIFY with event payload
-        sqlx::query(&format!("NOTIFY {}, $1", self.inner.channel))
-            .bind(&payload)
+        // Note: NOTIFY does not support parameterized queries, so we must escape the payload
+        let escaped_payload = payload.replace('\\', "\\\\").replace('\'', "''");
+        sqlx::query(&format!("NOTIFY {}, '{}'", self.inner.channel, escaped_payload))
             .execute(&self.inner.pool)
             .await
             .map_err(|e| Error::custom(format!("Failed to publish event: {e}")))?;
