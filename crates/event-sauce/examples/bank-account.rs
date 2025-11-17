@@ -207,7 +207,17 @@ impl BankAccountState {
         }
     }
 
-    /// Apply event to update state (called by generated wrapper)
+    /// Get current balance
+    fn balance(&self) -> i64 {
+        self.balance
+    }
+
+    /// Get account status
+    fn status(&self) -> AccountStatus {
+        self.status
+    }
+
+    /// Apply an event to update state
     fn apply_event(&mut self, event: &AccountEvent) {
         match event {
             AccountEvent::Opened(e) => {
@@ -222,16 +232,6 @@ impl BankAccountState {
                 self.balance -= e.amount;
             }
         }
-    }
-
-    /// Get current balance
-    fn balance(&self) -> i64 {
-        self.balance
-    }
-
-    /// Get account status
-    fn status(&self) -> AccountStatus {
-        self.status
     }
 }
 

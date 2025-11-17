@@ -267,7 +267,7 @@ impl ShoppingCartState {
         }
     }
 
-    /// Apply event to update state
+    /// Apply an event to update state
     fn apply_event(&mut self, event: &CartEvent) {
         match event {
             CartEvent::Created(e) => {

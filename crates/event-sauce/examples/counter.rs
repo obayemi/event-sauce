@@ -166,7 +166,7 @@ impl CounterState {
         self.value
     }
 
-    /// Apply an event to update state (called by the generated wrapper)
+    /// Apply an event to update state
     fn apply_event(&mut self, event: &CounterEvent) {
         match event {
             CounterEvent::Incremented(e) => self.value += e.amount,

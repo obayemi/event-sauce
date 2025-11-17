@@ -299,6 +299,29 @@ pub fn derive_event(input: TokenStream) -> TokenStream {
         }
     });
 
+    // Generate apply method arms that delegate to ApplyEvent::apply
+    let apply_arms = variants.iter().map(|variant| {
+        let variant_name = &variant.ident;
+
+        // For tuple variants, extract the inner event and call its apply method
+        match &variant.fields {
+            Fields::Unnamed(_) => {
+                quote! {
+                    #name::#variant_name(event) => {
+                        event_sauce_core::ApplyEvent::apply(event, aggregate)
+                    },
+                }
+            }
+            _ => {
+                // For named fields, we can't easily delegate
+                // Users will need to implement apply_event manually
+                quote! {
+                    #name::#variant_name { .. } => {},
+                }
+            }
+        }
+    });
+
     // Generate the implementation
     let gen = quote! {
         impl event_sauce_core::DomainEvent for #name {
@@ -318,6 +341,7 @@ pub fn derive_event(input: TokenStream) -> TokenStream {
                 }
             }
         }
+
 
         // Generate Into implementations for each variant
         #(#into_impls)*
