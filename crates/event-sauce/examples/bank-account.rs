@@ -89,7 +89,7 @@ struct AccountWithdrawnEvent {
 
 /// Bank account events wrapping the separated event structs
 #[derive(DeriveEvent, Debug, Clone)]
-#[event(version = 1, type_prefix = "Account", state = "BankAccountState")]
+#[event(version = 1, type_prefix = "Account", aggregate = "BankAccountAggregate")]
 enum AccountEvent {
     Opened(AccountOpenedEvent),
     Deposited(AccountDepositedEvent),

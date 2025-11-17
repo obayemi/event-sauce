@@ -114,7 +114,7 @@ struct CartCheckedOutEvent {
 
 /// Domain events wrapping separated event structs
 #[derive(DeriveEvent, Debug, Clone, Serialize, Deserialize)]
-#[event(version = 1, type_prefix = "Cart", state = "ShoppingCartState")]
+#[event(version = 1, type_prefix = "Cart", aggregate = "ShoppingCartAggregate")]
 enum CartEvent {
     Created(CartCreatedEvent),
     ItemAdded(CartItemAddedEvent),

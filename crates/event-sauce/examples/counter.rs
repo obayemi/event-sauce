@@ -70,7 +70,7 @@ struct CounterResetEvent {
 
 /// Domain events enum wrapping the separated event structs
 #[derive(DeriveEvent, Debug, Clone, Serialize, Deserialize)]
-#[event(version = 1, type_prefix = "Counter", state = "CounterState")]
+#[event(version = 1, type_prefix = "Counter", aggregate = "CounterAggregate")]
 enum CounterEvent {
     Incremented(CounterIncrementedEvent),
     Decremented(CounterDecrementedEvent),
