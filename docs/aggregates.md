@@ -25,11 +25,13 @@ An aggregate is the fundamental building block of event sourcing and Domain-Driv
 
 ## Defining Aggregates
 
-Aggregates are defined using the `#[derive(Aggregate)]` macro:
+### The State Wrapper Pattern (Recommended)
+
+The **recommended approach** is to use `#[derive(AggregateState)]` which separates business state from infrastructure concerns:
 
 ```rust
-use event_sauce_core::{Aggregate, AggregateId, AggregateError, Version};
-use event_sauce_macros::Aggregate as DeriveAggregate;
+use event_sauce_core::{Aggregate, AggregateId, AggregateError};
+use event_sauce_macros::AggregateState;
 use uuid::Uuid;
 
 // Define the aggregate ID
@@ -53,75 +55,115 @@ enum AccountError {
 
 impl AggregateError for AccountError {}
 
-// Define the aggregate
-#[derive(DeriveAggregate, Debug, Clone)]
+// Define the STATE - contains only business data
+#[derive(AggregateState, Debug, Clone, Default)]
 #[aggregate(
     id = "AccountId",
     event = "AccountEvent",
     error = "AccountError"
 )]
-struct BankAccount {
+struct BankAccountState {
     #[aggregate_id]
     id: AccountId,
 
-    // Domain state
+    // Domain state only - no infrastructure!
     owner: String,
     balance: i64,
     status: AccountStatus,
+}
 
-    // Event sourcing fields
-    #[aggregate_version]
+impl BankAccountState {
+    /// Apply an event to update state
+    fn apply_event(&mut self, event: &AccountEvent) {
+        match event {
+            AccountEvent::Opened { owner, initial_balance, .. } => {
+                self.owner = owner.clone();
+                self.balance = *initial_balance;
+                self.status = AccountStatus::Active;
+            }
+            AccountEvent::Deposited { amount, .. } => {
+                self.balance += amount;
+            }
+            AccountEvent::Withdrawn { amount, .. } => {
+                self.balance -= amount;
+            }
+        }
+    }
+}
+
+// BankAccountAggregate is GENERATED automatically!
+// It includes: state, version, and pending_events
+```
+
+### What Gets Generated?
+
+The `#[derive(AggregateState)]` macro generates a wrapper aggregate:
+
+```rust
+// GENERATED CODE (you don't write this!)
+pub struct BankAccountAggregate {
+    state: BankAccountState,
     version: Version,
-
-    #[aggregate_events]
     pending_events: Vec<AccountEvent>,
 }
+
+impl BankAccountAggregate {
+    pub fn new() -> Self { ... }
+    pub fn from_state(state: BankAccountState) -> Self { ... }
+    pub fn state(&self) -> &BankAccountState { ... }
+    pub fn state_mut(&mut self) -> &mut BankAccountState { ... }
+
+    // Delegates to state.apply_event()
+    fn apply_event(&mut self, event: &AccountEvent) {
+        self.state.apply_event(event);
+    }
+}
+
+// Deref/DerefMut for transparent field access
+impl Deref for BankAccountAggregate {
+    type Target = BankAccountState;
+    fn deref(&self) -> &Self::Target { &self.state }
+}
+
+impl DerefMut for BankAccountAggregate { ... }
+
+// Full Aggregate trait implementation
+impl Aggregate for BankAccountAggregate { ... }
 ```
+
+### Benefits of State Wrapper Pattern
+
+1. **Cleaner separation**: Business logic stays in state, infrastructure is generated
+2. **Less boilerplate**: ~40% less code compared to manual approach
+3. **Transparent access**: Deref allows direct field access
+4. **Type safety**: State and aggregate are separate types
+5. **Easier testing**: Test state logic independently
 
 ### Aggregate Attributes
 
 - **`id`**: The type used for aggregate identification (required)
 - **`event`**: The event type for this aggregate (required)
-- **`error`**: The error type for this aggregate (required)
+- **`error`**: The error type for this aggregate (optional, defaults to `()`)
+- **`name`**: Override the generated aggregate name (optional, default: removes "State", adds "Aggregate")
 
 ### Field Attributes
 
-- **`#[aggregate_id]`**: Marks the ID field
-- **`#[aggregate_version]`**: Marks the version field
-- **`#[aggregate_events]`**: Marks the pending events field
+- **`#[aggregate_id]`**: Marks the ID field (required)
 
-### Generated Trait Implementation
+### Naming Convention
 
-The macro generates the `Aggregate` trait implementation:
+By default, the generated aggregate name transforms the state struct name:
+- `CounterState` → `CounterAggregate`
+- `BankAccountState` → `BankAccountAggregate`
+- `ShoppingCartState` → `ShoppingCartAggregate`
 
-```rust
-impl Aggregate for BankAccount {
-    type Event = AccountEvent;
-    type Id = AccountId;
-    type Error = AccountError;
+Override with: `#[aggregate(name = "CustomName")]`
 
-    fn aggregate_id(&self) -> &Self::Id {
-        &self.id
-    }
+### Visibility Inheritance
 
-    fn version(&self) -> Version {
-        self.version
-    }
-
-    fn pending_events(&self) -> &[Self::Event] {
-        &self.pending_events
-    }
-
-    fn clear_pending_events(&mut self) {
-        self.pending_events.clear();
-    }
-
-    fn apply(&mut self, event: &Self::Event) {
-        self.apply_event(event);
-        self.version = self.version.next();
-    }
-}
-```
+The generated aggregate has the same visibility as the state struct:
+- `pub struct BankAccountState` → `pub struct BankAccountAggregate`
+- `struct BankAccountState` → `struct BankAccountAggregate`
 
 ## Aggregate Errors
 
@@ -172,7 +214,8 @@ impl AggregateError for BankAccountError {}
 Business methods return `Result<T, Self::Error>`:
 
 ```rust
-impl BankAccount {
+// Commands are implemented on the GENERATED aggregate
+impl BankAccountAggregate {
     fn withdraw(&mut self, amount: i64) -> Result<(), BankAccountError> {
         if amount <= 0 {
             return Err(BankAccountError::InvalidAmount(amount));
@@ -186,9 +229,16 @@ impl BankAccount {
         }
 
         // Create and apply event
-        let event = AccountEvent::Withdrawn { amount, timestamp: Utc::now() };
-        self.apply(&event);
-        self.pending_events.push(event);
+        let event = AccountWithdrawnEvent {
+            amount,
+            timestamp: Utc::now(),
+        };
+
+        // Validate using ApplyEvent trait (see Events Guide)
+        event.validate(self)?;
+
+        // apply() updates state and tracks the event
+        self.apply(event);
 
         Ok(())
     }
@@ -201,87 +251,80 @@ Business logic methods enforce invariants and create events.
 
 ### Command Pattern
 
-Commands are methods that change aggregate state:
+Commands are methods implemented on the **generated aggregate** that change state:
 
 ```rust
-impl BankAccount {
+// Implement commands on the GENERATED aggregate
+impl BankAccountAggregate {
     /// Open a new account (factory method)
     fn open(id: AccountId, owner: String, initial_balance: i64)
         -> Result<Self, BankAccountError>
     {
-        // Validate
-        if initial_balance < 0 {
-            return Err(BankAccountError::InvalidAmount(initial_balance));
-        }
-
-        // Create aggregate
-        let mut account = Self {
-            id,
-            owner: String::new(),
-            balance: 0,
-            status: AccountStatus::Active,
-            version: Version::initial(),
-            pending_events: Vec::new(),
-        };
+        // Create aggregate from state
+        let mut account = Self::from_state(BankAccountState::new(id.clone()));
 
         // Create and apply event
-        let event = AccountEvent::Opened {
+        let event = AccountOpenedEvent {
+            account_id: id.to_string(),
             owner,
             initial_balance,
             timestamp: Utc::now(),
         };
-        account.apply(&event);
-        account.pending_events.push(event);
+
+        // Validate using ApplyEvent trait
+        event.validate(&account)?;
+
+        // apply() updates state and adds to pending_events
+        account.apply(event);
 
         Ok(account)
     }
 
     /// Deposit money (command)
     fn deposit(&mut self, amount: i64) -> Result<(), BankAccountError> {
-        // Validate business rules
-        if self.status != AccountStatus::Active {
-            return Err(BankAccountError::AccountNotActive(self.status));
-        }
-
-        if amount <= 0 {
-            return Err(BankAccountError::InvalidAmount(amount));
-        }
-
-        // Create and apply event
-        let event = AccountEvent::Deposited {
+        // Create event
+        let event = AccountDepositedEvent {
             amount,
             timestamp: Utc::now(),
         };
-        self.apply(&event);
-        self.pending_events.push(event);
+
+        // Validate using ApplyEvent trait
+        event.validate(self)?;
+
+        // apply() updates state and adds to pending_events
+        self.apply(event);
 
         Ok(())
     }
 
     /// Freeze account (command)
     fn freeze(&mut self) -> Result<(), BankAccountError> {
-        if self.status == AccountStatus::Frozen {
-            return Err(BankAccountError::AccountAlreadyFrozen);
-        }
+        let event = AccountFrozenEvent {
+            timestamp: Utc::now(),
+        };
 
-        let event = AccountEvent::Frozen { timestamp: Utc::now() };
-        self.apply(&event);
-        self.pending_events.push(event);
+        // Validate using ApplyEvent trait
+        event.validate(self)?;
+
+        // apply() updates state and adds to pending_events
+        self.apply(event);
 
         Ok(())
     }
 }
 ```
 
+**Note**: With the state wrapper pattern, you implement commands on the **generated aggregate type** (e.g., `BankAccountAggregate`), not on the state struct. The generated aggregate's `Deref` implementation allows you to access state fields directly (e.g., `self.balance`, `self.status`).
+
 ### Query Pattern
 
-Query methods return aggregate state without modification:
+Query methods return aggregate state without modification. Thanks to `Deref`, you can access state fields directly:
 
 ```rust
-impl BankAccount {
+impl BankAccountAggregate {
     /// Get current balance (query)
     fn balance(&self) -> i64 {
-        self.balance
+        self.balance  // Deref allows direct access to state fields
     }
 
     /// Get account status (query)
@@ -299,6 +342,17 @@ impl BankAccount {
         self.balance - self.holds
     }
 }
+
+// Alternatively, implement queries on the state struct itself
+impl BankAccountState {
+    pub fn balance(&self) -> i64 {
+        self.balance
+    }
+
+    pub fn can_deposit(&self) -> bool {
+        self.status == AccountStatus::Active
+    }
+}
 ```
 
 ## State Management
@@ -307,32 +361,39 @@ Aggregates manage state through event application.
 
 ### Apply Event Method
 
-The `apply_event` method updates aggregate state:
+With the state wrapper pattern, `apply_event` is implemented on the **state struct** and called automatically by the generated aggregate:
 
 ```rust
-impl BankAccount {
+impl BankAccountState {
+    /// Apply an event to update state
+    /// Called automatically by the generated aggregate
     fn apply_event(&mut self, event: &AccountEvent) {
         match event {
-            AccountEvent::Opened {
-                owner,
-                initial_balance,
-                ..
-            } => {
-                self.owner = owner.clone();
-                self.balance = *initial_balance;
+            AccountEvent::Opened(e) => {
+                self.owner = e.owner.clone();
+                self.balance = e.initial_balance;
                 self.status = AccountStatus::Active;
             }
-            AccountEvent::Deposited { amount, .. } => {
-                self.balance += amount;
+            AccountEvent::Deposited(e) => {
+                self.balance += e.amount;
             }
-            AccountEvent::Withdrawn { amount, .. } => {
-                self.balance -= amount;
+            AccountEvent::Withdrawn(e) => {
+                self.balance -= e.amount;
             }
-            AccountEvent::Frozen { .. } => {
+            AccountEvent::Frozen(_) => {
                 self.status = AccountStatus::Frozen;
             }
         }
     }
+}
+```
+
+The generated aggregate calls this method:
+
+```rust
+// In BankAccountAggregate (GENERATED)
+fn apply_event(&mut self, event: &AccountEvent) {
+    self.state.apply_event(event);  // Delegates to state
 }
 ```
 
@@ -345,22 +406,15 @@ impl BankAccount {
 
 ### Event Replay
 
-Reconstruct aggregate state from events:
+Reconstruct aggregate state from events using `apply_unchecked`:
 
 ```rust
-impl BankAccount {
+impl BankAccountAggregate {
     /// Reconstruct from event history
     fn from_events(id: AccountId, events: Vec<AccountEvent>) -> Self {
-        let mut account = Self {
-            id,
-            owner: String::new(),
-            balance: 0,
-            status: AccountStatus::Active,
-            version: Version::initial(),
-            pending_events: Vec::new(),
-        };
+        let mut account = Self::from_state(BankAccountState::new(id));
 
-        // Replay all events
+        // Replay all events without validation
         for event in events {
             account.apply_unchecked(&event);
         }
@@ -369,6 +423,8 @@ impl BankAccount {
     }
 }
 ```
+
+**Key difference**: `apply_unchecked` skips validation (from the `ApplyEvent` trait) because historical events are assumed to be valid. This is important for performance during replay.
 
 ## Best Practices
 
@@ -500,7 +556,7 @@ Test behavior, not implementation:
 ```rust
 #[test]
 fn test_withdraw_reduces_balance() {
-    let mut account = BankAccount::open(
+    let mut account = BankAccountAggregate::open(
         AccountId::new(),
         "Alice".to_string(),
         1000,
@@ -514,7 +570,7 @@ fn test_withdraw_reduces_balance() {
 
 #[test]
 fn test_withdraw_insufficient_funds() {
-    let mut account = BankAccount::open(
+    let mut account = BankAccountAggregate::open(
         AccountId::new(),
         "Alice".to_string(),
         100,
@@ -526,6 +582,21 @@ fn test_withdraw_insufficient_funds() {
         result,
         Err(BankAccountError::InsufficientFunds { .. })
     ));
+}
+
+#[test]
+fn test_state_independently() {
+    // You can also test state logic independently
+    let mut state = BankAccountState::new(AccountId::new());
+
+    let event = AccountDepositedEvent {
+        amount: 100,
+        timestamp: Utc::now(),
+    };
+
+    state.apply_event(&AccountEvent::Deposited(event));
+
+    assert_eq!(state.balance, 100);
 }
 ```
 
@@ -586,9 +657,30 @@ impl Order {
 Aggregates in event-sauce provide:
 
 - **Type-safe domain models** with derive macros
+- **State wrapper pattern** for ~40% less boilerplate
+- **Clear separation** between business logic and infrastructure
 - **Rich error handling** with aggregate-specific errors
 - **Clear boundaries** for consistency and transactions
 - **Event-driven state** with replay support
-- **Business rule enforcement** with validation
+- **Business rule enforcement** with validation via ApplyEvent trait
+
+### Quick Reference: State Wrapper Pattern
+
+| Aspect | State Struct | Generated Aggregate |
+|--------|--------------|-------------------|
+| **Purpose** | Business logic only | Infrastructure + Aggregate trait |
+| **Contains** | Domain fields | state + version + pending_events |
+| **Methods** | apply_event(), queries | Commands, Aggregate trait methods |
+| **Visibility** | Your choice (pub/private) | Inherits from state |
+| **Name** | YourState | YourAggregate (customizable) |
+| **Testing** | Test state logic directly | Test commands and behavior |
+
+### Key Patterns
+
+1. **Define state** with `#[derive(AggregateState)]`
+2. **Implement `apply_event`** on state for event application
+3. **Implement commands** on generated aggregate
+4. **Use ApplyEvent trait** for event validation (see Events Guide)
+5. **Access state fields** via Deref for transparent access
 
 Next: [Events Guide](events.md) | [Validation Guide](validation.md)
