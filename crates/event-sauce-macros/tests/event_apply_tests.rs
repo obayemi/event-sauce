@@ -4,8 +4,8 @@
 //! the apply_event method when the aggregate attribute is specified.
 
 use chrono::{DateTime, Utc};
-use event_sauce_core::{Aggregate, AggregateError, AggregateId, ApplyEvent, DomainEvent, Version};
-use event_sauce_macros::{AggregateState, Event as DeriveEvent};
+use event_sauce_core::{Aggregate, AggregateId, ApplyEvent, DomainEvent, Version};
+use event_sauce_macros::{AggregateError, AggregateState, Event as DeriveEvent};
 
 // ============================================================================
 // Test Domain Model
@@ -30,13 +30,11 @@ impl std::fmt::Display for TestId {
 impl AggregateId for TestId {}
 
 /// Test error type
-#[derive(Debug, thiserror::Error)]
+#[derive(AggregateError, Debug, thiserror::Error)]
 enum TestError {
     #[error("Invalid value: {0}")]
     InvalidValue(i32),
 }
-
-impl AggregateError for TestError {}
 
 // ============================================================================
 // Test Events

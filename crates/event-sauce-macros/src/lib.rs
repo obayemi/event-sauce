@@ -696,3 +696,56 @@ pub fn derive_aggregate_id(input: TokenStream) -> TokenStream {
 
     gen.into()
 }
+
+/// Derive macro for AggregateError trait
+///
+/// This macro automatically implements the `AggregateError` marker trait
+/// for error types. Use this with `thiserror::Error` for clean error handling.
+///
+/// # Examples
+///
+/// ```ignore
+/// use event_sauce_macros::AggregateError;
+/// use thiserror::Error;
+///
+/// #[derive(AggregateError, Debug, Error)]
+/// enum BankAccountError {
+///     #[error("Insufficient funds: {balance}")]
+///     InsufficientFunds { balance: i64 },
+/// }
+///
+/// // Now BankAccountError implements AggregateError automatically
+/// ```
+///
+/// # Requirements
+///
+/// - Works with any type (struct or enum)
+/// - Typically used with enums deriving `thiserror::Error`
+/// - The type should implement `std::error::Error` (usually via `#[derive(Error)]`)
+///
+/// # Usage
+///
+/// Combine with `thiserror::Error` for domain-specific errors:
+///
+/// ```ignore
+/// #[derive(AggregateError, Debug, Error)]
+/// enum OrderError {
+///     #[error("Order not found: {0}")]
+///     NotFound(String),
+///
+///     #[error("Invalid quantity: {0}")]
+///     InvalidQuantity(u32),
+/// }
+/// ```
+#[proc_macro_derive(AggregateError)]
+pub fn derive_aggregate_error(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    let name = &input.ident;
+
+    // Generate the implementation
+    let gen = quote! {
+        impl event_sauce_core::AggregateError for #name {}
+    };
+
+    gen.into()
+}

@@ -30,8 +30,8 @@ An aggregate is the fundamental building block of event sourcing and Domain-Driv
 The **recommended approach** is to use `#[derive(AggregateState)]` which separates business state from infrastructure concerns:
 
 ```rust
-use event_sauce_core::{Aggregate, AggregateError};
-use event_sauce_macros::{AggregateId, AggregateState};
+use event_sauce_core::Aggregate;
+use event_sauce_macros::{AggregateError, AggregateId, AggregateState};
 use uuid::Uuid;
 
 // Define the aggregate ID (auto-implements AggregateId trait + Display)
@@ -50,14 +50,12 @@ impl Default for AccountId {
     }
 }
 
-// Define aggregate error (see Aggregate Errors section)
-#[derive(Debug, Error)]
+// Define aggregate error (auto-implements AggregateError)
+#[derive(AggregateError, Debug, Error)]
 enum AccountError {
     #[error("Insufficient funds")]
     InsufficientFunds,
 }
-
-impl AggregateError for AccountError {}
 
 // Define the STATE - contains only business data
 #[derive(AggregateState, Debug, Clone, Default)]
@@ -160,13 +158,13 @@ Aggregate-specific errors provide rich, domain-specific error handling.
 
 ### Defining Aggregate Errors
 
-Use `thiserror` for clean error definitions:
+Use `thiserror` for clean error definitions with `#[derive(AggregateError)]`:
 
 ```rust
 use thiserror::Error;
-use event_sauce_core::AggregateError;
+use event_sauce_macros::AggregateError;
 
-#[derive(Debug, Error)]
+#[derive(AggregateError, Debug, Error)]
 enum BankAccountError {
     #[error("Insufficient funds: balance={balance}, requested={requested}")]
     InsufficientFunds {
@@ -186,9 +184,6 @@ enum BankAccountError {
         requested: i64,
     },
 }
-
-// Mark as aggregate error
-impl AggregateError for BankAccountError {}
 ```
 
 ### Error Benefits

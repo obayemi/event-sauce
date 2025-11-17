@@ -3,17 +3,16 @@
 //! These tests verify that the AggregateState derive macro correctly generates
 //! the wrapper aggregate struct and Aggregate trait implementation.
 
-use event_sauce_core::{Aggregate, AggregateError, AggregateId, DomainEvent, Version};
+use event_sauce_core::{Aggregate, AggregateId, DomainEvent, Version};
+use event_sauce_macros::AggregateError;
 use chrono::{DateTime, Utc};
 use std::fmt;
 use thiserror::Error;
 
 // Define error type for testing
-#[derive(Debug, Error)]
+#[derive(AggregateError, Debug, Error)]
 #[error("Test counter error")]
 pub struct TestCounterError;
-
-impl AggregateError for TestCounterError {}
 
 // Define a simple aggregate ID for testing
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

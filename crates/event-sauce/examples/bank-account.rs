@@ -12,7 +12,7 @@
 
 use chrono::Utc;
 use event_sauce_core::{Aggregate, AggregateError, ApplyEvent, DomainEvent};
-use event_sauce_macros::{AggregateId, AggregateState, Event as DeriveEvent};
+use event_sauce_macros::{AggregateError, AggregateId, AggregateState, Event as DeriveEvent};
 use uuid::Uuid;
 
 // ============================================================================
@@ -88,7 +88,7 @@ enum AccountEvent {
 }
 
 /// Domain errors
-#[derive(Debug, thiserror::Error)]
+#[derive(AggregateError, Debug, thiserror::Error)]
 #[allow(dead_code)]
 enum AccountError {
     #[error("Insufficient funds: balance={balance}, requested={requested}")]
@@ -103,8 +103,6 @@ enum AccountError {
     #[error("Account already exists")]
     AccountAlreadyExists,
 }
-
-impl AggregateError for AccountError {}
 
 // ============================================================================
 // ApplyEvent Implementations

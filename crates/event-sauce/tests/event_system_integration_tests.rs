@@ -8,8 +8,8 @@
 //! - Type safety throughout the system
 
 use chrono::Utc;
-use event_sauce_core::{Aggregate, AggregateError, AggregateId, DomainEvent, Version};
-use event_sauce_macros::{Aggregate as DeriveAggregate, Event as DeriveEvent};
+use event_sauce_core::{Aggregate, AggregateId, DomainEvent, Version};
+use event_sauce_macros::{Aggregate as DeriveAggregate, AggregateError, Event as DeriveEvent};
 use std::fmt;
 use thiserror::Error;
 use uuid::Uuid;
@@ -43,7 +43,7 @@ enum AccountStatus {
     Closed,
 }
 
-#[derive(Debug, Error)]
+#[derive(AggregateError, Debug, Error)]
 enum TestAccountError {
     #[error("Insufficient funds: balance={balance}, requested={requested}")]
     InsufficientFunds { balance: i64, requested: i64 },
@@ -54,8 +54,6 @@ enum TestAccountError {
     #[error("Account is {0:?}")]
     AccountNotActive(AccountStatus),
 }
-
-impl AggregateError for TestAccountError {}
 
 #[derive(DeriveEvent, Debug, Clone)]
 #[event(version = 1, type_prefix = "TestAccount")]

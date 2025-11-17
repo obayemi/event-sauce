@@ -10,7 +10,7 @@
 
 use chrono::Utc;
 use event_sauce_core::{Aggregate, AggregateError, ApplyEvent};
-use event_sauce_macros::{AggregateId, AggregateState, Event as DeriveEvent};
+use event_sauce_macros::{AggregateError, AggregateId, AggregateState, Event as DeriveEvent};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
@@ -115,7 +115,7 @@ enum CartEvent {
 }
 
 /// Domain errors
-#[derive(Debug, thiserror::Error)]
+#[derive(AggregateError, Debug, thiserror::Error)]
 enum CartError {
     #[error("Invalid quantity: {0} (must be greater than 0)")]
     InvalidQuantity(u32),
@@ -135,8 +135,6 @@ enum CartError {
     #[error("Cart already checked out")]
     AlreadyCheckedOut,
 }
-
-impl AggregateError for CartError {}
 
 // ============================================================================
 // ApplyEvent Implementations - for GENERATED ShoppingCartAggregate

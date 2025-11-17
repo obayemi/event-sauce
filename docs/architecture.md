@@ -112,6 +112,7 @@ CREATE INDEX idx_events_type ON events(event_type, created_at);
 Derive macros for reducing boilerplate (~40% less code):
 
 - **#[derive(AggregateId)]** - Auto-implements AggregateId trait + Display
+- **#[derive(AggregateError)]** - Auto-implements AggregateError marker trait
 - **#[derive(AggregateState)]** - Generates aggregate wrapper with infrastructure
 - **#[derive(Event)]** - Implements DomainEvent trait + auto-generates apply_event
 - Compile-time code generation
@@ -422,7 +423,7 @@ impl Projection for MyProjection {
 
 ## Best Practices
 
-1. **Use derive macros** - #[derive(AggregateId)], #[derive(AggregateState)], #[derive(Event)]
+1. **Use derive macros** - #[derive(AggregateId)], #[derive(AggregateError)], #[derive(AggregateState)], #[derive(Event)]
 2. **Keep aggregates small** - One consistency boundary
 3. **Events are immutable** - Never modify historical events
 4. **Version events** - Plan for schema evolution

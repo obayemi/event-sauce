@@ -30,7 +30,7 @@ The **recommended approach** is to define events as **separate structs** wrapped
 
 ```rust
 use event_sauce_core::{ApplyEvent, DomainEvent};
-use event_sauce_macros::Event as DeriveEvent;
+use event_sauce_macros::{AggregateError, Event as DeriveEvent};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -112,11 +112,12 @@ AccountEvent::Deposited(..)   → "AccountDeposited"
 The **`ApplyEvent` trait** is the recommended way to implement event logic. Each event struct implements both validation and application logic:
 
 ```rust
-use event_sauce_core::{ApplyEvent, AggregateError};
+use event_sauce_core::ApplyEvent;
+use event_sauce_macros::AggregateError;
 use thiserror::Error;
 
-// Define error type
-#[derive(Debug, Error)]
+// Define error type (auto-implements AggregateError)
+#[derive(AggregateError, Debug, Error)]
 enum AccountError {
     #[error("Insufficient funds: balance={balance}, requested={requested}")]
     InsufficientFunds { balance: i64, requested: i64 },
@@ -127,8 +128,6 @@ enum AccountError {
     #[error("Account is {0:?}")]
     AccountNotActive(AccountStatus),
 }
-
-impl AggregateError for AccountError {}
 
 // Step 3: Implement ApplyEvent for each event struct
 // Note: Implement for the GENERATED aggregate (e.g., BankAccountAggregate)

@@ -25,6 +25,7 @@ event-sauce provides a powerful and ergonomic event sourcing experience with min
 
 - **📝 Auto-Generated Boilerplate**: Derive macros eliminate manual implementations
   - `#[derive(AggregateId)]` - Auto-implement ID types with Display
+  - `#[derive(AggregateError)]` - Auto-implement error marker trait
   - `#[derive(AggregateState)]` - Separate business logic from infrastructure
   - `#[derive(Event)]` - Auto-generate apply_event dispatching
 - **🎯 Type-Safe Events**: `ApplyEvent` trait for self-contained event logic
@@ -36,7 +37,7 @@ event-sauce provides a powerful and ergonomic event sourcing experience with min
 
 ```rust
 use event_sauce::prelude::*;
-use event_sauce_macros::{AggregateId, AggregateState, Event};
+use event_sauce_macros::{AggregateError, AggregateId, AggregateState, Event};
 use thiserror::Error;
 use uuid::Uuid;
 use chrono::Utc;
@@ -53,14 +54,12 @@ impl Default for CounterId {
     fn default() -> Self { Self(Uuid::nil()) }
 }
 
-// 2. Define domain-specific errors
-#[derive(Debug, Error)]
+// 2. Define domain-specific errors (auto-implements AggregateError)
+#[derive(AggregateError, Debug, Error)]
 enum CounterError {
     #[error("Invalid amount: {0}")]
     InvalidAmount(i32),
 }
-
-impl AggregateError for CounterError {}
 
 // 3. Define individual events
 #[derive(Debug, Clone)]
@@ -337,8 +336,8 @@ cargo run -p event-sauce --example process-manager-order --features "memory,saga
 Here's a complete, working example showing modern best practices:
 
 ```rust
-use event_sauce_macros::{AggregateId, AggregateState, Event};
-use event_sauce_core::{Aggregate, AggregateError, ApplyEvent};
+use event_sauce_macros::{AggregateError, AggregateId, AggregateState, Event};
+use event_sauce_core::{Aggregate, ApplyEvent};
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
@@ -354,14 +353,12 @@ impl Default for CounterId {
     fn default() -> Self { Self(Uuid::nil()) }
 }
 
-// 2. Domain errors
-#[derive(Debug, thiserror::Error)]
+// 2. Domain errors (auto-implements AggregateError)
+#[derive(AggregateError, Debug, thiserror::Error)]
 enum CounterError {
     #[error("Invalid amount: {0}")]
     InvalidAmount(i32),
 }
-
-impl AggregateError for CounterError {}
 
 // 3. Individual event types
 #[derive(Debug, Clone)]

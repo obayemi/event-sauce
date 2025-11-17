@@ -10,8 +10,8 @@
 //! Run with: cargo run -p event-sauce --example counter --features "memory,macros"
 
 use chrono::Utc;
-use event_sauce_core::{Aggregate, AggregateError, ApplyEvent};
-use event_sauce_macros::{AggregateId, AggregateState, Event as DeriveEvent};
+use event_sauce_core::{Aggregate, ApplyEvent};
+use event_sauce_macros::{AggregateError, AggregateId, AggregateState, Event as DeriveEvent};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -69,7 +69,7 @@ enum CounterEvent {
 }
 
 /// Domain errors
-#[derive(Debug, thiserror::Error)]
+#[derive(AggregateError, Debug, thiserror::Error)]
 enum CounterError {
     #[error("Invalid amount: {0} (must be positive)")]
     InvalidAmount(i32),
@@ -77,8 +77,6 @@ enum CounterError {
     #[error("Would result in negative value: current={current}, requested={requested}")]
     WouldBeNegative { current: i32, requested: i32 },
 }
-
-impl AggregateError for CounterError {}
 
 // ============================================================================
 // ApplyEvent Implementations

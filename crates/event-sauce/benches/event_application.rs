@@ -9,8 +9,8 @@
 
 use chrono::Utc;
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use event_sauce_core::{Aggregate, AggregateError, AggregateId, Version};
-use event_sauce_macros::{Aggregate as DeriveAggregate, Event as DeriveEvent};
+use event_sauce_core::{Aggregate, AggregateId, Version};
+use event_sauce_macros::{Aggregate as DeriveAggregate, AggregateError, Event as DeriveEvent};
 use std::fmt;
 use uuid::Uuid;
 
@@ -43,7 +43,7 @@ enum AccountStatus {
     Closed,
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(AggregateError, Debug, thiserror::Error)]
 enum BenchAccountError {
     #[error("Insufficient funds: balance={balance}, requested={requested}")]
     InsufficientFunds { balance: i64, requested: i64 },
@@ -54,8 +54,6 @@ enum BenchAccountError {
     #[error("Account is {0:?}")]
     AccountNotActive(AccountStatus),
 }
-
-impl AggregateError for BenchAccountError {}
 
 #[derive(DeriveEvent, Debug, Clone)]
 #[event(version = 1, type_prefix = "BenchAccount")]
