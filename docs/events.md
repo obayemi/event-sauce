@@ -24,33 +24,54 @@ Events are immutable facts that represent state changes in your domain. In event
 
 ## Defining Events
 
-Events are defined using the `#[derive(Event)]` macro on an enum:
+### The Separated Event Pattern (Recommended)
+
+The **recommended approach** is to define events as **separate structs** wrapped in an enum. This allows each event to have its own validation and application logic via the `ApplyEvent` trait:
 
 ```rust
-use event_sauce_core::DomainEvent;
+use event_sauce_core::{ApplyEvent, DomainEvent};
 use event_sauce_macros::Event as DeriveEvent;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+// Step 1: Define individual event structs
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AccountOpenedEvent {
+    account_id: String,
+    owner: String,
+    initial_balance: i64,
+    timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AccountDepositedEvent {
+    amount: i64,
+    timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AccountWithdrawnEvent {
+    amount: i64,
+    timestamp: DateTime<Utc>,
+}
+
+// Step 2: Wrap them in an enum for the domain event
 #[derive(DeriveEvent, Debug, Clone, Serialize, Deserialize)]
-#[event(version = 1, type_prefix = "BankAccount")]
-enum BankAccountEvent {
-    Opened {
-        account_id: String,
-        owner: String,
-        initial_balance: i64,
-        timestamp: DateTime<Utc>,
-    },
-    Deposited {
-        amount: i64,
-        timestamp: DateTime<Utc>,
-    },
-    Withdrawn {
-        amount: i64,
-        timestamp: DateTime<Utc>,
-    },
+#[event(version = 1, type_prefix = "Account")]
+enum AccountEvent {
+    Opened(AccountOpenedEvent),
+    Deposited(AccountDepositedEvent),
+    Withdrawn(AccountWithdrawnEvent),
 }
 ```
+
+### Benefits of Separated Events
+
+1. **Self-contained logic**: Each event struct implements its own `ApplyEvent` trait
+2. **Better organization**: Event logic stays with the event definition
+3. **Easier testing**: Test individual events independently
+4. **Type safety**: Each event is a distinct type
+5. **Cleaner code**: No large match statements in aggregate
 
 ### Event Attributes
 
@@ -65,105 +86,146 @@ enum BankAccountEvent {
 
 ### Generated Event Types
 
-The derive macro automatically generates event type names:
+The derive macro automatically generates event type names from the enum variants:
 
 ```rust
-BankAccountEvent::Opened { .. }      → "BankAccountOpened"
-BankAccountEvent::Deposited { .. }   → "BankAccountDeposited"
-BankAccountEvent::Withdrawn { .. }   → "BankAccountWithdrawn"
+AccountEvent::Opened(..)      → "AccountOpened"
+AccountEvent::Deposited(..)   → "AccountDeposited"
+AccountEvent::Withdrawn(..)   → "AccountWithdrawn"
 ```
 
-## Event Validation
+With type_prefix:
+```rust
+#[event(version = 1, type_prefix = "Account")]
+//                     ^^^^^^^^^ prefix
 
-Events can include validation logic that's enforced when creating new events but skipped during replay.
+AccountEvent::Opened(..)      → "AccountOpened"
+AccountEvent::Deposited(..)   → "AccountDeposited"
+```
 
-### Why Validation?
+## ApplyEvent Trait - Self-Contained Events (Recommended)
 
-- **Business rule enforcement**: Ensure invariants when creating events
-- **Better error messages**: Provide rich, domain-specific errors
-- **Replay performance**: Skip validation when replaying historical events
-
-### Validation Pattern
-
-Validation happens in business methods before creating events:
+The **`ApplyEvent` trait** is the recommended way to implement event logic. Each event struct implements both validation and application logic:
 
 ```rust
-impl BankAccount {
-    fn withdraw(&mut self, amount: i64) -> Result<(), AccountError> {
-        // Validate business rules
-        if self.status != AccountStatus::Active {
-            return Err(AccountError::AccountNotActive(self.status));
+use event_sauce_core::{ApplyEvent, AggregateError};
+use thiserror::Error;
+
+// Define error type
+#[derive(Debug, Error)]
+enum AccountError {
+    #[error("Insufficient funds: balance={balance}, requested={requested}")]
+    InsufficientFunds { balance: i64, requested: i64 },
+
+    #[error("Invalid amount: {0} (must be positive)")]
+    InvalidAmount(i64),
+
+    #[error("Account is {0:?}")]
+    AccountNotActive(AccountStatus),
+}
+
+impl AggregateError for AccountError {}
+
+// Step 3: Implement ApplyEvent for each event struct
+// Note: Implement for the GENERATED aggregate (e.g., BankAccountAggregate)
+impl ApplyEvent<BankAccountAggregate, AccountError> for AccountWithdrawnEvent {
+    /// Validate business rules before applying
+    fn validate(&self, account: &BankAccountAggregate) -> Result<(), AccountError> {
+        if account.status != AccountStatus::Active {
+            return Err(AccountError::AccountNotActive(account.status));
         }
 
-        if amount <= 0 {
-            return Err(AccountError::InvalidAmount(amount));
+        if self.amount <= 0 {
+            return Err(AccountError::InvalidAmount(self.amount));
         }
 
-        if self.balance < amount {
+        if account.balance < self.amount {
             return Err(AccountError::InsufficientFunds {
-                balance: self.balance,
-                requested: amount,
+                balance: account.balance,
+                requested: self.amount,
             });
         }
 
-        // Create event (validation passed)
-        let event = BankAccountEvent::Withdrawn {
+        Ok(())
+    }
+
+    /// Apply the event to update state
+    fn apply(&self, account: &mut BankAccountAggregate) {
+        // Thanks to Deref, can access state fields directly
+        account.balance -= self.amount;
+    }
+}
+
+impl ApplyEvent<BankAccountAggregate, AccountError> for AccountDepositedEvent {
+    fn validate(&self, account: &BankAccountAggregate) -> Result<(), AccountError> {
+        if account.status != AccountStatus::Active {
+            return Err(AccountError::AccountNotActive(account.status));
+        }
+
+        if self.amount <= 0 {
+            return Err(AccountError::InvalidAmount(self.amount));
+        }
+
+        Ok(())
+    }
+
+    fn apply(&self, account: &mut BankAccountAggregate) {
+        account.balance += self.amount;
+    }
+}
+```
+
+### Benefits of ApplyEvent Trait
+
+1. **Encapsulation**: Event logic lives with the event struct
+2. **Type safety**: Each event has its own validation and application
+3. **Testability**: Test events independently from aggregates
+4. **Maintainability**: No large match statements in aggregate code
+5. **Flexibility**: Easy to add new events without touching aggregate
+6. **Clear validation**: Business rules are co-located with events
+
+### How It Works
+
+When you call `aggregate.apply(event)` in a command:
+
+1. The framework calls `event.validate(&aggregate)?` first
+2. If validation passes, it calls `event.apply(&mut aggregate)`
+3. The event is added to `pending_events`
+4. The version is incremented
+
+During replay with `apply_unchecked`, validation is skipped for performance.
+
+## Event Validation
+
+With the `ApplyEvent` trait, validation is **part of the event** itself:
+
+```rust
+// In your command methods on the aggregate
+impl BankAccountAggregate {
+    fn withdraw(&mut self, amount: i64) -> Result<(), AccountError> {
+        // Create event
+        let event = AccountWithdrawnEvent {
             amount,
             timestamp: Utc::now(),
         };
 
-        // Apply and record
-        self.apply(&event);
-        self.pending_events.push(event);
+        // Validation happens automatically via ApplyEvent trait
+        event.validate(self)?;
+
+        // Apply the event (updates state and tracks event)
+        self.apply(event);
 
         Ok(())
     }
 }
 ```
 
-## Self-Contained Events
+### Why This Pattern?
 
-The `ApplyEvent` trait allows events to define their own application logic:
-
-```rust
-use event_sauce_core::{ApplyEvent, AggregateError};
-
-// Define error type
-#[derive(Debug, Error)]
-enum BankAccountError {
-    #[error("Insufficient funds")]
-    InsufficientFunds,
-}
-
-impl AggregateError for BankAccountError {}
-
-// Event struct
-struct MoneyWithdrawn {
-    amount: i64,
-    timestamp: DateTime<Utc>,
-}
-
-// Self-contained event logic
-impl ApplyEvent<BankAccount, BankAccountError> for MoneyWithdrawn {
-    fn validate(&self, account: &BankAccount) -> Result<(), BankAccountError> {
-        if account.balance < self.amount {
-            return Err(BankAccountError::InsufficientFunds);
-        }
-        Ok(())
-    }
-
-    fn apply(&self, account: &mut BankAccount) {
-        account.balance -= self.amount;
-    }
-}
-```
-
-### Benefits
-
-- **Encapsulation**: Event logic lives with the event
-- **Testability**: Test events independently
-- **Maintainability**: No large match statements
-- **Flexibility**: Easy to add new events
+- **Business rule enforcement**: Validation is co-located with the event
+- **Better error messages**: Rich, domain-specific errors from the event
+- **Replay performance**: Skip validation when replaying with `apply_unchecked`
+- **Clean commands**: Command methods just create events and call `apply()`
 
 ## Event Replay
 
@@ -173,46 +235,46 @@ Event replay reconstructs aggregate state from historical events. The new system
 
 #### 1. Regular Apply (with validation)
 
-Used when creating new events:
+Used when creating new events in command methods:
 
 ```rust
-let event = BankAccountEvent::Withdrawn { amount: 100, timestamp: Utc::now() };
-account.apply(&event)?;  // Validates and applies
+let event = AccountWithdrawnEvent {
+    amount: 100,
+    timestamp: Utc::now(),
+};
+
+// Validates via ApplyEvent::validate() then applies
+event.validate(&account)?;
+account.apply(event);
 ```
 
 #### 2. Unchecked Apply (without validation)
 
-Used when replaying historical events:
+Used when replaying historical events from the event store:
 
 ```rust
 // Replay events from event store
 for event in historical_events {
-    account.apply_unchecked(&event);  // Fast replay, no validation
+    account.apply_unchecked(&event);  // Fast replay, skips validation
 }
 ```
 
 ### Why Skip Validation on Replay?
 
-1. **Performance**: Avoid redundant validation
+1. **Performance**: Avoid redundant validation checks
 2. **Correctness**: Historical events are facts (already validated when created)
 3. **Determinism**: Same events always produce same state
+4. **Simplicity**: No error handling needed during replay
 
 ### Complete Replay Example
 
 ```rust
-impl BankAccount {
-    /// Reconstruct from event history
-    fn from_events(id: AccountId, events: Vec<BankAccountEvent>) -> Self {
-        let mut account = Self {
-            id,
-            owner: String::new(),
-            balance: 0,
-            status: AccountStatus::Active,
-            version: Version::initial(),
-            pending_events: Vec::new(),
-        };
+impl BankAccountAggregate {
+    /// Reconstruct aggregate from event history
+    fn from_events(id: AccountId, events: Vec<AccountEvent>) -> Self {
+        let mut account = Self::from_state(BankAccountState::new(id));
 
-        // Replay without validation
+        // Replay all events without validation
         for event in events {
             account.apply_unchecked(&event);
         }
@@ -221,6 +283,8 @@ impl BankAccount {
     }
 }
 ```
+
+**Key Point**: `apply_unchecked` still calls the `apply()` method from the `ApplyEvent` implementation, it just skips the `validate()` call. State updates happen the same way.
 
 ## Best Practices
 
@@ -291,30 +355,44 @@ enum BankAccountEvent {
 
 ### 5. Validation Placement
 
-Validate in business methods, not in apply:
+With the ApplyEvent pattern, **validation lives in the event's `validate()` method**, NOT in `apply()`:
 
 ```rust
 ✅ Good:
-fn withdraw(&mut self, amount: i64) -> Result<(), Error> {
-    if amount <= 0 {
-        return Err(Error::InvalidAmount);
+impl ApplyEvent<BankAccountAggregate, AccountError> for AccountWithdrawnEvent {
+    fn validate(&self, account: &BankAccountAggregate) -> Result<(), AccountError> {
+        // Validation here!
+        if self.amount <= 0 {
+            return Err(AccountError::InvalidAmount(self.amount));
+        }
+        if account.balance < self.amount {
+            return Err(AccountError::InsufficientFunds {
+                balance: account.balance,
+                requested: self.amount,
+            });
+        }
+        Ok(())
     }
-    let event = ...;
-    self.apply(&event);
+
+    fn apply(&self, account: &mut BankAccountAggregate) {
+        // Pure state transformation - NO validation!
+        account.balance -= self.amount;
+    }
 }
 
 ❌ Bad:
-fn apply_event(&mut self, event: &Event) {
-    match event {
-        Event::Withdrawn { amount, .. } => {
-            if amount <= 0 {  // Don't validate in apply!
-                panic!("Invalid amount");
-            }
-            self.balance -= amount;
+impl ApplyEvent<BankAccountAggregate, AccountError> for AccountWithdrawnEvent {
+    fn apply(&self, account: &mut BankAccountAggregate) {
+        // Don't validate in apply!
+        if self.amount <= 0 {
+            panic!("Invalid amount");  // ❌ Never do this
         }
+        account.balance -= self.amount;
     }
 }
 ```
+
+**Rule**: The `apply()` method should ONLY update state. All validation goes in `validate()`.
 
 ### 6. Timestamp Handling
 
@@ -336,22 +414,53 @@ let event = AccountOpened {
 
 ### 7. Testing Events
 
-Test events independently:
+With the ApplyEvent pattern, test event logic independently from aggregates:
 
 ```rust
 #[test]
 fn test_withdrawn_event_reduces_balance() {
-    let mut account = BankAccount { balance: 1000, .. };
-    let event = BankAccountEvent::Withdrawn {
+    let mut account = BankAccountAggregate::open(
+        AccountId::new(),
+        "Test".to_string(),
+        1000,
+    ).unwrap();
+
+    let event = AccountWithdrawnEvent {
         amount: 300,
         timestamp: Utc::now(),
     };
 
-    account.apply_event(&event);
+    // Test validation
+    assert!(event.validate(&account).is_ok());
 
+    // Test application
+    event.apply(&mut account);
     assert_eq!(account.balance, 700);
 }
+
+#[test]
+fn test_withdrawn_event_validates_insufficient_funds() {
+    let mut account = BankAccountAggregate::open(
+        AccountId::new(),
+        "Test".to_string(),
+        100,
+    ).unwrap();
+
+    let event = AccountWithdrawnEvent {
+        amount: 300,
+        timestamp: Utc::now(),
+    };
+
+    // Test validation fails
+    let result = event.validate(&account);
+    assert!(matches!(
+        result,
+        Err(AccountError::InsufficientFunds { .. })
+    ));
+}
 ```
+
+**Benefits**: You can test validation and application separately, making tests more focused and easier to debug.
 
 ## Advanced Topics
 
@@ -407,10 +516,37 @@ struct UserRegistered {
 
 The event-sauce event system provides:
 
-- **Type-safe events** with derive macros
+- **Type-safe events** with separated event structs
+- **Self-contained logic** with `ApplyEvent` trait (recommended)
 - **Rich validation** with aggregate-specific errors
 - **Optimized replay** with `apply_unchecked`
-- **Self-contained logic** with `ApplyEvent` trait
+- **Clean separation** between validation and application
 - **Schema evolution** with versioning
+- **Better testing** with independent event tests
 
-Next: [Aggregates Guide](aggregates.md) | [Validation Guide](validation.md)
+### Quick Reference: Event Pattern
+
+| Step | What | Example |
+|------|------|---------|
+| 1 | Define event structs | `struct AccountWithdrawnEvent { amount: i64, ... }` |
+| 2 | Wrap in enum | `enum AccountEvent { Withdrawn(AccountWithdrawnEvent), ... }` |
+| 3 | Derive DomainEvent | `#[derive(Event)]` on enum |
+| 4 | Implement ApplyEvent | `impl ApplyEvent<Aggregate, Error> for Event { ... }` |
+| 5 | Use in commands | `event.validate(self)?; self.apply(event);` |
+
+### Key Patterns
+
+1. **Separated event structs** wrapped in enum for domain events
+2. **ApplyEvent trait** implements `validate()` and `apply()` for each event
+3. **Validation in `validate()`**, pure state updates in `apply()`
+4. **Commands create events**, call `validate()`, then `apply()`
+5. **Replay uses `apply_unchecked()`** to skip validation for performance
+
+### Working with AggregateState
+
+When using `#[derive(AggregateState)]`:
+- Implement `ApplyEvent` for the **generated aggregate** (e.g., `BankAccountAggregate`)
+- Use `Deref` to access state fields directly in `validate()` and `apply()`
+- Implement commands on the generated aggregate
+
+Next: [Aggregates Guide](aggregates.md) | [Event Stores Guide](event-stores.md)
