@@ -40,9 +40,10 @@ pub fn derive_aggregate(input: TokenStream) -> TokenStream {
     };
 
     // Handle optional error type - if None, use unit type ()
-    let error_type: proc_macro2::TokenStream = match error_type_opt {
-        Some(ident) => quote! { #ident },
-        None => quote! { () },
+    let error_type: proc_macro2::TokenStream = if let Some(ident) = error_type_opt {
+        quote! { #ident }
+    } else {
+        quote! { () }
     };
 
     // Extract field information
@@ -194,7 +195,13 @@ struct EventAttrs {
     type_prefix: Option<String>,
 }
 
-/// Derive macro for Event trait
+/// Derive macro for `Event` trait
+///
+/// # Panics
+///
+/// This macro may panic if:
+/// - The enum variants are not in the expected format
+/// - Tuple variants do not contain exactly one field when generating `Into` implementations
 #[proc_macro_derive(Event, attributes(event))]
 pub fn derive_event(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -349,7 +356,18 @@ fn extract_event_attrs(attrs: &[Attribute]) -> Result<EventAttrs, TokenStream> {
     .into())
 }
 
-/// Derive macro for AggregateState - generates wrapper aggregate from state-only struct
+/// Derive macro for `AggregateState` - generates wrapper aggregate from state-only struct
+///
+/// Generates a wrapper aggregate with infrastructure fields (version, `pending_events`)
+/// while keeping business logic in the state struct.
+///
+/// # Features
+///
+///   - Automatic naming: `CounterState` → `CounterAggregate`
+///   - Custom wrapper name via `#[aggregate(name = "...")]`
+///   - Optional error type (defaults to `()`)
+///   - Automatic `Deref`/`DerefMut` for state access
+#[allow(clippy::too_many_lines)]
 #[proc_macro_derive(AggregateState, attributes(aggregate, aggregate_id))]
 pub fn derive_aggregate_state(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -502,9 +520,9 @@ fn extract_aggregate_state_attrs(attrs: &[Attribute], state_name: &Ident) -> Res
     // Generate wrapper name from state name
     let state_name_str = state_name.to_string();
     let wrapper_name_str = if let Some(name_without_state) = state_name_str.strip_suffix("State") {
-        format!("{}Aggregate", name_without_state)
+        format!("{name_without_state}Aggregate")
     } else {
-        format!("{}Aggregate", state_name_str)
+        format!("{state_name_str}Aggregate")
     };
 
     // Check if name override is provided
@@ -519,9 +537,10 @@ fn extract_aggregate_state_attrs(attrs: &[Attribute], state_name: &Ident) -> Res
                 if let Ok(aggregate_attrs) = AggregateAttrs::from_list(&nested_meta) {
                     if let Some(custom_name) = aggregate_attrs.name {
                         let wrapper_name = Ident::new(&custom_name, proc_macro2::Span::call_site());
-                        let error_type = match error_type_opt {
-                            Some(ident) => quote! { #ident },
-                            None => quote! { () },
+                        let error_type = if let Some(ident) = error_type_opt {
+                            quote! { #ident }
+                        } else {
+                            quote! { () }
                         };
                         return Ok((id_type, event_type, error_type, wrapper_name));
                     }
@@ -531,15 +550,16 @@ fn extract_aggregate_state_attrs(attrs: &[Attribute], state_name: &Ident) -> Res
     }
 
     let wrapper_name = Ident::new(&wrapper_name_str, proc_macro2::Span::call_site());
-    let error_type = match error_type_opt {
-        Some(ident) => quote! { #ident },
-        None => quote! { () },
+    let error_type = if let Some(ident) = error_type_opt {
+        quote! { #ident }
+    } else {
+        quote! { () }
     };
 
     Ok((id_type, event_type, error_type, wrapper_name))
 }
 
-/// Find the ID field marked with #[aggregate_id]
+/// Find the ID field marked with `#[aggregate_id]`
 fn find_id_field(fields: &Fields) -> Result<Ident, TokenStream> {
     if let Fields::Named(named) = fields {
         for field in &named.named {

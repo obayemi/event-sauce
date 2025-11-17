@@ -158,6 +158,11 @@ pub trait ApplyEvent<A, E: AggregateError> {
     /// * `Ok(())` if the event can be applied
     /// * `Err(E)` if validation fails
     ///
+    /// # Errors
+    ///
+    /// Returns an error of type `E` if the event fails validation based on
+    /// the aggregate's current state or business rules.
+    ///
     /// # Examples
     ///
     /// ```

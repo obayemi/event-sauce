@@ -354,6 +354,7 @@ impl ShoppingCartAggregate {
     }
 
     /// Clear all items
+    #[allow(dead_code)]
     fn clear(&mut self) -> Result<(), CartError> {
         let event = CartClearedEvent {
             timestamp: Utc::now(),
