@@ -9,11 +9,10 @@
 //! Run with: cargo run -p event-sauce --example shopping-cart --features "memory,macros"
 
 use chrono::Utc;
-use event_sauce_core::{Aggregate, AggregateError, AggregateId, ApplyEvent};
-use event_sauce_macros::{AggregateState, Event as DeriveEvent};
+use event_sauce_core::{Aggregate, AggregateError, ApplyEvent};
+use event_sauce_macros::{AggregateId, AggregateState, Event as DeriveEvent};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fmt;
 use uuid::Uuid;
 
 // ============================================================================
@@ -21,7 +20,7 @@ use uuid::Uuid;
 // ============================================================================
 
 /// Unique identifier for a shopping cart
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(AggregateId, Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 struct CartId(Uuid);
 
 impl CartId {
@@ -36,16 +35,8 @@ impl Default for CartId {
     }
 }
 
-impl fmt::Display for CartId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Cart-{}", self.0)
-    }
-}
-
-impl AggregateId for CartId {}
-
 /// Unique identifier for a product
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(AggregateId, Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 struct ProductId(Uuid);
 
 impl ProductId {

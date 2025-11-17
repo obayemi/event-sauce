@@ -10,10 +10,9 @@
 //! Run with: cargo run -p event-sauce --example counter --features "memory,macros"
 
 use chrono::Utc;
-use event_sauce_core::{Aggregate, AggregateError, AggregateId, ApplyEvent};
-use event_sauce_macros::{AggregateState, Event as DeriveEvent};
+use event_sauce_core::{Aggregate, AggregateError, ApplyEvent};
+use event_sauce_macros::{AggregateId, AggregateState, Event as DeriveEvent};
 use serde::{Deserialize, Serialize};
-use std::fmt;
 use uuid::Uuid;
 
 // ============================================================================
@@ -21,7 +20,7 @@ use uuid::Uuid;
 // ============================================================================
 
 /// Unique identifier for a counter
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(AggregateId, Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 struct CounterId(Uuid);
 
 impl CounterId {
@@ -35,14 +34,6 @@ impl Default for CounterId {
         Self(Uuid::nil())
     }
 }
-
-impl fmt::Display for CounterId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Counter-{}", self.0)
-    }
-}
-
-impl AggregateId for CounterId {}
 
 // ============================================================================
 // Event Structs - Separated event definitions

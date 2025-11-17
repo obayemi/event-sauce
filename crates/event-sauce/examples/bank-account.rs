@@ -11,9 +11,8 @@
 //! Run with: cargo run -p event-sauce --example bank-account --features "memory,macros"
 
 use chrono::Utc;
-use event_sauce_core::{Aggregate, AggregateError, AggregateId, ApplyEvent, DomainEvent};
-use event_sauce_macros::{AggregateState, Event as DeriveEvent};
-use std::fmt;
+use event_sauce_core::{Aggregate, AggregateError, ApplyEvent, DomainEvent};
+use event_sauce_macros::{AggregateId, AggregateState, Event as DeriveEvent};
 use uuid::Uuid;
 
 // ============================================================================
@@ -21,7 +20,7 @@ use uuid::Uuid;
 // ============================================================================
 
 /// Unique identifier for a bank account
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(AggregateId, Debug, Clone, PartialEq, Eq, Hash)]
 struct AccountId(Uuid);
 
 impl AccountId {
@@ -35,14 +34,6 @@ impl Default for AccountId {
         Self(Uuid::nil())
     }
 }
-
-impl fmt::Display for AccountId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Account-{}", self.0)
-    }
-}
-
-impl AggregateId for AccountId {}
 
 /// Account status
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

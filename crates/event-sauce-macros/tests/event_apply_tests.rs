@@ -1,0 +1,425 @@
+//! Integration tests for #[derive(Event)] macro with aggregate attribute.
+//!
+//! These tests verify that the Event derive macro correctly generates
+//! the apply_event method when the aggregate attribute is specified.
+
+use chrono::{DateTime, Utc};
+use event_sauce_core::{Aggregate, AggregateError, AggregateId, ApplyEvent, DomainEvent, Version};
+use event_sauce_macros::{AggregateState, Event as DeriveEvent};
+
+// ============================================================================
+// Test Domain Model
+// ============================================================================
+
+/// Test aggregate ID
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct TestId(i32);
+
+impl Default for TestId {
+    fn default() -> Self {
+        Self(0)
+    }
+}
+
+impl std::fmt::Display for TestId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "TestId({})", self.0)
+    }
+}
+
+impl AggregateId for TestId {}
+
+/// Test error type
+#[derive(Debug, thiserror::Error)]
+enum TestError {
+    #[error("Invalid value: {0}")]
+    InvalidValue(i32),
+}
+
+impl AggregateError for TestError {}
+
+// ============================================================================
+// Test Events
+// ============================================================================
+
+/// Event: Value was set
+#[derive(Debug, Clone)]
+struct ValueSetEvent {
+    value: i32,
+    timestamp: DateTime<Utc>,
+}
+
+/// Event: Value was incremented
+#[derive(Debug, Clone)]
+struct ValueIncrementedEvent {
+    amount: i32,
+    timestamp: DateTime<Utc>,
+}
+
+/// Event: Value was reset
+#[derive(Debug, Clone)]
+struct ValueResetEvent {
+    timestamp: DateTime<Utc>,
+}
+
+/// Test event enum with aggregate attribute
+#[derive(DeriveEvent, Debug, Clone)]
+#[event(version = 1, type_prefix = "Test", aggregate = "TestAggregate")]
+enum TestEvent {
+    Set(ValueSetEvent),
+    Incremented(ValueIncrementedEvent),
+    Reset(ValueResetEvent),
+}
+
+// ============================================================================
+// ApplyEvent Implementations
+// ============================================================================
+
+impl ApplyEvent<TestAggregate, TestError> for ValueSetEvent {
+    fn validate(&self, _aggregate: &TestAggregate) -> Result<(), TestError> {
+        if self.value < 0 {
+            return Err(TestError::InvalidValue(self.value));
+        }
+        Ok(())
+    }
+
+    fn apply(&self, aggregate: &mut TestAggregate) {
+        aggregate.value = self.value;
+    }
+}
+
+impl ApplyEvent<TestAggregate, TestError> for ValueIncrementedEvent {
+    fn validate(&self, _aggregate: &TestAggregate) -> Result<(), TestError> {
+        if self.amount <= 0 {
+            return Err(TestError::InvalidValue(self.amount));
+        }
+        Ok(())
+    }
+
+    fn apply(&self, aggregate: &mut TestAggregate) {
+        aggregate.value += self.amount;
+    }
+}
+
+impl ApplyEvent<TestAggregate, TestError> for ValueResetEvent {
+    fn apply(&self, aggregate: &mut TestAggregate) {
+        aggregate.value = 0;
+    }
+}
+
+// ============================================================================
+// Test Aggregate State
+// ============================================================================
+
+#[derive(AggregateState, Debug, Clone, Default)]
+#[aggregate(id = "TestId", event = "TestEvent", error = "TestError")]
+struct TestState {
+    #[aggregate_id]
+    id: TestId,
+    value: i32,
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[test]
+fn test_aggregate_attribute_generates_apply_event() {
+    // Test that the aggregate attribute causes apply_event to be generated
+    let mut aggregate = TestAggregate::from_state(TestState {
+        id: TestId(1),
+        value: 0,
+    });
+
+    let event = TestEvent::Set(ValueSetEvent {
+        value: 42,
+        timestamp: Utc::now(),
+    });
+
+    // This should compile and work - apply_event is auto-generated
+    aggregate.apply_event(&event);
+
+    assert_eq!(aggregate.value, 42);
+}
+
+#[test]
+fn test_apply_event_dispatches_to_apply_event_impl() {
+    let mut aggregate = TestAggregate::from_state(TestState {
+        id: TestId(1),
+        value: 10,
+    });
+
+    // Test Set event
+    let set_event = TestEvent::Set(ValueSetEvent {
+        value: 20,
+        timestamp: Utc::now(),
+    });
+    aggregate.apply_event(&set_event);
+    assert_eq!(aggregate.value, 20);
+
+    // Test Incremented event
+    let inc_event = TestEvent::Incremented(ValueIncrementedEvent {
+        amount: 5,
+        timestamp: Utc::now(),
+    });
+    aggregate.apply_event(&inc_event);
+    assert_eq!(aggregate.value, 25);
+
+    // Test Reset event
+    let reset_event = TestEvent::Reset(ValueResetEvent {
+        timestamp: Utc::now(),
+    });
+    aggregate.apply_event(&reset_event);
+    assert_eq!(aggregate.value, 0);
+}
+
+#[test]
+fn test_apply_event_with_multiple_events() {
+    let mut aggregate = TestAggregate::from_state(TestState {
+        id: TestId(1),
+        value: 0,
+    });
+
+    let events = vec![
+        TestEvent::Set(ValueSetEvent {
+            value: 10,
+            timestamp: Utc::now(),
+        }),
+        TestEvent::Incremented(ValueIncrementedEvent {
+            amount: 5,
+            timestamp: Utc::now(),
+        }),
+        TestEvent::Incremented(ValueIncrementedEvent {
+            amount: 3,
+            timestamp: Utc::now(),
+        }),
+    ];
+
+    for event in events {
+        aggregate.apply_event(&event);
+    }
+
+    assert_eq!(aggregate.value, 18); // 10 + 5 + 3
+}
+
+#[test]
+fn test_apply_event_through_aggregate_trait() {
+    let mut aggregate = TestAggregate::from_state(TestState {
+        id: TestId(1),
+        value: 0,
+    });
+
+    // Use the Aggregate trait's apply method
+    aggregate.apply(ValueSetEvent {
+        value: 100,
+        timestamp: Utc::now(),
+    });
+
+    assert_eq!(aggregate.value, 100);
+    assert_eq!(aggregate.version(), Version::from(1));
+    assert_eq!(aggregate.pending_events().len(), 1);
+}
+
+#[test]
+fn test_apply_event_preserves_aggregate_state() {
+    let mut aggregate = TestAggregate::from_state(TestState {
+        id: TestId(42),
+        value: 10,
+    });
+
+    let event = TestEvent::Incremented(ValueIncrementedEvent {
+        amount: 5,
+        timestamp: Utc::now(),
+    });
+
+    aggregate.apply_event(&event);
+
+    // Check that the aggregate state is preserved
+    assert_eq!(aggregate.id, TestId(42));
+    assert_eq!(aggregate.value, 15);
+}
+
+#[test]
+fn test_apply_event_works_with_deref() {
+    let mut aggregate = TestAggregate::from_state(TestState {
+        id: TestId(1),
+        value: 0,
+    });
+
+    // The aggregate derefs to state, so we can access state fields directly
+    assert_eq!(aggregate.value, 0);
+
+    aggregate.apply_event(&TestEvent::Set(ValueSetEvent {
+        value: 50,
+        timestamp: Utc::now(),
+    }));
+
+    // After applying, we can still access through deref
+    assert_eq!(aggregate.value, 50);
+}
+
+#[test]
+fn test_generated_apply_event_is_public() {
+    // This test ensures the generated apply_event method is public
+    // by calling it from outside the module
+    let mut aggregate = TestAggregate::from_state(TestState::default());
+
+    let event = TestEvent::Reset(ValueResetEvent {
+        timestamp: Utc::now(),
+    });
+
+    // This should compile without errors
+    aggregate.apply_event(&event);
+}
+
+#[test]
+fn test_apply_event_with_validation() {
+    let mut aggregate = TestAggregate::from_state(TestState {
+        id: TestId(1),
+        value: 0,
+    });
+
+    // Valid event through apply (which validates)
+    aggregate.apply(ValueSetEvent {
+        value: 10,
+        timestamp: Utc::now(),
+    });
+
+    // Get the event before applying to avoid borrow checker issue
+    let event = aggregate.pending_events()[0].clone();
+
+    // Reset value to test apply_event
+    aggregate.value = 0;
+
+    // This should work since validation passes
+    aggregate.apply_event(&event);
+    assert_eq!(aggregate.value, 10);
+}
+
+#[test]
+fn test_apply_event_integration_with_aggregate_lifecycle() {
+    // Create a new aggregate
+    let mut aggregate = TestAggregate::from_state(TestState {
+        id: TestId(1),
+        value: 0,
+    });
+
+    // Apply events through the Aggregate trait
+    aggregate.apply(ValueSetEvent {
+        value: 10,
+        timestamp: Utc::now(),
+    });
+    aggregate.apply(ValueIncrementedEvent {
+        amount: 5,
+        timestamp: Utc::now(),
+    });
+
+    // Check state
+    assert_eq!(aggregate.value, 15);
+    assert_eq!(aggregate.version(), Version::from(2));
+    assert_eq!(aggregate.pending_events().len(), 2);
+
+    // Replay events using apply_event
+    let events: Vec<_> = aggregate.pending_events().iter().cloned().collect();
+    let mut replayed = TestAggregate::from_state(TestState {
+        id: TestId(1),
+        value: 0,
+    });
+
+    for event in events {
+        replayed.apply_unchecked(&event);
+    }
+
+    assert_eq!(replayed.value, 15);
+    assert_eq!(replayed.version(), Version::from(2));
+}
+
+// ============================================================================
+// Test Without Aggregate Attribute
+// ============================================================================
+
+/// Event enum without aggregate attribute - should NOT generate apply_event
+#[derive(DeriveEvent, Debug, Clone)]
+#[event(version = 1, type_prefix = "Basic")]
+enum BasicEvent {
+    Happened {
+        timestamp: DateTime<Utc>,
+    },
+}
+
+#[test]
+fn test_without_aggregate_attribute_no_apply_event() {
+    // This test verifies that without the aggregate attribute,
+    // no apply_event is generated. This is verified at compile time -
+    // if we tried to call BasicEvent's apply_event, it wouldn't compile.
+    let event = BasicEvent::Happened {
+        timestamp: Utc::now(),
+    };
+
+    // We can still use the DomainEvent trait
+    assert_eq!(event.event_type(), "BasicHappened");
+    assert_eq!(event.event_version(), 1);
+}
+
+// ============================================================================
+// Test Edge Cases
+// ============================================================================
+
+#[test]
+fn test_apply_event_with_reset_to_zero() {
+    let mut aggregate = TestAggregate::from_state(TestState {
+        id: TestId(1),
+        value: 100,
+    });
+
+    aggregate.apply_event(&TestEvent::Reset(ValueResetEvent {
+        timestamp: Utc::now(),
+    }));
+
+    assert_eq!(aggregate.value, 0);
+}
+
+#[test]
+fn test_apply_event_multiple_times_same_event() {
+    let mut aggregate = TestAggregate::from_state(TestState {
+        id: TestId(1),
+        value: 0,
+    });
+
+    let event = TestEvent::Incremented(ValueIncrementedEvent {
+        amount: 1,
+        timestamp: Utc::now(),
+    });
+
+    // Apply the same event multiple times
+    for _ in 0..10 {
+        aggregate.apply_event(&event);
+    }
+
+    assert_eq!(aggregate.value, 10);
+}
+
+#[test]
+fn test_apply_event_is_deterministic() {
+    let event = TestEvent::Set(ValueSetEvent {
+        value: 42,
+        timestamp: Utc::now(),
+    });
+
+    // Apply to first aggregate
+    let mut aggregate1 = TestAggregate::from_state(TestState {
+        id: TestId(1),
+        value: 0,
+    });
+    aggregate1.apply_event(&event);
+
+    // Apply to second aggregate
+    let mut aggregate2 = TestAggregate::from_state(TestState {
+        id: TestId(1),
+        value: 0,
+    });
+    aggregate2.apply_event(&event);
+
+    // Results should be identical
+    assert_eq!(aggregate1.value, aggregate2.value);
+}

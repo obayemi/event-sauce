@@ -2,7 +2,7 @@
 //!
 //! Derive macros for event-sauce to reduce boilerplate.
 //!
-//! Provides: #[derive(Aggregate)], #[derive(AggregateState)], #[derive(Event)]
+//! Provides: #[derive(Aggregate)], #[derive(AggregateState)], #[derive(Event)], #[derive(AggregateId)]
 
 #![deny(missing_docs)]
 #![deny(clippy::all)]
@@ -621,4 +621,78 @@ fn find_id_field(fields: &Fields) -> Result<Ident, TokenStream> {
     )
     .to_compile_error()
     .into())
+}
+
+/// Derive macro for AggregateId trait
+///
+/// This macro automatically implements the `AggregateId` trait and `Display` trait
+/// for newtype structs wrapping types that implement `Display`.
+///
+/// # Examples
+///
+/// ```ignore
+/// use uuid::Uuid;
+/// use event_sauce_macros::AggregateId;
+///
+/// #[derive(AggregateId, Debug, Clone, PartialEq, Eq, Hash)]
+/// struct UserId(Uuid);
+///
+/// // Now UserId implements AggregateId and Display automatically
+/// let id = UserId(Uuid::new_v4());
+/// println!("{}", id); // Displays the UUID
+/// ```
+///
+/// # Requirements
+///
+/// The macro works with:
+/// - Tuple structs with a single field (e.g., `struct Id(Uuid)`)
+/// - The inner type must implement `Display` for automatic Display implementation
+/// - The struct must implement `Clone`, `Debug`, `PartialEq`, `Eq`, `Hash`
+///
+/// # Panics
+///
+/// Will fail to compile if the struct is not a tuple struct with exactly one field.
+#[proc_macro_derive(AggregateId)]
+pub fn derive_aggregate_id(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    let name = &input.ident;
+
+    // Check that this is a tuple struct with one field
+    match &input.data {
+        Data::Struct(data_struct) => match &data_struct.fields {
+            Fields::Unnamed(fields) if fields.unnamed.len() == 1 => {
+                // Valid: tuple struct with one field
+            }
+            _ => {
+                return syn::Error::new_spanned(
+                    name,
+                    "AggregateId can only be derived for tuple structs with exactly one field (e.g., struct Id(Uuid))"
+                )
+                .to_compile_error()
+                .into();
+            }
+        },
+        _ => {
+            return syn::Error::new_spanned(
+                name,
+                "AggregateId can only be derived for structs"
+            )
+            .to_compile_error()
+            .into();
+        }
+    };
+
+    // Generate the implementation
+    let gen = quote! {
+        impl event_sauce_core::AggregateId for #name {}
+
+        // Auto-implement Display by delegating to the inner type
+        impl std::fmt::Display for #name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                std::fmt::Display::fmt(&self.0, f)
+            }
+        }
+    };
+
+    gen.into()
 }
