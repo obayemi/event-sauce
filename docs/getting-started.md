@@ -40,9 +40,11 @@ Let's create a simple counter aggregate. An **aggregate** is a consistency bound
 
 ```rust
 use event_sauce::prelude::*;
+use event_sauce_macros::AggregateId;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+// Auto-implements AggregateId trait and Display
+#[derive(AggregateId, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CounterId(Uuid);
 
 impl CounterId {
@@ -51,9 +53,9 @@ impl CounterId {
     }
 }
 
-impl std::fmt::Display for CounterId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
+impl Default for CounterId {
+    fn default() -> Self {
+        Self(Uuid::nil())
     }
 }
 ```
@@ -64,99 +66,146 @@ Events represent things that have happened in your domain:
 
 ```rust
 use serde::{Deserialize, Serialize};
+use chrono::{DateTime, Utc};
 
+// Individual event structs (recommended pattern)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Incremented {
+    amount: i32,
+    timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Decremented {
+    amount: i32,
+    timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Reset {
+    timestamp: DateTime<Utc>,
+}
+
+// Wrap in enum (auto-generates apply_event method)
 #[derive(Event, Debug, Clone, Serialize, Deserialize)]
-#[event(aggregate = "Counter", version = 1)]
+#[event(version = 1, type_prefix = "Counter", aggregate = "CounterAggregate")]
 pub enum CounterEvent {
-    Incremented { amount: i32 },
-    Decremented { amount: i32 },
-    Reset,
+    Incremented(Incremented),
+    Decremented(Decremented),
+    Reset(Reset),
 }
 ```
 
 The `#[derive(Event)]` macro automatically implements the `DomainEvent` trait.
 
-### Step 3: Define the Aggregate
+### Step 3: Define the Aggregate State
 
 ```rust
-#[derive(Aggregate, Debug, Clone)]
-#[aggregate(id = "CounterId", event = "CounterEvent")]
-pub struct Counter {
+use event_sauce_macros::AggregateState;
+
+// Define the STATE - contains only business data
+#[derive(AggregateState, Debug, Clone, Default)]
+#[aggregate(id = "CounterId", event = "CounterEvent", error = "CounterError")]
+pub struct CounterState {
     #[aggregate_id]
     id: CounterId,
-
     value: i32,
+}
 
-    #[aggregate_version]
-    version: i64,
+// CounterAggregate is auto-generated!
+// It wraps CounterState and adds: version, pending_events
+```
 
-    #[aggregate_events]
-    pending_events: Vec<CounterEvent>,
+The `#[derive(AggregateState)]` macro generates a `CounterAggregate` wrapper that:
+- Implements the `Aggregate` trait
+- Manages version and pending_events automatically
+- Provides transparent field access via Deref
+- Reduces boilerplate by ~40%
+
+### Step 4: Implement ApplyEvent for Each Event
+
+```rust
+use event_sauce_core::ApplyEvent;
+
+// Implement event validation and application logic
+impl ApplyEvent<CounterAggregate, CounterError> for Incremented {
+    fn validate(&self, _counter: &CounterAggregate) -> Result<(), CounterError> {
+        if self.amount <= 0 {
+            return Err(CounterError::InvalidAmount(self.amount));
+        }
+        Ok(())
+    }
+
+    fn apply(&self, counter: &mut CounterAggregate) {
+        counter.value += self.amount;  // Deref allows direct access
+    }
+}
+
+impl ApplyEvent<CounterAggregate, CounterError> for Decremented {
+    fn validate(&self, counter: &CounterAggregate) -> Result<(), CounterError> {
+        if self.amount <= 0 {
+            return Err(CounterError::InvalidAmount(self.amount));
+        }
+        if counter.value < self.amount {
+            return Err(CounterError::WouldBeNegative {
+                current: counter.value,
+                requested: self.amount,
+            });
+        }
+        Ok(())
+    }
+
+    fn apply(&self, counter: &mut CounterAggregate) {
+        counter.value -= self.amount;
+    }
+}
+
+impl ApplyEvent<CounterAggregate, CounterError> for Reset {
+    fn apply(&self, counter: &mut CounterAggregate) {
+        counter.value = 0;
+    }
 }
 ```
 
-The `#[derive(Aggregate)]` macro implements the `Aggregate` trait and provides:
-- `id()` - Returns the aggregate ID
-- `version()` - Returns the current version
-- `pending_events()` - Returns uncommitted events
-- `clear_events()` - Clears pending events after persisting
-- `apply(&event)` - Applies an event to update state
+### Step 5: Implement Business Logic
 
-### Step 4: Implement Business Logic
+Commands are implemented on the generated `CounterAggregate`:
 
 ```rust
-impl Counter {
+impl CounterAggregate {
     /// Create a new counter
-    pub fn new(id: CounterId) -> Self {
-        Self {
-            id,
-            value: 0,
-            version: 0,
-            pending_events: Vec::new(),
-        }
+    pub fn create(id: CounterId) -> Self {
+        Self::from_state(CounterState { id, value: 0 })
     }
 
     /// Increment the counter
     pub fn increment(&mut self, amount: i32) -> Result<(), CounterError> {
-        if amount <= 0 {
-            return Err(CounterError::InvalidAmount(amount));
-        }
-
-        let event = CounterEvent::Incremented { amount };
-        self.apply(&event);
-        self.pending_events.push(event);
+        let event = Incremented {
+            amount,
+            timestamp: Utc::now(),
+        };
+        event.validate(self)?;  // Validate
+        self.apply(event);      // Apply & record
         Ok(())
     }
 
     /// Decrement the counter
     pub fn decrement(&mut self, amount: i32) -> Result<(), CounterError> {
-        if amount <= 0 {
-            return Err(CounterError::InvalidAmount(amount));
-        }
-
-        if self.value - amount < 0 {
-            return Err(CounterError::WouldBeNegative {
-                current: self.value,
-                requested: amount,
-            });
-        }
-
-        let event = CounterEvent::Decremented { amount };
-        self.apply(&event);
-        self.pending_events.push(event);
+        let event = Decremented {
+            amount,
+            timestamp: Utc::now(),
+        };
+        event.validate(self)?;
+        self.apply(event);
         Ok(())
     }
 
     /// Reset the counter to zero
     pub fn reset(&mut self) {
-        let event = CounterEvent::Reset;
-        self.apply(&event);
-        self.pending_events.push(event);
-    }
-
-    /// Get the current value
-    pub fn value(&self) -> i32 {
-        self.value
+        let event = Reset {
+            timestamp: Utc::now(),
+        };
+        self.apply(event);
     }
 }
 
@@ -168,33 +217,11 @@ pub enum CounterError {
     #[error("Would result in negative value: current={current}, requested={requested}")]
     WouldBeNegative { current: i32, requested: i32 },
 }
+
+impl AggregateError for CounterError {}
 ```
 
-### Step 5: Implement Event Application
-
-The `apply` method updates the aggregate's state based on events:
-
-```rust
-impl Counter {
-    /// Apply an event to update state (this is called automatically by the macro)
-    fn apply(&mut self, event: &CounterEvent) {
-        match event {
-            CounterEvent::Incremented { amount } => {
-                self.value += amount;
-                self.version += 1;
-            }
-            CounterEvent::Decremented { amount } => {
-                self.value -= amount;
-                self.version += 1;
-            }
-            CounterEvent::Reset => {
-                self.value = 0;
-                self.version += 1;
-            }
-        }
-    }
-}
-```
+**Note**: The `apply_event` method is auto-generated by the `#[event(aggregate = "CounterAggregate")]` attribute. You don't need to implement it manually!
 
 ## Storing and Loading
 
@@ -212,7 +239,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create a counter
     let id = CounterId::new();
-    let mut counter = Counter::new(id);
+    let mut counter = CounterAggregate::create(id);
 
     // Execute commands
     counter.increment(5)?;
@@ -223,8 +250,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     save_aggregate(&store, &counter).await?;
 
     // Load from store
-    let loaded = load_aggregate(&store, id).await?;
-    println!("Counter value: {}", loaded.value());
+    let loaded: CounterAggregate = load_aggregate(&store, id).await?;
+    println!("Counter value: {}", loaded.value);
 
     Ok(())
 }
@@ -328,28 +355,28 @@ mod tests {
 
     #[test]
     fn test_counter_increment() {
-        let mut counter = Counter::new(CounterId::new());
+        let mut counter = CounterAggregate::create(CounterId::new());
 
         counter.increment(5).unwrap();
-        assert_eq!(counter.value(), 5);
+        assert_eq!(counter.value, 5);
         assert_eq!(counter.version(), 1);
         assert_eq!(counter.pending_events().len(), 1);
     }
 
     #[test]
     fn test_counter_prevents_negative() {
-        let mut counter = Counter::new(CounterId::new());
+        let mut counter = CounterAggregate::create(CounterId::new());
 
         counter.increment(5).unwrap();
         let result = counter.decrement(10);
 
         assert!(result.is_err());
-        assert_eq!(counter.value(), 5); // State unchanged
+        assert_eq!(counter.value, 5); // State unchanged
     }
 
     #[test]
     fn test_event_replay() {
-        let mut counter = Counter::new(CounterId::new());
+        let mut counter = CounterAggregate::create(CounterId::new());
 
         // Execute commands
         counter.increment(10).unwrap();
@@ -358,13 +385,14 @@ mod tests {
 
         // Replay events to reconstruct state
         let events = counter.pending_events().clone();
-        let mut replayed = Counter::new(counter.id());
+        let id = counter.aggregate_id();
+        let mut replayed = CounterAggregate::create(id);
 
         for event in events {
-            replayed.apply(&event);
+            replayed.apply_unchecked(&event);  // Fast replay without validation
         }
 
-        assert_eq!(replayed.value(), counter.value());
+        assert_eq!(replayed.value, counter.value);
         assert_eq!(replayed.version(), counter.version());
     }
 }

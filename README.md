@@ -19,24 +19,41 @@
 - 🛡️ **Rich Validation**: Aggregate-specific errors with business rule enforcement
 - ⚡ **Optimized Replay**: Fast event replay without re-validation
 
-### New Event System Features
+### Modern Event Sourcing Features
 
-event-sauce now provides a powerful and ergonomic event sourcing experience:
+event-sauce provides a powerful and ergonomic event sourcing experience with minimal boilerplate:
 
-- **Aggregate-Specific Errors**: Define rich error types for each aggregate using the `AggregateError` trait
-- **Optional Event Validation**: Events can implement validation logic that's skipped during replay
-- **Self-Contained Events**: Events can define their own `apply` logic using the `ApplyEvent` trait
-- **Optimized Replay**: Use `apply_unchecked()` for fast event replay without re-validation
-- **Better Error Messages**: Rich, domain-specific error messages that help debugging
+- **📝 Auto-Generated Boilerplate**: Derive macros eliminate manual implementations
+  - `#[derive(AggregateId)]` - Auto-implement ID types with Display
+  - `#[derive(AggregateState)]` - Separate business logic from infrastructure
+  - `#[derive(Event)]` - Auto-generate apply_event dispatching
+- **🎯 Type-Safe Events**: `ApplyEvent` trait for self-contained event logic
+- **✅ Validation & Replay**: Separate validation from application for fast replay
+- **🛡️ Rich Errors**: Aggregate-specific error types with `AggregateError` trait
+- **⚡ Zero-Cost Abstractions**: All macro-generated code optimizes away
 
 ## Quick Start
 
 ```rust
 use event_sauce::prelude::*;
+use event_sauce_macros::{AggregateId, AggregateState, Event};
 use thiserror::Error;
 use uuid::Uuid;
+use chrono::Utc;
 
-// Define aggregate-specific errors
+// 1. Define your aggregate ID (auto-implements AggregateId + Display)
+#[derive(AggregateId, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct CounterId(Uuid);
+
+impl CounterId {
+    fn new() -> Self { Self(Uuid::new_v4()) }
+}
+
+impl Default for CounterId {
+    fn default() -> Self { Self(Uuid::nil()) }
+}
+
+// 2. Define domain-specific errors
 #[derive(Debug, Error)]
 enum CounterError {
     #[error("Invalid amount: {0}")]
@@ -45,57 +62,70 @@ enum CounterError {
 
 impl AggregateError for CounterError {}
 
-// Define your aggregate
-#[derive(Aggregate, Debug, Clone)]
-#[aggregate(id = "CounterId", event = "CounterEvent", error = "CounterError")]
-struct Counter {
-    #[aggregate_id]
-    id: CounterId,
-    value: i32,
-    #[aggregate_version]
-    version: Version,
-    #[aggregate_events]
-    pending: Vec<CounterEvent>,
-}
+// 3. Define individual events
+#[derive(Debug, Clone)]
+struct Incremented { amount: i32, timestamp: DateTime<Utc> }
 
-// Define events with derive macro
-#[derive(Event, Debug, Clone, Serialize, Deserialize)]
-#[event(version = 1, type_prefix = "Counter")]
+#[derive(Debug, Clone)]
+struct Decremented { amount: i32, timestamp: DateTime<Utc> }
+
+// 4. Define event enum (auto-generates apply_event method)
+#[derive(Event, Debug, Clone)]
+#[event(version = 1, type_prefix = "Counter", aggregate = "CounterAggregate")]
 enum CounterEvent {
-    Incremented { amount: i32, timestamp: DateTime<Utc> },
-    Decremented { amount: i32, timestamp: DateTime<Utc> },
+    Incremented(Incremented),
+    Decremented(Decremented),
 }
 
-// Implement business logic
-impl Counter {
-    fn increment(&mut self, amount: i32) -> Result<(), CounterError> {
-        // Validate business rules
-        if amount <= 0 {
-            return Err(CounterError::InvalidAmount(amount));
+// 5. Implement ApplyEvent for each event on the Aggregate
+impl ApplyEvent<CounterAggregate, CounterError> for Incremented {
+    fn validate(&self, _: &CounterAggregate) -> Result<(), CounterError> {
+        if self.amount <= 0 {
+            return Err(CounterError::InvalidAmount(self.amount));
         }
-
-        // Create and apply event
-        let event = CounterEvent::Incremented {
-            amount,
-            timestamp: Utc::now(),
-        };
-        self.apply(&event);
-        self.pending.push(event);
         Ok(())
     }
 
-    fn apply_event(&mut self, event: &CounterEvent) {
-        match event {
-            CounterEvent::Incremented { amount, .. } => {
-                self.value += amount;
-            }
-            CounterEvent::Decremented { amount, .. } => {
-                self.value -= amount;
-            }
-        }
+    fn apply(&self, counter: &mut CounterAggregate) {
+        counter.value += self.amount;
+    }
+}
+
+impl ApplyEvent<CounterAggregate, CounterError> for Decremented {
+    fn apply(&self, counter: &mut CounterAggregate) {
+        counter.value -= self.amount;
+    }
+}
+
+// 6. Define your state (business data only - no infrastructure!)
+#[derive(AggregateState, Debug, Clone, Default)]
+#[aggregate(id = "CounterId", event = "CounterEvent", error = "CounterError")]
+struct CounterState {
+    #[aggregate_id]
+    id: CounterId,
+    value: i32,
+}
+
+// 7. Implement business logic on the generated CounterAggregate
+impl CounterAggregate {
+    fn create(id: CounterId) -> Self {
+        Self::from_state(CounterState { id, value: 0 })
+    }
+
+    fn increment(&mut self, amount: i32) -> Result<(), CounterError> {
+        let event = Incremented { amount, timestamp: Utc::now() };
+        event.validate(self)?; // Validate
+        self.apply(event);     // Apply & record
+        Ok(())
     }
 }
 ```
+
+**Key Points:**
+- ✅ No manual `apply_event` - auto-generated by `#[event(aggregate = "...")]`
+- ✅ Separation of concerns: State vs Infrastructure
+- ✅ Type-safe event handling with `ApplyEvent` trait
+- ✅ Validation separate from application (fast replay)
 
 ## Installation
 
@@ -302,94 +332,103 @@ Demonstrates process manager pattern for complex workflows:
 cargo run -p event-sauce --example process-manager-order --features "memory,sagas"
 ```
 
-### Quick Example
+### Complete Minimal Example
 
-Here's a complete, minimal example:
+Here's a complete, working example showing modern best practices:
 
 ```rust
-use event_sauce::prelude::*;
-use serde::{Deserialize, Serialize};
+use event_sauce_macros::{AggregateId, AggregateState, Event};
+use event_sauce_core::{Aggregate, AggregateError, ApplyEvent};
+use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-// Define your aggregate ID
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+// 1. Aggregate ID (auto-implements AggregateId + Display)
+#[derive(AggregateId, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct CounterId(Uuid);
 
 impl CounterId {
     fn new() -> Self { Self(Uuid::new_v4()) }
 }
 
-// Define events - what happened in your domain
-#[derive(Event, Debug, Clone, Serialize, Deserialize)]
-#[event(aggregate = "Counter", version = 1)]
+impl Default for CounterId {
+    fn default() -> Self { Self(Uuid::nil()) }
+}
+
+// 2. Domain errors
+#[derive(Debug, thiserror::Error)]
+enum CounterError {
+    #[error("Invalid amount: {0}")]
+    InvalidAmount(i32),
+}
+
+impl AggregateError for CounterError {}
+
+// 3. Individual event types
+#[derive(Debug, Clone)]
+struct Incremented { amount: i32, timestamp: DateTime<Utc> }
+
+// 4. Event enum (auto-generates apply_event)
+#[derive(Event, Debug, Clone)]
+#[event(version = 1, type_prefix = "Counter", aggregate = "CounterAggregate")]
 enum CounterEvent {
-    Incremented { amount: i32, timestamp: DateTime<Utc> },
-    Decremented { amount: i32, timestamp: DateTime<Utc> },
+    Incremented(Incremented),
 }
 
-// Define the aggregate - your business logic boundary
-#[derive(Aggregate, Debug, Clone)]
-#[aggregate(id = "CounterId", event = "CounterEvent")]
-struct Counter {
-    #[aggregate_id]
-    id: CounterId,
-    value: i32,
-    #[aggregate_version]
-    version: i64,
-    #[aggregate_events]
-    pending_events: Vec<CounterEvent>,
-}
-
-impl Counter {
-    fn new(id: CounterId) -> Self {
-        Self { id, value: 0, version: 0, pending_events: Vec::new() }
-    }
-
-    fn increment(&mut self, amount: i32) -> Result<(), CounterError> {
-        if amount <= 0 {
-            return Err(CounterError::InvalidAmount);
+// 5. Event application logic
+impl ApplyEvent<CounterAggregate, CounterError> for Incremented {
+    fn validate(&self, _: &CounterAggregate) -> Result<(), CounterError> {
+        if self.amount <= 0 {
+            return Err(CounterError::InvalidAmount(self.amount));
         }
-
-        let event = CounterEvent::Incremented {
-            amount,
-            timestamp: Utc::now(),
-        };
-
-        self.apply(&event); // Update state
-        self.pending_events.push(event); // Record for persistence
         Ok(())
     }
 
-    fn apply(&mut self, event: &CounterEvent) {
-        match event {
-            CounterEvent::Incremented { amount, .. } => {
-                self.value += amount;
-                self.version += 1;
-            }
-            CounterEvent::Decremented { amount, .. } => {
-                self.value -= amount;
-                self.version += 1;
-            }
-        }
+    fn apply(&self, counter: &mut CounterAggregate) {
+        counter.value += self.amount; // Access state via Deref
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Create in-memory store (perfect for testing)
-    let store = MemoryEventStore::new();
+// 6. State (business data only)
+#[derive(AggregateState, Debug, Clone, Default)]
+#[aggregate(id = "CounterId", event = "CounterEvent", error = "CounterError")]
+struct CounterState {
+    #[aggregate_id]
+    id: CounterId,
+    value: i32,
+}
 
-    // Use your aggregate
-    let mut counter = Counter::new(CounterId::new());
+// 7. Business logic
+impl CounterAggregate {
+    fn create(id: CounterId) -> Self {
+        Self::from_state(CounterState { id, value: 0 })
+    }
+
+    fn increment(&mut self, amount: i32) -> Result<(), CounterError> {
+        let event = Incremented { amount, timestamp: Utc::now() };
+        event.validate(self)?;
+        self.apply(event); // Auto-records in pending_events
+        Ok(())
+    }
+}
+
+fn main() -> Result<(), CounterError> {
+    let mut counter = CounterAggregate::create(CounterId::new());
     counter.increment(5)?;
     counter.increment(3)?;
 
-    println!("Counter value: {}", counter.value()); // 8
-    println!("Version: {}", counter.version());     // 2
+    println!("Value: {}", counter.value);           // 8
+    println!("Version: {}", counter.version());     // v2
+    println!("Events: {}", counter.pending_events().len()); // 2
 
     Ok(())
 }
 ```
+
+**Why this pattern?**
+- 🎯 **No boilerplate**: Macros generate all infrastructure code
+- 🔄 **Separation**: Business state separate from version/events
+- ✅ **Type-safe**: ApplyEvent ensures each event targets correct aggregate
+- ⚡ **Fast replay**: Validation skipped during `apply_unchecked()`
 
 ## Development
 

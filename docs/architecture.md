@@ -109,12 +109,14 @@ CREATE INDEX idx_events_type ON events(event_type, created_at);
 
 ### event-sauce-macros
 
-Derive macros for reducing boilerplate:
+Derive macros for reducing boilerplate (~40% less code):
 
-- **#[derive(Aggregate)]** - Implements Aggregate trait
-- **#[derive(Event)]** - Implements DomainEvent trait
+- **#[derive(AggregateId)]** - Auto-implements AggregateId trait + Display
+- **#[derive(AggregateState)]** - Generates aggregate wrapper with infrastructure
+- **#[derive(Event)]** - Implements DomainEvent trait + auto-generates apply_event
 - Compile-time code generation
 - Type-safe and zero-runtime cost
+- Clean separation between business logic and infrastructure
 
 ### event-sauce-projections
 
@@ -420,14 +422,16 @@ impl Projection for MyProjection {
 
 ## Best Practices
 
-1. **Keep aggregates small** - One consistency boundary
-2. **Events are immutable** - Never modify historical events
-3. **Version events** - Plan for schema evolution
-4. **Use projections for reads** - Never query aggregates
-5. **Handle concurrency** - Retry on conflicts
-6. **Test with events** - Given/When/Then with events
-7. **Monitor performance** - Track event counts, load times
-8. **Plan for growth** - Consider snapshots early
+1. **Use derive macros** - #[derive(AggregateId)], #[derive(AggregateState)], #[derive(Event)]
+2. **Keep aggregates small** - One consistency boundary
+3. **Events are immutable** - Never modify historical events
+4. **Version events** - Plan for schema evolution
+5. **Use projections for reads** - Never query aggregates
+6. **Handle concurrency** - Retry on conflicts
+7. **Test with events** - Given/When/Then with events
+8. **Separate validation** - Use ApplyEvent trait for event-specific validation
+9. **Monitor performance** - Track event counts, load times
+10. **Plan for growth** - Consider snapshots early
 
 ## Resources
 
