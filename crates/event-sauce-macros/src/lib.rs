@@ -2,7 +2,7 @@
 //!
 //! Derive macros for event-sauce to reduce boilerplate.
 //!
-//! Provides: #[derive(Aggregate)], #[derive(Event)], #[derive(Projection)]
+//! Provides: #[derive(Aggregate)], #[derive(AggregateState)], #[derive(Event)]
 
 #![deny(missing_docs)]
 #![deny(clippy::all)]
@@ -19,7 +19,10 @@ use darling::FromMeta;
 struct AggregateAttrs {
     id: String,
     event: String,
-    error: String,
+    #[darling(default)]
+    error: Option<String>,
+    #[darling(default)]
+    name: Option<String>,
 }
 
 /// Derive macro for Aggregate trait
@@ -31,10 +34,15 @@ pub fn derive_aggregate(input: TokenStream) -> TokenStream {
     let name = &input.ident;
 
     // Parse the #[aggregate(...)] attribute
-    let attrs = extract_aggregate_attrs(&input.attrs);
-    let (id_type, event_type, error_type) = match attrs {
-        Ok((id, event, error)) => (id, event, error),
+    let (id_type, event_type, error_type_opt) = match extract_aggregate_attrs(&input.attrs) {
+        Ok(attrs) => attrs,
         Err(err) => return err,
+    };
+
+    // Handle optional error type - if None, use unit type ()
+    let error_type: proc_macro2::TokenStream = match error_type_opt {
+        Some(ident) => quote! { #ident },
+        None => quote! { () },
     };
 
     // Extract field information
@@ -96,7 +104,7 @@ pub fn derive_aggregate(input: TokenStream) -> TokenStream {
 }
 
 /// Extract aggregate attributes from the #[aggregate(...)] attribute
-fn extract_aggregate_attrs(attrs: &[Attribute]) -> Result<(Ident, Ident, Ident), TokenStream> {
+fn extract_aggregate_attrs(attrs: &[Attribute]) -> Result<(Ident, Ident, Option<Ident>), TokenStream> {
     for attr in attrs {
         if attr.path().is_ident("aggregate") {
             let nested = match &attr.meta {
@@ -115,7 +123,7 @@ fn extract_aggregate_attrs(attrs: &[Attribute]) -> Result<(Ident, Ident, Ident),
 
             let id_type = Ident::new(&aggregate_attrs.id, proc_macro2::Span::call_site());
             let event_type = Ident::new(&aggregate_attrs.event, proc_macro2::Span::call_site());
-            let error_type = Ident::new(&aggregate_attrs.error, proc_macro2::Span::call_site());
+            let error_type = aggregate_attrs.error.map(|e| Ident::new(&e, proc_macro2::Span::call_site()));
 
             return Ok((id_type, event_type, error_type));
         }
@@ -123,7 +131,7 @@ fn extract_aggregate_attrs(attrs: &[Attribute]) -> Result<(Ident, Ident, Ident),
 
     Err(syn::Error::new(
         proc_macro2::Span::call_site(),
-        "Missing #[aggregate(id = \"...\", event = \"...\", error = \"...\")] attribute"
+        "Missing #[aggregate(id = \"...\", event = \"...\")] attribute"
     )
     .to_compile_error()
     .into())
@@ -336,6 +344,218 @@ fn extract_event_attrs(attrs: &[Attribute]) -> Result<EventAttrs, TokenStream> {
     Err(syn::Error::new(
         proc_macro2::Span::call_site(),
         "Missing #[event(version = ...)] attribute"
+    )
+    .to_compile_error()
+    .into())
+}
+
+/// Derive macro for AggregateState - generates wrapper aggregate from state-only struct
+#[proc_macro_derive(AggregateState, attributes(aggregate, aggregate_id))]
+pub fn derive_aggregate_state(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+
+    // Extract the state struct name and visibility
+    let state_name = &input.ident;
+    let vis = &input.vis;
+
+    // Parse the #[aggregate(...)] attribute
+    let (id_type, event_type, error_type, wrapper_name) = match extract_aggregate_state_attrs(&input.attrs, state_name) {
+        Ok(attrs) => attrs,
+        Err(err) => return err,
+    };
+
+    // Extract fields to find the ID field
+    let fields = match &input.data {
+        Data::Struct(data) => &data.fields,
+        _ => {
+            return syn::Error::new_spanned(
+                &input.ident,
+                "AggregateState can only be derived for structs"
+            )
+            .to_compile_error()
+            .into();
+        }
+    };
+
+    // Find the ID field
+    let id_field = match find_id_field(fields) {
+        Ok(field) => field,
+        Err(err) => return err,
+    };
+
+    // Generate the wrapper aggregate struct
+    let gen = quote! {
+        // Generate the wrapper aggregate
+        #vis struct #wrapper_name {
+            state: #state_name,
+            version: event_sauce_core::Version,
+            pending_events: Vec<#event_type>,
+        }
+
+        impl #wrapper_name {
+            /// Creates a new aggregate with default state
+            pub fn new() -> Self
+            where
+                #state_name: Default,
+            {
+                Self {
+                    state: #state_name::default(),
+                    version: event_sauce_core::Version::initial(),
+                    pending_events: Vec::new(),
+                }
+            }
+
+            /// Creates a new aggregate from an existing state
+            pub fn from_state(state: #state_name) -> Self {
+                Self {
+                    state,
+                    version: event_sauce_core::Version::initial(),
+                    pending_events: Vec::new(),
+                }
+            }
+
+            /// Returns a reference to the internal state
+            pub fn state(&self) -> &#state_name {
+                &self.state
+            }
+
+            /// Returns a mutable reference to the internal state
+            pub fn state_mut(&mut self) -> &mut #state_name {
+                &mut self.state
+            }
+
+            /// Private method that delegates event application to the state
+            fn apply_event(&mut self, event: &#event_type) {
+                self.state.apply_event(event);
+            }
+        }
+
+        // Implement Default if the state implements Default
+        impl Default for #wrapper_name
+        where
+            #state_name: Default,
+        {
+            fn default() -> Self {
+                Self::new()
+            }
+        }
+
+        // Implement Deref for transparent field access
+        impl std::ops::Deref for #wrapper_name {
+            type Target = #state_name;
+
+            fn deref(&self) -> &Self::Target {
+                &self.state
+            }
+        }
+
+        // Implement DerefMut for transparent mutable field access
+        impl std::ops::DerefMut for #wrapper_name {
+            fn deref_mut(&mut self) -> &mut Self::Target {
+                &mut self.state
+            }
+        }
+
+        // Implement Aggregate trait
+        impl event_sauce_core::Aggregate for #wrapper_name {
+            type Event = #event_type;
+            type Id = #id_type;
+            type Error = #error_type;
+
+            fn aggregate_id(&self) -> &Self::Id {
+                &self.state.#id_field
+            }
+
+            fn version(&self) -> event_sauce_core::Version {
+                self.version
+            }
+
+            fn pending_events(&self) -> &[Self::Event] {
+                &self.pending_events
+            }
+
+            fn clear_pending_events(&mut self) {
+                self.pending_events.clear();
+            }
+
+            fn apply<E: Into<Self::Event>>(&mut self, event: E) {
+                let event = event.into();
+                self.apply_internal(&event);
+                self.pending_events.push(event);
+            }
+
+            fn apply_internal(&mut self, event: &Self::Event) {
+                self.apply_event(event);
+                self.version = self.version.next();
+            }
+        }
+    };
+
+    gen.into()
+}
+
+/// Extract aggregate state attributes and generate wrapper name
+fn extract_aggregate_state_attrs(attrs: &[Attribute], state_name: &Ident) -> Result<(Ident, Ident, proc_macro2::TokenStream, Ident), TokenStream> {
+    // Extract aggregate attrs using existing function
+    let (id_type, event_type, error_type_opt) = extract_aggregate_attrs(attrs)?;
+
+    // Generate wrapper name from state name
+    let state_name_str = state_name.to_string();
+    let wrapper_name_str = if let Some(name_without_state) = state_name_str.strip_suffix("State") {
+        format!("{}Aggregate", name_without_state)
+    } else {
+        format!("{}Aggregate", state_name_str)
+    };
+
+    // Check if name override is provided
+    for attr in attrs {
+        if attr.path().is_ident("aggregate") {
+            let nested = match &attr.meta {
+                Meta::List(list) => &list.tokens,
+                _ => continue,
+            };
+
+            if let Ok(nested_meta) = darling::ast::NestedMeta::parse_meta_list(nested.clone()) {
+                if let Ok(aggregate_attrs) = AggregateAttrs::from_list(&nested_meta) {
+                    if let Some(custom_name) = aggregate_attrs.name {
+                        let wrapper_name = Ident::new(&custom_name, proc_macro2::Span::call_site());
+                        let error_type = match error_type_opt {
+                            Some(ident) => quote! { #ident },
+                            None => quote! { () },
+                        };
+                        return Ok((id_type, event_type, error_type, wrapper_name));
+                    }
+                }
+            }
+        }
+    }
+
+    let wrapper_name = Ident::new(&wrapper_name_str, proc_macro2::Span::call_site());
+    let error_type = match error_type_opt {
+        Some(ident) => quote! { #ident },
+        None => quote! { () },
+    };
+
+    Ok((id_type, event_type, error_type, wrapper_name))
+}
+
+/// Find the ID field marked with #[aggregate_id]
+fn find_id_field(fields: &Fields) -> Result<Ident, TokenStream> {
+    if let Fields::Named(named) = fields {
+        for field in &named.named {
+            let field_name = field.ident.as_ref().expect("Named field should have ident");
+
+            for attr in &field.attrs {
+                if attr.path().is_ident("aggregate_id") {
+                    return Ok(field_name.clone());
+                }
+            }
+        }
+    }
+
+    Err(syn::Error::new(
+        proc_macro2::Span::call_site(),
+        "Missing #[aggregate_id] field attribute. State struct must have one field marked with #[aggregate_id]"
     )
     .to_compile_error()
     .into())
