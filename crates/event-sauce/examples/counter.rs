@@ -1,7 +1,7 @@
 //! Simple Counter Example
 //!
 //! This example demonstrates the basics of event sourcing with event-sauce:
-//! - Defining aggregates and events
+//! - Defining aggregates with AggregateState (cleaner separation)
 //! - Using derive macros
 //! - In-memory event store
 //! - Command execution
@@ -10,8 +10,8 @@
 //! Run with: cargo run -p event-sauce --example counter --features "memory,macros"
 
 use chrono::Utc;
-use event_sauce_core::{Aggregate, AggregateError, AggregateId, ApplyEvent, Version};
-use event_sauce_macros::{Aggregate as DeriveAggregate, Event as DeriveEvent};
+use event_sauce_core::{Aggregate, AggregateError, AggregateId, ApplyEvent};
+use event_sauce_macros::{AggregateState, Event as DeriveEvent};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use uuid::Uuid;
@@ -27,6 +27,12 @@ struct CounterId(Uuid);
 impl CounterId {
     fn new() -> Self {
         Self(Uuid::new_v4())
+    }
+}
+
+impl Default for CounterId {
+    fn default() -> Self {
+        Self(Uuid::nil())
     }
 }
 
@@ -86,22 +92,25 @@ impl AggregateError for CounterError {}
 // ============================================================================
 // ApplyEvent Implementations
 // ============================================================================
+//
+// NOTE: ApplyEvent is implemented for the GENERATED CounterAggregate type,
+// not the CounterState. The macro generates CounterAggregate automatically.
 
-impl ApplyEvent<Counter, CounterError> for CounterIncrementedEvent {
-    fn validate(&self, _counter: &Counter) -> Result<(), CounterError> {
+impl ApplyEvent<CounterAggregate, CounterError> for CounterIncrementedEvent {
+    fn validate(&self, _counter: &CounterAggregate) -> Result<(), CounterError> {
         if self.amount <= 0 {
             return Err(CounterError::InvalidAmount(self.amount));
         }
         Ok(())
     }
 
-    fn apply(&self, counter: &mut Counter) {
+    fn apply(&self, counter: &mut CounterAggregate) {
         counter.value += self.amount;
     }
 }
 
-impl ApplyEvent<Counter, CounterError> for CounterDecrementedEvent {
-    fn validate(&self, counter: &Counter) -> Result<(), CounterError> {
+impl ApplyEvent<CounterAggregate, CounterError> for CounterDecrementedEvent {
+    fn validate(&self, counter: &CounterAggregate) -> Result<(), CounterError> {
         if self.amount <= 0 {
             return Err(CounterError::InvalidAmount(self.amount));
         }
@@ -115,42 +124,66 @@ impl ApplyEvent<Counter, CounterError> for CounterDecrementedEvent {
         Ok(())
     }
 
-    fn apply(&self, counter: &mut Counter) {
+    fn apply(&self, counter: &mut CounterAggregate) {
         counter.value -= self.amount;
     }
 }
 
-impl ApplyEvent<Counter, CounterError> for CounterResetEvent {
-    fn apply(&self, counter: &mut Counter) {
+impl ApplyEvent<CounterAggregate, CounterError> for CounterResetEvent {
+    fn apply(&self, counter: &mut CounterAggregate) {
         counter.value = 0;
     }
 }
 
-/// Counter aggregate
-#[derive(DeriveAggregate, Debug, Clone)]
+// ============================================================================
+// Counter State - Business Logic Only
+// ============================================================================
+//
+// The AggregateState macro generates a CounterAggregate wrapper that includes:
+// - state: CounterState
+// - version: Version
+// - pending_events: Vec<CounterEvent>
+//
+// This separates infrastructure concerns from business state.
+
+/// Counter state - contains only business data
+#[derive(AggregateState, Debug, Clone, Default)]
 #[aggregate(id = "CounterId", event = "CounterEvent", error = "CounterError")]
-struct Counter {
+struct CounterState {
     #[aggregate_id]
     id: CounterId,
-
     value: i32,
-
-    #[aggregate_version]
-    version: Version,
-
-    #[aggregate_events]
-    pending_events: Vec<CounterEvent>,
 }
 
-impl Counter {
-    /// Create a new counter
+impl CounterState {
+    /// Create a new counter state
     fn new(id: CounterId) -> Self {
-        Self {
-            id,
-            value: 0,
-            version: Version::initial(),
-            pending_events: Vec::new(),
+        Self { id, value: 0 }
+    }
+
+    /// Get the current value
+    fn value(&self) -> i32 {
+        self.value
+    }
+
+    /// Apply an event to update state (called by the generated wrapper)
+    fn apply_event(&mut self, event: &CounterEvent) {
+        match event {
+            CounterEvent::Incremented(e) => self.value += e.amount,
+            CounterEvent::Decremented(e) => self.value -= e.amount,
+            CounterEvent::Reset(_) => self.value = 0,
         }
+    }
+}
+
+// ============================================================================
+// Command Methods - Implemented on the generated CounterAggregate
+// ============================================================================
+
+impl CounterAggregate {
+    /// Create a new counter
+    fn create(id: CounterId) -> Self {
+        Self::from_state(CounterState::new(id))
     }
 
     /// Increment the counter
@@ -163,6 +196,7 @@ impl Counter {
         // Validate using the event's validation logic
         event.validate(self)?;
 
+        // apply() automatically adds to pending_events
         self.apply(event);
         Ok(())
     }
@@ -177,29 +211,17 @@ impl Counter {
         // Validate using the event's validation logic
         event.validate(self)?;
 
+        // apply() automatically adds to pending_events
         self.apply(event);
         Ok(())
     }
 
     /// Reset the counter to zero
     fn reset(&mut self) {
+        // apply() automatically adds to pending_events
         self.apply(CounterResetEvent {
             timestamp: Utc::now(),
         });
-    }
-
-    /// Get the current value
-    fn value(&self) -> i32 {
-        self.value
-    }
-
-    /// Apply an event to update state (required by Aggregate trait)
-    fn apply_event(&mut self, event: &CounterEvent) {
-        match event {
-            CounterEvent::Incremented(e) => e.apply(self),
-            CounterEvent::Decremented(e) => e.apply(self),
-            CounterEvent::Reset(e) => e.apply(self),
-        }
     }
 }
 
@@ -213,7 +235,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create a new counter
     let id = CounterId::new();
-    let mut counter = Counter::new(id);
+    let mut counter = CounterAggregate::create(id);
     println!("✓ Created counter: {}", id);
     println!("  Initial value: {}", counter.value());
 
@@ -256,7 +278,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n--- Event Replay ---");
 
     let events: Vec<_> = counter.pending_events().iter().cloned().collect();
-    let mut replayed = Counter::new(id);
+    let mut replayed = CounterAggregate::create(id);
 
     println!("Replaying {} events...", events.len());
     for event in events {
@@ -294,7 +316,7 @@ mod tests {
 
     #[test]
     fn test_new_counter_is_zero() {
-        let counter = Counter::new(CounterId::new());
+        let counter = CounterAggregate::create(CounterId::new());
 
         assert_eq!(counter.value(), 0);
         assert_eq!(counter.version(), Version::initial());
@@ -303,7 +325,7 @@ mod tests {
 
     #[test]
     fn test_increment() {
-        let mut counter = Counter::new(CounterId::new());
+        let mut counter = CounterAggregate::create(CounterId::new());
 
         counter.increment(5).unwrap();
 
@@ -314,7 +336,7 @@ mod tests {
 
     #[test]
     fn test_decrement() {
-        let mut counter = Counter::new(CounterId::new());
+        let mut counter = CounterAggregate::create(CounterId::new());
 
         counter.increment(10).unwrap();
         counter.decrement(3).unwrap();
@@ -325,7 +347,7 @@ mod tests {
 
     #[test]
     fn test_reset() {
-        let mut counter = Counter::new(CounterId::new());
+        let mut counter = CounterAggregate::create(CounterId::new());
 
         counter.increment(10).unwrap();
         counter.reset();
@@ -336,7 +358,7 @@ mod tests {
 
     #[test]
     fn test_cannot_increment_zero() {
-        let mut counter = Counter::new(CounterId::new());
+        let mut counter = CounterAggregate::create(CounterId::new());
 
         let result = counter.increment(0);
 
@@ -346,7 +368,7 @@ mod tests {
 
     #[test]
     fn test_cannot_decrement_below_zero() {
-        let mut counter = Counter::new(CounterId::new());
+        let mut counter = CounterAggregate::create(CounterId::new());
 
         counter.increment(5).unwrap();
         let result = counter.decrement(10);
@@ -357,7 +379,7 @@ mod tests {
 
     #[test]
     fn test_event_replay() {
-        let mut counter = Counter::new(CounterId::new());
+        let mut counter = CounterAggregate::create(CounterId::new());
 
         counter.increment(10).unwrap();
         counter.decrement(3).unwrap();
@@ -365,7 +387,7 @@ mod tests {
 
         // Replay events
         let events = counter.pending_events().to_vec();
-        let mut replayed = Counter::new(*counter.aggregate_id());
+        let mut replayed = CounterAggregate::create(*counter.aggregate_id());
 
         for event in events {
             replayed.apply_unchecked(&event);
@@ -377,7 +399,7 @@ mod tests {
 
     #[test]
     fn test_multiple_operations() {
-        let mut counter = Counter::new(CounterId::new());
+        let mut counter = CounterAggregate::create(CounterId::new());
 
         counter.increment(5).unwrap();
         counter.increment(3).unwrap();
@@ -389,5 +411,17 @@ mod tests {
 
         assert_eq!(counter.value(), 7);
         assert_eq!(counter.pending_events().len(), 7);
+    }
+
+    #[test]
+    fn test_state_wrapper_pattern() {
+        // The generated CounterAggregate provides access to the state
+        let counter = CounterAggregate::create(CounterId::new());
+
+        // Can access state via Deref
+        assert_eq!(counter.value, 0);
+
+        // Can access via state() method
+        assert_eq!(counter.state().value, 0);
     }
 }
