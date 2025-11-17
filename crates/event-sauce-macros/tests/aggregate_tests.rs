@@ -3,9 +3,17 @@
 //! These tests verify that the Aggregate derive macro correctly generates
 //! the Aggregate trait implementation.
 
-use event_sauce_core::{Aggregate, AggregateId, DomainEvent, Version};
+use event_sauce_core::{Aggregate, AggregateError, AggregateId, DomainEvent, Version};
 use chrono::{DateTime, Utc};
 use std::fmt;
+use thiserror::Error;
+
+// Define error type for testing
+#[derive(Debug, Error)]
+#[error("Test counter error")]
+struct TestCounterError;
+
+impl AggregateError for TestCounterError {}
 
 // Define a simple aggregate ID for testing
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -56,7 +64,7 @@ impl DomainEvent for TestCounterEvent {
 // This is the aggregate struct that uses the derive macro
 // The macro should generate the Aggregate trait implementation
 #[derive(event_sauce_macros::Aggregate, Debug, Clone)]
-#[aggregate(id = "TestCounterId", event = "TestCounterEvent")]
+#[aggregate(id = "TestCounterId", event = "TestCounterEvent", error = "TestCounterError")]
 struct TestCounter {
     #[aggregate_id]
     id: TestCounterId,
@@ -78,12 +86,10 @@ impl TestCounter {
     }
 
     fn increment(&mut self, amount: i32) {
-        let event = TestCounterEvent::Incremented {
+        self.apply(TestCounterEvent::Incremented {
             amount,
             timestamp: Utc::now(),
-        };
-        self.apply(&event);
-        self.pending_events.push(event);
+        });
     }
 
     fn apply_event(&mut self, event: &TestCounterEvent) {
@@ -160,7 +166,7 @@ fn test_aggregate_derive_apply() {
     };
 
     let initial_version = counter.version();
-    counter.apply(&event);
+    counter.apply(event);
 
     // Version should be incremented
     assert_eq!(counter.version(), initial_version.next());

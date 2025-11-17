@@ -1,4 +1,4 @@
-error: Missing #[aggregate_id] field attribute
+error: Missing field `error`
   --> tests/ui/aggregate_missing_id_field.rs:35:10
    |
 35 | #[derive(event_sauce_macros::Aggregate)]

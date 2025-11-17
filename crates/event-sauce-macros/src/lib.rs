@@ -19,6 +19,7 @@ use darling::FromMeta;
 struct AggregateAttrs {
     id: String,
     event: String,
+    error: String,
 }
 
 /// Derive macro for Aggregate trait
@@ -31,8 +32,8 @@ pub fn derive_aggregate(input: TokenStream) -> TokenStream {
 
     // Parse the #[aggregate(...)] attribute
     let attrs = extract_aggregate_attrs(&input.attrs);
-    let (id_type, event_type) = match attrs {
-        Ok((id, event)) => (id, event),
+    let (id_type, event_type, error_type) = match attrs {
+        Ok((id, event, error)) => (id, event, error),
         Err(err) => return err,
     };
 
@@ -60,6 +61,7 @@ pub fn derive_aggregate(input: TokenStream) -> TokenStream {
         impl event_sauce_core::Aggregate for #name {
             type Event = #event_type;
             type Id = #id_type;
+            type Error = #error_type;
 
             fn aggregate_id(&self) -> &Self::Id {
                 &self.#id_field
@@ -77,7 +79,13 @@ pub fn derive_aggregate(input: TokenStream) -> TokenStream {
                 self.#events_field.clear();
             }
 
-            fn apply(&mut self, event: &Self::Event) {
+            fn apply<E: Into<Self::Event>>(&mut self, event: E) {
+                let event = event.into();
+                self.apply_internal(&event);
+                self.#events_field.push(event);
+            }
+
+            fn apply_internal(&mut self, event: &Self::Event) {
                 self.apply_event(event);
                 self.#version_field = self.#version_field.next();
             }
@@ -88,7 +96,7 @@ pub fn derive_aggregate(input: TokenStream) -> TokenStream {
 }
 
 /// Extract aggregate attributes from the #[aggregate(...)] attribute
-fn extract_aggregate_attrs(attrs: &[Attribute]) -> Result<(Ident, Ident), TokenStream> {
+fn extract_aggregate_attrs(attrs: &[Attribute]) -> Result<(Ident, Ident, Ident), TokenStream> {
     for attr in attrs {
         if attr.path().is_ident("aggregate") {
             let nested = match &attr.meta {
@@ -107,14 +115,15 @@ fn extract_aggregate_attrs(attrs: &[Attribute]) -> Result<(Ident, Ident), TokenS
 
             let id_type = Ident::new(&aggregate_attrs.id, proc_macro2::Span::call_site());
             let event_type = Ident::new(&aggregate_attrs.event, proc_macro2::Span::call_site());
+            let error_type = Ident::new(&aggregate_attrs.error, proc_macro2::Span::call_site());
 
-            return Ok((id_type, event_type));
+            return Ok((id_type, event_type, error_type));
         }
     }
 
     Err(syn::Error::new(
         proc_macro2::Span::call_site(),
-        "Missing #[aggregate(id = \"...\", event = \"...\")] attribute"
+        "Missing #[aggregate(id = \"...\", event = \"...\", error = \"...\")] attribute"
     )
     .to_compile_error()
     .into())
@@ -219,20 +228,61 @@ pub fn derive_event(input: TokenStream) -> TokenStream {
         let variant_str = variant_name.to_string();
         let event_type_name = format!("{type_prefix}{variant_str}");
 
-        quote! {
-            #name::#variant_name { .. } => #event_type_name,
+        // Check if this is a tuple variant or named field variant
+        match &variant.fields {
+            Fields::Unnamed(_) => {
+                quote! {
+                    #name::#variant_name(..) => #event_type_name,
+                }
+            }
+            _ => {
+                quote! {
+                    #name::#variant_name { .. } => #event_type_name,
+                }
+            }
         }
     });
 
     // Generate occurred_at match arms
     let occurred_at_arms = variants.iter().map(|variant| {
         let variant_name = &variant.ident;
-        quote! {
-            #name::#variant_name { timestamp, .. } => *timestamp,
+
+        // Check if this is a tuple variant or named field variant
+        match &variant.fields {
+            Fields::Unnamed(_) => {
+                quote! {
+                    #name::#variant_name(event) => event.timestamp,
+                }
+            }
+            _ => {
+                quote! {
+                    #name::#variant_name { timestamp, .. } => *timestamp,
+                }
+            }
         }
     });
 
     let version = attrs.version;
+
+    // Generate Into implementations for tuple variants
+    let into_impls = variants.iter().filter_map(|variant| {
+        let variant_name = &variant.ident;
+
+        // Only generate Into for tuple variants with exactly one field
+        match &variant.fields {
+            Fields::Unnamed(fields) if fields.unnamed.len() == 1 => {
+                let field_type = &fields.unnamed.first().unwrap().ty;
+                Some(quote! {
+                    impl Into<#name> for #field_type {
+                        fn into(self) -> #name {
+                            #name::#variant_name(self)
+                        }
+                    }
+                })
+            }
+            _ => None,
+        }
+    });
 
     // Generate the implementation
     let gen = quote! {
@@ -253,6 +303,9 @@ pub fn derive_event(input: TokenStream) -> TokenStream {
                 }
             }
         }
+
+        // Generate Into implementations for each variant
+        #(#into_impls)*
     };
 
     gen.into()

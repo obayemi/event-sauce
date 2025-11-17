@@ -16,38 +16,83 @@
 - 🎯 **Type-Safe**: Compile-time guarantees with derive macros
 - 📦 **Production Ready**: Optimistic concurrency, snapshots, distributed locking
 - 🧪 **Testing First-Class**: Built-in test helpers and fixtures
+- 🛡️ **Rich Validation**: Aggregate-specific errors with business rule enforcement
+- ⚡ **Optimized Replay**: Fast event replay without re-validation
+
+### New Event System Features
+
+event-sauce now provides a powerful and ergonomic event sourcing experience:
+
+- **Aggregate-Specific Errors**: Define rich error types for each aggregate using the `AggregateError` trait
+- **Optional Event Validation**: Events can implement validation logic that's skipped during replay
+- **Self-Contained Events**: Events can define their own `apply` logic using the `ApplyEvent` trait
+- **Optimized Replay**: Use `apply_unchecked()` for fast event replay without re-validation
+- **Better Error Messages**: Rich, domain-specific error messages that help debugging
 
 ## Quick Start
 
 ```rust
 use event_sauce::prelude::*;
+use thiserror::Error;
 use uuid::Uuid;
 
+// Define aggregate-specific errors
+#[derive(Debug, Error)]
+enum CounterError {
+    #[error("Invalid amount: {0}")]
+    InvalidAmount(i32),
+}
+
+impl AggregateError for CounterError {}
+
+// Define your aggregate
 #[derive(Aggregate, Debug, Clone)]
-#[aggregate(id = "CounterId", event = "CounterEvent")]
+#[aggregate(id = "CounterId", event = "CounterEvent", error = "CounterError")]
 struct Counter {
     #[aggregate_id]
     id: CounterId,
     value: i32,
     #[aggregate_version]
-    version: i64,
+    version: Version,
     #[aggregate_events]
     pending: Vec<CounterEvent>,
 }
 
+// Define events with derive macro
 #[derive(Event, Debug, Clone, Serialize, Deserialize)]
-#[event(aggregate = "Counter", version = 1)]
+#[event(version = 1, type_prefix = "Counter")]
 enum CounterEvent {
-    Incremented { amount: i32 },
-    Decremented { amount: i32 },
+    Incremented { amount: i32, timestamp: DateTime<Utc> },
+    Decremented { amount: i32, timestamp: DateTime<Utc> },
 }
 
+// Implement business logic
 impl Counter {
     fn increment(&mut self, amount: i32) -> Result<(), CounterError> {
-        let event = CounterEvent::Incremented { amount };
+        // Validate business rules
+        if amount <= 0 {
+            return Err(CounterError::InvalidAmount(amount));
+        }
+
+        // Create and apply event
+        let event = CounterEvent::Incremented {
+            amount,
+            timestamp: Utc::now(),
+        };
         self.apply(&event);
         self.pending.push(event);
         Ok(())
+    }
+
+    fn apply_event(&mut self, event: &CounterEvent) {
+        match event {
+            CounterEvent::Incremented { amount, .. } => {
+                self.value += amount;
+            }
+            CounterEvent::Decremented { amount, .. } => {
+                self.value -= amount;
+            }
+        }
     }
 }
 ```

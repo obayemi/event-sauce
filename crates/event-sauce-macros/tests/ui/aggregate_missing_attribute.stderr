@@ -1,4 +1,4 @@
-error: Missing #[aggregate(id = "...", event = "...")] attribute
+error: Missing #[aggregate(id = "...", event = "...", error = "...")] attribute
   --> tests/ui/aggregate_missing_attribute.rs:35:10
    |
 35 | #[derive(event_sauce_macros::Aggregate)]

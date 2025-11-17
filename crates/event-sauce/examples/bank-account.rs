@@ -1,14 +1,16 @@
-//! Simple Bank Account Example
+//! Bank Account Example with Validation
 //!
-//! This example demonstrates:
-//! - Using #[derive(Aggregate)] and #[derive(Event)] macros
-//! - In-memory event store for testing and development
-//! - Basic event sourcing patterns
+//! This example demonstrates the new event sourcing pattern with:
+//! - Aggregate-specific error types using `AggregateError` trait
+//! - Event validation with business rules
+//! - Self-contained event application logic using `ApplyEvent` trait
+//! - Event replay without validation using `apply_unchecked`
+//! - Rich domain model with status management
 //!
-//! Run with: cargo run -p event-sauce --example bank-account
+//! Run with: cargo run -p event-sauce --example bank-account --features "memory,macros"
 
 use chrono::Utc;
-use event_sauce_core::{Aggregate, AggregateId, DomainEvent, Version};
+use event_sauce_core::{Aggregate, AggregateError, AggregateId, ApplyEvent, DomainEvent, Version};
 use event_sauce_macros::{Aggregate as DeriveAggregate, Event as DeriveEvent};
 use std::fmt;
 use uuid::Uuid;
@@ -35,45 +37,142 @@ impl fmt::Display for AccountId {
 
 impl AggregateId for AccountId {}
 
-/// Bank account events using the derive macro
+/// Account status
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+enum AccountStatus {
+    Active,
+    Frozen,
+    Closed,
+}
+
+// ============================================================================
+// Event Structs - Separated event definitions
+// ============================================================================
+
+/// Event: Account was opened
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+struct AccountOpenedEvent {
+    account_id: String,
+    owner: String,
+    initial_balance: i64,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+/// Event: Money was deposited
+#[derive(Debug, Clone)]
+struct AccountDepositedEvent {
+    amount: i64,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+/// Event: Money was withdrawn
+#[derive(Debug, Clone)]
+struct AccountWithdrawnEvent {
+    amount: i64,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+/// Bank account events wrapping the separated event structs
 #[derive(DeriveEvent, Debug, Clone)]
 #[event(version = 1, type_prefix = "Account")]
-#[allow(dead_code)]
 enum AccountEvent {
-    Opened {
-        account_id: String,
-        owner: String,
-        initial_balance: i64,
-        timestamp: chrono::DateTime<Utc>,
-    },
-    Deposited {
-        amount: i64,
-        timestamp: chrono::DateTime<Utc>,
-    },
-    Withdrawn {
-        amount: i64,
-        timestamp: chrono::DateTime<Utc>,
-    },
+    Opened(AccountOpenedEvent),
+    Deposited(AccountDepositedEvent),
+    Withdrawn(AccountWithdrawnEvent),
 }
 
 /// Domain errors
 #[derive(Debug, thiserror::Error)]
+#[allow(dead_code)]
 enum AccountError {
     #[error("Insufficient funds: balance={balance}, requested={requested}")]
     InsufficientFunds { balance: i64, requested: i64 },
 
-    #[error("Invalid amount: {0}")]
+    #[error("Invalid amount: {0} (must be positive)")]
     InvalidAmount(i64),
+
+    #[error("Account is {0:?}")]
+    AccountNotActive(AccountStatus),
+
+    #[error("Account already exists")]
+    AccountAlreadyExists,
+}
+
+impl AggregateError for AccountError {}
+
+// ============================================================================
+// ApplyEvent Implementations
+// ============================================================================
+
+impl ApplyEvent<BankAccount, AccountError> for AccountOpenedEvent {
+    fn validate(&self, _account: &BankAccount) -> Result<(), AccountError> {
+        if self.initial_balance < 0 {
+            return Err(AccountError::InvalidAmount(self.initial_balance));
+        }
+        Ok(())
+    }
+
+    fn apply(&self, account: &mut BankAccount) {
+        account.owner = self.owner.clone();
+        account.balance = self.initial_balance;
+        account.status = AccountStatus::Active;
+    }
+}
+
+impl ApplyEvent<BankAccount, AccountError> for AccountDepositedEvent {
+    fn validate(&self, account: &BankAccount) -> Result<(), AccountError> {
+        if account.status != AccountStatus::Active {
+            return Err(AccountError::AccountNotActive(account.status));
+        }
+
+        if self.amount <= 0 {
+            return Err(AccountError::InvalidAmount(self.amount));
+        }
+
+        Ok(())
+    }
+
+    fn apply(&self, account: &mut BankAccount) {
+        account.balance += self.amount;
+    }
+}
+
+impl ApplyEvent<BankAccount, AccountError> for AccountWithdrawnEvent {
+    fn validate(&self, account: &BankAccount) -> Result<(), AccountError> {
+        if account.status != AccountStatus::Active {
+            return Err(AccountError::AccountNotActive(account.status));
+        }
+
+        if self.amount <= 0 {
+            return Err(AccountError::InvalidAmount(self.amount));
+        }
+
+        if account.balance < self.amount {
+            return Err(AccountError::InsufficientFunds {
+                balance: account.balance,
+                requested: self.amount,
+            });
+        }
+
+        Ok(())
+    }
+
+    fn apply(&self, account: &mut BankAccount) {
+        account.balance -= self.amount;
+    }
 }
 
 /// Bank account aggregate using the derive macro
 #[derive(DeriveAggregate, Debug, Clone)]
-#[aggregate(id = "AccountId", event = "AccountEvent")]
+#[aggregate(id = "AccountId", event = "AccountEvent", error = "AccountError")]
 struct BankAccount {
     #[aggregate_id]
     id: AccountId,
     owner: String,
     balance: i64,
+    status: AccountStatus,
     #[aggregate_version]
     version: Version,
     #[aggregate_events]
@@ -83,95 +182,74 @@ struct BankAccount {
 impl BankAccount {
     /// Create a new bank account
     fn open(id: AccountId, owner: String, initial_balance: i64) -> Result<Self, AccountError> {
-        if initial_balance < 0 {
-            return Err(AccountError::InvalidAmount(initial_balance));
-        }
-
         let mut account = Self {
             id: id.clone(),
             owner: String::new(),
             balance: 0,
+            status: AccountStatus::Active,
             version: Version::initial(),
             pending_events: Vec::new(),
         };
 
-        let event = AccountEvent::Opened {
+        let event = AccountOpenedEvent {
             account_id: id.to_string(),
             owner,
             initial_balance,
             timestamp: Utc::now(),
         };
 
-        account.apply(&event);
-        account.pending_events.push(event);
+        // Validate using the event's validation logic
+        event.validate(&account)?;
 
+        account.apply(event);
         Ok(account)
     }
 
     /// Deposit money into the account
     fn deposit(&mut self, amount: i64) -> Result<(), AccountError> {
-        if amount <= 0 {
-            return Err(AccountError::InvalidAmount(amount));
-        }
-
-        let event = AccountEvent::Deposited {
+        let event = AccountDepositedEvent {
             amount,
             timestamp: Utc::now(),
         };
 
-        self.apply(&event);
-        self.pending_events.push(event);
+        // Validate using the event's validation logic
+        event.validate(self)?;
 
+        self.apply(event);
         Ok(())
     }
 
     /// Withdraw money from the account
     fn withdraw(&mut self, amount: i64) -> Result<(), AccountError> {
-        if amount <= 0 {
-            return Err(AccountError::InvalidAmount(amount));
-        }
-
-        if self.balance < amount {
-            return Err(AccountError::InsufficientFunds {
-                balance: self.balance,
-                requested: amount,
-            });
-        }
-
-        let event = AccountEvent::Withdrawn {
+        let event = AccountWithdrawnEvent {
             amount,
             timestamp: Utc::now(),
         };
 
-        self.apply(&event);
-        self.pending_events.push(event);
+        // Validate using the event's validation logic
+        event.validate(self)?;
 
+        self.apply(event);
         Ok(())
     }
 
     /// Apply event to update state (required by Aggregate trait)
     fn apply_event(&mut self, event: &AccountEvent) {
         match event {
-            AccountEvent::Opened {
-                owner,
-                initial_balance,
-                ..
-            } => {
-                self.owner = owner.clone();
-                self.balance = *initial_balance;
-            }
-            AccountEvent::Deposited { amount, .. } => {
-                self.balance += amount;
-            }
-            AccountEvent::Withdrawn { amount, .. } => {
-                self.balance -= amount;
-            }
+            AccountEvent::Opened(e) => e.apply(self),
+            AccountEvent::Deposited(e) => e.apply(self),
+            AccountEvent::Withdrawn(e) => e.apply(self),
         }
     }
 
     /// Get current balance
     fn balance(&self) -> i64 {
         self.balance
+    }
+
+    /// Get account status
+    fn status(&self) -> AccountStatus {
+        self.status
     }
 }
 
@@ -251,12 +329,20 @@ fn main() -> Result<(), AccountError> {
         _ => println!("❌ Should have rejected negative amount!"),
     }
 
+    // Test status validation
+    println!("\n📝 Step 5: Test status validation");
+    println!("{}", "-".repeat(70));
+    println!("Current status: {:?}", account.status());
+    println!("✓ Account is active and accepting transactions");
+
     // Summary
     println!("\n{}", "=".repeat(70));
     println!("✅ Example completed successfully!");
     println!("\nKey Takeaways:");
     println!("  • #[derive(Aggregate)] eliminates boilerplate for aggregates");
     println!("  • #[derive(Event)] generates DomainEvent trait implementation");
+    println!("  • Aggregate-specific errors via AggregateError trait");
+    println!("  • Rich validation with status checking and business rules");
     println!("  • Events capture all state changes immutably");
     println!("  • Business rules are enforced at command time");
     println!("  • Type-safe event sourcing with minimal code");

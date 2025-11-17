@@ -40,6 +40,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 futures.workspace = true
 async-trait.workspace = true
+criterion = { workspace = true, features = ["html_reports"] }
 
 [[example]]
 name = "saga-payment"
@@ -56,3 +57,7 @@ required-features = ["memory", "projections"]
 [[example]]
 name = "bank-account"
 required-features = ["macros", "memory"]
+
+[[bench]]
+name = "event_application"
+harness = false

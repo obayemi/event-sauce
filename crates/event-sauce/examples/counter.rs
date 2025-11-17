@@ -10,7 +10,7 @@
 //! Run with: cargo run -p event-sauce --example counter --features "memory,macros"
 
 use chrono::Utc;
-use event_sauce_core::{Aggregate, AggregateId, Version};
+use event_sauce_core::{Aggregate, AggregateError, AggregateId, ApplyEvent, Version};
 use event_sauce_macros::{Aggregate as DeriveAggregate, Event as DeriveEvent};
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -38,21 +38,37 @@ impl fmt::Display for CounterId {
 
 impl AggregateId for CounterId {}
 
-/// Domain events for Counter
+// ============================================================================
+// Event Structs - Separated event definitions
+// ============================================================================
+
+/// Event: Counter was incremented
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CounterIncrementedEvent {
+    amount: i32,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+/// Event: Counter was decremented
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CounterDecrementedEvent {
+    amount: i32,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+/// Event: Counter was reset
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CounterResetEvent {
+    timestamp: chrono::DateTime<Utc>,
+}
+
+/// Domain events enum wrapping the separated event structs
 #[derive(DeriveEvent, Debug, Clone, Serialize, Deserialize)]
 #[event(version = 1, type_prefix = "Counter")]
 enum CounterEvent {
-    Incremented {
-        amount: i32,
-        timestamp: chrono::DateTime<Utc>,
-    },
-    Decremented {
-        amount: i32,
-        timestamp: chrono::DateTime<Utc>,
-    },
-    Reset {
-        timestamp: chrono::DateTime<Utc>,
-    },
+    Incremented(CounterIncrementedEvent),
+    Decremented(CounterDecrementedEvent),
+    Reset(CounterResetEvent),
 }
 
 /// Domain errors
@@ -65,9 +81,54 @@ enum CounterError {
     WouldBeNegative { current: i32, requested: i32 },
 }
 
+impl AggregateError for CounterError {}
+
+// ============================================================================
+// ApplyEvent Implementations
+// ============================================================================
+
+impl ApplyEvent<Counter, CounterError> for CounterIncrementedEvent {
+    fn validate(&self, _counter: &Counter) -> Result<(), CounterError> {
+        if self.amount <= 0 {
+            return Err(CounterError::InvalidAmount(self.amount));
+        }
+        Ok(())
+    }
+
+    fn apply(&self, counter: &mut Counter) {
+        counter.value += self.amount;
+    }
+}
+
+impl ApplyEvent<Counter, CounterError> for CounterDecrementedEvent {
+    fn validate(&self, counter: &Counter) -> Result<(), CounterError> {
+        if self.amount <= 0 {
+            return Err(CounterError::InvalidAmount(self.amount));
+        }
+
+        if counter.value - self.amount < 0 {
+            return Err(CounterError::WouldBeNegative {
+                current: counter.value,
+                requested: self.amount,
+            });
+        }
+        Ok(())
+    }
+
+    fn apply(&self, counter: &mut Counter) {
+        counter.value -= self.amount;
+    }
+}
+
+impl ApplyEvent<Counter, CounterError> for CounterResetEvent {
+    fn apply(&self, counter: &mut Counter) {
+        counter.value = 0;
+    }
+}
+
 /// Counter aggregate
 #[derive(DeriveAggregate, Debug, Clone)]
-#[aggregate(id = "CounterId", event = "CounterEvent")]
+#[aggregate(id = "CounterId", event = "CounterEvent", error = "CounterError")]
 struct Counter {
     #[aggregate_id]
     id: CounterId,
@@ -94,48 +155,37 @@ impl Counter {
 
     /// Increment the counter
     fn increment(&mut self, amount: i32) -> Result<(), CounterError> {
-        if amount <= 0 {
-            return Err(CounterError::InvalidAmount(amount));
-        }
-
-        let event = CounterEvent::Incremented {
+        let event = CounterIncrementedEvent {
             amount,
             timestamp: Utc::now(),
         };
-        self.apply_event(&event);
-        self.pending_events.push(event);
+
+        // Validate using the event's validation logic
+        event.validate(self)?;
+
+        self.apply(event);
         Ok(())
     }
 
     /// Decrement the counter
     fn decrement(&mut self, amount: i32) -> Result<(), CounterError> {
-        if amount <= 0 {
-            return Err(CounterError::InvalidAmount(amount));
-        }
-
-        if self.value - amount < 0 {
-            return Err(CounterError::WouldBeNegative {
-                current: self.value,
-                requested: amount,
-            });
-        }
-
-        let event = CounterEvent::Decremented {
+        let event = CounterDecrementedEvent {
             amount,
             timestamp: Utc::now(),
         };
-        self.apply_event(&event);
-        self.pending_events.push(event);
+
+        // Validate using the event's validation logic
+        event.validate(self)?;
+
+        self.apply(event);
         Ok(())
     }
 
     /// Reset the counter to zero
     fn reset(&mut self) {
-        let event = CounterEvent::Reset {
+        self.apply(CounterResetEvent {
             timestamp: Utc::now(),
-        };
-        self.apply_event(&event);
-        self.pending_events.push(event);
+        });
     }
 
     /// Get the current value
@@ -143,21 +193,12 @@ impl Counter {
         self.value
     }
 
-    /// Apply an event to update state
+    /// Apply an event to update state (required by Aggregate trait)
     fn apply_event(&mut self, event: &CounterEvent) {
         match event {
-            CounterEvent::Incremented { amount, .. } => {
-                self.value += amount;
-                self.version = self.version.next();
-            }
-            CounterEvent::Decremented { amount, .. } => {
-                self.value -= amount;
-                self.version = self.version.next();
-            }
-            CounterEvent::Reset { .. } => {
-                self.value = 0;
-                self.version = self.version.next();
-            }
+            CounterEvent::Incremented(e) => e.apply(self),
+            CounterEvent::Decremented(e) => e.apply(self),
+            CounterEvent::Reset(e) => e.apply(self),
         }
     }
 }
@@ -219,7 +260,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Replaying {} events...", events.len());
     for event in events {
-        replayed.apply_event(&event);
+        replayed.apply_unchecked(&event);
     }
 
     println!("✓ Replayed counter value: {}", replayed.value());
@@ -323,11 +364,11 @@ mod tests {
         counter.increment(5).unwrap();
 
         // Replay events
-        let events = counter.pending_events().clone();
-        let mut replayed = Counter::new(counter.id());
+        let events = counter.pending_events().to_vec();
+        let mut replayed = Counter::new(*counter.aggregate_id());
 
-        for event in &events {
-            replayed.apply_event(event);
+        for event in events {
+            replayed.apply_unchecked(&event);
         }
 
         assert_eq!(replayed.value(), counter.value());

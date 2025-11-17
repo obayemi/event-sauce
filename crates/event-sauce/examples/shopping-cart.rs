@@ -9,7 +9,7 @@
 //! Run with: cargo run -p event-sauce --example shopping-cart --features "memory,macros"
 
 use chrono::Utc;
-use event_sauce_core::{Aggregate, AggregateId, Version};
+use event_sauce_core::{Aggregate, AggregateError, AggregateId, ApplyEvent, Version};
 use event_sauce_macros::{Aggregate as DeriveAggregate, Event as DeriveEvent};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -63,39 +63,67 @@ impl CartItem {
     }
 }
 
-/// Domain events for ShoppingCart
+// ============================================================================
+// Event Structs - Separated event definitions
+// ============================================================================
+
+/// Event: Shopping cart was created
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CartCreatedEvent {
+    cart_id: String,
+    customer_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+/// Event: Item was added to cart
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CartItemAddedEvent {
+    product_id: ProductId,
+    name: String,
+    price: i64,
+    quantity: u32,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+/// Event: Item was removed from cart
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CartItemRemovedEvent {
+    product_id: ProductId,
+    quantity: u32,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+/// Event: Item quantity was changed
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CartItemQuantityChangedEvent {
+    product_id: ProductId,
+    new_quantity: u32,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+/// Event: Cart was cleared
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CartClearedEvent {
+    timestamp: chrono::DateTime<Utc>,
+}
+
+/// Event: Cart was checked out
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CartCheckedOutEvent {
+    total: i64,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+/// Domain events for ShoppingCart wrapping separated event structs
 #[derive(DeriveEvent, Debug, Clone, Serialize, Deserialize)]
 #[event(version = 1, type_prefix = "Cart")]
 enum CartEvent {
-    Created {
-        cart_id: String,
-        customer_id: String,
-        timestamp: chrono::DateTime<Utc>,
-    },
-    ItemAdded {
-        product_id: ProductId,
-        name: String,
-        price: i64,
-        quantity: u32,
-        timestamp: chrono::DateTime<Utc>,
-    },
-    ItemRemoved {
-        product_id: ProductId,
-        quantity: u32,
-        timestamp: chrono::DateTime<Utc>,
-    },
-    ItemQuantityChanged {
-        product_id: ProductId,
-        new_quantity: u32,
-        timestamp: chrono::DateTime<Utc>,
-    },
-    Cleared {
-        timestamp: chrono::DateTime<Utc>,
-    },
-    CheckedOut {
-        total: i64,
-        timestamp: chrono::DateTime<Utc>,
-    },
+    Created(CartCreatedEvent),
+    ItemAdded(CartItemAddedEvent),
+    ItemRemoved(CartItemRemovedEvent),
+    ItemQuantityChanged(CartItemQuantityChangedEvent),
+    Cleared(CartClearedEvent),
+    CheckedOut(CartCheckedOutEvent),
 }
 
 /// Domain errors
@@ -120,9 +148,138 @@ enum CartError {
     AlreadyCheckedOut,
 }
 
+impl AggregateError for CartError {}
+
+// ============================================================================
+// ApplyEvent Implementations
+// ============================================================================
+
+impl ApplyEvent<ShoppingCart, CartError> for CartCreatedEvent {
+    fn apply(&self, cart: &mut ShoppingCart) {
+        cart.customer_id = self.customer_id.clone();
+    }
+}
+
+impl ApplyEvent<ShoppingCart, CartError> for CartItemAddedEvent {
+    fn validate(&self, cart: &ShoppingCart) -> Result<(), CartError> {
+        if cart.checked_out {
+            return Err(CartError::AlreadyCheckedOut);
+        }
+
+        if self.quantity == 0 {
+            return Err(CartError::InvalidQuantity(self.quantity));
+        }
+
+        if self.price <= 0 {
+            return Err(CartError::InvalidPrice(self.price));
+        }
+
+        Ok(())
+    }
+
+    fn apply(&self, cart: &mut ShoppingCart) {
+        cart.items
+            .entry(self.product_id)
+            .and_modify(|item| item.quantity += self.quantity)
+            .or_insert(CartItem {
+                product_id: self.product_id,
+                name: self.name.clone(),
+                price: self.price,
+                quantity: self.quantity,
+            });
+    }
+}
+
+impl ApplyEvent<ShoppingCart, CartError> for CartItemRemovedEvent {
+    fn validate(&self, cart: &ShoppingCart) -> Result<(), CartError> {
+        if cart.checked_out {
+            return Err(CartError::AlreadyCheckedOut);
+        }
+
+        let item = cart
+            .items
+            .get(&self.product_id)
+            .ok_or(CartError::ProductNotFound(self.product_id))?;
+
+        if item.quantity < self.quantity {
+            return Err(CartError::InsufficientQuantity {
+                available: item.quantity,
+                requested: self.quantity,
+            });
+        }
+
+        Ok(())
+    }
+
+    fn apply(&self, cart: &mut ShoppingCart) {
+        if let Some(item) = cart.items.get_mut(&self.product_id) {
+            item.quantity -= self.quantity;
+            if item.quantity == 0 {
+                cart.items.remove(&self.product_id);
+            }
+        }
+    }
+}
+
+impl ApplyEvent<ShoppingCart, CartError> for CartItemQuantityChangedEvent {
+    fn validate(&self, cart: &ShoppingCart) -> Result<(), CartError> {
+        if cart.checked_out {
+            return Err(CartError::AlreadyCheckedOut);
+        }
+
+        if !cart.items.contains_key(&self.product_id) {
+            return Err(CartError::ProductNotFound(self.product_id));
+        }
+
+        if self.new_quantity == 0 {
+            return Err(CartError::InvalidQuantity(self.new_quantity));
+        }
+
+        Ok(())
+    }
+
+    fn apply(&self, cart: &mut ShoppingCart) {
+        if let Some(item) = cart.items.get_mut(&self.product_id) {
+            item.quantity = self.new_quantity;
+        }
+    }
+}
+
+impl ApplyEvent<ShoppingCart, CartError> for CartClearedEvent {
+    fn validate(&self, cart: &ShoppingCart) -> Result<(), CartError> {
+        if cart.checked_out {
+            return Err(CartError::AlreadyCheckedOut);
+        }
+
+        Ok(())
+    }
+
+    fn apply(&self, cart: &mut ShoppingCart) {
+        cart.items.clear();
+    }
+}
+
+impl ApplyEvent<ShoppingCart, CartError> for CartCheckedOutEvent {
+    fn validate(&self, cart: &ShoppingCart) -> Result<(), CartError> {
+        if cart.checked_out {
+            return Err(CartError::AlreadyCheckedOut);
+        }
+
+        if cart.items.is_empty() {
+            return Err(CartError::EmptyCart);
+        }
+
+        Ok(())
+    }
+
+    fn apply(&self, cart: &mut ShoppingCart) {
+        cart.checked_out = true;
+    }
+}
+
 /// Shopping cart aggregate
 #[derive(DeriveAggregate, Debug, Clone)]
-#[aggregate(id = "CartId", event = "CartEvent")]
+#[aggregate(id = "CartId", event = "CartEvent", error = "CartError")]
 struct ShoppingCart {
     #[aggregate_id]
     id: CartId,
@@ -150,14 +307,12 @@ impl ShoppingCart {
             pending_events: Vec::new(),
         };
 
-        let event = CartEvent::Created {
+        cart.apply(CartCreatedEvent {
             cart_id: id.to_string(),
             customer_id,
             timestamp: Utc::now(),
-        };
+        });
 
-        cart.apply_event(&event);
-        cart.pending_events.push(event);
         cart
     }
 
@@ -169,19 +324,7 @@ impl ShoppingCart {
         price: i64,
         quantity: u32,
     ) -> Result<(), CartError> {
-        if self.checked_out {
-            return Err(CartError::AlreadyCheckedOut);
-        }
-
-        if quantity == 0 {
-            return Err(CartError::InvalidQuantity(quantity));
-        }
-
-        if price <= 0 {
-            return Err(CartError::InvalidPrice(price));
-        }
-
-        let event = CartEvent::ItemAdded {
+        let event = CartItemAddedEvent {
             product_id,
             name,
             price,
@@ -189,98 +332,69 @@ impl ShoppingCart {
             timestamp: Utc::now(),
         };
 
-        self.apply_event(&event);
-        self.pending_events.push(event);
+        // Validate using the event's validation logic
+        event.validate(self)?;
+
+        self.apply(event);
         Ok(())
     }
 
     /// Remove a quantity of an item
     fn remove_item(&mut self, product_id: ProductId, quantity: u32) -> Result<(), CartError> {
-        if self.checked_out {
-            return Err(CartError::AlreadyCheckedOut);
-        }
-
-        let item = self
-            .items
-            .get(&product_id)
-            .ok_or(CartError::ProductNotFound(product_id))?;
-
-        if item.quantity < quantity {
-            return Err(CartError::InsufficientQuantity {
-                available: item.quantity,
-                requested: quantity,
-            });
-        }
-
-        let event = CartEvent::ItemRemoved {
+        let event = CartItemRemovedEvent {
             product_id,
             quantity,
             timestamp: Utc::now(),
         };
 
-        self.apply_event(&event);
-        self.pending_events.push(event);
+        // Validate using the event's validation logic
+        event.validate(self)?;
+
+        self.apply(event);
         Ok(())
     }
 
     /// Update the quantity of an item
     fn update_quantity(&mut self, product_id: ProductId, quantity: u32) -> Result<(), CartError> {
-        if self.checked_out {
-            return Err(CartError::AlreadyCheckedOut);
-        }
-
-        if !self.items.contains_key(&product_id) {
-            return Err(CartError::ProductNotFound(product_id));
-        }
-
-        if quantity == 0 {
-            return Err(CartError::InvalidQuantity(quantity));
-        }
-
-        let event = CartEvent::ItemQuantityChanged {
+        let event = CartItemQuantityChangedEvent {
             product_id,
             new_quantity: quantity,
             timestamp: Utc::now(),
         };
 
-        self.apply_event(&event);
-        self.pending_events.push(event);
+        // Validate using the event's validation logic
+        event.validate(self)?;
+
+        self.apply(event);
         Ok(())
     }
 
     /// Clear all items from the cart
     #[allow(dead_code)]
     fn clear(&mut self) -> Result<(), CartError> {
-        if self.checked_out {
-            return Err(CartError::AlreadyCheckedOut);
-        }
-
-        let event = CartEvent::Cleared {
+        let event = CartClearedEvent {
             timestamp: Utc::now(),
         };
-        self.apply_event(&event);
-        self.pending_events.push(event);
+
+        // Validate using the event's validation logic
+        event.validate(self)?;
+
+        self.apply(event);
         Ok(())
     }
 
     /// Checkout the cart
     fn checkout(&mut self) -> Result<(), CartError> {
-        if self.checked_out {
-            return Err(CartError::AlreadyCheckedOut);
-        }
-
-        if self.items.is_empty() {
-            return Err(CartError::EmptyCart);
-        }
-
         let total = self.total();
-        let event = CartEvent::CheckedOut {
+        let event = CartCheckedOutEvent {
             total,
             timestamp: Utc::now(),
         };
 
-        self.apply_event(&event);
-        self.pending_events.push(event);
+        // Validate using the event's validation logic
+        event.validate(self)?;
+
+        self.apply(event);
         Ok(())
     }
 
@@ -299,66 +413,15 @@ impl ShoppingCart {
         self.items.values().map(|item| item.quantity).sum()
     }
 
-    /// Apply an event to update state
+    /// Apply an event to update state (required by Aggregate trait)
     fn apply_event(&mut self, event: &CartEvent) {
         match event {
-            CartEvent::Created {
-                cart_id: _,
-                customer_id,
-                ..
-            } => {
-                self.customer_id = customer_id.clone();
-                self.version = self.version.next();
-            }
-            CartEvent::ItemAdded {
-                product_id,
-                name,
-                price,
-                quantity,
-                ..
-            } => {
-                self.items
-                    .entry(*product_id)
-                    .and_modify(|item| item.quantity += quantity)
-                    .or_insert(CartItem {
-                        product_id: *product_id,
-                        name: name.clone(),
-                        price: *price,
-                        quantity: *quantity,
-                    });
-                self.version = self.version.next();
-            }
-            CartEvent::ItemRemoved {
-                product_id,
-                quantity,
-                ..
-            } => {
-                if let Some(item) = self.items.get_mut(product_id) {
-                    item.quantity -= quantity;
-                    if item.quantity == 0 {
-                        self.items.remove(product_id);
-                    }
-                }
-                self.version = self.version.next();
-            }
-            CartEvent::ItemQuantityChanged {
-                product_id,
-                new_quantity,
-                ..
-            } => {
-                if let Some(item) = self.items.get_mut(product_id) {
-                    item.quantity = *new_quantity;
-                }
-                self.version = self.version.next();
-            }
-            CartEvent::Cleared { .. } => {
-                self.items.clear();
-                self.version = self.version.next();
-            }
-            CartEvent::CheckedOut { .. } => {
-                self.checked_out = true;
-                self.version = self.version.next();
-            }
+            CartEvent::Created(e) => e.apply(self),
+            CartEvent::ItemAdded(e) => e.apply(self),
+            CartEvent::ItemRemoved(e) => e.apply(self),
+            CartEvent::ItemQuantityChanged(e) => e.apply(self),
+            CartEvent::Cleared(e) => e.apply(self),
+            CartEvent::CheckedOut(e) => e.apply(self),
         }
     }
 }
@@ -457,16 +520,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Total events: {}", cart.pending_events().len());
     for (i, event) in cart.pending_events().iter().enumerate() {
         match event {
-            CartEvent::Created { .. } => println!("{}. Cart created", i + 1),
-            CartEvent::ItemAdded { name, quantity, .. } => {
+            CartEvent::Created(_) => println!("{}. Cart created", i + 1),
+            CartEvent::ItemAdded(CartItemAddedEvent { name, quantity, .. }) => {
                 println!("{}. Added {} x {}", i + 1, quantity, name)
             }
-            CartEvent::ItemRemoved { quantity, .. } => println!("{}. Removed {}", i + 1, quantity),
-            CartEvent::ItemQuantityChanged { new_quantity, .. } => {
+            CartEvent::ItemRemoved(CartItemRemovedEvent { quantity, .. }) => {
+                println!("{}. Removed {}", i + 1, quantity)
+            }
+            CartEvent::ItemQuantityChanged(CartItemQuantityChangedEvent {
+                new_quantity, ..
+            }) => {
                 println!("{}. Quantity changed to {}", i + 1, new_quantity)
             }
-            CartEvent::Cleared { .. } => println!("{}. Cart cleared", i + 1),
-            CartEvent::CheckedOut { total, .. } => {
+            CartEvent::Cleared(_) => println!("{}. Cart cleared", i + 1),
+            CartEvent::CheckedOut(CartCheckedOutEvent { total, .. }) => {
                 println!("{}. Checked out (${:.2})", i + 1, *total as f64 / 100.0)
             }
         }

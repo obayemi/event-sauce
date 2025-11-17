@@ -25,3 +25,4 @@ trybuild = "1.0"
 tokio = { workspace = true, features = ["macros", "rt"] }
 chrono.workspace = true
 uuid.workspace = true
+thiserror.workspace = true

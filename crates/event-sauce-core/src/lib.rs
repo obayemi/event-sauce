@@ -19,7 +19,9 @@
 #![warn(clippy::pedantic)]
 
 mod aggregate;
+mod aggregate_error;
 mod aggregate_id;
+mod apply_event;
 mod domain_event;
 mod error;
 mod event_bus;
@@ -28,7 +30,9 @@ mod event_store;
 mod version;
 
 pub use aggregate::Aggregate;
+pub use aggregate_error::AggregateError;
 pub use aggregate_id::AggregateId;
+pub use apply_event::ApplyEvent;
 pub use domain_event::DomainEvent;
 pub use error::{Error, Result};
 pub use event_bus::{EventBus, EventFilter};
