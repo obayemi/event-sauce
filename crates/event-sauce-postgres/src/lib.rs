@@ -4,7 +4,6 @@
 //!
 //! Provides production-ready `PostgreSQL` implementations of:
 //! - `EventStore` - Durable event persistence with ACID guarantees
-//! - `EventBus` - Real-time event delivery using `LISTEN`/`NOTIFY`
 //!
 //! # Features
 //!
@@ -13,7 +12,6 @@
 //! - Efficient streaming queries
 //! - Snapshot support
 //! - Connection pooling
-//! - Real-time event notifications
 //! - **Schema isolation** - Avoid migration conflicts with your application
 //!
 //! # Quick Start (Recommended)
@@ -96,8 +94,6 @@
 #![deny(clippy::all)]
 #![warn(clippy::pedantic)]
 
-mod event_bus;
 mod event_store;
 
-pub use event_bus::PostgresEventBus;
 pub use event_store::{PostgresEventStore, PostgresEventStoreBuilder};

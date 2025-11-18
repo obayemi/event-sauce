@@ -24,11 +24,11 @@ mod aggregate_id;
 mod apply_event;
 mod domain_event;
 mod error;
-mod event_bus;
 mod event_envelope;
 mod event_store;
 mod snapshot_config;
 mod snapshot_strategy;
+mod subscription;
 mod version;
 
 pub use aggregate::Aggregate;
@@ -37,9 +37,12 @@ pub use aggregate_id::AggregateId;
 pub use apply_event::ApplyEvent;
 pub use domain_event::DomainEvent;
 pub use error::{Error, Result};
-pub use event_bus::{EventBus, EventFilter, EventPublisher};
 pub use event_envelope::{EventEnvelope, EventMetadata};
 pub use event_store::{load, EventStore, Position, Snapshot, StreamId};
 pub use snapshot_config::{SnapshotConfig, SnapshotConfigBuilder};
 pub use snapshot_strategy::{AlwaysSnapshot, EveryNEvents, NeverSnapshot, SnapshotStrategy};
+pub use subscription::{
+    CheckpointStore, CheckpointStrategy, ErrorPolicy, EventFilter, Subscription,
+    SubscriptionBuilder, SubscriptionConfig,
+};
 pub use version::Version;
