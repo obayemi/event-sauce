@@ -186,7 +186,7 @@ async fn measure_load_time(
 
 async fn demo_no_snapshots() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n╔═══════════════════════════════════════════════════════════╗");
-    println!("║  Scenario 1: No Snapshots (Explicitly Disabled)          ║");
+    println!("║  Scenario 1: No Snapshots (Explicitly Disabled)           ║");
     println!("╚═══════════════════════════════════════════════════════════╝\n");
 
     // Create store with snapshots explicitly disabled
@@ -212,7 +212,7 @@ async fn demo_no_snapshots() -> Result<(), Box<dyn std::error::Error>> {
 
 async fn demo_default_behavior() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n╔═══════════════════════════════════════════════════════════╗");
-    println!("║  Scenario 2: Default Behavior (Every 100 Events)         ║");
+    println!("║  Scenario 2: Default Behavior (Every 100 Events)          ║");
     println!("╚═══════════════════════════════════════════════════════════╝\n");
 
     // Create store with default settings - snapshots enabled!
@@ -239,7 +239,7 @@ async fn demo_default_behavior() -> Result<(), Box<dyn std::error::Error>> {
 
 async fn demo_always_snapshot() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n╔═══════════════════════════════════════════════════════════╗");
-    println!("║  Scenario 3: Always Snapshot Strategy                    ║");
+    println!("║  Scenario 3: Always Snapshot Strategy                     ║");
     println!("╚═══════════════════════════════════════════════════════════╝\n");
 
     // Create store with always snapshot strategy
@@ -263,7 +263,7 @@ async fn demo_always_snapshot() -> Result<(), Box<dyn std::error::Error>> {
 
 async fn demo_interval_snapshots() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n╔═══════════════════════════════════════════════════════════╗");
-    println!("║  Scenario 4: Custom Interval (Every 50 Events)           ║");
+    println!("║  Scenario 4: Custom Interval (Every 50 Events)            ║");
     println!("╚═══════════════════════════════════════════════════════════╝\n");
 
     // Create store with snapshot every 50 events (custom interval)
@@ -289,7 +289,7 @@ async fn demo_interval_snapshots() -> Result<(), Box<dyn std::error::Error>> {
 
 async fn demo_per_type_configuration() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n╔═══════════════════════════════════════════════════════════╗");
-    println!("║  Scenario 5: Per-Aggregate-Type Configuration            ║");
+    println!("║  Scenario 5: Per-Aggregate-Type Configuration             ║");
     println!("╚═══════════════════════════════════════════════════════════╝\n");
 
     // Create store with different strategies per aggregate type
@@ -320,7 +320,7 @@ async fn demo_per_type_configuration() -> Result<(), Box<dyn std::error::Error>>
 
 async fn demo_performance_comparison() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n╔═══════════════════════════════════════════════════════════╗");
-    println!("║  Scenario 6: Performance Comparison                      ║");
+    println!("║  Scenario 6: Performance Comparison                       ║");
     println!("╚═══════════════════════════════════════════════════════════╝\n");
 
     let event_counts = vec![100, 500, 1000, 2000];
@@ -355,7 +355,7 @@ async fn demo_performance_comparison() -> Result<(), Box<dyn std::error::Error>>
 
 async fn demo_snapshot_disabled_on_load() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n╔═══════════════════════════════════════════════════════════╗");
-    println!("║  Scenario 7: Disable Snapshots on Load                   ║");
+    println!("║  Scenario 7: Disable Snapshots on Load                    ║");
     println!("╚═══════════════════════════════════════════════════════════╝\n");
 
     // Create store that creates snapshots but doesn't use them on load
@@ -389,9 +389,9 @@ async fn demo_snapshot_disabled_on_load() -> Result<(), Box<dyn std::error::Erro
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n");
     println!("╔═══════════════════════════════════════════════════════════╗");
-    println!("║                                                           ║");
-    println!("║       Event-Sauce Snapshotting Strategies Demo           ║");
-    println!("║                                                           ║");
+    println!("║                                                            ║");
+    println!("║       Event-Sauce Snapshotting Strategies Demo            ║");
+    println!("║                                                            ║");
     println!("╚═══════════════════════════════════════════════════════════╝");
 
     // Run all demonstration scenarios
@@ -404,7 +404,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     demo_snapshot_disabled_on_load().await?;
 
     println!("\n╔═══════════════════════════════════════════════════════════╗");
-    println!("║  Summary: Snapshot Strategy Guidelines                   ║");
+    println!("║  Summary: Snapshot Strategy Guidelines                    ║");
     println!("╚═══════════════════════════════════════════════════════════╝\n");
 
     println!("📋 When to use each strategy:\n");

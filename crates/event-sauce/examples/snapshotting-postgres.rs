@@ -313,7 +313,7 @@ async fn demo_without_snapshots(
     pool: &PgPool,
 ) -> Result<PerformanceMetrics, Box<dyn std::error::Error>> {
     println!("╔═══════════════════════════════════════════════════════════╗");
-    println!("║  Scenario 1: WITHOUT Snapshots                            ║");
+    println!("║  Scenario 1: WITHOUT Snapshots                             ║");
     println!("╚═══════════════════════════════════════════════════════════╝\n");
 
     let config = SnapshotConfig::disabled();
@@ -351,7 +351,7 @@ async fn demo_with_snapshots(
     pool: &PgPool,
 ) -> Result<PerformanceMetrics, Box<dyn std::error::Error>> {
     println!("╔═══════════════════════════════════════════════════════════╗");
-    println!("║  Scenario 2: WITH Snapshots (Every 100 Events)           ║");
+    println!("║  Scenario 2: WITH Snapshots (Every 100 Events)            ║");
     println!("╚═══════════════════════════════════════════════════════════╝\n");
 
     let config = SnapshotConfig::builder()
@@ -395,7 +395,7 @@ async fn demo_performance_comparison(
     pool: &PgPool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("╔═══════════════════════════════════════════════════════════╗");
-    println!("║  Scenario 3: Performance Comparison                      ║");
+    println!("║  Scenario 3: Performance Comparison                       ║");
     println!("╚═══════════════════════════════════════════════════════════╝\n");
 
     let test_cases = vec![100, 250, 500, 1000];
@@ -450,7 +450,7 @@ async fn demo_performance_comparison(
 
 async fn demo_always_snapshot(pool: &PgPool) -> Result<(), Box<dyn std::error::Error>> {
     println!("╔═══════════════════════════════════════════════════════════╗");
-    println!("║  Scenario 4: Always Snapshot Strategy                    ║");
+    println!("║  Scenario 4: Always Snapshot Strategy                     ║");
     println!("╚═══════════════════════════════════════════════════════════╝\n");
 
     let config = SnapshotConfig::always();
@@ -493,7 +493,7 @@ async fn demo_always_snapshot(pool: &PgPool) -> Result<(), Box<dyn std::error::E
 
 async fn demo_per_type_configuration(pool: &PgPool) -> Result<(), Box<dyn std::error::Error>> {
     println!("╔═══════════════════════════════════════════════════════════╗");
-    println!("║  Scenario 5: Per-Aggregate-Type Configuration            ║");
+    println!("║  Scenario 5: Per-Aggregate-Type Configuration             ║");
     println!("╚═══════════════════════════════════════════════════════════╝\n");
 
     // Counter gets snapshots every 50 events (type-specific override)
@@ -545,10 +545,10 @@ async fn demo_per_type_configuration(pool: &PgPool) -> Result<(), Box<dyn std::e
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n");
     println!("╔═══════════════════════════════════════════════════════════╗");
-    println!("║                                                           ║");
-    println!("║   Event-Sauce PostgreSQL Snapshotting Performance Demo   ║");
-    println!("║         Real-World Database Performance Testing          ║");
-    println!("║                                                           ║");
+    println!("║                                                            ║");
+    println!("║   Event-Sauce PostgreSQL Snapshotting Performance Demo    ║");
+    println!("║         Real-World Database Performance Testing           ║");
+    println!("║                                                            ║");
     println!("╚═══════════════════════════════════════════════════════════╝\n");
 
     // Setup test database
@@ -561,7 +561,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Performance comparison summary
     println!("╔═══════════════════════════════════════════════════════════╗");
-    println!("║  Performance Impact Summary (500 events)                 ║");
+    println!("║  Performance Impact Summary (500 events)                  ║");
     println!("╚═══════════════════════════════════════════════════════════╝\n");
 
     let load_speedup =
@@ -605,7 +605,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Final summary
     println!("╔═══════════════════════════════════════════════════════════╗");
-    println!("║  Key Insights from Real PostgreSQL Performance           ║");
+    println!("║  Key Insights from Real PostgreSQL Performance            ║");
     println!("╚═══════════════════════════════════════════════════════════╝\n");
 
     println!("💡 Database Performance Characteristics:\n");

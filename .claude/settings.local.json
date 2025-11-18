@@ -15,7 +15,8 @@
       "Bash(cargo doc:*)",
       "Bash(RUST_BACKTRACE=1 cargo test:*)",
       "Bash(docker info:*)",
-      "Bash(/dev/null)"
+      "Bash(/dev/null)",
+      "Bash(cargo check:*)"
     ],
     "deny": [],
     "ask": []
