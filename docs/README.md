@@ -11,7 +11,7 @@ Welcome to the event-sauce documentation! This directory contains comprehensive 
 - **[Aggregates](aggregates.md)** - Business entities and consistency boundaries
 - **[Events](events.md)** - Domain events and event modeling
 - **[Event Store](event-store.md)** - Persisting and loading event streams
-- **[Projections & Event Bus](projections.md)** - Building read models with real-time event distribution
+- **[Projections & Subscriptions](projections.md)** - Building read models with durable, guaranteed delivery
 - **[Validation](validation.md)** - Event validation and business rules
 
 ## Production Deployment

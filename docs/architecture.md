@@ -34,10 +34,10 @@ Event sourcing is a pattern where state changes are stored as a sequence of even
              │                │                   │
 ┌────────────┴────────────────┴───────────────────┴────────────┐
 │                     event-sauce Core                          │
-│  ┌─────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐     │
-│  │Aggregate│  │  Event   │  │EventStore│  │ EventBus │     │
-│  │  Trait  │  │  Trait   │  │  Trait   │  │  Trait   │     │
-│  └─────────┘  └──────────┘  └──────────┘  └──────────┘     │
+│  ┌─────────┐  ┌──────────┐  ┌──────────┐  ┌────────────┐   │
+│  │Aggregate│  │  Event   │  │EventStore│  │Subscription│   │
+│  │  Trait  │  │  Trait   │  │  Trait   │  │   System   │   │
+│  └─────────┘  └──────────┘  └──────────┘  └────────────┘   │
 └────────────┬────────────────┬──────────────────┬────────────┘
              │                │                   │
 ┌────────────┴────────────────┴───────────────────┴────────────┐
@@ -59,7 +59,7 @@ The foundation providing traits and types:
 - **Aggregate** - Root entity with identity and lifecycle
 - **DomainEvent** - Something that happened in the domain
 - **EventStore** - Persistence abstraction
-- **EventBus** - Pub/sub for events
+- **Subscription** - Durable event consumption with guaranteed delivery
 - **Version** - Optimistic concurrency control
 
 **Why separate?**
@@ -72,8 +72,7 @@ The foundation providing traits and types:
 
 In-memory implementation for testing:
 
-- **MemoryEventStore** - HashMap-based storage
-- **MemoryEventBus** - Channel-based pub/sub
+- **InMemoryEventStore** - HashMap-based storage with durable subscriptions
 - Fast, no I/O, deterministic
 - Perfect for unit tests
 
@@ -81,11 +80,11 @@ In-memory implementation for testing:
 
 Production-ready PostgreSQL backend:
 
-- **PostgresEventStore** - Durable event storage
-- **PostgresEventBus** - LISTEN/NOTIFY pub/sub
+- **PostgresEventStore** - Durable event storage with subscription support
 - Optimistic concurrency via unique constraints
 - Streaming support for memory efficiency
 - Transaction support
+- Checkpoint storage for resumable subscriptions
 
 **Schema Design:**
 ```sql
@@ -163,7 +162,7 @@ Generate Domain Events
     ↓
 Save Events (to EventStore)
     ↓
-Publish Events (via EventBus)
+Subscriptions Process Events
     ↓
 Update Projections
 ```
@@ -180,12 +179,16 @@ Apply Each Event to Aggregate
 Result: Current State
 ```
 
-### 3. Projection Building
+### 3. Projection Building with Subscriptions
 
 ```
-Subscribe to EventBus
+Create Subscription
     ↓
-Receive Event
+Load Checkpoint (resume from last position)
+    ↓
+Stream Events from EventStore
+    ↓
+Filter Events
     ↓
 Update Read Model
     ↓
@@ -227,23 +230,60 @@ pub trait EventStore: Send + Sync {
 }
 ```
 
-### EventBus Trait
+### Subscription System
+
+Subscriptions provide guaranteed delivery with checkpoint management:
 
 ```rust
-#[async_trait]
-pub trait EventBus: Send + Sync {
-    type Error;
+/// Durable subscription with guaranteed delivery
+pub struct Subscription<S> {
+    name: String,
+    store: Arc<S>,
+    checkpoint_store: Option<Arc<dyn CheckpointStore>>,
+    config: SubscriptionConfig,
+}
 
-    // Publish events
-    async fn publish(&self, events: Vec<EventEnvelope>) -> Result<(), Self::Error>;
+impl<S: EventStore> Subscription<S> {
+    /// Create a subscription with builder pattern
+    pub fn builder(name: impl Into<String>, store: Arc<S>) -> SubscriptionBuilder<S>;
 
-    // Subscribe to events
-    async fn subscribe(
-        &self,
-        filter: EventFilter,
-    ) -> Result<impl Stream<Item = EventEnvelope> + Send, Self::Error>;
+    /// Run the subscription, processing events through handler
+    pub async fn run<F>(&mut self, handler: F) -> Result<()>
+    where
+        F: FnMut(EventEnvelope) -> Result<()>;
+
+    /// Rebuild from scratch by deleting checkpoint
+    pub async fn rebuild(&mut self) -> Result<()>;
+}
+
+/// Event filter for selective subscription
+pub enum EventFilter {
+    All,
+    EventType(String),
+    AggregateType(String),
+    Both { event_type: String, aggregate_type: String },
+}
+
+/// Checkpoint strategy
+pub enum CheckpointStrategy {
+    EveryEvent,      // Save after each event (safest)
+    EveryN(usize),   // Save every N events
+    Manual,          // User controls checkpointing
+}
+
+/// Error handling policy
+pub enum ErrorPolicy {
+    Retry,  // Retry with backoff
+    Skip,   // Skip and continue
+    Fail,   // Fail subscription
 }
 ```
+
+Key differences from pub/sub:
+- **Guaranteed delivery** - Events never lost, always processed
+- **Checkpoint tracking** - Resume from last position after restart
+- **Eventual consistency** - All subscribers eventually see all events
+- **No broadcast** - Each subscription independently reads from event store
 
 ## Design Decisions
 

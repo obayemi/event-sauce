@@ -246,10 +246,10 @@ jj git push
              │                │                   │
 ┌────────────┴────────────────┴───────────────────┴───────────┐
 │                     event-sauce Core                         │
-│  ┌─────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐    │
-│  │Aggregate│  │  Event   │  │EventStore│  │ EventBus │    │
-│  │  Trait  │  │  Trait   │  │  Trait   │  │  Trait   │    │
-│  └─────────┘  └──────────┘  └──────────┘  └──────────┘    │
+│  ┌─────────┐  ┌──────────┐  ┌──────────┐  ┌────────────┐  │
+│  │Aggregate│  │  Event   │  │EventStore│  │Subscription│  │
+│  │  Trait  │  │  Trait   │  │  Trait   │  │   System   │  │
+│  └─────────┘  └──────────┘  └──────────┘  └────────────┘  │
 └────────────┬────────────────┬──────────────────┬───────────┘
              │                │                   │
 ┌────────────┴────────────────┴───────────────────┴───────────┐
@@ -631,7 +631,7 @@ store.migrate().await?;
 ### Guides
 
 - **[Getting Started Guide](docs/getting-started.md)** - Your first event-sourced application
-- **[Projections & Event Bus](docs/projections.md)** - 🆕 Building read models with real-time event distribution
+- **[Projections & Subscriptions](docs/projections.md)** - 🆕 Building read models with durable, guaranteed delivery
 - **[PostgreSQL Production Setup](docs/postgres-production.md)** - Complete production deployment guide
 - **[Architecture Overview](docs/architecture.md)** - System design and patterns
 - **[TDD Workflow](docs/tdd-workflow.md)** - Test-driven development for event sourcing

@@ -1,13 +1,13 @@
-# Projections and Event Bus
+# Projections and Subscriptions
 
-Projections are read models built from event streams. They enable efficient queries by maintaining denormalized views optimized for specific read patterns. The event bus provides real-time event distribution to keep projections up-to-date.
+Projections are read models built from event streams. They enable efficient queries by maintaining denormalized views optimized for specific read patterns. The subscription system provides durable, guaranteed delivery of events to projections.
 
 ## Table of Contents
 
 - [What are Projections?](#what-are-projections)
-- [Event Bus Basics](#event-bus-basics)
+- [Subscription System](#subscription-system)
 - [Building Projections](#building-projections)
-- [Using the Event Bus](#using-the-event-bus)
+- [Using Subscriptions](#using-subscriptions)
 - [Checkpoint Management](#checkpoint-management)
 - [Real-World Example](#real-world-example)
 - [Production Patterns](#production-patterns)
@@ -38,29 +38,39 @@ let is_active = user_status_projection.is_user_active(user_id).await?;
 1. **Performance** - Queries are instant (no event replay)
 2. **Flexibility** - Build multiple views from same events
 3. **Scalability** - Read models can scale independently
-4. **Real-time** - Update as events occur via event bus
+4. **Guaranteed Delivery** - Subscriptions ensure eventual consistency
 
-## Event Bus Basics
+## Subscription System
 
-The event bus is a publish-subscribe system that distributes events to interested subscribers in real-time.
+The subscription system provides **durable, guaranteed delivery** of events. Unlike pub/sub systems, subscriptions always read from the durable event store, ensuring:
 
-### Core Trait
+- **No message loss** - Events are never lost
+- **Eventual consistency** - Every subscription eventually processes all events
+- **Resumability** - Checkpoints track progress for restarts
+- **Filtering** - Process only relevant events
+
+### Key Differences from Pub/Sub
+
+| Aspect | Pub/Sub (EventBus) | Subscriptions |
+|--------|-------------------|---------------|
+| Delivery | Best-effort broadcast | Guaranteed delivery |
+| Storage | In-memory channels | Durable event store |
+| Resumption | Lost on restart | Checkpoint-based resume |
+| Consistency | Eventually consistent (may lose events) | Eventual consistency guaranteed |
+| Use Case | Real-time notifications | Durable projections |
+
+### Core Components
 
 ```rust
-#[async_trait]
-pub trait EventBus: Send + Sync {
-    /// Publish a single event to all subscribers
-    async fn publish(&self, event: EventEnvelope) -> Result<()>;
+use event_sauce_core::{Subscription, EventFilter, CheckpointStrategy, ErrorPolicy};
 
-    /// Publish multiple events efficiently
-    async fn publish_batch(&self, events: Vec<EventEnvelope>) -> Result<()>;
-
-    /// Subscribe to events matching a filter
-    async fn subscribe(
-        &self,
-        filter: EventFilter,
-    ) -> Result<impl Stream<Item = EventEnvelope> + Send>;
-}
+/// Create a durable subscription
+let subscription = Subscription::builder("user-projection", store)
+    .checkpoint_store(checkpoint_store)
+    .filter(EventFilter::by_aggregate_type("User"))
+    .checkpoint_strategy(CheckpointStrategy::EveryN(10))
+    .error_policy(ErrorPolicy::Skip)
+    .build()?;
 ```
 
 ### Event Filters
@@ -82,13 +92,6 @@ let filter = EventFilter::by_aggregate_type("User");
 // Match both event and aggregate type
 let filter = EventFilter::both("UserRegistered", "User");
 ```
-
-### Available Implementations
-
-| Implementation | Use Case | Features |
-|----------------|----------|----------|
-| `InMemoryEventBus` | Development, testing | Fast, simple, in-process |
-| `PostgresEventBus` | Production | LISTEN/NOTIFY, persistent |
 
 ## Building Projections
 
@@ -267,83 +270,96 @@ impl Projection for UserDetailsProjection {
 }
 ```
 
-## Using the Event Bus
+## Using Subscriptions
 
-### Setup: Connecting Projections to Event Bus
+### Basic Setup: Running a Projection
 
 ```rust
-use event_sauce::prelude::*;
-use event_sauce_memory::InMemoryEventBus;
-use event_sauce_projections::ProjectionRunner;
-use futures::StreamExt;
+use event_sauce_core::{Subscription, EventFilter, CheckpointStrategy};
+use event_sauce_memory::InMemoryCheckpointStore;
+use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // 1. Create event bus
-    let bus = InMemoryEventBus::new();
+    // 1. Create event store
+    let store = Arc::new(InMemoryEventStore::new());
 
-    // 2. Create projections
-    let count_projection = UserCountProjection::new();
-    let details_projection = UserDetailsProjection::new();
+    // 2. Create checkpoint store
+    let checkpoint_store = Arc::new(InMemoryCheckpointStore::new());
 
-    // 3. Create projection runners
-    let mut count_runner = ProjectionRunner::new(count_projection);
-    let mut details_runner = ProjectionRunner::new(details_projection);
+    // 3. Create projection
+    let projection = UserCountProjection::new();
 
-    // 4. Subscribe to event streams
-    let count_stream = bus.subscribe(EventFilter::all()).await?;
-    let details_stream = bus.subscribe(EventFilter::all()).await?;
+    // 4. Create subscription
+    let mut subscription = Subscription::builder("user-count", store)
+        .checkpoint_store(checkpoint_store)
+        .filter(EventFilter::by_aggregate_type("User"))
+        .checkpoint_strategy(CheckpointStrategy::EveryN(10))
+        .build()?;
 
-    // 5. Run projections in background tasks
-    tokio::spawn(async move {
-        count_runner.run(count_stream).await
-    });
-
-    tokio::spawn(async move {
-        details_runner.run(details_stream).await
-    });
-
-    // 6. Publish events
-    let user_id = Uuid::new_v4();
-    bus.publish(create_event(UserEvent::Registered {
-        user_id,
-        email: "alice@example.com".to_string(),
-    })).await?;
-
-    bus.publish(create_event(UserEvent::Activated {
-        user_id,
-    })).await?;
+    // 5. Run projection
+    subscription.run(|event| {
+        // Process event with projection
+        projection.handle(&event).await
+    }).await?;
 
     Ok(())
 }
 ```
 
-### Publishing Events
+### Running Multiple Projections
 
 ```rust
-// Single event
-bus.publish(event).await?;
+use tokio::task;
 
-// Batch publishing (more efficient)
-bus.publish_batch(vec![event1, event2, event3]).await?;
-```
+#[tokio::main]
+async fn main() -> Result<()> {
+    let store = Arc::new(InMemoryEventStore::new());
+    let checkpoint_store = Arc::new(InMemoryCheckpointStore::new());
 
-### Subscribing with Filters
+    // Create multiple projections
+    let count_projection = UserCountProjection::new();
+    let details_projection = UserDetailsProjection::new();
 
-```rust
-// Subscribe to all user events
-let stream = bus
-    .subscribe(EventFilter::by_aggregate_type("User"))
-    .await?;
+    // Run them concurrently
+    let count_handle = task::spawn({
+        let store = store.clone();
+        let checkpoint_store = checkpoint_store.clone();
+        let mut count_projection = count_projection;
 
-// Subscribe to specific event
-let stream = bus
-    .subscribe(EventFilter::by_event_type("UserRegistered"))
-    .await?;
+        async move {
+            let mut subscription = Subscription::builder("user-count", store)
+                .checkpoint_store(checkpoint_store)
+                .filter(EventFilter::all())
+                .build()?;
 
-// Process events
-while let Some(event) = stream.next().await {
-    projection.handle(&event).await?;
+            subscription.run(|event| {
+                count_projection.handle(&event).await
+            }).await
+        }
+    });
+
+    let details_handle = task::spawn({
+        let store = store.clone();
+        let checkpoint_store = checkpoint_store.clone();
+        let mut details_projection = details_projection;
+
+        async move {
+            let mut subscription = Subscription::builder("user-details", store)
+                .checkpoint_store(checkpoint_store)
+                .filter(EventFilter::all())
+                .build()?;
+
+            subscription.run(|event| {
+                details_projection.handle(&event).await
+            }).await
+        }
+    });
+
+    // Wait for both to complete (or run indefinitely)
+    tokio::try_join!(count_handle, details_handle)?;
+
+    Ok(())
 }
 ```
 
@@ -356,67 +372,39 @@ Checkpoints track projection progress, enabling resumption after restarts or fai
 ```rust
 pub struct Checkpoint {
     projection_name: String,  // e.g., "user_count_by_status"
-    last_event_id: Uuid,      // Last processed event ID
-    sequence: i64,            // Sequence number in stream
+    position: Position,       // Global position in event stream
     timestamp: DateTime<Utc>, // When checkpoint was saved
 }
 ```
 
-### Using Checkpoints
+### Checkpoint Strategies
 
 ```rust
-use event_sauce_projections::{
-    ProjectionRunner,
-    Checkpoint,
-    CheckpointStore,
-    InMemoryCheckpointStore
-};
+use event_sauce_core::CheckpointStrategy;
 
-async fn run_with_checkpoints(
-    bus: &impl EventBus,
-    projection: impl Projection,
-) -> Result<()> {
-    // 1. Create checkpoint store
-    let checkpoint_store = InMemoryCheckpointStore::new();
+// Save after every event (safest, highest overhead)
+let strategy = CheckpointStrategy::EveryEvent;
 
-    // 2. Load last checkpoint
-    let last_checkpoint = checkpoint_store
-        .load(projection.name())
-        .await?;
+// Save every N events (good balance)
+let strategy = CheckpointStrategy::EveryN(100);
 
-    println!("Resuming from checkpoint: {:?}", last_checkpoint);
+// Manual checkpointing (full control)
+let strategy = CheckpointStrategy::Manual;
+```
 
-    // 3. Create runner
-    let mut runner = ProjectionRunner::new(projection);
+### CheckpointStore Trait
 
-    // 4. Subscribe to events
-    let stream = bus.subscribe(EventFilter::all()).await?;
+```rust
+#[async_trait]
+pub trait CheckpointStore: Send + Sync {
+    /// Save a checkpoint
+    async fn save_checkpoint(&self, subscription_name: &str, position: Position) -> Result<()>;
 
-    // 5. Run with checkpoint callbacks
-    runner.run_with_callback(stream, {
-        let checkpoint_store = checkpoint_store.clone();
-        let projection_name = projection.name().to_string();
+    /// Load a checkpoint
+    async fn load_checkpoint(&self, subscription_name: &str) -> Result<Option<Position>>;
 
-        move |event| {
-            let checkpoint_store = checkpoint_store.clone();
-            let projection_name = projection_name.clone();
-            let event_id = event.id;
-            let sequence = i64::from(event.event_version.as_i32());
-
-            async move {
-                // Save checkpoint after processing each event
-                let checkpoint = Checkpoint::new(
-                    &projection_name,
-                    event_id,
-                    sequence,
-                );
-                checkpoint_store.save(&projection_name, checkpoint).await?;
-                Ok(())
-            }
-        }
-    }).await?;
-
-    Ok(())
+    /// Delete a checkpoint (for rebuilding)
+    async fn delete_checkpoint(&self, subscription_name: &str) -> Result<()>;
 }
 ```
 
@@ -433,26 +421,22 @@ struct PostgresCheckpointStore {
 }
 
 impl PostgresCheckpointStore {
-    async fn save(&self, projection: &str, checkpoint: Checkpoint) -> Result<()> {
+    async fn save(&self, subscription: &str, position: Position) -> Result<()> {
         sqlx::query!(
             r#"
-            INSERT INTO projection_checkpoints (
-                projection_name,
-                last_event_id,
-                sequence,
-                timestamp
+            INSERT INTO subscription_checkpoints (
+                subscription_name,
+                position,
+                updated_at
             )
-            VALUES ($1, $2, $3, $4)
-            ON CONFLICT (projection_name)
+            VALUES ($1, $2, NOW())
+            ON CONFLICT (subscription_name)
             DO UPDATE SET
-                last_event_id = $2,
-                sequence = $3,
-                timestamp = $4
+                position = $2,
+                updated_at = NOW()
             "#,
-            projection,
-            checkpoint.last_event_id(),
-            checkpoint.sequence(),
-            checkpoint.timestamp(),
+            subscription,
+            position.as_i64(),
         )
         .execute(&self.pool)
         .await?;
@@ -460,19 +444,19 @@ impl PostgresCheckpointStore {
         Ok(())
     }
 
-    async fn load(&self, projection: &str) -> Result<Option<Checkpoint>> {
+    async fn load(&self, subscription: &str) -> Result<Option<Position>> {
         let row = sqlx::query!(
             r#"
-            SELECT last_event_id, sequence, timestamp
-            FROM projection_checkpoints
-            WHERE projection_name = $1
+            SELECT position
+            FROM subscription_checkpoints
+            WHERE subscription_name = $1
             "#,
-            projection,
+            subscription,
         )
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(row.map(|r| Checkpoint::new(projection, r.last_event_id, r.sequence)))
+        Ok(row.map(|r| Position::new(r.position)))
     }
 }
 ```
@@ -482,10 +466,8 @@ impl PostgresCheckpointStore {
 Complete example with task management domain:
 
 ```rust
-use event_sauce::prelude::*;
-use event_sauce_memory::InMemoryEventBus;
-use event_sauce_projections::{Projection, ProjectionRunner};
-use futures::StreamExt;
+use event_sauce_core::{Subscription, EventFilter, CheckpointStrategy};
+use std::sync::Arc;
 
 // Domain events
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -590,44 +572,52 @@ impl Projection for TasksByAssigneeProjection {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let bus = InMemoryEventBus::new();
+    let store = Arc::new(InMemoryEventStore::new());
+    let checkpoint_store = Arc::new(InMemoryCheckpointStore::new());
 
-    // Create and run projections
-    let count_projection = TaskCountProjection {
-        counts: HashMap::new()
-    };
-    let assignee_projection = TasksByAssigneeProjection {
-        assignments: HashMap::new()
-    };
+    // Create and run projections concurrently
+    let count_handle = tokio::spawn({
+        let store = store.clone();
+        let checkpoint_store = checkpoint_store.clone();
 
-    let mut count_runner = ProjectionRunner::new(count_projection);
-    let mut assignee_runner = ProjectionRunner::new(assignee_projection);
+        async move {
+            let count_projection = TaskCountProjection {
+                counts: HashMap::new()
+            };
 
-    let count_stream = bus.subscribe(EventFilter::all()).await?;
-    let assignee_stream = bus.subscribe(EventFilter::all()).await?;
+            let mut subscription = Subscription::builder("task-count", store)
+                .checkpoint_store(checkpoint_store)
+                .checkpoint_strategy(CheckpointStrategy::EveryN(10))
+                .build()?;
 
-    // Run projections in background
-    tokio::spawn(async move {
-        count_runner.run(count_stream).await
+            subscription.run(|event| {
+                count_projection.handle(&event).await
+            }).await
+        }
     });
 
-    tokio::spawn(async move {
-        assignee_runner.run(assignee_stream).await
+    let assignee_handle = tokio::spawn({
+        let store = store.clone();
+        let checkpoint_store = checkpoint_store.clone();
+
+        async move {
+            let assignee_projection = TasksByAssigneeProjection {
+                assignments: HashMap::new()
+            };
+
+            let mut subscription = Subscription::builder("task-assignee", store)
+                .checkpoint_store(checkpoint_store)
+                .checkpoint_strategy(CheckpointStrategy::EveryN(10))
+                .build()?;
+
+            subscription.run(|event| {
+                assignee_projection.handle(&event).await
+            }).await
+        }
     });
 
-    // Publish events
-    let task_id = Uuid::new_v4();
-    bus.publish(create_event(TaskEvent::Created {
-        task_id,
-        title: "Implement auth".to_string(),
-        assignee: "alice".to_string(),
-    })).await?;
-
-    bus.publish(create_event(TaskEvent::StatusChanged {
-        task_id,
-        old_status: TaskStatus::Todo,
-        new_status: TaskStatus::InProgress,
-    })).await?;
+    // Run subscriptions
+    tokio::try_join!(count_handle, assignee_handle)?;
 
     Ok(())
 }
@@ -731,16 +721,20 @@ impl Projection for MaterializedTaskListProjection {
 
 ```rust
 // Only subscribe to relevant events
-async fn run_specialized_projection(bus: &impl EventBus) -> Result<()> {
+async fn run_specialized_projection(store: Arc<impl EventStore>) -> Result<()> {
     let projection = CompletedTasksProjection::new();
-    let mut runner = ProjectionRunner::new(projection);
+    let checkpoint_store = Arc::new(InMemoryCheckpointStore::new());
 
     // Filter: Only subscribe to "TaskCompleted" events
-    let stream = bus
-        .subscribe(EventFilter::by_event_type("TaskCompleted"))
-        .await?;
+    let mut subscription = Subscription::builder("completed-tasks", store)
+        .checkpoint_store(checkpoint_store)
+        .filter(EventFilter::by_event_type("TaskCompleted"))
+        .build()?;
 
-    runner.run(stream).await?;
+    subscription.run(|event| {
+        projection.handle(&event).await
+    }).await?;
+
     Ok(())
 }
 ```
@@ -748,32 +742,22 @@ async fn run_specialized_projection(bus: &impl EventBus) -> Result<()> {
 ### Pattern 4: Rebuilding Projections
 
 ```rust
-use event_sauce_core::EventStore;
-
-/// Rebuild projection from scratch by replaying all events
-async fn rebuild_projection(
-    store: &impl EventStore,
-    projection: &mut impl Projection,
+/// Rebuild projection from scratch
+async fn rebuild_projection<P: Projection>(
+    subscription: &mut Subscription<impl EventStore>,
+    projection: &mut P,
 ) -> Result<()> {
     println!("Rebuilding projection: {}", projection.name());
 
-    // Load all events from event store
-    let mut stream = store
-        .load_all_events()
-        .await?;
+    // Delete checkpoint to start from beginning
+    subscription.rebuild().await?;
 
-    let mut count = 0;
-    while let Some(event) = stream.next().await {
-        let event = event?;
-        projection.handle(&event).await?;
-        count += 1;
+    // Run subscription (will process all events from start)
+    subscription.run(|event| {
+        projection.handle(&event).await
+    }).await?;
 
-        if count % 1000 == 0 {
-            println!("Processed {} events...", count);
-        }
-    }
-
-    println!("Rebuild complete. Processed {} events", count);
+    println!("Rebuild complete for {}", projection.name());
     Ok(())
 }
 ```
@@ -838,43 +822,54 @@ mod tests {
 }
 ```
 
-### Integration Testing
+### Integration Testing with Subscriptions
 
 ```rust
 #[tokio::test]
-async fn test_projection_with_event_bus() {
-    let bus = InMemoryEventBus::new();
-    let projection = TaskCountProjection {
+async fn test_projection_with_subscription() {
+    let store = Arc::new(InMemoryEventStore::new());
+    let checkpoint_store = Arc::new(InMemoryCheckpointStore::new());
+
+    // Add events to store
+    let task_id = Uuid::new_v4();
+    store.append(
+        format!("Task-{}", task_id),
+        vec![
+            create_test_event(TaskEvent::Created {
+                task_id,
+                title: "Test Task".to_string(),
+                assignee: "alice".to_string(),
+            }),
+            create_test_event(TaskEvent::StatusChanged {
+                task_id,
+                old_status: TaskStatus::Todo,
+                new_status: TaskStatus::InProgress,
+            }),
+        ],
+        Version::initial(),
+    ).await.unwrap();
+
+    // Create projection and subscription
+    let projection = Arc::new(Mutex::new(TaskCountProjection {
         counts: HashMap::new(),
-    };
-    let mut runner = ProjectionRunner::new(projection);
+    }));
 
-    let stream = bus.subscribe(EventFilter::all()).await.unwrap();
+    let mut subscription = Subscription::builder("test-projection", store)
+        .checkpoint_store(checkpoint_store)
+        .build()
+        .unwrap();
 
-    // Run projection in background
-    let handle = tokio::spawn(async move {
-        runner.run(stream.take(3)).await
-    });
-
-    // Publish events
-    bus.publish(create_test_event(TaskEvent::Created {
-        task_id: Uuid::new_v4(),
-        title: "Task 1".to_string(),
-        assignee: "alice".to_string(),
-    })).await.unwrap();
-
-    bus.publish(create_test_event(TaskEvent::Created {
-        task_id: Uuid::new_v4(),
-        title: "Task 2".to_string(),
-        assignee: "bob".to_string(),
-    })).await.unwrap();
-
-    // Wait for processing
-    handle.await.unwrap().unwrap();
+    // Run subscription
+    let projection_clone = projection.clone();
+    subscription.run(move |event| {
+        let mut proj = projection_clone.lock().unwrap();
+        proj.handle(&event).await
+    }).await.unwrap();
 
     // Verify projection state
-    let projection = runner.projection();
-    assert_eq!(projection.counts.get(&TaskStatus::Todo), Some(&2));
+    let proj = projection.lock().unwrap();
+    assert_eq!(proj.counts.get(&TaskStatus::Todo), Some(&0));
+    assert_eq!(proj.counts.get(&TaskStatus::InProgress), Some(&1));
 }
 ```
 
@@ -932,12 +927,15 @@ async fn handle(&mut self, event: &EventEnvelope) -> Result<()> {
 
 ```rust
 // ✅ GOOD: Filter at subscription
-let stream = bus
-    .subscribe(EventFilter::by_event_type("OrderCompleted"))
-    .await?;
+let subscription = Subscription::builder("orders", store)
+    .filter(EventFilter::by_event_type("OrderCompleted"))
+    .build()?;
 
 // ❌ BAD: Receive all events, filter in handler
-let stream = bus.subscribe(EventFilter::all()).await?;
+let subscription = Subscription::builder("orders", store)
+    .filter(EventFilter::all())
+    .build()?;
+
 async fn handle(&mut self, event: &EventEnvelope) -> Result<()> {
     if event.event_type != "OrderCompleted" {
         return Ok(()); // Wasteful processing
@@ -949,16 +947,15 @@ async fn handle(&mut self, event: &EventEnvelope) -> Result<()> {
 ### 4. Always Use Checkpoints in Production
 
 ```rust
-// ✅ GOOD: Checkpoint after each event
-runner.run_with_callback(stream, |event| {
-    async move {
-        checkpoint_store.save(projection_name, checkpoint).await?;
-        Ok(())
-    }
-}).await?;
+// ✅ GOOD: Checkpoint store configured
+let subscription = Subscription::builder("user-projection", store)
+    .checkpoint_store(checkpoint_store)
+    .checkpoint_strategy(CheckpointStrategy::EveryN(10))
+    .build()?;
 
 // ❌ BAD: No checkpoints - must rebuild from scratch on restart
-runner.run(stream).await?;
+let subscription = Subscription::builder("user-projection", store)
+    .build()?;
 ```
 
 ### 5. Handle Deserialization Errors Gracefully
@@ -1025,18 +1022,18 @@ impl Projection for UserProjectionV2 {
 // Can run V1 and V2 simultaneously during migration
 ```
 
-### 8. Monitor Projection Lag
+### 8. Monitor Subscription Lag
 
 ```rust
-// Track how far behind projections are
-struct ProjectionMetrics {
-    last_processed_sequence: i64,
-    current_sequence: i64,
+// Track how far behind subscriptions are
+struct SubscriptionMetrics {
+    last_processed_position: Position,
+    current_position: Position,
 }
 
-impl ProjectionMetrics {
+impl SubscriptionMetrics {
     fn lag(&self) -> i64 {
-        self.current_sequence - self.last_processed_sequence
+        self.current_position.as_i64() - self.last_processed_position.as_i64()
     }
 
     fn is_lagging(&self) -> bool {
@@ -1047,18 +1044,18 @@ impl ProjectionMetrics {
 
 ## Summary
 
-Projections and event bus work together to provide real-time, efficient read models:
+Projections and subscriptions work together to provide durable, guaranteed-delivery read models:
 
-1. **Event Bus** distributes events to subscribers in real-time
+1. **Subscriptions** provide guaranteed delivery from the durable event store
 2. **Projections** maintain optimized read models from event streams
-3. **Checkpoints** enable resumable processing
+3. **Checkpoints** enable resumable processing after restarts
 4. **Filters** reduce processing overhead
 5. **Multiple projections** provide different views of the same data
 
 **Key Takeaways:**
 
 - Use projections for all queries (never query aggregates)
-- Subscribe to event bus for real-time updates
+- Subscribe with durable subscriptions for guaranteed delivery
 - Always use checkpoints in production
 - Keep projections simple and focused
 - Make projections idempotent for safe replay
