@@ -5,6 +5,7 @@
 //! - Per-aggregate-type configuration
 //! - Performance comparison with/without snapshots
 //! - Snapshot-aware loading
+//! - Zero storage overhead: only the latest snapshot is kept
 //!
 //! Run with: cargo run -p event-sauce --example snapshotting --features "memory,macros"
 
@@ -15,7 +16,7 @@ use event_sauce_core::{
 use event_sauce_macros::{AggregateError, AggregateId, AggregateState, Event as DeriveEvent};
 use event_sauce_memory::InMemoryEventStore;
 use serde::{Deserialize, Serialize};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 // ============================================================================
@@ -94,28 +95,80 @@ impl CounterAggregate {
 // Helper Functions
 // ============================================================================
 
+/// Metrics for commit performance analysis
+#[derive(Debug)]
+struct CommitMetrics {
+    total_commits: usize,
+    total_commit_time: Duration,
+    avg_commit_time: Duration,
+    commits_with_snapshot: usize,
+    avg_snapshot_commit_time: Option<Duration>,
+}
+
+impl CommitMetrics {
+    fn print(&self, label: &str) {
+        println!("  📊 {} Commit Performance:", label);
+        println!("     Total commits:         {}", self.total_commits);
+        println!("     Total commit time:     {:?}", self.total_commit_time);
+        println!("     Average commit time:   {:?}", self.avg_commit_time);
+        if let Some(avg_snap) = self.avg_snapshot_commit_time {
+            println!("     Snapshot commits:      {}", self.commits_with_snapshot);
+            println!("     Avg snapshot commit:   {:?}", avg_snap);
+        }
+    }
+}
+
 async fn create_counter_with_events(
     store: &InMemoryEventStore,
     id: CounterId,
     event_count: usize,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<CommitMetrics, Box<dyn std::error::Error>> {
     let mut counter = CounterAggregate::create(id);
+    let mut total_commit_time = Duration::ZERO;
+    let mut commit_count = 0;
+    let mut snapshot_commit_times = Vec::new();
 
     for i in 0..event_count {
         counter.increment(1)?;
 
         // Commit in batches to create realistic version numbers
         if (i + 1) % 10 == 0 {
+            let start = Instant::now();
             store.commit(&mut counter).await?;
+            let commit_time = start.elapsed();
+            total_commit_time += commit_time;
+            commit_count += 1;
+
+            // Track if this was likely a snapshot commit (every 100 events)
+            if (i + 1) % 100 == 0 {
+                snapshot_commit_times.push(commit_time);
+            }
         }
     }
 
     // Commit any remaining events
     if !counter.pending_events().is_empty() {
+        let start = Instant::now();
         store.commit(&mut counter).await?;
+        let commit_time = start.elapsed();
+        total_commit_time += commit_time;
+        commit_count += 1;
     }
 
-    Ok(())
+    let avg_commit_time = total_commit_time / commit_count as u32;
+    let avg_snapshot_commit_time = if !snapshot_commit_times.is_empty() {
+        Some(snapshot_commit_times.iter().sum::<Duration>() / snapshot_commit_times.len() as u32)
+    } else {
+        None
+    };
+
+    Ok(CommitMetrics {
+        total_commits: commit_count,
+        total_commit_time,
+        avg_commit_time,
+        commits_with_snapshot: snapshot_commit_times.len(),
+        avg_snapshot_commit_time,
+    })
 }
 
 async fn measure_load_time(
@@ -141,16 +194,18 @@ async fn demo_no_snapshots() -> Result<(), Box<dyn std::error::Error>> {
     let store = InMemoryEventStore::with_config(config);
 
     let id = CounterId::new();
-    println!("Creating counter with 500 events...");
-    create_counter_with_events(&store, id, 500).await?;
+    println!("⏳ Creating counter with 500 events...");
+    let commit_metrics = create_counter_with_events(&store, id, 500).await?;
 
-    println!("Loading counter (will replay all 500 events)...");
+    println!("⏳ Loading counter (will replay all 500 events)...");
     let load_time = measure_load_time(&store, id).await?;
 
     let counter: CounterAggregate = load(&store, id).await?;
     println!("✓ Counter value: {}", counter.value());
     println!("✓ Load time: {:?}", load_time);
-    println!("✓ No snapshots created (as expected)");
+    println!("✓ No snapshots created (as expected)\n");
+
+    commit_metrics.print("WITHOUT Snapshots");
 
     Ok(())
 }
@@ -164,17 +219,20 @@ async fn demo_default_behavior() -> Result<(), Box<dyn std::error::Error>> {
     let store = InMemoryEventStore::new(); // Default: snapshots every 100 events
 
     let id = CounterId::new();
-    println!("Creating counter with 500 events (default: snapshot every 100)...");
-    create_counter_with_events(&store, id, 500).await?;
+    println!("⏳ Creating counter with 500 events (default: snapshot every 100)...");
+    let commit_metrics = create_counter_with_events(&store, id, 500).await?;
 
-    println!("Loading counter (will use latest snapshot)...");
+    println!("⏳ Loading counter (will use latest snapshot)...");
     let load_time = measure_load_time(&store, id).await?;
 
     let counter: CounterAggregate = load(&store, id).await?;
     println!("✓ Counter value: {}", counter.value());
     println!("✓ Load time: {:?}", load_time);
     println!("✓ Snapshots created at versions: 100, 200, 300, 400, 500");
-    println!("✓ Default config provides excellent performance out-of-the-box!");
+    println!("✓ Only latest snapshot (v500) kept - zero storage overhead!");
+    println!("✓ Default config provides excellent performance out-of-the-box!\n");
+
+    commit_metrics.print("WITH Snapshots");
 
     Ok(())
 }
@@ -352,7 +410,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("📋 When to use each strategy:\n");
     println!("  • EveryNEvents(100) (DEFAULT)");
     println!("    - Enabled automatically with sensible defaults");
-    println!("    - Excellent balance of performance and storage");
+    println!("    - Excellent balance of performance and write cost");
     println!("    - Suitable for most use cases out-of-the-box\n");
 
     println!("  • NeverSnapshot");
@@ -363,20 +421,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  • AlwaysSnapshot");
     println!("    - Read-heavy aggregates");
     println!("    - Need guaranteed fast load times");
-    println!("    - Storage cost is not a concern\n");
+    println!("    - Acceptable write overhead for maximum read speed\n");
 
     println!("  • EveryNEvents(n)");
     println!("    - General-purpose strategy (recommended)");
-    println!("    - Balance between storage and performance");
+    println!("    - Balance between write cost and read performance");
     println!("    - n=100 is a good starting point");
     println!("    - Adjust based on your specific needs\n");
 
     println!("💡 Configuration Tips:\n");
     println!("  • Use per-aggregate-type overrides for fine-tuning");
-    println!("  • Monitor snapshot storage size in production");
-    println!("  • Consider event count and load frequency");
+    println!("  • Only the latest snapshot is kept (no storage bloat!)");
+    println!("  • Consider commit frequency and load patterns");
     println!("  • Snapshots are created automatically during commit()");
-    println!("  • Snapshots are used transparently during load()\n");
+    println!("  • Snapshots are used transparently during load()");
+    println!("  • Small write overhead for massive read speedup\n");
 
     println!("✨ All scenarios completed successfully!\n");
 

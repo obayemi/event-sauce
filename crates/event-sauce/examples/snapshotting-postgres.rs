@@ -9,6 +9,8 @@
 //! - Performance comparison: with vs without snapshots
 //! - Snapshot strategies impact on actual database queries
 //! - Production-realistic performance metrics
+//! - Zero storage overhead: only the latest snapshot is kept
+//! - Detailed commit timing analysis
 //!
 //! Run with:
 //! ```bash
@@ -165,10 +167,22 @@ struct PerformanceMetrics {
     total_time: Duration,
     events_per_second_write: f64,
     events_per_second_load: f64,
+    total_commits: usize,
+    avg_commit_time: Duration,
+    commits_with_snapshot: usize,
+    avg_snapshot_commit_time: Option<Duration>,
 }
 
 impl PerformanceMetrics {
-    fn new(event_count: usize, write_time: Duration, load_time: Duration) -> Self {
+    fn new(
+        event_count: usize,
+        write_time: Duration,
+        load_time: Duration,
+        total_commits: usize,
+        avg_commit_time: Duration,
+        commits_with_snapshot: usize,
+        avg_snapshot_commit_time: Option<Duration>,
+    ) -> Self {
         let total_time = write_time + load_time;
         let events_per_second_write = event_count as f64 / write_time.as_secs_f64();
         let events_per_second_load = event_count as f64 / load_time.as_secs_f64();
@@ -180,6 +194,10 @@ impl PerformanceMetrics {
             total_time,
             events_per_second_write,
             events_per_second_load,
+            total_commits,
+            avg_commit_time,
+            commits_with_snapshot,
+            avg_snapshot_commit_time,
         }
     }
 
@@ -197,33 +215,84 @@ impl PerformanceMetrics {
             "     Load throughput:   {:.0} events/sec",
             self.events_per_second_load
         );
+        println!();
+        println!("     Total commits:     {}", self.total_commits);
+        println!("     Avg commit time:   {:?}", self.avg_commit_time);
+        if let Some(avg_snap) = self.avg_snapshot_commit_time {
+            println!("     Snapshot commits:  {}", self.commits_with_snapshot);
+            println!("     Avg snapshot commit: {:?}", avg_snap);
+            let overhead_pct = ((avg_snap.as_nanos() as f64 / self.avg_commit_time.as_nanos() as f64) - 1.0) * 100.0;
+            if overhead_pct > 0.0 {
+                println!("     Snapshot overhead: +{:.1}% per snapshot commit", overhead_pct);
+            }
+        }
     }
 }
 
-/// Creates a counter with the specified number of events and measures write time.
+/// Detailed commit metrics returned from counter creation.
+#[derive(Debug)]
+struct CommitMetrics {
+    total_time: Duration,
+    total_commits: usize,
+    avg_commit_time: Duration,
+    commits_with_snapshot: usize,
+    avg_snapshot_commit_time: Option<Duration>,
+}
+
+/// Creates a counter with the specified number of events and measures write time with detailed commit metrics.
 async fn create_counter_with_events(
     store: &PostgresEventStore,
     id: CounterId,
     event_count: usize,
-) -> Result<Duration, Box<dyn std::error::Error>> {
+) -> Result<CommitMetrics, Box<dyn std::error::Error>> {
     let start = Instant::now();
     let mut counter = CounterAggregate::create(id);
+    let mut total_commit_time = Duration::ZERO;
+    let mut commit_count = 0;
+    let mut snapshot_commit_times = Vec::new();
 
     for i in 0..event_count {
         counter.increment(1)?;
 
         // Commit in batches to create realistic version numbers
         if (i + 1) % 10 == 0 {
+            let commit_start = Instant::now();
             store.commit(&mut counter).await?;
+            let commit_time = commit_start.elapsed();
+            total_commit_time += commit_time;
+            commit_count += 1;
+
+            // Track if this was likely a snapshot commit (every 100 events)
+            if (i + 1) % 100 == 0 {
+                snapshot_commit_times.push(commit_time);
+            }
         }
     }
 
     // Commit any remaining events
     if !counter.pending_events().is_empty() {
+        let commit_start = Instant::now();
         store.commit(&mut counter).await?;
+        let commit_time = commit_start.elapsed();
+        total_commit_time += commit_time;
+        commit_count += 1;
     }
 
-    Ok(start.elapsed())
+    let total_time = start.elapsed();
+    let avg_commit_time = total_commit_time / commit_count as u32;
+    let avg_snapshot_commit_time = if !snapshot_commit_times.is_empty() {
+        Some(snapshot_commit_times.iter().sum::<Duration>() / snapshot_commit_times.len() as u32)
+    } else {
+        None
+    };
+
+    Ok(CommitMetrics {
+        total_time,
+        total_commits: commit_count,
+        avg_commit_time,
+        commits_with_snapshot: snapshot_commit_times.len(),
+        avg_snapshot_commit_time,
+    })
 }
 
 /// Loads a counter and measures load time.
@@ -254,15 +323,24 @@ async fn demo_without_snapshots(
     let event_count = 500;
 
     println!("⏳ Creating counter with {} events...", event_count);
-    let write_time = create_counter_with_events(&store, id, event_count).await?;
+    let commit_metrics = create_counter_with_events(&store, id, event_count).await?;
 
     println!("⏳ Loading counter (replaying all {} events)...", event_count);
     let load_time = measure_load_time(&store, id).await?;
 
     let counter: CounterAggregate = load(&store, id).await?;
     println!("✓ Counter value: {}", counter.value());
+    println!("✓ No snapshots created\n");
 
-    let metrics = PerformanceMetrics::new(event_count, write_time, load_time);
+    let metrics = PerformanceMetrics::new(
+        event_count,
+        commit_metrics.total_time,
+        load_time,
+        commit_metrics.total_commits,
+        commit_metrics.avg_commit_time,
+        commit_metrics.commits_with_snapshot,
+        commit_metrics.avg_snapshot_commit_time,
+    );
     metrics.print_detailed("WITHOUT Snapshots");
     println!();
 
@@ -288,16 +366,25 @@ async fn demo_with_snapshots(
         "⏳ Creating counter with {} events (snapshot every 100)...",
         event_count
     );
-    let write_time = create_counter_with_events(&store, id, event_count).await?;
+    let commit_metrics = create_counter_with_events(&store, id, event_count).await?;
 
-    println!("⏳ Loading counter (using latest snapshot)...");
+    println!("⏳ Loading counter (using latest snapshot at v500)...");
     let load_time = measure_load_time(&store, id).await?;
 
     let counter: CounterAggregate = load(&store, id).await?;
     println!("✓ Counter value: {}", counter.value());
     println!("✓ Snapshots created at versions: 100, 200, 300, 400, 500");
+    println!("✓ Only latest snapshot (v500) kept - zero storage overhead!\n");
 
-    let metrics = PerformanceMetrics::new(event_count, write_time, load_time);
+    let metrics = PerformanceMetrics::new(
+        event_count,
+        commit_metrics.total_time,
+        load_time,
+        commit_metrics.total_commits,
+        commit_metrics.avg_commit_time,
+        commit_metrics.commits_with_snapshot,
+        commit_metrics.avg_snapshot_commit_time,
+    );
     metrics.print_detailed("WITH Snapshots");
     println!();
 
@@ -323,7 +410,7 @@ async fn demo_performance_comparison(
         let store_no_snap = PostgresEventStore::with_config(pool.clone(), config_no_snap);
         let id1 = CounterId::new();
 
-        let write_time_no_snap = create_counter_with_events(&store_no_snap, id1, event_count).await?;
+        let metrics_no_snap = create_counter_with_events(&store_no_snap, id1, event_count).await?;
         let load_time_no_snap = measure_load_time(&store_no_snap, id1).await?;
 
         // Test WITH snapshots
@@ -333,22 +420,27 @@ async fn demo_performance_comparison(
         let store_with_snap = PostgresEventStore::with_config(pool.clone(), config_with_snap);
         let id2 = CounterId::new();
 
-        let write_time_with_snap =
-            create_counter_with_events(&store_with_snap, id2, event_count).await?;
+        let metrics_with_snap = create_counter_with_events(&store_with_snap, id2, event_count).await?;
         let load_time_with_snap = measure_load_time(&store_with_snap, id2).await?;
 
         // Calculate improvements
         let load_speedup = load_time_no_snap.as_nanos() as f64 / load_time_with_snap.as_nanos() as f64;
         let write_overhead =
-            (write_time_with_snap.as_nanos() as f64 / write_time_no_snap.as_nanos() as f64 - 1.0)
+            (metrics_with_snap.total_time.as_nanos() as f64 / metrics_no_snap.total_time.as_nanos() as f64 - 1.0)
                 * 100.0;
+        let avg_commit_overhead = if let Some(avg_snap) = metrics_with_snap.avg_snapshot_commit_time {
+            ((avg_snap.as_nanos() as f64 / metrics_no_snap.avg_commit_time.as_nanos() as f64) - 1.0) * 100.0
+        } else {
+            0.0
+        };
 
         println!("  Without snapshots:");
-        println!("    Write: {:?}", write_time_no_snap);
+        println!("    Write: {:?} (avg commit: {:?})", metrics_no_snap.total_time, metrics_no_snap.avg_commit_time);
         println!("    Load:  {:?}", load_time_no_snap);
 
         println!("  With snapshots:");
-        println!("    Write: {:?} (+{:.1}% overhead)", write_time_with_snap, write_overhead);
+        println!("    Write: {:?} (+{:.1}% overhead)", metrics_with_snap.total_time, write_overhead);
+        println!("    Avg commit: {:?} (snapshot commits: +{:.1}%)", metrics_with_snap.avg_commit_time, avg_commit_overhead);
         println!("    Load:  {:?} ({:.2}x faster)", load_time_with_snap, load_speedup);
         println!();
     }
@@ -371,7 +463,7 @@ async fn demo_always_snapshot(pool: &PgPool) -> Result<(), Box<dyn std::error::E
         "⏳ Creating counter with {} events (snapshot on every commit)...",
         event_count
     );
-    let write_time = create_counter_with_events(&store, id, event_count).await?;
+    let commit_metrics = create_counter_with_events(&store, id, event_count).await?;
 
     println!("⏳ Loading counter (using latest snapshot)...");
     let load_time = measure_load_time(&store, id).await?;
@@ -382,8 +474,17 @@ async fn demo_always_snapshot(pool: &PgPool) -> Result<(), Box<dyn std::error::E
         "✓ Snapshot at version: {} (always up-to-date)",
         counter.version().as_i32()
     );
+    println!("✓ Only latest snapshot kept - zero storage overhead!\n");
 
-    let metrics = PerformanceMetrics::new(event_count, write_time, load_time);
+    let metrics = PerformanceMetrics::new(
+        event_count,
+        commit_metrics.total_time,
+        load_time,
+        commit_metrics.total_commits,
+        commit_metrics.avg_commit_time,
+        commit_metrics.commits_with_snapshot,
+        commit_metrics.avg_snapshot_commit_time,
+    );
     metrics.print_detailed("Always Snapshot");
     println!();
 
@@ -410,7 +511,7 @@ async fn demo_per_type_configuration(pool: &PgPool) -> Result<(), Box<dyn std::e
         "⏳ Creating Counter with {} events (snapshot every 50 for Counter type)...",
         event_count
     );
-    let write_time = create_counter_with_events(&store, id, event_count).await?;
+    let commit_metrics = create_counter_with_events(&store, id, event_count).await?;
 
     println!("⏳ Loading counter...");
     let load_time = measure_load_time(&store, id).await?;
@@ -419,8 +520,17 @@ async fn demo_per_type_configuration(pool: &PgPool) -> Result<(), Box<dyn std::e
     println!("✓ Counter value: {}", counter.value());
     println!("✓ Snapshots created at versions: 50, 100, 150, 200");
     println!("✓ Counter used its specific strategy (50 vs default 100)");
+    println!("✓ Only latest snapshot (v200) kept - zero storage overhead!\n");
 
-    let metrics = PerformanceMetrics::new(event_count, write_time, load_time);
+    let metrics = PerformanceMetrics::new(
+        event_count,
+        commit_metrics.total_time,
+        load_time,
+        commit_metrics.total_commits,
+        commit_metrics.avg_commit_time,
+        commit_metrics.commits_with_snapshot,
+        commit_metrics.avg_snapshot_commit_time,
+    );
     metrics.print_detailed("Per-Type Configuration");
     println!();
 
@@ -507,19 +617,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("  2. Write Overhead:");
     println!("     • Snapshot creation adds ~{}% write overhead", write_overhead as i32);
-    println!("     • This is acceptable for typical read-heavy workloads");
+    println!("     • Overhead only affects commits that create snapshots");
+    println!("     • Acceptable for typical read-heavy workloads");
     println!("     • Batch commits help amortize snapshot costs\n");
 
-    println!("  3. Scaling Characteristics:");
+    println!("  3. Storage Efficiency:");
+    println!("     • Only the latest snapshot is kept per aggregate");
+    println!("     • Old snapshots are automatically deleted on new snapshot");
+    println!("     • Zero storage bloat regardless of snapshot frequency");
+    println!("     • Snapshot storage = one serialized aggregate per stream\n");
+
+    println!("  4. Scaling Characteristics:");
     println!("     • Without snapshots: Load time grows linearly with events");
     println!("     • With snapshots: Load time remains nearly constant");
     println!("     • Critical for aggregates with hundreds/thousands of events\n");
 
-    println!("  4. Production Recommendations:");
+    println!("  5. Production Recommendations:");
     println!("     • Use EveryNEvents(100) as default (built-in default)");
     println!("     • Tune snapshot interval based on read/write ratio");
-    println!("     • Monitor snapshot storage size and query performance");
-    println!("     • Consider per-type overrides for optimization\n");
+    println!("     • Monitor snapshot creation impact on commit times");
+    println!("     • Consider per-type overrides for optimization");
+    println!("     • No need to worry about snapshot cleanup or storage\n");
 
     println!("✨ All scenarios completed successfully!");
     println!("🐳 PostgreSQL container will be cleaned up automatically.\n");
