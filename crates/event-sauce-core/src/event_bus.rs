@@ -7,6 +7,40 @@ use futures::Stream;
 
 use crate::{EventEnvelope, Result};
 
+/// Trait for publishing events only (dyn-safe subset of EventBus).
+///
+/// This trait contains only the publishing methods from EventBus, making it
+/// dyn-compatible so it can be used as `dyn EventPublisher` in trait objects.
+/// This is useful for EventStore implementations that need to publish events
+/// but don't need subscription capabilities.
+///
+/// # Examples
+///
+/// ```ignore
+/// use event_sauce_core::EventPublisher;
+///
+/// async fn publish_to_any_bus(publisher: &dyn EventPublisher, event: EventEnvelope) {
+///     publisher.publish(event).await?;
+/// }
+/// ```
+#[async_trait]
+pub trait EventPublisher: Send + Sync {
+    /// Publishes a single event.
+    async fn publish(&self, event: EventEnvelope) -> Result<()>;
+
+    /// Publishes multiple events efficiently.
+    ///
+    /// # Default Implementation
+    ///
+    /// The default implementation publishes events one by one.
+    async fn publish_batch(&self, events: Vec<EventEnvelope>) -> Result<()> {
+        for event in events {
+            self.publish(event).await?;
+        }
+        Ok(())
+    }
+}
+
 /// Event filter for selective event subscription.
 ///
 /// Allows filtering events by type, aggregate type, or custom criteria.
@@ -145,6 +179,8 @@ impl EventFilter {
 /// - Filtering events based on criteria
 /// - Supporting async streaming for backpressure
 ///
+/// This trait extends `EventPublisher` and adds subscription capabilities.
+///
 /// # Streaming Support
 ///
 /// Subscriptions return `Stream` for memory-efficient event processing
@@ -173,39 +209,7 @@ impl EventFilter {
 /// }
 /// ```
 #[async_trait]
-pub trait EventBus: Send + Sync {
-    /// Publishes a single event to all matching subscribers.
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// bus.publish(event_envelope).await?;
-    /// ```
-    async fn publish(&self, event: EventEnvelope) -> Result<()>;
-
-    /// Publishes multiple events efficiently.
-    ///
-    /// Implementations may batch or optimize multiple event publishing.
-    ///
-    /// # Default Implementation
-    ///
-    /// The default implementation publishes events one by one.
-    /// Implementations can override this for true batching/optimization.
-    /// Coverage: Tested via `MockEventBus` in tests.
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// bus.publish_batch(vec![event1, event2, event3]).await?;
-    /// ```
-    async fn publish_batch(&self, events: Vec<EventEnvelope>) -> Result<()> {
-        // Default implementation: publish one by one
-        for event in events {
-            self.publish(event).await?;
-        }
-        Ok(())
-    }
-
+pub trait EventBus: EventPublisher {
     /// Subscribes to events matching a filter.
     ///
     /// Returns a stream of events for processing with backpressure support.
@@ -399,12 +403,15 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl EventBus for MockEventBus {
+    impl EventPublisher for MockEventBus {
         async fn publish(&self, event: EventEnvelope) -> crate::Result<()> {
             self.published.lock().unwrap().push(event);
             Ok(())
         }
+    }
 
+    #[async_trait::async_trait]
+    impl EventBus for MockEventBus {
         async fn subscribe(
             &self,
             _filter: EventFilter,

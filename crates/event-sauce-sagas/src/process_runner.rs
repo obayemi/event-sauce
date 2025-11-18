@@ -3,7 +3,7 @@
 use crate::error::{Error, Result};
 use crate::process_manager::{Command, ProcessManager};
 use async_trait::async_trait;
-use event_sauce_core::{EventBus, EventEnvelope, EventFilter};
+use event_sauce_core::{EventBus, EventEnvelope, EventFilter, EventPublisher};
 use futures::StreamExt;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -243,11 +243,14 @@ mod tests {
     }
 
     #[async_trait]
-    impl EventBus for MockEventBus {
+    impl EventPublisher for MockEventBus {
         async fn publish(&self, _event: EventEnvelope) -> event_sauce_core::Result<()> {
             Ok(())
         }
+    }
 
+    #[async_trait]
+    impl EventBus for MockEventBus {
         async fn subscribe(
             &self,
             _filter: EventFilter,

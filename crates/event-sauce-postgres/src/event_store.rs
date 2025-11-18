@@ -4,10 +4,12 @@
 
 use async_trait::async_trait;
 use event_sauce_core::{
-    Error, EventEnvelope, EventStore, Position, Result, Snapshot, SnapshotConfig, StreamId, Version,
+    Error, EventEnvelope, EventPublisher, EventStore, Position, Result, Snapshot, SnapshotConfig,
+    StreamId, Version,
 };
 use futures::stream::{self, Stream};
 use sqlx::PgPool;
+use std::sync::Arc;
 
 /// `PostgreSQL` event store implementation.
 ///
@@ -48,6 +50,7 @@ pub struct PostgresEventStore {
     pool: PgPool,
     snapshot_config: SnapshotConfig,
     schema: String,
+    event_bus: Option<Arc<dyn EventPublisher>>,
 }
 
 /// Builder for configuring `PostgresEventStore`.
@@ -77,6 +80,7 @@ pub struct PostgresEventStoreBuilder {
     pool: Option<PgPool>,
     snapshot_config: Option<SnapshotConfig>,
     schema: Option<String>,
+    event_bus: Option<Arc<dyn EventPublisher>>,
 }
 
 impl PostgresEventStore {
@@ -351,6 +355,7 @@ impl PostgresEventStoreBuilder {
             pool: None,
             snapshot_config: None,
             schema: None,
+            event_bus: None,
         }
     }
 
@@ -414,6 +419,29 @@ impl PostgresEventStoreBuilder {
         self
     }
 
+    /// Configures the event store to publish events to an event bus.
+    ///
+    /// When configured, events will be automatically published to the bus
+    /// after successful persistence to the database.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use event_sauce_postgres::PostgresEventStore;
+    /// use event_sauce_memory::InMemoryEventBus;
+    ///
+    /// let bus = InMemoryEventBus::new();
+    /// let store = PostgresEventStore::builder()
+    ///     .pool(pool)
+    ///     .with_event_bus(bus)
+    ///     .build();
+    /// ```
+    #[must_use]
+    pub fn with_event_bus(mut self, event_bus: impl EventPublisher + 'static) -> Self {
+        self.event_bus = Some(Arc::new(event_bus));
+        self
+    }
+
     /// Builds the `PostgresEventStore` with the configured settings.
     ///
     /// # Defaults
@@ -446,6 +474,7 @@ impl PostgresEventStoreBuilder {
                 .snapshot_config
                 .unwrap_or_else(|| SnapshotConfig::builder().build()),
             schema: self.schema.unwrap_or_else(|| "event_sauce".to_string()),
+            event_bus: self.event_bus,
         }
     }
 }
@@ -532,6 +561,12 @@ impl EventStore for PostgresEventStore {
             .map_err(|e| Error::custom(format!("Failed to commit transaction: {e}")))?;
 
         Ok(())
+    }
+
+    fn event_publisher(&self) -> Option<&dyn EventPublisher> {
+        self.event_bus
+            .as_ref()
+            .map(|arc| arc.as_ref() as &dyn EventPublisher)
     }
 
     async fn load_stream(

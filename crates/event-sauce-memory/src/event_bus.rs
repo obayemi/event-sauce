@@ -4,7 +4,7 @@
 //! suitable for testing and development.
 
 use async_trait::async_trait;
-use event_sauce_core::{EventBus, EventEnvelope, EventFilter, Result};
+use event_sauce_core::{EventBus, EventEnvelope, EventFilter, EventPublisher, Result};
 use futures::stream::{self, Stream};
 use parking_lot::RwLock;
 use std::sync::Arc;
@@ -90,13 +90,16 @@ impl Default for InMemoryEventBus {
 }
 
 #[async_trait]
-impl EventBus for InMemoryEventBus {
+impl EventPublisher for InMemoryEventBus {
     async fn publish(&self, event: EventEnvelope) -> Result<()> {
         // Ignore the error if there are no subscribers
         let _ = self.inner.sender.send(event);
         Ok(())
     }
+}
 
+#[async_trait]
+impl EventBus for InMemoryEventBus {
     async fn subscribe(
         &self,
         filter: EventFilter,

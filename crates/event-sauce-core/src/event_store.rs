@@ -315,6 +315,29 @@ pub trait EventStore: Send + Sync {
         DISABLED_CONFIG.get_or_init(SnapshotConfig::disabled)
     }
 
+    /// Returns an optional event publisher for this store.
+    ///
+    /// When an event publisher is configured, the default `commit()` implementation
+    /// will automatically publish events after successful persistence.
+    ///
+    /// # Default Implementation
+    ///
+    /// The default implementation returns `None`, meaning no automatic publishing.
+    /// Implementations can override this to provide an event publisher.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// impl EventStore for MyStore {
+    ///     fn event_publisher(&self) -> Option<&dyn EventPublisher> {
+    ///         self.event_bus.as_ref().map(|bus| bus.as_ref() as &dyn EventPublisher)
+    ///     }
+    /// }
+    /// ```
+    fn event_publisher(&self) -> Option<&dyn crate::EventPublisher> {
+        None
+    }
+
     /// Commits pending events from an aggregate to the event store.
     ///
     /// This method:
@@ -372,10 +395,15 @@ pub trait EventStore: Send + Sync {
         // Append to store
         self.append(
             StreamId::new(aggregate_type, aggregate_id),
-            envelopes,
+            envelopes.clone(),
             expected_version,
         )
         .await?;
+
+        // Publish events to event bus if configured
+        if let Some(publisher) = self.event_publisher() {
+            publisher.publish_batch(envelopes).await?;
+        }
 
         // Create snapshot if strategy indicates we should
         let config = self.snapshot_config();
@@ -505,6 +533,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::EventPublisher;
 
     #[test]
     fn test_stream_id_new() {
@@ -723,5 +752,273 @@ mod tests {
         // Load snapshot (default returns None)
         let loaded = store.load_snapshot(stream_id).await.unwrap();
         assert!(loaded.is_none());
+    }
+
+    // Tests for EventBus integration
+    use std::sync::{Arc, Mutex};
+    use crate::{Aggregate, AggregateError, AggregateId, DomainEvent, EventBus, EventFilter};
+    use chrono::Utc;
+    use std::fmt;
+    use thiserror::Error;
+
+    // Test aggregate for event bus testing
+    #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+    struct TestAggregateId(Uuid);
+
+    impl TestAggregateId {
+        fn new() -> Self {
+            Self(Uuid::new_v4())
+        }
+    }
+
+    impl fmt::Display for TestAggregateId {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "TestAggregate-{}", self.0)
+        }
+    }
+
+    impl AggregateId for TestAggregateId {
+        fn to_uuid(&self) -> Uuid {
+            self.0
+        }
+    }
+
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+    enum TestAggregateEvent {
+        Created { value: i32 },
+        Updated { value: i32 },
+    }
+
+    impl DomainEvent for TestAggregateEvent {
+        type Aggregate = TestAgg;
+
+        fn event_type(&self) -> &'static str {
+            match self {
+                TestAggregateEvent::Created { .. } => "TestAggregate.Created",
+                TestAggregateEvent::Updated { .. } => "TestAggregate.Updated",
+            }
+        }
+
+        fn event_version(&self) -> i32 {
+            1
+        }
+
+        fn occurred_at(&self) -> chrono::DateTime<Utc> {
+            Utc::now()
+        }
+    }
+
+    #[derive(Debug, Error)]
+    #[error("Test aggregate error")]
+    struct TestAggErr;
+
+    impl AggregateError for TestAggErr {}
+
+    #[derive(serde::Serialize)]
+    struct TestAgg {
+        id: TestAggregateId,
+        value: i32,
+        version: Version,
+        pending_events: Vec<TestAggregateEvent>,
+    }
+
+    impl TestAgg {
+        fn create(&mut self, value: i32) -> std::result::Result<(), TestAggErr> {
+            self.apply(TestAggregateEvent::Created { value })
+        }
+
+        fn update(&mut self, value: i32) -> std::result::Result<(), TestAggErr> {
+            self.apply(TestAggregateEvent::Updated { value })
+        }
+
+        fn apply_event(&mut self, event: &TestAggregateEvent) {
+            match event {
+                TestAggregateEvent::Created { value } | TestAggregateEvent::Updated { value } => {
+                    self.value = *value;
+                }
+            }
+        }
+    }
+
+    impl Aggregate for TestAgg {
+        type Event = TestAggregateEvent;
+        type Id = TestAggregateId;
+        type Error = TestAggErr;
+
+        fn new(id: Self::Id) -> Self {
+            Self {
+                id,
+                value: 0,
+                version: Version::initial(),
+                pending_events: Vec::new(),
+            }
+        }
+
+        fn aggregate_id(&self) -> &Self::Id {
+            &self.id
+        }
+
+        fn version(&self) -> Version {
+            self.version
+        }
+
+        fn pending_events(&self) -> &[Self::Event] {
+            &self.pending_events
+        }
+
+        fn clear_pending_events(&mut self) {
+            self.pending_events.clear();
+        }
+
+        fn apply<E: Into<Self::Event>>(&mut self, event: E) -> std::result::Result<(), Self::Error> {
+            let event = event.into();
+            self.apply_internal(&event)?;
+            self.pending_events.push(event);
+            Ok(())
+        }
+
+        fn apply_internal(&mut self, event: &Self::Event) -> std::result::Result<(), Self::Error> {
+            self.apply_event(event);
+            self.version = self.version.next();
+            Ok(())
+        }
+    }
+
+    // Mock EventBus that tracks published events
+    #[derive(Clone)]
+    struct MockEventBus {
+        published: Arc<Mutex<Vec<crate::EventEnvelope>>>,
+    }
+
+    impl MockEventBus {
+        fn new() -> Self {
+            Self {
+                published: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn published_events(&self) -> Vec<crate::EventEnvelope> {
+            self.published.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl EventPublisher for MockEventBus {
+        async fn publish(&self, event: crate::EventEnvelope) -> crate::Result<()> {
+            self.published.lock().unwrap().push(event);
+            Ok(())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl EventBus for MockEventBus {
+        async fn subscribe(
+            &self,
+            _filter: EventFilter,
+        ) -> crate::Result<impl futures::Stream<Item = crate::EventEnvelope> + Send> {
+            Ok(futures::stream::empty())
+        }
+    }
+
+    // Mock EventStore with optional EventBus
+    struct MockEventStoreWithBus {
+        streams: Arc<Mutex<std::collections::HashMap<StreamId, Vec<crate::EventEnvelope>>>>,
+        event_bus: Option<MockEventBus>,
+    }
+
+    impl MockEventStoreWithBus {
+        fn new() -> Self {
+            Self {
+                streams: Arc::new(Mutex::new(std::collections::HashMap::new())),
+                event_bus: None,
+            }
+        }
+
+        fn with_event_bus(mut self, bus: MockEventBus) -> Self {
+            self.event_bus = Some(bus);
+            self
+        }
+    }
+
+    #[async_trait]
+    impl EventStore for MockEventStoreWithBus {
+        async fn append(
+            &self,
+            stream_id: StreamId,
+            events: Vec<crate::EventEnvelope>,
+            _expected_version: Version,
+        ) -> crate::Result<()> {
+            // Store events
+            self.streams
+                .lock()
+                .unwrap()
+                .entry(stream_id)
+                .or_default()
+                .extend(events.clone());
+
+            // Publish to event bus if configured
+            if let Some(bus) = &self.event_bus {
+                bus.publish_batch(events).await?;
+            }
+
+            Ok(())
+        }
+
+        async fn load_stream(
+            &self,
+            _stream_id: StreamId,
+            _from_version: Version,
+        ) -> crate::Result<impl futures::Stream<Item = crate::Result<crate::EventEnvelope>> + Send>
+        {
+            Ok(stream::empty())
+        }
+
+        async fn stream_all(
+            &self,
+            _from_position: Position,
+        ) -> crate::Result<impl futures::Stream<Item = crate::Result<crate::EventEnvelope>> + Send>
+        {
+            Ok(stream::empty())
+        }
+
+        async fn get_version(&self, _stream_id: StreamId) -> crate::Result<Version> {
+            Ok(Version::initial())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_commit_publishes_to_event_bus() {
+        // Test that commit() automatically publishes events to the event bus
+        // when the store is configured with one
+
+        let bus = MockEventBus::new();
+        let store = MockEventStoreWithBus::new().with_event_bus(bus.clone());
+
+        // Create aggregate with pending events
+        let mut aggregate = TestAgg::new(TestAggregateId::new());
+        aggregate.create(42).unwrap();
+        aggregate.update(100).unwrap();
+
+        // Commit should persist AND publish to event bus
+        store.commit(&mut aggregate).await.unwrap();
+
+        // Verify events were published to bus
+        let published = bus.published_events();
+        assert_eq!(published.len(), 2, "Expected 2 events to be published to bus");
+        assert_eq!(published[0].event_type, "TestAggregate.Created");
+        assert_eq!(published[1].event_type, "TestAggregate.Updated");
+    }
+
+    #[tokio::test]
+    async fn test_commit_without_event_bus_still_works() {
+        // Commit should work fine when no event bus is configured
+        let store = MockEventStoreWithBus::new(); // No event bus
+
+        let mut aggregate = TestAgg::new(TestAggregateId::new());
+        aggregate.create(42).unwrap();
+
+        // Should succeed without event bus
+        store.commit(&mut aggregate).await.unwrap();
+        assert_eq!(aggregate.pending_events().len(), 0); // Events cleared
     }
 }

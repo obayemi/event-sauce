@@ -3,7 +3,7 @@
 //! Provides a production-ready `PostgreSQL` implementation of `EventBus`.
 
 use async_trait::async_trait;
-use event_sauce_core::{Error, EventBus, EventEnvelope, EventFilter, Result};
+use event_sauce_core::{Error, EventBus, EventEnvelope, EventFilter, EventPublisher, Result};
 use futures::stream::{self, Stream};
 use sqlx::postgres::{PgListener, PgPool};
 use std::sync::Arc;
@@ -105,7 +105,7 @@ impl PostgresEventBus {
 }
 
 #[async_trait]
-impl EventBus for PostgresEventBus {
+impl EventPublisher for PostgresEventBus {
     async fn publish(&self, event: EventEnvelope) -> Result<()> {
         // Serialize event to JSON
         let payload = serde_json::to_string(&event)
@@ -124,7 +124,10 @@ impl EventBus for PostgresEventBus {
 
         Ok(())
     }
+}
 
+#[async_trait]
+impl EventBus for PostgresEventBus {
     async fn subscribe(
         &self,
         filter: EventFilter,

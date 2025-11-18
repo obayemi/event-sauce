@@ -37,7 +37,7 @@ pub use aggregate_id::AggregateId;
 pub use apply_event::ApplyEvent;
 pub use domain_event::DomainEvent;
 pub use error::{Error, Result};
-pub use event_bus::{EventBus, EventFilter};
+pub use event_bus::{EventBus, EventFilter, EventPublisher};
 pub use event_envelope::{EventEnvelope, EventMetadata};
 pub use event_store::{load, EventStore, Position, Snapshot, StreamId};
 pub use snapshot_config::{SnapshotConfig, SnapshotConfigBuilder};
