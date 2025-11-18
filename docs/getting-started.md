@@ -308,10 +308,11 @@ where
 
 ## Projections
 
-Projections provide read models by subscribing to events:
+Projections provide read models using subscriptions:
 
 ```rust
-use event_sauce_projections::Projection;
+use event_sauce_core::{Subscription, EventFilter, CheckpointStrategy};
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Default)]
 pub struct CounterStats {
@@ -320,27 +321,42 @@ pub struct CounterStats {
     current_value: i32,
 }
 
-#[async_trait::async_trait]
-impl Projection for CounterStats {
-    type Error = anyhow::Error;
+impl CounterStats {
+    fn handle_event(&mut self, envelope: &EventEnvelope) -> Result<()> {
+        // Deserialize using from_envelope
+        let event = CounterEvent::from_envelope(envelope)?;
 
-    async fn handle_event(&mut self, envelope: &EventEnvelope) -> Result<(), Self::Error> {
-        match envelope.event_type.as_str() {
-            "Counter.Incremented" => {
+        match event {
+            CounterEvent::Incremented { amount } => {
                 self.total_increments += 1;
-                // Parse event data and update current_value
+                self.current_value += amount;
             }
-            "Counter.Decremented" => {
+            CounterEvent::Decremented { amount } => {
                 self.total_decrements += 1;
-                // Parse event data and update current_value
+                self.current_value -= amount;
             }
-            "Counter.Reset" => {
+            CounterEvent::Reset => {
                 self.current_value = 0;
             }
-            _ => {}
         }
         Ok(())
     }
+}
+
+// Use with subscription
+async fn run_projection(store: Arc<impl EventStore>) -> Result<()> {
+    let state = Arc::new(Mutex::new(CounterStats::default()));
+    let checkpoint_store = Arc::new(SimpleCheckpointStore::default());
+
+    let mut subscription = Subscription::builder("counter-stats", store)
+        .checkpoint_store(checkpoint_store)
+        .filter(EventFilter::by_aggregate_type("Counter"))
+        .build()?;
+
+    subscription.run(move |event| {
+        let mut s = state.lock().unwrap();
+        s.handle_event(&event)
+    }).await
 }
 ```
 

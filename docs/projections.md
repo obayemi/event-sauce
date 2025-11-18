@@ -68,9 +68,9 @@ use event_sauce_core::{Subscription, EventFilter, CheckpointStrategy, ErrorPolic
 let subscription = Subscription::builder("user-projection", store)
     .checkpoint_store(checkpoint_store)
     .filter(EventFilter::by_aggregate_type("User"))
-    .checkpoint_strategy(CheckpointStrategy::EveryN(10))
     .error_policy(ErrorPolicy::Skip)
     .build()?;
+    // Default checkpoint_strategy is EveryEvent (safest option)
 ```
 
 ### Event Filters
@@ -95,30 +95,19 @@ let filter = EventFilter::both("UserRegistered", "User");
 
 ## Building Projections
 
-### The Projection Trait
+### Projection Pattern
 
-```rust
-use event_sauce_projections::Projection;
-use event_sauce_core::{EventEnvelope, Result};
-use async_trait::async_trait;
-
-#[async_trait]
-pub trait Projection: Send + Sync {
-    /// Unique name for this projection
-    fn name(&self) -> &str;
-
-    /// Handle an event and update the projection state
-    async fn handle(&mut self, event: &EventEnvelope) -> Result<()>;
-}
-```
+Projections in event-sauce are simple structs with handler methods. No trait implementation required - just define your state and a method to process events.
 
 ### Simple Example: User Count
 
 ```rust
 use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
+use event_sauce_core::{EventEnvelope, Result};
 
 /// Maintains a count of users by status
+#[derive(Debug, Clone, Default)]
 struct UserCountProjection {
     counts: HashMap<UserStatus, u64>,
 }
@@ -140,11 +129,7 @@ enum UserEvent {
 
 impl UserCountProjection {
     fn new() -> Self {
-        let mut counts = HashMap::new();
-        counts.insert(UserStatus::Active, 0);
-        counts.insert(UserStatus::Inactive, 0);
-        counts.insert(UserStatus::Suspended, 0);
-        Self { counts }
+        Self::default()
     }
 
     fn get_count(&self, status: &UserStatus) -> u64 {
@@ -154,35 +139,32 @@ impl UserCountProjection {
     fn total_users(&self) -> u64 {
         self.counts.values().sum()
     }
-}
 
-#[async_trait]
-impl Projection for UserCountProjection {
-    fn name(&self) -> &str {
-        "user_count_by_status"
-    }
-
-    async fn handle(&mut self, event: &EventEnvelope) -> Result<()> {
-        let event_data = serde_json::from_value::<UserEvent>(
-            event.event_data.clone()
-        ).map_err(|e| {
-            event_sauce_core::Error::custom(format!("Deserialization failed: {}", e))
-        })?;
+    // Simple event handler method - no trait required
+    fn handle_event(&mut self, event: &EventEnvelope) -> Result<()> {
+        // Deserialize using from_envelope
+        let event_data = UserEvent::from_envelope(event)?;
 
         match event_data {
             UserEvent::Registered { .. } => {
                 *self.counts.entry(UserStatus::Inactive).or_insert(0) += 1;
             }
             UserEvent::Activated { .. } => {
-                *self.counts.entry(UserStatus::Inactive).or_insert(0) -= 1;
+                if let Some(count) = self.counts.get_mut(&UserStatus::Inactive) {
+                    *count = count.saturating_sub(1);
+                }
                 *self.counts.entry(UserStatus::Active).or_insert(0) += 1;
             }
             UserEvent::Deactivated { .. } => {
-                *self.counts.entry(UserStatus::Active).or_insert(0) -= 1;
+                if let Some(count) = self.counts.get_mut(&UserStatus::Active) {
+                    *count = count.saturating_sub(1);
+                }
                 *self.counts.entry(UserStatus::Inactive).or_insert(0) += 1;
             }
             UserEvent::Suspended { .. } => {
-                *self.counts.entry(UserStatus::Active).or_insert(0) -= 1;
+                if let Some(count) = self.counts.get_mut(&UserStatus::Active) {
+                    *count = count.saturating_sub(1);
+                }
                 *self.counts.entry(UserStatus::Suspended).or_insert(0) += 1;
             }
         }
@@ -196,8 +178,10 @@ impl Projection for UserCountProjection {
 
 ```rust
 use std::collections::HashMap;
+use chrono::{DateTime, Utc};
 
 /// Maintains detailed user information for efficient lookups
+#[derive(Debug, Clone, Default)]
 struct UserDetailsProjection {
     users: HashMap<Uuid, UserDetails>,
 }
@@ -213,9 +197,7 @@ struct UserDetails {
 
 impl UserDetailsProjection {
     fn new() -> Self {
-        Self {
-            users: HashMap::new(),
-        }
+        Self::default()
     }
 
     fn get_user(&self, user_id: &Uuid) -> Option<&UserDetails> {
@@ -225,18 +207,9 @@ impl UserDetailsProjection {
     fn find_by_email(&self, email: &str) -> Option<&UserDetails> {
         self.users.values().find(|u| u.email == email)
     }
-}
 
-#[async_trait]
-impl Projection for UserDetailsProjection {
-    fn name(&self) -> &str {
-        "user_details"
-    }
-
-    async fn handle(&mut self, event: &EventEnvelope) -> Result<()> {
-        let event_data = serde_json::from_value::<UserEvent>(
-            event.event_data.clone()
-        )?;
+    fn handle_event(&mut self, event: &EventEnvelope) -> Result<()> {
+        let event_data = UserEvent::from_envelope(event)?;
 
         match event_data {
             UserEvent::Registered { user_id, email } => {
@@ -244,7 +217,7 @@ impl Projection for UserDetailsProjection {
                     user_id,
                     email,
                     status: UserStatus::Inactive,
-                    created_at: event.occurred_at,
+                    created_at: Utc::now(),
                     last_login: None,
                 });
             }
@@ -276,8 +249,7 @@ impl Projection for UserDetailsProjection {
 
 ```rust
 use event_sauce_core::{Subscription, EventFilter, CheckpointStrategy};
-use event_sauce_memory::InMemoryCheckpointStore;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -285,22 +257,23 @@ async fn main() -> Result<()> {
     let store = Arc::new(InMemoryEventStore::new());
 
     // 2. Create checkpoint store
-    let checkpoint_store = Arc::new(InMemoryCheckpointStore::new());
+    let checkpoint_store = Arc::new(SimpleCheckpointStore::default());
 
-    // 3. Create projection
-    let projection = UserCountProjection::new();
+    // 3. Create projection state
+    let projection = Arc::new(Mutex::new(UserCountProjection::new()));
 
     // 4. Create subscription
     let mut subscription = Subscription::builder("user-count", store)
         .checkpoint_store(checkpoint_store)
         .filter(EventFilter::by_aggregate_type("User"))
-        .checkpoint_strategy(CheckpointStrategy::EveryN(10))
         .build()?;
+        // Default checkpoint_strategy is EveryEvent
 
-    // 5. Run projection
-    subscription.run(|event| {
-        // Process event with projection
-        projection.handle(&event).await
+    // 5. Run projection with closure
+    let proj = projection.clone();
+    subscription.run(move |event| {
+        let mut p = proj.lock().unwrap();
+        p.handle_event(&event)
     }).await?;
 
     Ok(())
@@ -310,22 +283,23 @@ async fn main() -> Result<()> {
 ### Running Multiple Projections
 
 ```rust
+use std::sync::{Arc, Mutex};
 use tokio::task;
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let store = Arc::new(InMemoryEventStore::new());
-    let checkpoint_store = Arc::new(InMemoryCheckpointStore::new());
+    let checkpoint_store = Arc::new(SimpleCheckpointStore::default());
 
-    // Create multiple projections
-    let count_projection = UserCountProjection::new();
-    let details_projection = UserDetailsProjection::new();
+    // Create multiple projection states
+    let count_state = Arc::new(Mutex::new(UserCountProjection::new()));
+    let details_state = Arc::new(Mutex::new(UserDetailsProjection::new()));
 
     // Run them concurrently
     let count_handle = task::spawn({
         let store = store.clone();
         let checkpoint_store = checkpoint_store.clone();
-        let mut count_projection = count_projection;
+        let state = count_state.clone();
 
         async move {
             let mut subscription = Subscription::builder("user-count", store)
@@ -333,8 +307,9 @@ async fn main() -> Result<()> {
                 .filter(EventFilter::all())
                 .build()?;
 
-            subscription.run(|event| {
-                count_projection.handle(&event).await
+            subscription.run(move |event| {
+                let mut s = state.lock().unwrap();
+                s.handle_event(&event)
             }).await
         }
     });
@@ -342,7 +317,7 @@ async fn main() -> Result<()> {
     let details_handle = task::spawn({
         let store = store.clone();
         let checkpoint_store = checkpoint_store.clone();
-        let mut details_projection = details_projection;
+        let state = details_state.clone();
 
         async move {
             let mut subscription = Subscription::builder("user-details", store)
@@ -350,8 +325,9 @@ async fn main() -> Result<()> {
                 .filter(EventFilter::all())
                 .build()?;
 
-            subscription.run(|event| {
-                details_projection.handle(&event).await
+            subscription.run(move |event| {
+                let mut s = state.lock().unwrap();
+                s.handle_event(&event)
             }).await
         }
     });
@@ -382,15 +358,17 @@ pub struct Checkpoint {
 ```rust
 use event_sauce_core::CheckpointStrategy;
 
-// Save after every event (safest, highest overhead)
+// Default: Save after every event (safest, recommended for production)
 let strategy = CheckpointStrategy::EveryEvent;
 
-// Save every N events (good balance)
+// Alternative: Save every N events (reduced overhead, risk of data loss)
 let strategy = CheckpointStrategy::EveryN(100);
 
-// Manual checkpointing (full control)
+// Advanced: Manual checkpointing (full control, use with caution)
 let strategy = CheckpointStrategy::Manual;
 ```
+
+**Note:** The default strategy is `EveryEvent`, which provides the strongest durability guarantees. Only use `EveryN` or `Manual` if you have specific performance requirements and can tolerate potential event loss on crashes.
 
 ### CheckpointStore Trait
 
@@ -497,20 +475,14 @@ enum TaskStatus {
 }
 
 // Projection 1: Task counts by status
+#[derive(Debug, Clone, Default)]
 struct TaskCountProjection {
     counts: HashMap<TaskStatus, u64>,
 }
 
-#[async_trait]
-impl Projection for TaskCountProjection {
-    fn name(&self) -> &str {
-        "task_count_by_status"
-    }
-
-    async fn handle(&mut self, event: &EventEnvelope) -> Result<()> {
-        let event_data = serde_json::from_value::<TaskEvent>(
-            event.event_data.clone()
-        )?;
+impl TaskCountProjection {
+    fn handle_event(&mut self, event: &EventEnvelope) -> Result<()> {
+        let event_data = TaskEvent::from_envelope(event)?;
 
         match event_data {
             TaskEvent::Created { .. } => {
@@ -530,20 +502,14 @@ impl Projection for TaskCountProjection {
 }
 
 // Projection 2: Tasks by assignee
+#[derive(Debug, Clone, Default)]
 struct TasksByAssigneeProjection {
     assignments: HashMap<String, Vec<Uuid>>,
 }
 
-#[async_trait]
-impl Projection for TasksByAssigneeProjection {
-    fn name(&self) -> &str {
-        "tasks_by_assignee"
-    }
-
-    async fn handle(&mut self, event: &EventEnvelope) -> Result<()> {
-        let event_data = serde_json::from_value::<TaskEvent>(
-            event.event_data.clone()
-        )?;
+impl TasksByAssigneeProjection {
+    fn handle_event(&mut self, event: &EventEnvelope) -> Result<()> {
+        let event_data = TaskEvent::from_envelope(event)?;
 
         match event_data {
             TaskEvent::Created { task_id, assignee, .. } => {
@@ -573,25 +539,26 @@ impl Projection for TasksByAssigneeProjection {
 #[tokio::main]
 async fn main() -> Result<()> {
     let store = Arc::new(InMemoryEventStore::new());
-    let checkpoint_store = Arc::new(InMemoryCheckpointStore::new());
+    let checkpoint_store = Arc::new(SimpleCheckpointStore::default());
+
+    // Create projection states
+    let count_state = Arc::new(Mutex::new(TaskCountProjection::default()));
+    let assignee_state = Arc::new(Mutex::new(TasksByAssigneeProjection::default()));
 
     // Create and run projections concurrently
     let count_handle = tokio::spawn({
         let store = store.clone();
         let checkpoint_store = checkpoint_store.clone();
+        let state = count_state.clone();
 
         async move {
-            let count_projection = TaskCountProjection {
-                counts: HashMap::new()
-            };
-
             let mut subscription = Subscription::builder("task-count", store)
                 .checkpoint_store(checkpoint_store)
-                .checkpoint_strategy(CheckpointStrategy::EveryN(10))
                 .build()?;
 
-            subscription.run(|event| {
-                count_projection.handle(&event).await
+            subscription.run(move |event| {
+                let mut s = state.lock().unwrap();
+                s.handle_event(&event)
             }).await
         }
     });
@@ -599,19 +566,16 @@ async fn main() -> Result<()> {
     let assignee_handle = tokio::spawn({
         let store = store.clone();
         let checkpoint_store = checkpoint_store.clone();
+        let state = assignee_state.clone();
 
         async move {
-            let assignee_projection = TasksByAssigneeProjection {
-                assignments: HashMap::new()
-            };
-
             let mut subscription = Subscription::builder("task-assignee", store)
                 .checkpoint_store(checkpoint_store)
-                .checkpoint_strategy(CheckpointStrategy::EveryN(10))
                 .build()?;
 
-            subscription.run(|event| {
-                assignee_projection.handle(&event).await
+            subscription.run(move |event| {
+                let mut s = state.lock().unwrap();
+                s.handle_event(&event)
             }).await
         }
     });
@@ -623,7 +587,7 @@ async fn main() -> Result<()> {
 }
 ```
 
-**See the complete example**: `cargo run --example task-projections --features "memory,projections"`
+**See the complete example**: `cargo run --example task-projections --features "memory,macros"`
 
 ## Production Patterns
 
@@ -663,31 +627,32 @@ impl TaskQueryService {
 ### Pattern 2: Materialized Views
 
 ```rust
+use sqlx::PgPool;
+
 /// Projection that writes to database table
+#[derive(Clone)]
 struct MaterializedTaskListProjection {
     pool: PgPool,
 }
 
-#[async_trait]
-impl Projection for MaterializedTaskListProjection {
-    fn name(&self) -> &str {
-        "materialized_task_list"
+impl MaterializedTaskListProjection {
+    fn new(pool: PgPool) -> Self {
+        Self { pool }
     }
 
-    async fn handle(&mut self, event: &EventEnvelope) -> Result<()> {
-        let event_data = serde_json::from_value::<TaskEvent>(
-            event.event_data.clone()
-        )?;
+    async fn handle_event(&mut self, event: &EventEnvelope) -> Result<()> {
+        let event_data = TaskEvent::from_envelope(event)?;
 
         match event_data {
             TaskEvent::Created { task_id, title, assignee } => {
                 sqlx::query!(
                     "INSERT INTO task_list (id, title, assignee, status)
-                     VALUES ($1, $2, $3, $4)",
+                     VALUES ($1, $2, $3, $4)
+                     ON CONFLICT (id) DO NOTHING",
                     task_id,
                     title,
                     assignee,
-                    TaskStatus::Todo as _,
+                    "Todo",
                 )
                 .execute(&self.pool)
                 .await?;
@@ -695,7 +660,7 @@ impl Projection for MaterializedTaskListProjection {
             TaskEvent::StatusChanged { task_id, new_status, .. } => {
                 sqlx::query!(
                     "UPDATE task_list SET status = $1 WHERE id = $2",
-                    new_status as _,
+                    format!("{:?}", new_status),
                     task_id,
                 )
                 .execute(&self.pool)
@@ -722,17 +687,18 @@ impl Projection for MaterializedTaskListProjection {
 ```rust
 // Only subscribe to relevant events
 async fn run_specialized_projection(store: Arc<impl EventStore>) -> Result<()> {
-    let projection = CompletedTasksProjection::new();
-    let checkpoint_store = Arc::new(InMemoryCheckpointStore::new());
+    let state = Arc::new(Mutex::new(CompletedTasksProjection::new()));
+    let checkpoint_store = Arc::new(SimpleCheckpointStore::default());
 
     // Filter: Only subscribe to "TaskCompleted" events
     let mut subscription = Subscription::builder("completed-tasks", store)
         .checkpoint_store(checkpoint_store)
-        .filter(EventFilter::by_event_type("TaskCompleted"))
+        .filter(EventFilter::by_event_type("Task.Completed"))
         .build()?;
 
-    subscription.run(|event| {
-        projection.handle(&event).await
+    subscription.run(move |event| {
+        let mut s = state.lock().unwrap();
+        s.handle_event(&event)
     }).await?;
 
     Ok(())
@@ -743,21 +709,29 @@ async fn run_specialized_projection(store: Arc<impl EventStore>) -> Result<()> {
 
 ```rust
 /// Rebuild projection from scratch
-async fn rebuild_projection<P: Projection>(
-    subscription: &mut Subscription<impl EventStore>,
-    projection: &mut P,
+async fn rebuild_projection(
+    subscription_name: &str,
+    store: Arc<impl EventStore>,
+    checkpoint_store: Arc<dyn CheckpointStore>,
 ) -> Result<()> {
-    println!("Rebuilding projection: {}", projection.name());
+    println!("Rebuilding projection: {subscription_name}");
 
     // Delete checkpoint to start from beginning
-    subscription.rebuild().await?;
+    checkpoint_store.delete_checkpoint(subscription_name).await?;
+
+    // Create fresh subscription
+    let state = Arc::new(Mutex::new(TaskCountProjection::default()));
+    let mut subscription = Subscription::builder(subscription_name, store)
+        .checkpoint_store(checkpoint_store)
+        .build()?;
 
     // Run subscription (will process all events from start)
-    subscription.run(|event| {
-        projection.handle(&event).await
+    subscription.run(move |event| {
+        let mut s = state.lock().unwrap();
+        s.handle_event(&event)
     }).await?;
 
-    println!("Rebuild complete for {}", projection.name());
+    println!("Rebuild complete for {subscription_name}");
     Ok(())
 }
 ```
@@ -784,9 +758,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_count_projection_increments_on_create() {
-        let mut projection = TaskCountProjection {
-            counts: HashMap::new(),
-        };
+        let mut projection = TaskCountProjection::default();
 
         let event = create_test_event(TaskEvent::Created {
             task_id: Uuid::new_v4(),
@@ -794,19 +766,15 @@ mod tests {
             assignee: "alice".to_string(),
         });
 
-        projection.handle(&event).await.unwrap();
+        projection.handle_event(&event).unwrap();
 
         assert_eq!(projection.counts.get(&TaskStatus::Todo), Some(&1));
     }
 
     #[tokio::test]
     async fn test_count_projection_handles_status_change() {
-        let mut projection = TaskCountProjection {
-            counts: HashMap::from([
-                (TaskStatus::Todo, 1),
-                (TaskStatus::InProgress, 0),
-            ]),
-        };
+        let mut projection = TaskCountProjection::default();
+        projection.counts.insert(TaskStatus::Todo, 1);
 
         let event = create_test_event(TaskEvent::StatusChanged {
             task_id: Uuid::new_v4(),
@@ -814,7 +782,7 @@ mod tests {
             new_status: TaskStatus::InProgress,
         });
 
-        projection.handle(&event).await.unwrap();
+        projection.handle_event(&event).unwrap();
 
         assert_eq!(projection.counts.get(&TaskStatus::Todo), Some(&0));
         assert_eq!(projection.counts.get(&TaskStatus::InProgress), Some(&1));
@@ -828,12 +796,12 @@ mod tests {
 #[tokio::test]
 async fn test_projection_with_subscription() {
     let store = Arc::new(InMemoryEventStore::new());
-    let checkpoint_store = Arc::new(InMemoryCheckpointStore::new());
+    let checkpoint_store = Arc::new(SimpleCheckpointStore::default());
 
     // Add events to store
     let task_id = Uuid::new_v4();
     store.append(
-        format!("Task-{}", task_id),
+        StreamId::new("Task", task_id),
         vec![
             create_test_event(TaskEvent::Created {
                 task_id,
@@ -850,9 +818,7 @@ async fn test_projection_with_subscription() {
     ).await.unwrap();
 
     // Create projection and subscription
-    let projection = Arc::new(Mutex::new(TaskCountProjection {
-        counts: HashMap::new(),
-    }));
+    let state = Arc::new(Mutex::new(TaskCountProjection::default()));
 
     let mut subscription = Subscription::builder("test-projection", store)
         .checkpoint_store(checkpoint_store)
@@ -860,16 +826,16 @@ async fn test_projection_with_subscription() {
         .unwrap();
 
     // Run subscription
-    let projection_clone = projection.clone();
+    let state_clone = state.clone();
     subscription.run(move |event| {
-        let mut proj = projection_clone.lock().unwrap();
-        proj.handle(&event).await
+        let mut s = state_clone.lock().unwrap();
+        s.handle_event(&event)
     }).await.unwrap();
 
     // Verify projection state
-    let proj = projection.lock().unwrap();
-    assert_eq!(proj.counts.get(&TaskStatus::Todo), Some(&0));
-    assert_eq!(proj.counts.get(&TaskStatus::InProgress), Some(&1));
+    let s = state.lock().unwrap();
+    assert_eq!(s.counts.get(&TaskStatus::Todo), Some(&0));
+    assert_eq!(s.counts.get(&TaskStatus::InProgress), Some(&1));
 }
 ```
 
@@ -898,26 +864,30 @@ struct GodProjection {
 
 ```rust
 // ✅ GOOD: Idempotent - can replay events safely
-async fn handle(&mut self, event: &EventEnvelope) -> Result<()> {
+fn handle_event(&mut self, event: &EventEnvelope) -> Result<()> {
+    let event_data = UserEvent::from_envelope(event)?;
+
     match event_data {
         UserEvent::Registered { user_id, email } => {
             // Use upsert - safe to replay
             self.users.insert(user_id, UserDetails {
                 user_id,
-                email
+                email,
+                status: UserStatus::Inactive,
+                created_at: Utc::now(),
+                last_login: None,
             });
         }
+        _ => {}
     }
     Ok(())
 }
 
 // ❌ BAD: Not idempotent - replaying breaks state
-async fn handle(&mut self, event: &EventEnvelope) -> Result<()> {
-    match event_data {
-        UserEvent::Registered { .. } => {
-            // Increment is NOT idempotent
-            self.count += 1;
-        }
+fn handle_event(&mut self, event: &EventEnvelope) -> Result<()> {
+    // Increment is NOT idempotent - replaying adds extra counts!
+    if event.event_type == "UserRegistered" {
+        self.count += 1;
     }
     Ok(())
 }
@@ -928,7 +898,7 @@ async fn handle(&mut self, event: &EventEnvelope) -> Result<()> {
 ```rust
 // ✅ GOOD: Filter at subscription
 let subscription = Subscription::builder("orders", store)
-    .filter(EventFilter::by_event_type("OrderCompleted"))
+    .filter(EventFilter::by_event_type("Order.Completed"))
     .build()?;
 
 // ❌ BAD: Receive all events, filter in handler
@@ -936,9 +906,9 @@ let subscription = Subscription::builder("orders", store)
     .filter(EventFilter::all())
     .build()?;
 
-async fn handle(&mut self, event: &EventEnvelope) -> Result<()> {
-    if event.event_type != "OrderCompleted" {
-        return Ok(()); // Wasteful processing
+fn handle_event(&mut self, event: &EventEnvelope) -> Result<()> {
+    if event.event_type != "Order.Completed" {
+        return Ok(()); // Wasteful - still receives all events
     }
     // ...
 }
@@ -950,8 +920,8 @@ async fn handle(&mut self, event: &EventEnvelope) -> Result<()> {
 // ✅ GOOD: Checkpoint store configured
 let subscription = Subscription::builder("user-projection", store)
     .checkpoint_store(checkpoint_store)
-    .checkpoint_strategy(CheckpointStrategy::EveryN(10))
     .build()?;
+    // Default: saves checkpoint after every event (safest)
 
 // ❌ BAD: No checkpoints - must rebuild from scratch on restart
 let subscription = Subscription::builder("user-projection", store)
@@ -962,10 +932,8 @@ let subscription = Subscription::builder("user-projection", store)
 
 ```rust
 // ✅ GOOD: Graceful error handling
-async fn handle(&mut self, event: &EventEnvelope) -> Result<()> {
-    let event_data = match serde_json::from_value::<UserEvent>(
-        event.event_data.clone()
-    ) {
+fn handle_event(&mut self, event: &EventEnvelope) -> Result<()> {
+    let event_data = match UserEvent::from_envelope(event) {
         Ok(data) => data,
         Err(e) => {
             eprintln!("Failed to deserialize event {}: {}", event.id, e);
@@ -978,10 +946,8 @@ async fn handle(&mut self, event: &EventEnvelope) -> Result<()> {
 }
 
 // ❌ BAD: Panic on deserialization error
-async fn handle(&mut self, event: &EventEnvelope) -> Result<()> {
-    let event_data = serde_json::from_value::<UserEvent>(
-        event.event_data.clone()
-    ).unwrap(); // Will panic and crash projection!
+fn handle_event(&mut self, event: &EventEnvelope) -> Result<()> {
+    let event_data = UserEvent::from_envelope(event).unwrap(); // Will panic and crash projection!
 
     // ...
 }
@@ -1007,18 +973,20 @@ struct UserProjection {
 ### 7. Version Your Projections
 
 ```rust
+#[derive(Default)]
 struct UserProjectionV2 {
-    // ... new fields
+    // ... new fields with enhanced schema
 }
 
-impl Projection for UserProjectionV2 {
-    fn name(&self) -> &str {
-        "user_projection_v2"  // Different name = new projection
+impl UserProjectionV2 {
+    fn handle_event(&mut self, event: &EventEnvelope) -> Result<()> {
+        // ... handle with new logic
+        Ok(())
     }
-
-    // ... handle with new logic
 }
 
+// Use different subscription names for different versions
+// "user_projection_v1" vs "user_projection_v2"
 // Can run V1 and V2 simultaneously during migration
 ```
 

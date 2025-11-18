@@ -118,14 +118,15 @@ Derive macros for reducing boilerplate (~40% less code):
 - Type-safe and zero-runtime cost
 - Clean separation between business logic and infrastructure
 
-### event-sauce-projections
+### Subscription System (in event-sauce-core)
 
-Read model building:
+Read model building via durable subscriptions:
 
-- **Projection** trait - Process events to build read models
-- **ProjectionRunner** - Manages projection lifecycle
-- **Checkpointing** - Track progress for resumability
-- State management helpers
+- **Subscription** - Durable event subscription with guaranteed delivery
+- **EventFilter** - Filter events by type or aggregate
+- **CheckpointStore** - Track progress for resumability
+- **CheckpointStrategy** - Configure checkpoint frequency
+- No separate projection trait needed - use simple handler functions
 
 ### event-sauce-cli
 
@@ -142,7 +143,7 @@ Re-exports all crates with feature flags:
 
 ```toml
 [dependencies]
-event-sauce = { version = "0.1", features = ["postgres", "projections"] }
+event-sauce = { version = "0.1", features = ["postgres", "macros"] }
 ```
 
 ## Event Sourcing Flow

@@ -639,9 +639,8 @@ store.migrate().await?;
 ### API Documentation
 
 - [event-sauce (facade)](https://docs.rs/event-sauce) - Main entry point
-- [event-sauce-core](https://docs.rs/event-sauce-core) - Core traits and types
+- [event-sauce-core](https://docs.rs/event-sauce-core) - Core traits and types (includes Subscription system for projections)
 - [event-sauce-postgres](https://docs.rs/event-sauce-postgres) - PostgreSQL backend
-- [event-sauce-projections](https://docs.rs/event-sauce-projections) - Read models
 
 ### Learn More
 
@@ -655,9 +654,9 @@ store.migrate().await?;
 - [x] Phase 0.5: Workspace and crate structure
 - [x] **Phase 1: Core traits and types (event-sauce-core)** - ✅ 103 tests, 97.78% coverage ([details](crates/event-sauce-core/COVERAGE.md))
 - [x] **Phase 2: In-memory implementation (event-sauce-memory)** - ✅ 26 tests, 99.54% coverage
-- [x] **Phase 3: PostgreSQL backend (event-sauce-postgres)** - ✅ 27 tests (EventStore + EventBus with LISTEN/NOTIFY)
+- [x] **Phase 3: PostgreSQL backend (event-sauce-postgres)** - ✅ 27 tests (EventStore with LISTEN/NOTIFY)
 - [x] **Phase 4: Derive macros (event-sauce-macros)** - ✅ 19 tests (#[derive(Aggregate)] and #[derive(Event)])
-- [x] **Phase 5: Projections (event-sauce-projections)** - ✅ 33 tests (Projection trait, ProjectionRunner, Checkpointing)
+- [x] **Phase 5: Subscription system (event-sauce-core)** - ✅ Integrated into core (Subscription, CheckpointStore, EventFilter)
 - [ ] Phase 6: SQLite backend (deferred)
 - [x] **Phase 7: Saga and Process Manager patterns (event-sauce-sagas)** - ✅ 38 tests (Saga trait, ProcessManager trait, Runners, Integration tests)
 - [x] **Phase 8: CLI tooling (event-sauce-cli)** - ✅ 23 tests (init, generate, db commands)

@@ -189,8 +189,8 @@ impl Default for SubscriptionConfig {
 
 /// Trait for checkpoint storage.
 ///
-/// This trait is re-exported from event-sauce-projections but defined here
-/// for the subscription system's use.
+/// Checkpoint stores track the progress of subscriptions, enabling
+/// resumption after restarts or failures.
 #[async_trait]
 pub trait CheckpointStore: Send + Sync {
     /// Saves a checkpoint.

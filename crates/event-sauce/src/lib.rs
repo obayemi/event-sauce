@@ -48,9 +48,6 @@ pub use event_sauce_postgres;
 #[cfg(feature = "sqlite")]
 pub use event_sauce_sqlite;
 
-#[cfg(feature = "projections")]
-pub use event_sauce_projections;
-
 // #[cfg(feature = "sagas")]
 // pub use event_sauce_sagas;  // TODO: Re-enable after refactoring sagas
 
