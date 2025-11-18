@@ -12,6 +12,42 @@ cargo run -p event-sauce --example <example-name>
 
 ## Available Examples
 
+### PostgreSQL Quick Start (`postgres-quickstart.rs`) 🆕
+
+**The simplest way to get started with PostgreSQL-backed event sourcing.**
+
+A beginner-friendly example demonstrating:
+
+- **PostgreSQL Setup**: Connect to PostgreSQL and run migrations
+- **Event Store Creation**: Initialize a production-ready event store
+- **Basic CRUD**: Create, update, and load aggregates from the database
+- **Optimistic Concurrency**: Automatic version control and conflict detection
+- **Error Handling**: Graceful error handling with domain-specific errors
+
+```bash
+# Prerequisites: PostgreSQL running on localhost
+docker run -d -p 5432:5432 \
+  -e POSTGRES_PASSWORD=postgres \
+  -e POSTGRES_DB=eventsauce \
+  postgres:16-alpine
+
+# Run the example
+cargo run -p event-sauce --example postgres-quickstart --features "postgres,macros"
+```
+
+**Key Features Demonstrated:**
+- Connecting to PostgreSQL with `sqlx`
+- Running database migrations automatically
+- Creating a `PostgresEventStore`
+- Full aggregate lifecycle (create → modify → save → load)
+- Domain validation and business rules
+- Version tracking across database operations
+
+**Perfect for:**
+- First-time users wanting to see PostgreSQL in action
+- Setting up a new production project
+- Understanding the complete flow from connection to persistence
+
 ### Bank Account (`bank-account.rs`)
 
 A simple but complete bank account implementation demonstrating:
@@ -110,13 +146,18 @@ cargo run -p event-sauce --example task-projections --features "memory,projectio
 
 ## Learning Path
 
-1. **Start here**: `bank-account.rs` - Learn the basics of aggregates and events
-2. **Next**: `task-projections.rs` - Learn to build read models with projections
-3. **Coming soon**: More examples with sagas and persistence
+### For Beginners:
+1. **PostgreSQL Users**: Start with `postgres-quickstart.rs` - Get up and running with PostgreSQL
+2. **In-Memory/Learning**: Start with `bank-account.rs` - Learn the basics without database setup
+
+### Next Steps:
+3. `task-projections.rs` - Learn to build read models with projections
+4. `snapshotting-postgres.rs` - Optimize performance with snapshots
+5. Coming soon: More examples with sagas and complex workflows
 
 ## Tips
 
-- All examples use in-memory storage for simplicity
+- Most examples use in-memory storage for simplicity (except `postgres-quickstart.rs` and `snapshotting-postgres.rs`)
 - Check the source code comments for detailed explanations
 - Examples follow the same structure:
   1. Domain model definition (IDs, events, errors)
