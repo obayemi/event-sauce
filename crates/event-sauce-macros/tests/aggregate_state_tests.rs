@@ -6,6 +6,7 @@
 use chrono::{DateTime, Utc};
 use event_sauce_core::{Aggregate, AggregateId, DomainEvent, Version};
 use event_sauce_macros::AggregateError;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 use thiserror::Error;
 
@@ -15,7 +16,7 @@ use thiserror::Error;
 pub struct TestCounterError;
 
 // Define a simple aggregate ID for testing
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TestCounterId(String);
 
 impl TestCounterId {
@@ -47,7 +48,7 @@ impl AggregateId for TestCounterId {
 }
 
 // Define a simple event for testing
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(dead_code)]
 pub enum TestCounterEvent {
     Incremented {
@@ -82,7 +83,7 @@ impl DomainEvent for TestCounterEvent {
 
 // This is the state-only struct that uses the AggregateState derive macro
 // The macro should generate a wrapper struct and Aggregate trait implementation
-#[derive(event_sauce_macros::AggregateState, Debug, Clone, Default)]
+#[derive(event_sauce_macros::AggregateState, Debug, Clone, Default, Serialize, Deserialize)]
 #[aggregate(
     id = "TestCounterId",
     event = "TestCounterEvent",
@@ -282,7 +283,7 @@ fn test_aggregate_state_implements_default() {
 }
 
 // Test with custom name attribute
-#[derive(event_sauce_macros::AggregateState, Debug, Clone, Default)]
+#[derive(event_sauce_macros::AggregateState, Debug, Clone, Default, Serialize, Deserialize)]
 #[aggregate(
     id = "TestCounterId",
     event = "TestCounterEvent",
@@ -316,7 +317,7 @@ fn test_aggregate_state_custom_name() {
 }
 
 // Test with public visibility
-#[derive(event_sauce_macros::AggregateState, Debug, Clone, Default)]
+#[derive(event_sauce_macros::AggregateState, Debug, Clone, Default, Serialize, Deserialize)]
 #[aggregate(
     id = "TestCounterId",
     event = "TestCounterEvent",

@@ -27,6 +27,8 @@ mod error;
 mod event_bus;
 mod event_envelope;
 mod event_store;
+mod snapshot_config;
+mod snapshot_strategy;
 mod version;
 
 pub use aggregate::Aggregate;
@@ -38,4 +40,6 @@ pub use error::{Error, Result};
 pub use event_bus::{EventBus, EventFilter};
 pub use event_envelope::{EventEnvelope, EventMetadata};
 pub use event_store::{load, EventStore, Position, Snapshot, StreamId};
+pub use snapshot_config::{SnapshotConfig, SnapshotConfigBuilder};
+pub use snapshot_strategy::{AlwaysSnapshot, EveryNEvents, NeverSnapshot, SnapshotStrategy};
 pub use version::Version;

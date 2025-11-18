@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use futures::Stream;
 use uuid::Uuid;
 
-use crate::{Aggregate, AggregateId, DomainEvent, EventEnvelope, Result, Version};
+use crate::{Aggregate, AggregateId, DomainEvent, EventEnvelope, Result, SnapshotConfig, Version};
 
 /// Stream ID uniquely identifying an event stream.
 ///
@@ -289,13 +289,45 @@ pub trait EventStore: Send + Sync {
         Ok(None) // Default: no snapshots
     }
 
+    /// Returns the snapshot configuration for this store.
+    ///
+    /// The configuration controls:
+    /// - When snapshots are created (strategy per aggregate type)
+    /// - Whether snapshots are used during loading
+    ///
+    /// # Default Implementation
+    ///
+    /// The default implementation returns a disabled configuration.
+    /// Implementations can override this to provide custom snapshot behavior.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let config = store.snapshot_config();
+    /// let strategy = config.strategy_for_type("User");
+    /// if strategy.should_snapshot(aggregate.version()) {
+    ///     // Create snapshot
+    /// }
+    /// ```
+    fn snapshot_config(&self) -> &SnapshotConfig {
+        use std::sync::OnceLock;
+        static DISABLED_CONFIG: OnceLock<SnapshotConfig> = OnceLock::new();
+        DISABLED_CONFIG.get_or_init(SnapshotConfig::disabled)
+    }
+
     /// Commits pending events from an aggregate to the event store.
     ///
     /// This method:
     /// 1. Extracts pending events from the aggregate
     /// 2. Converts them to event envelopes
     /// 3. Appends them to the event store with optimistic concurrency control
-    /// 4. Clears the pending events from the aggregate on success
+    /// 4. Creates a snapshot if the strategy indicates it should
+    /// 5. Clears the pending events from the aggregate on success
+    ///
+    /// Snapshots are created based on the [`SnapshotConfig`] returned by
+    /// [`snapshot_config()`](Self::snapshot_config). The strategy is evaluated
+    /// per aggregate type, and snapshot creation failures are logged but don't
+    /// fail the commit.
     ///
     /// # Examples
     ///
@@ -304,7 +336,7 @@ pub trait EventStore: Send + Sync {
     /// user.register("alice@example.com")?;
     /// user.verify_email()?;
     ///
-    /// // Commit all pending events
+    /// // Commit all pending events (and possibly create a snapshot)
     /// event_store.commit(&mut user).await?;
     /// ```
     ///
@@ -313,7 +345,7 @@ pub trait EventStore: Send + Sync {
     /// Returns `Error::ConcurrencyConflict` if another process modified the aggregate.
     async fn commit<A>(&self, aggregate: &mut A) -> Result<()>
     where
-        A: Aggregate,
+        A: Aggregate + serde::Serialize,
         A::Event: serde::Serialize,
     {
         let pending = aggregate.pending_events();
@@ -354,6 +386,39 @@ pub trait EventStore: Send + Sync {
         )
         .await?;
 
+        // Create snapshot if strategy indicates we should
+        let config = self.snapshot_config();
+        let strategy = config.strategy_for_type(aggregate_type);
+        let current_version = aggregate.version();
+
+        if strategy.should_snapshot(current_version) {
+            // Try to serialize and save snapshot, but don't fail commit on error
+            match serde_json::to_value(&*aggregate) {
+                Ok(snapshot_data) => {
+                    let snapshot = Snapshot::new(
+                        aggregate_id,
+                        aggregate_type.to_string(),
+                        current_version,
+                        snapshot_data,
+                    );
+
+                    // Log error but don't fail commit
+                    if let Err(e) = self.save_snapshot(snapshot).await {
+                        eprintln!(
+                            "Warning: Failed to save snapshot for {} {}: {}",
+                            aggregate_type, aggregate_id, e
+                        );
+                    }
+                }
+                Err(e) => {
+                    eprintln!(
+                        "Warning: Failed to serialize aggregate {} {} for snapshot: {}",
+                        aggregate_type, aggregate_id, e
+                    );
+                }
+            }
+        }
+
         // Clear pending events
         aggregate.clear_pending_events();
 
@@ -364,9 +429,15 @@ pub trait EventStore: Send + Sync {
 /// Loads an aggregate from the event store by its ID.
 ///
 /// This helper function:
-/// 1. Loads all events for the aggregate
-/// 2. Deserializes them into domain events
-/// 3. Replays them onto a new aggregate instance
+/// 1. Checks if snapshots are enabled and loads a snapshot if available
+/// 2. Loads events from the snapshot version (or from start if no snapshot)
+/// 3. Deserializes them into domain events
+/// 4. Replays them onto the aggregate instance
+///
+/// The snapshot behavior is controlled by the store's [`SnapshotConfig`].
+/// When `use_snapshots_on_load` is true and a snapshot exists, only events
+/// after the snapshot are loaded and replayed, significantly improving
+/// performance for aggregates with many events.
 ///
 /// # Note
 ///
@@ -387,11 +458,12 @@ pub trait EventStore: Send + Sync {
 /// Returns an error if:
 /// - The aggregate doesn't exist (no events found)
 /// - Events cannot be deserialized
+/// - Snapshot cannot be deserialized
 /// - Event replay fails
 pub async fn load<S, A>(store: &S, aggregate_id: A::Id) -> Result<A>
 where
     S: EventStore,
-    A: Aggregate,
+    A: Aggregate + serde::de::DeserializeOwned,
     A::Event: serde::de::DeserializeOwned,
 {
     use futures::StreamExt;
@@ -400,12 +472,32 @@ where
     let aggregate_type = A::aggregate_type();
     let stream_id = StreamId::new(aggregate_type, uuid);
 
-    // Load all events for this aggregate
-    let event_stream = store.load_stream(stream_id, Version::initial()).await?;
-    futures::pin_mut!(event_stream);
+    // Try to load snapshot if enabled
+    let config = store.snapshot_config();
+    let (mut aggregate, from_version) = if config.use_snapshots_on_load() {
+        match store.load_snapshot(stream_id.clone()).await? {
+            Some(snapshot) => {
+                // Deserialize aggregate from snapshot
+                let aggregate: A = serde_json::from_value(snapshot.snapshot_data).map_err(
+                    |e| crate::Error::custom(format!("Failed to deserialize snapshot: {e}")),
+                )?;
 
-    // Create new aggregate instance with the correct ID using the trait method
-    let mut aggregate = A::new(aggregate_id);
+                // Start loading events from after the snapshot
+                (aggregate, snapshot.snapshot_version.next())
+            }
+            None => {
+                // No snapshot, load from beginning
+                (A::new(aggregate_id), Version::initial())
+            }
+        }
+    } else {
+        // Snapshots disabled, load from beginning
+        (A::new(aggregate_id), Version::initial())
+    };
+
+    // Load events from the appropriate version
+    let event_stream = store.load_stream(stream_id, from_version).await?;
+    futures::pin_mut!(event_stream);
 
     // Replay events
     while let Some(envelope) = event_stream.next().await {

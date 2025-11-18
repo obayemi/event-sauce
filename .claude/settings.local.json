@@ -13,7 +13,9 @@
       "Bash(find:*)",
       "Bash(cat:*)",
       "Bash(cargo doc:*)",
-      "Bash(RUST_BACKTRACE=1 cargo test:*)"
+      "Bash(RUST_BACKTRACE=1 cargo test:*)",
+      "Bash(docker info:*)",
+      "Bash(/dev/null)"
     ],
     "deny": [],
     "ask": []

@@ -236,6 +236,7 @@ struct EventAttrs {
 /// - The enum variants are not in the expected format
 /// - Tuple variants do not contain exactly one field when generating `Into` implementations
 #[proc_macro_derive(Event, attributes(event))]
+#[allow(clippy::too_many_lines)]
 pub fn derive_event(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
 
@@ -496,6 +497,8 @@ pub fn derive_aggregate_state(input: TokenStream) -> TokenStream {
     // Generate the wrapper aggregate struct
     let gen = quote! {
         // Generate the wrapper aggregate
+        // Note: Derive Serialize/Deserialize to support snapshotting
+        #[derive(::serde::Serialize, ::serde::Deserialize)]
         #vis struct #wrapper_name {
             state: #state_name,
             version: event_sauce_core::Version,
@@ -688,7 +691,7 @@ fn find_id_field(fields: &Fields) -> Result<Ident, TokenStream> {
     .into())
 }
 
-/// Derive macro for AggregateId trait
+/// Derive macro for `AggregateId` trait
 ///
 /// This macro automatically implements the `AggregateId` trait and `Display` trait
 /// for newtype structs wrapping types that implement `Display`.
@@ -742,7 +745,7 @@ pub fn derive_aggregate_id(input: TokenStream) -> TokenStream {
                 .to_compile_error()
                 .into();
         }
-    };
+    }
 
     // Generate the implementation
     let gen = quote! {
@@ -763,7 +766,7 @@ pub fn derive_aggregate_id(input: TokenStream) -> TokenStream {
     gen.into()
 }
 
-/// Derive macro for AggregateError trait
+/// Derive macro for `AggregateError` trait
 ///
 /// This macro automatically implements the `AggregateError` marker trait
 /// for error types. Use this with `thiserror::Error` for clean error handling.

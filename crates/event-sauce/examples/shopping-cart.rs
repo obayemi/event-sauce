@@ -247,7 +247,7 @@ impl ApplyEvent<ShoppingCartAggregate, CartError> for CartCheckedOutEvent {
 // ============================================================================
 
 /// Shopping cart state - contains only business data
-#[derive(AggregateState, Debug, Clone)]
+#[derive(AggregateState, Debug, Clone, Serialize, Deserialize)]
 #[aggregate(id = "CartId", event = "CartEvent", error = "CartError")]
 struct ShoppingCartState {
     #[aggregate_id]

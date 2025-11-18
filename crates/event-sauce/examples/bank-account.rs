@@ -13,6 +13,7 @@
 use chrono::Utc;
 use event_sauce_core::{Aggregate, AggregateError, ApplyEvent, DomainEvent};
 use event_sauce_macros::{AggregateError, AggregateId, AggregateState, Event as DeriveEvent};
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 // ============================================================================
@@ -20,7 +21,7 @@ use uuid::Uuid;
 // ============================================================================
 
 /// Unique identifier for a bank account
-#[derive(AggregateId, Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(AggregateId, Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 struct AccountId(Uuid);
 
 impl AccountId {
@@ -36,7 +37,7 @@ impl Default for AccountId {
 }
 
 /// Account status
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[allow(dead_code)]
 enum AccountStatus {
     Active,
@@ -55,7 +56,7 @@ impl Default for AccountStatus {
 // ============================================================================
 
 /// Event: Account was opened
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(dead_code)]
 struct AccountOpenedEvent {
     account_id: String,
@@ -65,21 +66,21 @@ struct AccountOpenedEvent {
 }
 
 /// Event: Money was deposited
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct AccountDepositedEvent {
     amount: i64,
     timestamp: chrono::DateTime<Utc>,
 }
 
 /// Event: Money was withdrawn
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct AccountWithdrawnEvent {
     amount: i64,
     timestamp: chrono::DateTime<Utc>,
 }
 
 /// Bank account events wrapping the separated event structs
-#[derive(DeriveEvent, Debug, Clone)]
+#[derive(DeriveEvent, Debug, Clone, Serialize, Deserialize)]
 #[event(
     version = 1,
     type_prefix = "Account",
@@ -192,7 +193,7 @@ impl ApplyEvent<BankAccountAggregate, AccountError> for AccountWithdrawnEvent {
 // The AggregateState macro generates a BankAccountAggregate wrapper
 
 /// Bank account state - contains only business data
-#[derive(AggregateState, Debug, Clone)]
+#[derive(AggregateState, Debug, Clone, Serialize, Deserialize)]
 #[aggregate(id = "AccountId", event = "AccountEvent", error = "AccountError")]
 struct BankAccountState {
     #[aggregate_id]

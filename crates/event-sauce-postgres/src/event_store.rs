@@ -4,7 +4,8 @@
 
 use async_trait::async_trait;
 use event_sauce_core::{
-    Error, EventEnvelope, EventStore, Position, Result, Snapshot, StreamId, Version,
+    Error, EventEnvelope, EventStore, Position, Result, Snapshot, SnapshotConfig, StreamId,
+    Version,
 };
 use futures::stream::{self, Stream};
 use sqlx::PgPool;
@@ -35,23 +36,59 @@ use sqlx::PgPool;
 #[derive(Clone)]
 pub struct PostgresEventStore {
     pool: PgPool,
+    snapshot_config: SnapshotConfig,
 }
 
 impl PostgresEventStore {
-    /// Creates a new `PostgreSQL` event store.
+    /// Creates a new `PostgreSQL` event store with default snapshot configuration.
+    ///
+    /// Default configuration: Snapshots every 100 events, enabled on load.
+    ///
+    /// For custom snapshot behavior, use [`with_config`](Self::with_config) or
+    /// [`SnapshotConfig::disabled()`] to turn off snapshots.
     ///
     /// # Examples
     ///
     /// ```ignore
     /// use event_sauce_postgres::PostgresEventStore;
+    /// use event_sauce_core::SnapshotConfig;
     /// use sqlx::PgPool;
     ///
     /// let pool = PgPool::connect("postgresql://localhost/events").await?;
+    ///
+    /// // Default: snapshots every 100 events
     /// let store = PostgresEventStore::new(pool);
+    ///
+    /// // Disable snapshots
+    /// let store = PostgresEventStore::with_config(pool, SnapshotConfig::disabled());
     /// ```
     #[must_use]
     pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+        Self::with_config(pool, SnapshotConfig::builder().build())
+    }
+
+    /// Creates a new `PostgreSQL` event store with the given snapshot configuration.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use event_sauce_postgres::PostgresEventStore;
+    /// use event_sauce_core::{SnapshotConfig, EveryNEvents};
+    /// use sqlx::PgPool;
+    ///
+    /// let pool = PgPool::connect("postgresql://localhost/events").await?;
+    /// let config = SnapshotConfig::builder()
+    ///     .default_strategy(EveryNEvents(100))
+    ///     .build();
+    ///
+    /// let store = PostgresEventStore::with_config(pool, config);
+    /// ```
+    #[must_use]
+    pub fn with_config(pool: PgPool, snapshot_config: SnapshotConfig) -> Self {
+        Self {
+            pool,
+            snapshot_config,
+        }
     }
 
     /// Returns a reference to the underlying connection pool.
@@ -226,6 +263,10 @@ impl EventStore for PostgresEventStore {
         .map_err(|e| Error::custom(format!("Failed to load snapshot: {e}")))?;
 
         Ok(row.map(Into::into))
+    }
+
+    fn snapshot_config(&self) -> &SnapshotConfig {
+        &self.snapshot_config
     }
 }
 

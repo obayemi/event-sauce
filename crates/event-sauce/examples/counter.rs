@@ -151,7 +151,7 @@ impl ApplyEvent<CounterAggregate, CounterError> for CounterResetEvent {
 // This separates infrastructure concerns from business state.
 
 /// Counter state - contains only business data
-#[derive(AggregateState, Debug, Clone)]
+#[derive(AggregateState, Debug, Clone, Serialize, Deserialize)]
 #[aggregate(id = "CounterId", event = "CounterEvent", error = "CounterError")]
 struct CounterState {
     #[aggregate_id]

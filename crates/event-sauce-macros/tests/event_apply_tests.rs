@@ -6,13 +6,14 @@
 use chrono::{DateTime, Utc};
 use event_sauce_core::{Aggregate, AggregateId, ApplyEvent, DomainEvent, Version};
 use event_sauce_macros::{AggregateError, AggregateState, Event as DeriveEvent};
+use serde::{Deserialize, Serialize};
 
 // ============================================================================
 // Test Domain Model
 // ============================================================================
 
 /// Test aggregate ID
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 struct TestId(i32);
 
 impl Default for TestId {
@@ -48,27 +49,27 @@ enum TestError {
 // ============================================================================
 
 /// Event: Value was set
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct ValueSetEvent {
     value: i32,
     timestamp: DateTime<Utc>,
 }
 
 /// Event: Value was incremented
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct ValueIncrementedEvent {
     amount: i32,
     timestamp: DateTime<Utc>,
 }
 
 /// Event: Value was reset
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct ValueResetEvent {
     timestamp: DateTime<Utc>,
 }
 
 /// Test event enum with aggregate attribute
-#[derive(DeriveEvent, Debug, Clone)]
+#[derive(DeriveEvent, Debug, Clone, Serialize, Deserialize)]
 #[event(version = 1, type_prefix = "Test", aggregate = "TestAggregate")]
 enum TestEvent {
     Set(ValueSetEvent),
@@ -116,7 +117,7 @@ impl ApplyEvent<TestAggregate, TestError> for ValueResetEvent {
 // Test Aggregate State
 // ============================================================================
 
-#[derive(AggregateState, Debug, Clone, Default)]
+#[derive(AggregateState, Debug, Clone, Default, Serialize, Deserialize)]
 #[aggregate(id = "TestId", event = "TestEvent", error = "TestError")]
 struct TestState {
     #[aggregate_id]

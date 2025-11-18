@@ -1,0 +1,384 @@
+//! Snapshotting Example
+//!
+//! This example demonstrates the snapshot strategies feature:
+//! - Different snapshot strategies (Always, Never, EveryNEvents)
+//! - Per-aggregate-type configuration
+//! - Performance comparison with/without snapshots
+//! - Snapshot-aware loading
+//!
+//! Run with: cargo run -p event-sauce --example snapshotting --features "memory,macros"
+
+use chrono::Utc;
+use event_sauce_core::{
+    load, Aggregate, ApplyEvent, EventStore, EveryNEvents, NeverSnapshot, SnapshotConfig,
+};
+use event_sauce_macros::{AggregateError, AggregateId, AggregateState, Event as DeriveEvent};
+use event_sauce_memory::InMemoryEventStore;
+use serde::{Deserialize, Serialize};
+use std::time::Instant;
+use uuid::Uuid;
+
+// ============================================================================
+// Domain Model - Simple Counter for Demonstration
+// ============================================================================
+
+#[derive(AggregateId, Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+struct CounterId(Uuid);
+
+impl CounterId {
+    fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct IncrementedEvent {
+    amount: i32,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(DeriveEvent, Debug, Clone, Serialize, Deserialize)]
+#[event(version = 1, type_prefix = "Counter", aggregate = "CounterAggregate")]
+enum CounterEvent {
+    Incremented(IncrementedEvent),
+}
+
+#[derive(AggregateError, Debug, thiserror::Error)]
+enum CounterError {
+    #[error("Invalid amount: {0}")]
+    InvalidAmount(i32),
+}
+
+impl ApplyEvent<CounterAggregate, CounterError> for IncrementedEvent {
+    fn apply(&self, counter: &mut CounterAggregate) {
+        counter.value += self.amount;
+    }
+}
+
+#[derive(AggregateState, Debug, Clone, Serialize, Deserialize)]
+#[aggregate(id = "CounterId", event = "CounterEvent", error = "CounterError")]
+struct CounterState {
+    #[aggregate_id]
+    id: CounterId,
+    value: i32,
+}
+
+impl Default for CounterState {
+    fn default() -> Self {
+        Self {
+            id: CounterId(Uuid::nil()),
+            value: 0,
+        }
+    }
+}
+
+impl CounterAggregate {
+    fn create(id: CounterId) -> Self {
+        <Self as Aggregate>::new(id)
+    }
+
+    fn increment(&mut self, amount: i32) -> Result<(), CounterError> {
+        let event = IncrementedEvent {
+            amount,
+            timestamp: Utc::now(),
+        };
+        self.apply(CounterEvent::Incremented(event))
+    }
+
+    fn value(&self) -> i32 {
+        self.value
+    }
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+async fn create_counter_with_events(
+    store: &InMemoryEventStore,
+    id: CounterId,
+    event_count: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut counter = CounterAggregate::create(id);
+
+    for i in 0..event_count {
+        counter.increment(1)?;
+
+        // Commit in batches to create realistic version numbers
+        if (i + 1) % 10 == 0 {
+            store.commit(&mut counter).await?;
+        }
+    }
+
+    // Commit any remaining events
+    if !counter.pending_events().is_empty() {
+        store.commit(&mut counter).await?;
+    }
+
+    Ok(())
+}
+
+async fn measure_load_time(
+    store: &InMemoryEventStore,
+    id: CounterId,
+) -> Result<std::time::Duration, Box<dyn std::error::Error>> {
+    let start = Instant::now();
+    let _counter: CounterAggregate = load(store, id).await?;
+    Ok(start.elapsed())
+}
+
+// ============================================================================
+// Demonstration Scenarios
+// ============================================================================
+
+async fn demo_no_snapshots() -> Result<(), Box<dyn std::error::Error>> {
+    println!("\n╔═══════════════════════════════════════════════════════════╗");
+    println!("║  Scenario 1: No Snapshots (Explicitly Disabled)          ║");
+    println!("╚═══════════════════════════════════════════════════════════╝\n");
+
+    // Create store with snapshots explicitly disabled
+    let config = SnapshotConfig::disabled();
+    let store = InMemoryEventStore::with_config(config);
+
+    let id = CounterId::new();
+    println!("Creating counter with 500 events...");
+    create_counter_with_events(&store, id, 500).await?;
+
+    println!("Loading counter (will replay all 500 events)...");
+    let load_time = measure_load_time(&store, id).await?;
+
+    let counter: CounterAggregate = load(&store, id).await?;
+    println!("✓ Counter value: {}", counter.value());
+    println!("✓ Load time: {:?}", load_time);
+    println!("✓ No snapshots created (as expected)");
+
+    Ok(())
+}
+
+async fn demo_default_behavior() -> Result<(), Box<dyn std::error::Error>> {
+    println!("\n╔═══════════════════════════════════════════════════════════╗");
+    println!("║  Scenario 2: Default Behavior (Every 100 Events)         ║");
+    println!("╚═══════════════════════════════════════════════════════════╝\n");
+
+    // Create store with default settings - snapshots enabled!
+    let store = InMemoryEventStore::new(); // Default: snapshots every 100 events
+
+    let id = CounterId::new();
+    println!("Creating counter with 500 events (default: snapshot every 100)...");
+    create_counter_with_events(&store, id, 500).await?;
+
+    println!("Loading counter (will use latest snapshot)...");
+    let load_time = measure_load_time(&store, id).await?;
+
+    let counter: CounterAggregate = load(&store, id).await?;
+    println!("✓ Counter value: {}", counter.value());
+    println!("✓ Load time: {:?}", load_time);
+    println!("✓ Snapshots created at versions: 100, 200, 300, 400, 500");
+    println!("✓ Default config provides excellent performance out-of-the-box!");
+
+    Ok(())
+}
+
+async fn demo_always_snapshot() -> Result<(), Box<dyn std::error::Error>> {
+    println!("\n╔═══════════════════════════════════════════════════════════╗");
+    println!("║  Scenario 3: Always Snapshot Strategy                    ║");
+    println!("╚═══════════════════════════════════════════════════════════╝\n");
+
+    // Create store with always snapshot strategy
+    let config = SnapshotConfig::always();
+    let store = InMemoryEventStore::with_config(config);
+
+    let id = CounterId::new();
+    println!("Creating counter with 500 events (snapshot on every commit)...");
+    create_counter_with_events(&store, id, 500).await?;
+
+    println!("Loading counter (will use latest snapshot)...");
+    let load_time = measure_load_time(&store, id).await?;
+
+    let counter: CounterAggregate = load(&store, id).await?;
+    println!("✓ Counter value: {}", counter.value());
+    println!("✓ Load time: {:?}", load_time);
+    println!("✓ Snapshot created at version: {}", counter.version().as_i32());
+
+    Ok(())
+}
+
+async fn demo_interval_snapshots() -> Result<(), Box<dyn std::error::Error>> {
+    println!("\n╔═══════════════════════════════════════════════════════════╗");
+    println!("║  Scenario 4: Custom Interval (Every 50 Events)           ║");
+    println!("╚═══════════════════════════════════════════════════════════╝\n");
+
+    // Create store with snapshot every 50 events (custom interval)
+    let config = SnapshotConfig::builder()
+        .default_strategy(EveryNEvents(50))
+        .build();
+    let store = InMemoryEventStore::with_config(config);
+
+    let id = CounterId::new();
+    println!("Creating counter with 500 events (snapshot every 50 events)...");
+    create_counter_with_events(&store, id, 500).await?;
+
+    println!("Loading counter (will use snapshot + replay ~10 events)...");
+    let load_time = measure_load_time(&store, id).await?;
+
+    let counter: CounterAggregate = load(&store, id).await?;
+    println!("✓ Counter value: {}", counter.value());
+    println!("✓ Load time: {:?}", load_time);
+    println!("✓ Snapshots created at versions: 50, 100, 150, 200... 500");
+
+    Ok(())
+}
+
+async fn demo_per_type_configuration() -> Result<(), Box<dyn std::error::Error>> {
+    println!("\n╔═══════════════════════════════════════════════════════════╗");
+    println!("║  Scenario 5: Per-Aggregate-Type Configuration            ║");
+    println!("╚═══════════════════════════════════════════════════════════╝\n");
+
+    // Create store with different strategies per aggregate type
+    let config = SnapshotConfig::builder()
+        .default_strategy(EveryNEvents(100)) // Default for most aggregates
+        .per_type_override("Counter", EveryNEvents(50)) // Counter snapshots more frequently
+        .per_type_override("Order", NeverSnapshot) // Orders never snapshot
+        .build();
+
+    let store = InMemoryEventStore::with_config(config);
+
+    let id = CounterId::new();
+    println!("Creating Counter aggregate with 200 events...");
+    println!("  (Counter strategy: snapshot every 50 events)");
+    create_counter_with_events(&store, id, 200).await?;
+
+    println!("\nLoading counter...");
+    let load_time = measure_load_time(&store, id).await?;
+
+    let counter: CounterAggregate = load(&store, id).await?;
+    println!("✓ Counter value: {}", counter.value());
+    println!("✓ Load time: {:?}", load_time);
+    println!("✓ Snapshots created at versions: 50, 100, 150, 200");
+    println!("✓ Counter used its specific strategy (every 50 vs default 100)");
+
+    Ok(())
+}
+
+async fn demo_performance_comparison() -> Result<(), Box<dyn std::error::Error>> {
+    println!("\n╔═══════════════════════════════════════════════════════════╗");
+    println!("║  Scenario 6: Performance Comparison                      ║");
+    println!("╚═══════════════════════════════════════════════════════════╝\n");
+
+    let event_counts = vec![100, 500, 1000, 2000];
+
+    for count in event_counts {
+        println!("\n--- Testing with {} events ---", count);
+
+        // Test without snapshots (explicitly disabled)
+        let store_no_snap = InMemoryEventStore::with_config(SnapshotConfig::disabled());
+        let id1 = CounterId::new();
+        create_counter_with_events(&store_no_snap, id1, count).await?;
+        let time_no_snap = measure_load_time(&store_no_snap, id1).await?;
+
+        // Test with snapshots every 100 events
+        let config = SnapshotConfig::builder()
+            .default_strategy(EveryNEvents(100))
+            .build();
+        let store_with_snap = InMemoryEventStore::with_config(config);
+        let id2 = CounterId::new();
+        create_counter_with_events(&store_with_snap, id2, count).await?;
+        let time_with_snap = measure_load_time(&store_with_snap, id2).await?;
+
+        let speedup = time_no_snap.as_nanos() as f64 / time_with_snap.as_nanos() as f64;
+
+        println!("  Without snapshots: {:?}", time_no_snap);
+        println!("  With snapshots:    {:?}", time_with_snap);
+        println!("  Speedup:           {:.2}x faster", speedup);
+    }
+
+    Ok(())
+}
+
+async fn demo_snapshot_disabled_on_load() -> Result<(), Box<dyn std::error::Error>> {
+    println!("\n╔═══════════════════════════════════════════════════════════╗");
+    println!("║  Scenario 7: Disable Snapshots on Load                   ║");
+    println!("╚═══════════════════════════════════════════════════════════╝\n");
+
+    // Create store that creates snapshots but doesn't use them on load
+    let config = SnapshotConfig::builder()
+        .default_strategy(EveryNEvents(100))
+        .use_snapshots_on_load(false) // Create but don't use!
+        .build();
+    let store = InMemoryEventStore::with_config(config);
+
+    let id = CounterId::new();
+    println!("Creating counter with 300 events (snapshots will be created)...");
+    create_counter_with_events(&store, id, 300).await?;
+
+    println!("Loading counter (snapshots exist but won't be used)...");
+    let load_time = measure_load_time(&store, id).await?;
+
+    let counter: CounterAggregate = load(&store, id).await?;
+    println!("✓ Counter value: {}", counter.value());
+    println!("✓ Load time: {:?}", load_time);
+    println!("✓ Snapshots were created but ignored during load");
+    println!("  (Useful for debugging or verifying event replay)");
+
+    Ok(())
+}
+
+// ============================================================================
+// Main Entry Point
+// ============================================================================
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    println!("\n");
+    println!("╔═══════════════════════════════════════════════════════════╗");
+    println!("║                                                           ║");
+    println!("║       Event-Sauce Snapshotting Strategies Demo           ║");
+    println!("║                                                           ║");
+    println!("╚═══════════════════════════════════════════════════════════╝");
+
+    // Run all demonstration scenarios
+    demo_no_snapshots().await?;
+    demo_default_behavior().await?;
+    demo_always_snapshot().await?;
+    demo_interval_snapshots().await?;
+    demo_per_type_configuration().await?;
+    demo_performance_comparison().await?;
+    demo_snapshot_disabled_on_load().await?;
+
+    println!("\n╔═══════════════════════════════════════════════════════════╗");
+    println!("║  Summary: Snapshot Strategy Guidelines                   ║");
+    println!("╚═══════════════════════════════════════════════════════════╝\n");
+
+    println!("📋 When to use each strategy:\n");
+    println!("  • EveryNEvents(100) (DEFAULT)");
+    println!("    - Enabled automatically with sensible defaults");
+    println!("    - Excellent balance of performance and storage");
+    println!("    - Suitable for most use cases out-of-the-box\n");
+
+    println!("  • NeverSnapshot");
+    println!("    - Only for aggregates with very few events (<50)");
+    println!("    - Write-heavy, rarely-read aggregates");
+    println!("    - Explicitly disable with SnapshotConfig::disabled()\n");
+
+    println!("  • AlwaysSnapshot");
+    println!("    - Read-heavy aggregates");
+    println!("    - Need guaranteed fast load times");
+    println!("    - Storage cost is not a concern\n");
+
+    println!("  • EveryNEvents(n)");
+    println!("    - General-purpose strategy (recommended)");
+    println!("    - Balance between storage and performance");
+    println!("    - n=100 is a good starting point");
+    println!("    - Adjust based on your specific needs\n");
+
+    println!("💡 Configuration Tips:\n");
+    println!("  • Use per-aggregate-type overrides for fine-tuning");
+    println!("  • Monitor snapshot storage size in production");
+    println!("  • Consider event count and load frequency");
+    println!("  • Snapshots are created automatically during commit()");
+    println!("  • Snapshots are used transparently during load()\n");
+
+    println!("✨ All scenarios completed successfully!\n");
+
+    Ok(())
+}

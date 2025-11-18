@@ -5,7 +5,8 @@
 
 use async_trait::async_trait;
 use event_sauce_core::{
-    Error, EventEnvelope, EventStore, Position, Result, Snapshot, StreamId, Version,
+    Error, EventEnvelope, EventStore, Position, Result, Snapshot, SnapshotConfig, StreamId,
+    Version,
 };
 use futures::stream::{self, Stream};
 use parking_lot::RwLock;
@@ -53,25 +54,57 @@ struct InMemoryEventStoreInner {
     snapshots: RwLock<HashMap<StreamId, Snapshot>>,
     /// All events in global order for `stream_all`
     global_events: RwLock<Vec<EventEnvelope>>,
+    /// Snapshot configuration
+    snapshot_config: SnapshotConfig,
 }
 
 impl InMemoryEventStore {
-    /// Creates a new empty in-memory event store.
+    /// Creates a new empty in-memory event store with default snapshot configuration.
+    ///
+    /// Default configuration: Snapshots every 100 events, enabled on load.
+    ///
+    /// For custom snapshot behavior, use [`with_config`](Self::with_config) or
+    /// [`SnapshotConfig::disabled()`] to turn off snapshots.
     ///
     /// # Examples
     ///
     /// ```
     /// use event_sauce_memory::InMemoryEventStore;
     ///
+    /// // Default: snapshots every 100 events
     /// let store = InMemoryEventStore::new();
+    ///
+    /// // Disable snapshots
+    /// use event_sauce_core::SnapshotConfig;
+    /// let store = InMemoryEventStore::with_config(SnapshotConfig::disabled());
     /// ```
     #[must_use]
     pub fn new() -> Self {
+        Self::with_config(SnapshotConfig::builder().build())
+    }
+
+    /// Creates a new empty in-memory event store with the given snapshot configuration.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use event_sauce_memory::InMemoryEventStore;
+    /// use event_sauce_core::{SnapshotConfig, EveryNEvents};
+    ///
+    /// let config = SnapshotConfig::builder()
+    ///     .default_strategy(EveryNEvents(100))
+    ///     .build();
+    ///
+    /// let store = InMemoryEventStore::with_config(config);
+    /// ```
+    #[must_use]
+    pub fn with_config(snapshot_config: SnapshotConfig) -> Self {
         Self {
             inner: Arc::new(InMemoryEventStoreInner {
                 streams: RwLock::new(HashMap::new()),
                 snapshots: RwLock::new(HashMap::new()),
                 global_events: RwLock::new(Vec::new()),
+                snapshot_config,
             }),
         }
     }
@@ -184,6 +217,10 @@ impl EventStore for InMemoryEventStore {
     async fn load_snapshot(&self, stream_id: StreamId) -> Result<Option<Snapshot>> {
         let snapshots = self.inner.snapshots.read();
         Ok(snapshots.get(&stream_id).cloned())
+    }
+
+    fn snapshot_config(&self) -> &SnapshotConfig {
+        &self.inner.snapshot_config
     }
 }
 
