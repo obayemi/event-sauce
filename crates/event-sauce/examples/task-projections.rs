@@ -1,17 +1,20 @@
 //! Task Management with Projections
 //!
 //! This example demonstrates:
-//! - Creating events from a task management domain
+//! - Creating events from a task management domain using modern event patterns
 //! - Building multiple projections (read models) from the same events
 //! - Using checkpoints to track projection progress
 //! - Running projections concurrently
+//! - ApplyEvent trait for type-safe event handling
 //!
-//! Run with: `cargo run --example task-projections --features "memory,projections"`
+//! Run with: `cargo run --example task-projections --features "memory,projections,macros"`
 
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use event_sauce::event_sauce_memory::InMemoryEventBus;
 use event_sauce::event_sauce_projections;
 use event_sauce::{EventBus, EventEnvelope, EventFilter, Result, Version};
+use event_sauce_macros::Event;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -30,36 +33,54 @@ enum TaskStatus {
     Completed,
 }
 
-/// Task events
+// Individual event structs with their own data
 #[derive(Debug, Clone, Serialize, Deserialize)]
+struct Created {
+    task_id: Uuid,
+    title: String,
+    assignee: String,
+    timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StatusChanged {
+    task_id: Uuid,
+    old_status: TaskStatus,
+    new_status: TaskStatus,
+    timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Assigned {
+    task_id: Uuid,
+    from_assignee: String,
+    to_assignee: String,
+    timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Completed {
+    task_id: Uuid,
+    timestamp: DateTime<Utc>,
+}
+
+/// Task event enum wrapping individual events
+#[derive(Event, Debug, Clone, Serialize, Deserialize)]
+#[event(version = 1, type_prefix = "Task")]
 enum TaskEvent {
-    Created {
-        task_id: Uuid,
-        title: String,
-        assignee: String,
-    },
-    StatusChanged {
-        task_id: Uuid,
-        old_status: TaskStatus,
-        new_status: TaskStatus,
-    },
-    Assigned {
-        task_id: Uuid,
-        from_assignee: String,
-        to_assignee: String,
-    },
-    Completed {
-        task_id: Uuid,
-    },
+    Created(Created),
+    StatusChanged(StatusChanged),
+    Assigned(Assigned),
+    Completed(Completed),
 }
 
 /// Helper function to create event envelopes
 fn create_event(event: TaskEvent, aggregate_id: Uuid, sequence: i32) -> EventEnvelope {
     let event_type = match &event {
-        TaskEvent::Created { .. } => "TaskCreated",
-        TaskEvent::StatusChanged { .. } => "TaskStatusChanged",
-        TaskEvent::Assigned { .. } => "TaskAssigned",
-        TaskEvent::Completed { .. } => "TaskCompleted",
+        TaskEvent::Created(_) => "Task.Created",
+        TaskEvent::StatusChanged(_) => "Task.StatusChanged",
+        TaskEvent::Assigned(_) => "Task.Assigned",
+        TaskEvent::Completed(_) => "Task.Completed",
     };
 
     EventEnvelope::new(
@@ -111,14 +132,14 @@ impl Projection for TaskCountByStatusProjection {
             })?;
 
         match event_data {
-            TaskEvent::Created { .. } => {
+            TaskEvent::Created(_) => {
                 *self.counts.entry(TaskStatus::Todo).or_insert(0) += 1;
             }
-            TaskEvent::StatusChanged {
+            TaskEvent::StatusChanged(StatusChanged {
                 old_status,
                 new_status,
                 ..
-            } => {
+            }) => {
                 // Decrement old status count
                 if let Some(count) = self.counts.get_mut(&old_status) {
                     *count = count.saturating_sub(1);
@@ -126,11 +147,11 @@ impl Projection for TaskCountByStatusProjection {
                 // Increment new status count
                 *self.counts.entry(new_status).or_insert(0) += 1;
             }
-            TaskEvent::Completed { .. } => {
+            TaskEvent::Completed(_) => {
                 // Completed event might be separate from status change
                 // This is idempotent if status was already changed to Completed
             }
-            TaskEvent::Assigned { .. } => {
+            TaskEvent::Assigned(_) => {
                 // Assignment doesn't affect status counts
             }
         }
@@ -176,19 +197,20 @@ impl Projection for TasksByAssigneeProjection {
             })?;
 
         match event_data {
-            TaskEvent::Created {
+            TaskEvent::Created(Created {
                 task_id, assignee, ..
-            } => {
+            }) => {
                 self.assignments
                     .entry(assignee)
                     .or_insert_with(Vec::new)
                     .push(task_id);
             }
-            TaskEvent::Assigned {
+            TaskEvent::Assigned(Assigned {
                 task_id,
                 from_assignee,
                 to_assignee,
-            } => {
+                ..
+            }) => {
                 // Remove from old assignee
                 if let Some(tasks) = self.assignments.get_mut(&from_assignee) {
                     tasks.retain(|&id| id != task_id);
@@ -237,14 +259,14 @@ impl Projection for CompletedTasksProjection {
     }
 
     async fn handle(&mut self, event: &EventEnvelope) -> Result<()> {
-        // Only process TaskCompleted events
-        if event.event_type == "TaskCompleted" {
+        // Only process Task.Completed events
+        if event.event_type == "Task.Completed" {
             let event_data = serde_json::from_value::<TaskEvent>(event.event_data.clone())
                 .map_err(|e| {
                     event_sauce_core::Error::custom(format!("Failed to deserialize: {}", e))
                 })?;
 
-            if let TaskEvent::Completed { task_id } = event_data {
+            if let TaskEvent::Completed(Completed { task_id, .. }) = event_data {
                 self.count += 1;
                 self.last_completed_task_id = Some(task_id);
             }
@@ -284,7 +306,7 @@ async fn main() -> Result<()> {
     let status_stream = bus.subscribe(EventFilter::all()).await?;
     let assignee_stream = bus.subscribe(EventFilter::all()).await?;
     let completed_stream = bus
-        .subscribe(EventFilter::by_event_type("TaskCompleted"))
+        .subscribe(EventFilter::by_event_type("Task.Completed"))
         .await?;
 
     println!("✓ Subscribed projections to event streams\n");
@@ -298,11 +320,12 @@ async fn main() -> Result<()> {
 
     // Task 1: Created by Alice
     let event = create_event(
-        TaskEvent::Created {
+        TaskEvent::Created(Created {
             task_id: task1_id,
             title: "Implement authentication".to_string(),
             assignee: "alice".to_string(),
-        },
+            timestamp: Utc::now(),
+        }),
         task1_id,
         1,
     );
@@ -311,11 +334,12 @@ async fn main() -> Result<()> {
 
     // Task 2: Created by Bob
     let event = create_event(
-        TaskEvent::Created {
+        TaskEvent::Created(Created {
             task_id: task2_id,
             title: "Write documentation".to_string(),
             assignee: "bob".to_string(),
-        },
+            timestamp: Utc::now(),
+        }),
         task2_id,
         1,
     );
@@ -324,11 +348,12 @@ async fn main() -> Result<()> {
 
     // Task 3: Created by Alice
     let event = create_event(
-        TaskEvent::Created {
+        TaskEvent::Created(Created {
             task_id: task3_id,
             title: "Fix bug #123".to_string(),
             assignee: "alice".to_string(),
-        },
+            timestamp: Utc::now(),
+        }),
         task3_id,
         1,
     );
@@ -337,11 +362,12 @@ async fn main() -> Result<()> {
 
     // Task 1: Status changed to InProgress
     let event = create_event(
-        TaskEvent::StatusChanged {
+        TaskEvent::StatusChanged(StatusChanged {
             task_id: task1_id,
             old_status: TaskStatus::Todo,
             new_status: TaskStatus::InProgress,
-        },
+            timestamp: Utc::now(),
+        }),
         task1_id,
         2,
     );
@@ -350,11 +376,12 @@ async fn main() -> Result<()> {
 
     // Task 2: Assigned from Bob to Charlie
     let event = create_event(
-        TaskEvent::Assigned {
+        TaskEvent::Assigned(Assigned {
             task_id: task2_id,
             from_assignee: "bob".to_string(),
             to_assignee: "charlie".to_string(),
-        },
+            timestamp: Utc::now(),
+        }),
         task2_id,
         2,
     );
@@ -363,28 +390,37 @@ async fn main() -> Result<()> {
 
     // Task 1: Completed
     let event = create_event(
-        TaskEvent::StatusChanged {
+        TaskEvent::StatusChanged(StatusChanged {
             task_id: task1_id,
             old_status: TaskStatus::InProgress,
             new_status: TaskStatus::Completed,
-        },
+            timestamp: Utc::now(),
+        }),
         task1_id,
         3,
     );
     bus.publish(event).await?;
     println!("✓ Task 1 moved to Completed");
 
-    let event = create_event(TaskEvent::Completed { task_id: task1_id }, task1_id, 4);
+    let event = create_event(
+        TaskEvent::Completed(Completed {
+            task_id: task1_id,
+            timestamp: Utc::now(),
+        }),
+        task1_id,
+        4,
+    );
     bus.publish(event).await?;
     println!("✓ Task 1 completed");
 
     // Task 3: Status changed to InProgress
     let event = create_event(
-        TaskEvent::StatusChanged {
+        TaskEvent::StatusChanged(StatusChanged {
             task_id: task3_id,
             old_status: TaskStatus::Todo,
             new_status: TaskStatus::InProgress,
-        },
+            timestamp: Utc::now(),
+        }),
         task3_id,
         2,
     );
@@ -434,7 +470,7 @@ async fn main() -> Result<()> {
         .await?;
     println!("✓ Assignee projection processed (with checkpoints)");
 
-    // Only 1 TaskCompleted event was published
+    // Only 1 Task.Completed event was published
     completed_runner.run(completed_stream.take(1)).await?;
     println!("✓ Completed tasks projection processed\n");
 

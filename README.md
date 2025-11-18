@@ -569,11 +569,70 @@ event-sauce generate --help
 event-sauce init --help
 ```
 
+## PostgreSQL Production Setup
+
+Event-sauce provides production-ready PostgreSQL support with **schema isolation** to avoid migration conflicts:
+
+```rust
+use event_sauce_postgres::PostgresEventStore;
+use sqlx::PgPool;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let pool = PgPool::connect(&std::env::var("DATABASE_URL")?).await?;
+
+    // Simple setup with schema isolation (recommended)
+    let store = PostgresEventStore::new(pool);
+    store.migrate().await?;
+
+    // Creates:
+    // - event_sauce.events table
+    // - event_sauce.snapshots table
+    // - event_sauce._event_sauce_migrations (separate from your app!)
+
+    Ok(())
+}
+```
+
+### Builder Pattern for Custom Configuration
+
+```rust
+use event_sauce_postgres::PostgresEventStore;
+use event_sauce_core::{SnapshotConfig, EveryNEvents};
+use sqlx::postgres::PgPoolOptions;
+use std::time::Duration;
+
+let pool = PgPoolOptions::new()
+    .max_connections(50)
+    .acquire_timeout(Duration::from_secs(30))
+    .connect(&database_url)
+    .await?;
+
+let store = PostgresEventStore::builder()
+    .pool(pool)
+    .schema("event_sauce")                      // Custom schema name
+    .snapshot_config(SnapshotConfig::builder()
+        .default_strategy(EveryNEvents(100))    // Snapshot every 100 events
+        .build())
+    .build();
+
+store.migrate().await?;
+```
+
+**Why schema isolation?**
+- ✅ Your app's migrations stay in `public._sqlx_migrations`
+- ✅ Event-sauce migrations go to `event_sauce._event_sauce_migrations`
+- ✅ Zero conflicts, clean separation, easy cleanup
+
+📖 **[Full PostgreSQL Production Guide](docs/postgres-production.md)** - Connection pooling, snapshots, HA setup, monitoring, and more.
+
 ## Documentation
 
 ### Guides
 
 - **[Getting Started Guide](docs/getting-started.md)** - Your first event-sourced application
+- **[Projections & Event Bus](docs/projections.md)** - 🆕 Building read models with real-time event distribution
+- **[PostgreSQL Production Setup](docs/postgres-production.md)** - Complete production deployment guide
 - **[Architecture Overview](docs/architecture.md)** - System design and patterns
 - **[TDD Workflow](docs/tdd-workflow.md)** - Test-driven development for event sourcing
 

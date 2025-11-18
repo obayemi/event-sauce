@@ -11,7 +11,12 @@ Welcome to the event-sauce documentation! This directory contains comprehensive 
 - **[Aggregates](aggregates.md)** - Business entities and consistency boundaries
 - **[Events](events.md)** - Domain events and event modeling
 - **[Event Store](event-store.md)** - Persisting and loading event streams
+- **[Projections & Event Bus](projections.md)** - Building read models with real-time event distribution
 - **[Validation](validation.md)** - Event validation and business rules
+
+## Production Deployment
+
+- **[PostgreSQL Production Setup](postgres-production.md)** - 🆕 Complete guide to deploying with PostgreSQL (connection pooling, snapshots, HA, monitoring)
 
 ## Guides
 
@@ -58,11 +63,11 @@ Event sourcing is a pattern where you store all changes to application state as 
 We recommend following this path:
 
 1. **Start** → [Getting Started Guide](getting-started.md)
-2. **Build** → Run the `counter` example
+2. **Build** → Run the `postgres-quickstart` or `bank-account` example
 3. **Learn** → Read [Architecture Overview](architecture.md)
 4. **Practice** → Follow [TDD Workflow](tdd-workflow.md)
-5. **Explore** → Try the `shopping-cart` example
-6. **Advanced** → Study the `task-projections` example
+5. **Explore** → Read [Projections & Event Bus](projections.md) and try the `task-projections` example
+6. **Production** → Study [PostgreSQL Production Setup](postgres-production.md)
 
 ## Common Patterns
 

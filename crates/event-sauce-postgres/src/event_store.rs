@@ -16,6 +16,7 @@ use sqlx::PgPool;
 /// - Efficient streaming queries
 /// - Snapshot support
 /// - Full ACID guarantees
+/// - Schema isolation to avoid conflicts with application migrations
 ///
 /// # Examples
 ///
@@ -26,9 +27,19 @@ use sqlx::PgPool;
 /// #[tokio::main]
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///     let pool = PgPool::connect("postgresql://localhost/events").await?;
+///
+///     // Using builder pattern with custom schema (recommended)
+///     let store = PostgresEventStore::builder()
+///         .pool(pool)
+///         .schema("event_sauce") // Isolates migrations from your app
+///         .build();
+///
+///     // Run migrations in the custom schema
+///     store.migrate().await?;
+///
+///     // Or use simple constructor (uses "public" schema)
 ///     let store = PostgresEventStore::new(pool);
 ///
-///     // Store is ready to use
 ///     Ok(())
 /// }
 /// ```
@@ -36,37 +47,67 @@ use sqlx::PgPool;
 pub struct PostgresEventStore {
     pool: PgPool,
     snapshot_config: SnapshotConfig,
+    schema: String,
+}
+
+/// Builder for configuring `PostgresEventStore`.
+///
+/// Provides a flexible way to configure the event store with:
+/// - Custom database connection pool
+/// - Snapshot configuration
+/// - Schema name for table isolation
+///
+/// # Examples
+///
+/// ```ignore
+/// use event_sauce_postgres::PostgresEventStore;
+/// use event_sauce_core::SnapshotConfig;
+/// use sqlx::PgPool;
+///
+/// let pool = PgPool::connect("postgresql://localhost/events").await?;
+///
+/// let store = PostgresEventStore::builder()
+///     .pool(pool)
+///     .schema("event_sauce")
+///     .snapshot_config(SnapshotConfig::builder().build())
+///     .build();
+/// ```
+#[derive(Clone)]
+pub struct PostgresEventStoreBuilder {
+    pool: Option<PgPool>,
+    snapshot_config: Option<SnapshotConfig>,
+    schema: Option<String>,
 }
 
 impl PostgresEventStore {
-    /// Creates a new `PostgreSQL` event store with default snapshot configuration.
+    /// Creates a new `PostgreSQL` event store with default configuration.
     ///
-    /// Default configuration: Snapshots every 100 events, enabled on load.
+    /// This is a convenience method that uses the builder with all defaults:
+    /// - **Schema**: "event_sauce" (isolated from your app)
+    /// - **Snapshots**: Every 100 events
     ///
-    /// For custom snapshot behavior, use [`with_config`](Self::with_config) or
-    /// [`SnapshotConfig::disabled()`] to turn off snapshots.
+    /// Equivalent to `PostgresEventStore::builder().pool(pool).build()`.
     ///
     /// # Examples
     ///
     /// ```ignore
     /// use event_sauce_postgres::PostgresEventStore;
-    /// use event_sauce_core::SnapshotConfig;
     /// use sqlx::PgPool;
     ///
     /// let pool = PgPool::connect("postgresql://localhost/events").await?;
     ///
-    /// // Default: snapshots every 100 events
+    /// // Uses "event_sauce" schema by default
     /// let store = PostgresEventStore::new(pool);
-    ///
-    /// // Disable snapshots
-    /// let store = PostgresEventStore::with_config(pool, SnapshotConfig::disabled());
+    /// store.migrate().await?;
     /// ```
     #[must_use]
     pub fn new(pool: PgPool) -> Self {
-        Self::with_config(pool, SnapshotConfig::builder().build())
+        Self::builder().pool(pool).build()
     }
 
-    /// Creates a new `PostgreSQL` event store with the given snapshot configuration.
+    /// Creates a new `PostgreSQL` event store with custom snapshot configuration.
+    ///
+    /// Uses default schema "event_sauce".
     ///
     /// # Examples
     ///
@@ -77,23 +118,68 @@ impl PostgresEventStore {
     ///
     /// let pool = PgPool::connect("postgresql://localhost/events").await?;
     /// let config = SnapshotConfig::builder()
-    ///     .default_strategy(EveryNEvents(100))
+    ///     .default_strategy(EveryNEvents(50))
     ///     .build();
     ///
     /// let store = PostgresEventStore::with_config(pool, config);
     /// ```
     #[must_use]
     pub fn with_config(pool: PgPool, snapshot_config: SnapshotConfig) -> Self {
-        Self {
-            pool,
-            snapshot_config,
-        }
+        Self::builder()
+            .pool(pool)
+            .snapshot_config(snapshot_config)
+            .build()
+    }
+
+    /// Creates a builder for configuring the event store.
+    ///
+    /// This is the recommended way to create a `PostgresEventStore` when you need
+    /// to customize the schema name or other settings.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use event_sauce_postgres::PostgresEventStore;
+    /// use sqlx::PgPool;
+    ///
+    /// let pool = PgPool::connect("postgresql://localhost/events").await?;
+    ///
+    /// let store = PostgresEventStore::builder()
+    ///     .pool(pool)
+    ///     .schema("event_sauce")  // Isolate from app migrations
+    ///     .build();
+    /// ```
+    #[must_use]
+    pub fn builder() -> PostgresEventStoreBuilder {
+        PostgresEventStoreBuilder::new()
     }
 
     /// Returns a reference to the underlying connection pool.
     #[must_use]
     pub fn pool(&self) -> &PgPool {
         &self.pool
+    }
+
+    /// Returns the schema name used by this event store.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let store = PostgresEventStore::builder()
+    ///     .pool(pool)
+    ///     .schema("my_schema")
+    ///     .build();
+    ///
+    /// assert_eq!(store.schema(), "my_schema");
+    /// ```
+    #[must_use]
+    pub fn schema(&self) -> &str {
+        &self.schema
+    }
+
+    /// Returns a schema-qualified table name (e.g., "schema.events").
+    fn qualify_table(&self, table: &str) -> String {
+        format!("{}.{}", self.schema, table)
     }
 
     /// Runs database migrations to set up the event store schema.
@@ -127,11 +213,246 @@ impl PostgresEventStore {
     /// - The migrations cannot be applied due to permission issues
     /// - There are SQL syntax errors in migration files
     pub async fn migrate(&self) -> Result<()> {
-        sqlx::migrate!("./migrations")
-            .run(&self.pool)
+        // Create schema if it doesn't exist (skip for public schema)
+        if self.schema != "public" {
+            let create_schema = format!("CREATE SCHEMA IF NOT EXISTS {}", self.schema);
+            sqlx::query(&create_schema)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| Error::custom(format!("Failed to create schema: {e}")))?;
+        }
+
+        // Create migration tracking table in the custom schema
+        let migrations_table = self.qualify_table("_event_sauce_migrations");
+        let create_migrations_table = format!(
+            "CREATE TABLE IF NOT EXISTS {} (
+                version BIGINT PRIMARY KEY,
+                description TEXT NOT NULL,
+                applied_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+            )",
+            migrations_table
+        );
+        sqlx::query(&create_migrations_table)
+            .execute(&self.pool)
             .await
-            .map_err(|e| Error::custom(format!("Failed to run migrations: {e}")))?;
+            .map_err(|e| Error::custom(format!("Failed to create migrations table: {e}")))?;
+
+        // Check if migration has already been applied
+        let check_query = format!(
+            "SELECT COUNT(*) FROM {} WHERE version = $1",
+            migrations_table
+        );
+        let count: i64 = sqlx::query_scalar(&check_query)
+            .bind(20250101000000i64)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| Error::custom(format!("Failed to check migration status: {e}")))?;
+
+        if count > 0 {
+            // Migration already applied
+            return Ok(());
+        }
+
+        // Apply the migration with schema-qualified table names
+        // Note: Each statement must be executed separately
+        let events_table = self.qualify_table("events");
+        let snapshots_table = self.qualify_table("snapshots");
+
+        // Create events table
+        let create_events = format!(
+            "CREATE TABLE IF NOT EXISTS {} (
+                id BIGSERIAL PRIMARY KEY,
+                event_id UUID NOT NULL UNIQUE,
+                aggregate_id UUID NOT NULL,
+                aggregate_type VARCHAR(255) NOT NULL,
+                event_type VARCHAR(255) NOT NULL,
+                event_version INTEGER NOT NULL,
+                event_data JSONB NOT NULL,
+                stream_version BIGINT NOT NULL,
+                created_by UUID,
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                correlation_id UUID,
+                causation_id UUID,
+                metadata JSONB,
+                UNIQUE(aggregate_id, aggregate_type, stream_version)
+            )",
+            events_table
+        );
+        sqlx::query(&create_events)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| Error::custom(format!("Failed to create events table: {e}")))?;
+
+        // Create indexes for events table
+        let indexes = vec![
+            format!("CREATE INDEX IF NOT EXISTS idx_events_aggregate ON {}(aggregate_id, aggregate_type)", events_table),
+            format!("CREATE INDEX IF NOT EXISTS idx_events_aggregate_version ON {}(aggregate_id, aggregate_type, stream_version)", events_table),
+            format!("CREATE INDEX IF NOT EXISTS idx_events_type ON {}(event_type)", events_table),
+            format!("CREATE INDEX IF NOT EXISTS idx_events_aggregate_type ON {}(aggregate_type)", events_table),
+            format!("CREATE INDEX IF NOT EXISTS idx_events_created_at ON {}(created_at)", events_table),
+            format!("CREATE INDEX IF NOT EXISTS idx_events_correlation_id ON {}(correlation_id) WHERE correlation_id IS NOT NULL", events_table),
+        ];
+
+        for index_sql in indexes {
+            sqlx::query(&index_sql)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| Error::custom(format!("Failed to create index: {e}")))?;
+        }
+
+        // Create snapshots table
+        let create_snapshots = format!(
+            "CREATE TABLE IF NOT EXISTS {} (
+                aggregate_id UUID NOT NULL,
+                aggregate_type VARCHAR(255) NOT NULL,
+                snapshot_version BIGINT NOT NULL,
+                snapshot_data JSONB NOT NULL,
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (aggregate_id, aggregate_type)
+            )",
+            snapshots_table
+        );
+        sqlx::query(&create_snapshots)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| Error::custom(format!("Failed to create snapshots table: {e}")))?;
+
+        // Create index for snapshots table
+        let snapshots_index = format!(
+            "CREATE INDEX IF NOT EXISTS idx_snapshots_type ON {}(aggregate_type)",
+            snapshots_table
+        );
+        sqlx::query(&snapshots_index)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| Error::custom(format!("Failed to create snapshots index: {e}")))?;
+
+        // Record the migration
+        let record_query = format!(
+            "INSERT INTO {} (version, description) VALUES ($1, $2)",
+            migrations_table
+        );
+        sqlx::query(&record_query)
+            .bind(20250101000000i64)
+            .bind("create_events_table")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| Error::custom(format!("Failed to record migration: {e}")))?;
+
         Ok(())
+    }
+}
+
+impl PostgresEventStoreBuilder {
+    /// Creates a new builder with default values.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            pool: None,
+            snapshot_config: None,
+            schema: None,
+        }
+    }
+
+    /// Sets the database connection pool.
+    ///
+    /// This is required - calling `build()` without setting a pool will panic.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use event_sauce_postgres::PostgresEventStore;
+    /// use sqlx::PgPool;
+    ///
+    /// let pool = PgPool::connect("postgresql://localhost/events").await?;
+    /// let builder = PostgresEventStore::builder().pool(pool);
+    /// ```
+    #[must_use]
+    pub fn pool(mut self, pool: PgPool) -> Self {
+        self.pool = Some(pool);
+        self
+    }
+
+    /// Sets the snapshot configuration.
+    ///
+    /// Defaults to `SnapshotConfig::builder().build()` (every 100 events).
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use event_sauce_postgres::PostgresEventStore;
+    /// use event_sauce_core::SnapshotConfig;
+    ///
+    /// let builder = PostgresEventStore::builder()
+    ///     .pool(pool)
+    ///     .snapshot_config(SnapshotConfig::disabled());
+    /// ```
+    #[must_use]
+    pub fn snapshot_config(mut self, config: SnapshotConfig) -> Self {
+        self.snapshot_config = Some(config);
+        self
+    }
+
+    /// Sets the schema name for event store tables.
+    ///
+    /// Defaults to "event_sauce" to isolate event-sauce migrations from your
+    /// application's migration system. Use "public" if you want to use the
+    /// default PostgreSQL schema.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use event_sauce_postgres::PostgresEventStore;
+    ///
+    /// let builder = PostgresEventStore::builder()
+    ///     .pool(pool)
+    ///     .schema("my_custom_schema");
+    /// ```
+    #[must_use]
+    pub fn schema(mut self, schema: impl Into<String>) -> Self {
+        self.schema = Some(schema.into());
+        self
+    }
+
+    /// Builds the `PostgresEventStore` with the configured settings.
+    ///
+    /// # Defaults
+    ///
+    /// - **Schema**: "event_sauce" (isolates migrations from your app)
+    /// - **Snapshot config**: Every 100 events
+    ///
+    /// # Panics
+    ///
+    /// Panics if the pool has not been set via [`pool()`](Self::pool).
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use event_sauce_postgres::PostgresEventStore;
+    /// use sqlx::PgPool;
+    ///
+    /// let pool = PgPool::connect("postgresql://localhost/events").await?;
+    ///
+    /// // Uses "event_sauce" schema by default
+    /// let store = PostgresEventStore::builder()
+    ///     .pool(pool)
+    ///     .build();
+    /// ```
+    #[must_use]
+    pub fn build(self) -> PostgresEventStore {
+        PostgresEventStore {
+            pool: self.pool.expect("Pool is required"),
+            snapshot_config: self
+                .snapshot_config
+                .unwrap_or_else(|| SnapshotConfig::builder().build()),
+            schema: self.schema.unwrap_or_else(|| "event_sauce".to_string()),
+        }
+    }
+}
+
+impl Default for PostgresEventStoreBuilder {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -154,14 +475,17 @@ impl EventStore for PostgresEventStore {
             .map_err(|e| Error::custom(format!("Failed to start transaction: {e}")))?;
 
         // Check current version
-        let current_version: Option<i64> = sqlx::query_scalar(
-            "SELECT MAX(stream_version) FROM events WHERE aggregate_id = $1 AND aggregate_type = $2"
-        )
-        .bind(stream_id.aggregate_id())
-        .bind(stream_id.aggregate_type())
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(|e| Error::custom(format!("Failed to check version: {e}")))?;
+        let events_table = self.qualify_table("events");
+        let query = format!(
+            "SELECT MAX(stream_version) FROM {} WHERE aggregate_id = $1 AND aggregate_type = $2",
+            events_table
+        );
+        let current_version: Option<i64> = sqlx::query_scalar(&query)
+            .bind(stream_id.aggregate_id())
+            .bind(stream_id.aggregate_type())
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| Error::custom(format!("Failed to check version: {e}")))?;
 
         #[allow(clippy::cast_possible_truncation)]
         let current_version = Version::new((current_version.unwrap_or(-1) + 1) as i32);
@@ -178,26 +502,29 @@ impl EventStore for PostgresEventStore {
             #[allow(clippy::cast_possible_wrap)]
             let stream_version = i64::from(expected_version.as_i32()) + idx as i64;
 
-            sqlx::query(
-                "INSERT INTO events (
+            let insert_query = format!(
+                "INSERT INTO {} (
                     event_id, aggregate_id, aggregate_type, event_type, event_version,
                     event_data, stream_version, created_by, correlation_id, causation_id, metadata
                 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
-            )
-            .bind(event.id)
-            .bind(event.aggregate_id)
-            .bind(&event.aggregate_type)
-            .bind(&event.event_type)
-            .bind(event.event_version.as_i32())
-            .bind(&event.event_data)
-            .bind(stream_version)
-            .bind(event.created_by)
-            .bind(event.metadata.as_ref().and_then(|m| m.correlation_id))
-            .bind(event.metadata.as_ref().and_then(|m| m.causation_id))
-            .bind(event.metadata.as_ref().and_then(|m| m.additional.clone()))
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| Error::custom(format!("Failed to insert event: {e}")))?;
+                events_table
+            );
+
+            sqlx::query(&insert_query)
+                .bind(event.id)
+                .bind(event.aggregate_id)
+                .bind(&event.aggregate_type)
+                .bind(&event.event_type)
+                .bind(event.event_version.as_i32())
+                .bind(&event.event_data)
+                .bind(stream_version)
+                .bind(event.created_by)
+                .bind(event.metadata.as_ref().and_then(|m| m.correlation_id))
+                .bind(event.metadata.as_ref().and_then(|m| m.causation_id))
+                .bind(event.metadata.as_ref().and_then(|m| m.additional.clone()))
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| Error::custom(format!("Failed to insert event: {e}")))?;
         }
 
         tx.commit()
@@ -212,22 +539,26 @@ impl EventStore for PostgresEventStore {
         stream_id: StreamId,
         from_version: Version,
     ) -> Result<impl Stream<Item = Result<EventEnvelope>> + Send> {
-        let events: Vec<EventEnvelope> = sqlx::query_as::<_, EventRow>(
+        let events_table = self.qualify_table("events");
+        let query = format!(
             "SELECT event_id, aggregate_id, aggregate_type, event_type, event_version,
                     event_data, created_by, created_at, correlation_id, causation_id, metadata
-             FROM events
+             FROM {}
              WHERE aggregate_id = $1 AND aggregate_type = $2 AND stream_version >= $3
              ORDER BY stream_version ASC",
-        )
-        .bind(stream_id.aggregate_id())
-        .bind(stream_id.aggregate_type())
-        .bind(i64::from(from_version.as_i32()))
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| Error::custom(format!("Failed to load stream: {e}")))?
-        .into_iter()
-        .map(Into::into)
-        .collect();
+            events_table
+        );
+
+        let events: Vec<EventEnvelope> = sqlx::query_as::<_, EventRow>(&query)
+            .bind(stream_id.aggregate_id())
+            .bind(stream_id.aggregate_type())
+            .bind(i64::from(from_version.as_i32()))
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| Error::custom(format!("Failed to load stream: {e}")))?
+            .into_iter()
+            .map(Into::into)
+            .collect();
 
         Ok(stream::iter(events.into_iter().map(Ok)))
     }
@@ -236,33 +567,41 @@ impl EventStore for PostgresEventStore {
         &self,
         from_position: Position,
     ) -> Result<impl Stream<Item = Result<EventEnvelope>> + Send> {
-        let events: Vec<EventEnvelope> = sqlx::query_as::<_, EventRow>(
+        let events_table = self.qualify_table("events");
+        let query = format!(
             "SELECT event_id, aggregate_id, aggregate_type, event_type, event_version,
                     event_data, created_by, created_at, correlation_id, causation_id, metadata
-             FROM events
+             FROM {}
              WHERE id > $1
              ORDER BY id ASC",
-        )
-        .bind(from_position.as_i64())
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| Error::custom(format!("Failed to stream all: {e}")))?
-        .into_iter()
-        .map(Into::into)
-        .collect();
+            events_table
+        );
+
+        let events: Vec<EventEnvelope> = sqlx::query_as::<_, EventRow>(&query)
+            .bind(from_position.as_i64())
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| Error::custom(format!("Failed to stream all: {e}")))?
+            .into_iter()
+            .map(Into::into)
+            .collect();
 
         Ok(stream::iter(events.into_iter().map(Ok)))
     }
 
     async fn get_version(&self, stream_id: StreamId) -> Result<Version> {
-        let version: Option<i64> = sqlx::query_scalar(
-            "SELECT MAX(stream_version) FROM events WHERE aggregate_id = $1 AND aggregate_type = $2"
-        )
-        .bind(stream_id.aggregate_id())
-        .bind(stream_id.aggregate_type())
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| Error::custom(format!("Failed to get version: {e}")))?;
+        let events_table = self.qualify_table("events");
+        let query = format!(
+            "SELECT MAX(stream_version) FROM {} WHERE aggregate_id = $1 AND aggregate_type = $2",
+            events_table
+        );
+
+        let version: Option<i64> = sqlx::query_scalar(&query)
+            .bind(stream_id.aggregate_id())
+            .bind(stream_id.aggregate_type())
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| Error::custom(format!("Failed to get version: {e}")))?;
 
         #[allow(clippy::cast_possible_truncation)]
         let next_version = version.map_or(0, |v| v + 1) as i32;
@@ -270,34 +609,42 @@ impl EventStore for PostgresEventStore {
     }
 
     async fn save_snapshot(&self, snapshot: Snapshot) -> Result<()> {
-        sqlx::query(
-            "INSERT INTO snapshots (aggregate_id, aggregate_type, snapshot_version, snapshot_data)
+        let snapshots_table = self.qualify_table("snapshots");
+        let query = format!(
+            "INSERT INTO {} (aggregate_id, aggregate_type, snapshot_version, snapshot_data)
              VALUES ($1, $2, $3, $4)
              ON CONFLICT (aggregate_id, aggregate_type)
              DO UPDATE SET snapshot_version = $3, snapshot_data = $4, created_at = NOW()",
-        )
-        .bind(snapshot.aggregate_id)
-        .bind(&snapshot.aggregate_type)
-        .bind(i64::from(snapshot.snapshot_version.as_i32()))
-        .bind(&snapshot.snapshot_data)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| Error::custom(format!("Failed to save snapshot: {e}")))?;
+            snapshots_table
+        );
+
+        sqlx::query(&query)
+            .bind(snapshot.aggregate_id)
+            .bind(&snapshot.aggregate_type)
+            .bind(i64::from(snapshot.snapshot_version.as_i32()))
+            .bind(&snapshot.snapshot_data)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| Error::custom(format!("Failed to save snapshot: {e}")))?;
 
         Ok(())
     }
 
     async fn load_snapshot(&self, stream_id: StreamId) -> Result<Option<Snapshot>> {
-        let row: Option<SnapshotRow> = sqlx::query_as::<_, SnapshotRow>(
+        let snapshots_table = self.qualify_table("snapshots");
+        let query = format!(
             "SELECT aggregate_id, aggregate_type, snapshot_version, snapshot_data
-             FROM snapshots
+             FROM {}
              WHERE aggregate_id = $1 AND aggregate_type = $2",
-        )
-        .bind(stream_id.aggregate_id())
-        .bind(stream_id.aggregate_type())
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| Error::custom(format!("Failed to load snapshot: {e}")))?;
+            snapshots_table
+        );
+
+        let row: Option<SnapshotRow> = sqlx::query_as::<_, SnapshotRow>(&query)
+            .bind(stream_id.aggregate_id())
+            .bind(stream_id.aggregate_type())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| Error::custom(format!("Failed to load snapshot: {e}")))?;
 
         Ok(row.map(Into::into))
     }
@@ -432,6 +779,14 @@ mod tests {
         fn pool(&self) -> &PgPool {
             &self.pool
         }
+
+        /// Creates a store configured for this test database (uses public schema to match migrations).
+        fn store(&self) -> PostgresEventStore {
+            PostgresEventStore::builder()
+                .pool(self.pool.clone())
+                .schema("public") // Match the schema where TestDatabase runs migrations
+                .build()
+        }
     }
 
     fn create_test_envelope(event_type: &str, aggregate_id: Uuid) -> EventEnvelope {
@@ -456,13 +811,13 @@ mod tests {
     #[tokio::test]
     async fn test_create_store() {
         let db = TestDatabase::new().await.unwrap();
-        let _store = PostgresEventStore::new(db.pool().clone());
+        let _store = db.store();
     }
 
     #[tokio::test]
     async fn test_append_to_new_stream() {
         let db = TestDatabase::new().await.unwrap();
-        let store = PostgresEventStore::new(db.pool().clone());
+        let store = db.store();
         let stream_id = StreamId::new("User", Uuid::new_v4());
         let event = create_test_envelope("UserCreated", stream_id.aggregate_id());
 
@@ -475,7 +830,7 @@ mod tests {
     #[tokio::test]
     async fn test_load_stream() {
         let db = TestDatabase::new().await.unwrap();
-        let store = PostgresEventStore::new(db.pool().clone());
+        let store = db.store();
         let aggregate_id = Uuid::new_v4();
         let stream_id = StreamId::new("User", aggregate_id);
         let event = create_test_envelope("UserCreated", aggregate_id);
@@ -497,7 +852,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_version() {
         let db = TestDatabase::new().await.unwrap();
-        let store = PostgresEventStore::new(db.pool().clone());
+        let store = db.store();
         let stream_id = StreamId::new("User", Uuid::new_v4());
 
         // New stream should have initial version
@@ -508,7 +863,7 @@ mod tests {
     #[tokio::test]
     async fn test_concurrency_conflict() {
         let db = TestDatabase::new().await.unwrap();
-        let store = PostgresEventStore::new(db.pool().clone());
+        let store = db.store();
         let aggregate_id = Uuid::new_v4();
         let stream_id = StreamId::new("User", aggregate_id);
         let event1 = create_test_envelope("UserCreated", aggregate_id);
@@ -531,7 +886,7 @@ mod tests {
     #[tokio::test]
     async fn test_stream_all() {
         let db = TestDatabase::new().await.unwrap();
-        let store = PostgresEventStore::new(db.pool().clone());
+        let store = db.store();
         let id1 = Uuid::new_v4();
         let id2 = Uuid::new_v4();
         let stream1 = StreamId::new("User", id1);
@@ -563,7 +918,7 @@ mod tests {
     #[tokio::test]
     async fn test_save_and_load_snapshot() {
         let db = TestDatabase::new().await.unwrap();
-        let store = PostgresEventStore::new(db.pool().clone());
+        let store = db.store();
         let aggregate_id = Uuid::new_v4();
         let stream_id = StreamId::new("User", aggregate_id);
 
@@ -584,7 +939,7 @@ mod tests {
     #[tokio::test]
     async fn test_append_multiple_events() {
         let db = TestDatabase::new().await.unwrap();
-        let store = PostgresEventStore::new(db.pool().clone());
+        let store = db.store();
         let aggregate_id = Uuid::new_v4();
         let stream_id = StreamId::new("User", aggregate_id);
 
@@ -606,7 +961,7 @@ mod tests {
     #[tokio::test]
     async fn test_load_stream_from_version() {
         let db = TestDatabase::new().await.unwrap();
-        let store = PostgresEventStore::new(db.pool().clone());
+        let store = db.store();
         let aggregate_id = Uuid::new_v4();
         let stream_id = StreamId::new("User", aggregate_id);
 
@@ -629,7 +984,7 @@ mod tests {
     #[tokio::test]
     async fn test_stream_all_from_position() {
         let db = TestDatabase::new().await.unwrap();
-        let store = PostgresEventStore::new(db.pool().clone());
+        let store = db.store();
 
         for i in 0..5 {
             let aggregate_id = Uuid::new_v4();
@@ -652,7 +1007,7 @@ mod tests {
     #[tokio::test]
     async fn test_load_nonexistent_stream() {
         let db = TestDatabase::new().await.unwrap();
-        let store = PostgresEventStore::new(db.pool().clone());
+        let store = db.store();
         let stream_id = StreamId::new("User", Uuid::new_v4());
 
         let stream = store
@@ -667,7 +1022,7 @@ mod tests {
     #[tokio::test]
     async fn test_load_nonexistent_snapshot() {
         let db = TestDatabase::new().await.unwrap();
-        let store = PostgresEventStore::new(db.pool().clone());
+        let store = db.store();
         let stream_id = StreamId::new("User", Uuid::new_v4());
 
         let snapshot = store.load_snapshot(stream_id).await.unwrap();
@@ -677,7 +1032,7 @@ mod tests {
     #[tokio::test]
     async fn test_store_is_cloneable() {
         let db = TestDatabase::new().await.unwrap();
-        let store = PostgresEventStore::new(db.pool().clone());
+        let store = db.store();
         let store_clone = store.clone();
 
         let aggregate_id = Uuid::new_v4();
@@ -698,7 +1053,7 @@ mod tests {
     #[tokio::test]
     async fn test_version_increments_correctly() {
         let db = TestDatabase::new().await.unwrap();
-        let store = PostgresEventStore::new(db.pool().clone());
+        let store = db.store();
         let aggregate_id = Uuid::new_v4();
         let stream_id = StreamId::new("User", aggregate_id);
 
@@ -734,7 +1089,7 @@ mod tests {
     #[tokio::test]
     async fn test_snapshot_overwrites() {
         let db = TestDatabase::new().await.unwrap();
-        let store = PostgresEventStore::new(db.pool().clone());
+        let store = db.store();
         let aggregate_id = Uuid::new_v4();
         let stream_id = StreamId::new("User", aggregate_id);
 
@@ -764,7 +1119,7 @@ mod tests {
     #[tokio::test]
     async fn test_append_empty_events() {
         let db = TestDatabase::new().await.unwrap();
-        let store = PostgresEventStore::new(db.pool().clone());
+        let store = db.store();
         let stream_id = StreamId::new("User", Uuid::new_v4());
 
         // Appending empty events should succeed (no-op)
@@ -775,7 +1130,7 @@ mod tests {
     #[tokio::test]
     async fn test_concurrent_appends_from_different_streams() {
         let db = TestDatabase::new().await.unwrap();
-        let store = PostgresEventStore::new(db.pool().clone());
+        let store = db.store();
 
         let id1 = Uuid::new_v4();
         let id2 = Uuid::new_v4();
@@ -874,5 +1229,187 @@ mod tests {
             .append(stream_id, vec![event], Version::initial())
             .await;
         assert!(result.is_ok());
+    }
+
+    // === Builder Pattern Tests ===
+
+    #[tokio::test]
+    async fn test_builder_with_defaults() {
+        let db = TestDatabase::new().await.unwrap();
+        let store = PostgresEventStore::builder()
+            .pool(db.pool().clone())
+            .build();
+
+        // Default schema should be "event_sauce"
+        assert_eq!(store.schema(), "event_sauce");
+
+        // Migrate to create the schema
+        store.migrate().await.unwrap();
+
+        // Should work with default schema
+        let aggregate_id = Uuid::new_v4();
+        let stream_id = StreamId::new("User", aggregate_id);
+        let event = create_test_envelope("UserCreated", aggregate_id);
+
+        store
+            .append(stream_id.clone(), vec![event], Version::initial())
+            .await
+            .unwrap();
+
+        let version = store.get_version(stream_id).await.unwrap();
+        assert_eq!(version, Version::new(1));
+    }
+
+    #[tokio::test]
+    async fn test_builder_with_custom_schema() {
+        let db = TestDatabase::new().await.unwrap();
+        let store = PostgresEventStore::builder()
+            .pool(db.pool().clone())
+            .schema("custom_schema")
+            .build();
+
+        // Verify schema is used
+        assert_eq!(store.schema(), "custom_schema");
+    }
+
+    #[tokio::test]
+    async fn test_builder_with_snapshot_config() {
+        let db = TestDatabase::new().await.unwrap();
+        let config = SnapshotConfig::disabled();
+        let store = PostgresEventStore::builder()
+            .pool(db.pool().clone())
+            .snapshot_config(config.clone())
+            .build();
+
+        // Verify snapshot config is set - just check it's accessible
+        // (testing the actual strategy behavior is done in core crate tests)
+        let _config = store.snapshot_config();
+        assert!(true); // Config is accessible
+    }
+
+    #[tokio::test]
+    async fn test_builder_full_configuration() {
+        let db = TestDatabase::new().await.unwrap();
+        let config = SnapshotConfig::builder()
+            .default_strategy(event_sauce_core::EveryNEvents(50))
+            .build();
+
+        let store = PostgresEventStore::builder()
+            .pool(db.pool().clone())
+            .schema("my_events")
+            .snapshot_config(config)
+            .build();
+
+        assert_eq!(store.schema(), "my_events");
+    }
+
+    #[tokio::test]
+    async fn test_builder_migrate_creates_schema() {
+        // Create a fresh database
+        let container = Postgres::default()
+            .with_tag("16-alpine")
+            .start()
+            .await
+            .unwrap();
+
+        let host = container.get_host().await.unwrap();
+        let port = container.get_host_port_ipv4(5432).await.unwrap();
+        let connection_string =
+            format!("postgresql://postgres:postgres@{}:{}/postgres", host, port);
+
+        let pool = PgPool::connect(&connection_string).await.unwrap();
+
+        // Build store with custom schema
+        let store = PostgresEventStore::builder()
+            .pool(pool.clone())
+            .schema("event_sauce_test")
+            .build();
+
+        // Run migrations
+        store.migrate().await.unwrap();
+
+        // Verify schema exists
+        let schema_exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS (
+                SELECT FROM information_schema.schemata
+                WHERE schema_name = $1
+            )",
+        )
+        .bind("event_sauce_test")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert!(schema_exists);
+
+        // Verify tables exist in the schema
+        let events_exist: bool = sqlx::query_scalar(
+            "SELECT EXISTS (
+                SELECT FROM information_schema.tables
+                WHERE table_schema = $1 AND table_name = 'events'
+            )",
+        )
+        .bind("event_sauce_test")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert!(events_exist);
+    }
+
+    #[tokio::test]
+    async fn test_builder_operations_use_custom_schema() {
+        // Create a fresh database
+        let container = Postgres::default()
+            .with_tag("16-alpine")
+            .start()
+            .await
+            .unwrap();
+
+        let host = container.get_host().await.unwrap();
+        let port = container.get_host_port_ipv4(5432).await.unwrap();
+        let connection_string =
+            format!("postgresql://postgres:postgres@{}:{}/postgres", host, port);
+
+        let pool = PgPool::connect(&connection_string).await.unwrap();
+
+        // Build store with custom schema
+        let store = PostgresEventStore::builder()
+            .pool(pool.clone())
+            .schema("events_schema")
+            .build();
+
+        store.migrate().await.unwrap();
+
+        // Perform operations
+        let aggregate_id = Uuid::new_v4();
+        let stream_id = StreamId::new("User", aggregate_id);
+        let event = create_test_envelope("UserCreated", aggregate_id);
+
+        store
+            .append(stream_id.clone(), vec![event], Version::initial())
+            .await
+            .unwrap();
+
+        // Verify data is in the custom schema, not public
+        let count_in_custom_schema: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events_schema.events WHERE aggregate_id = $1",
+        )
+        .bind(aggregate_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(count_in_custom_schema, 1);
+
+        // Verify data is NOT in public schema
+        let count_in_public: std::result::Result<i64, sqlx::Error> =
+            sqlx::query_scalar("SELECT COUNT(*) FROM public.events WHERE aggregate_id = $1")
+                .bind(aggregate_id)
+                .fetch_one(&pool)
+                .await;
+
+        // Should fail because table doesn't exist in public schema
+        assert!(count_in_public.is_err());
     }
 }

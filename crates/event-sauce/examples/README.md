@@ -112,9 +112,10 @@ A comprehensive example demonstrating how to build read models (projections) fro
 - **Checkpointing**: Tracking projection progress for resumability
 - **Async Streaming**: Processing events with backpressure
 - **Real-world Domain**: Task management with assignments and status changes
+- **Modern Event Pattern**: Using `#[derive(Event)]` with separate event structs
 
 ```bash
-cargo run -p event-sauce --example task-projections --features "memory,projections"
+cargo run -p event-sauce --example task-projections --features "memory,projections,macros"
 ```
 
 **Key Features Demonstrated:**
@@ -124,11 +125,54 @@ cargo run -p event-sauce --example task-projections --features "memory,projectio
 - Event bus subscriptions with filters
 - Building multiple read models from same event stream
 - Idempotent event processing
+- Modern event pattern with `#[derive(Event)]` macro
 
 **Projections Implemented:**
 1. **TaskCountByStatusProjection** - Maintains counts by task status
 2. **TasksByAssigneeProjection** - Tracks which tasks are assigned to whom
 3. **CompletedTasksProjection** - Counts completed tasks
+
+**Code Highlights:**
+
+```rust
+// Modern event pattern with separate structs
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Created {
+    task_id: Uuid,
+    title: String,
+    assignee: String,
+    timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StatusChanged {
+    task_id: Uuid,
+    old_status: TaskStatus,
+    new_status: TaskStatus,
+    timestamp: DateTime<Utc>,
+}
+
+// Event enum wrapping individual events
+#[derive(Event, Debug, Clone, Serialize, Deserialize)]
+#[event(version = 1, type_prefix = "Task")]
+enum TaskEvent {
+    Created(Created),
+    StatusChanged(StatusChanged),
+    Assigned(Assigned),
+    Completed(Completed),
+}
+
+// Projections handle events using pattern matching
+match event_data {
+    TaskEvent::Created(Created { task_id, assignee, .. }) => {
+        // Update projection state
+    }
+    TaskEvent::StatusChanged(StatusChanged { old_status, new_status, .. }) => {
+        // Update projection state
+    }
+    _ => {}
+}
+```
 
 **Example Output:**
 ```
