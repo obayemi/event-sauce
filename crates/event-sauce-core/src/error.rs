@@ -281,7 +281,7 @@ mod tests {
     #[test]
     fn test_error_debug_format() {
         let error = Error::concurrency_conflict(Version::new(1), Version::new(2));
-        let debug_str = format!("{:?}", error);
+        let debug_str = format!("{error:?}");
         assert!(debug_str.contains("ConcurrencyConflict"));
     }
 

@@ -148,7 +148,7 @@ pub enum CheckpointStrategy {
     EveryEvent,
     /// Save checkpoint after every N events.
     EveryN(usize),
-    /// Manual checkpoint management (user calls save_checkpoint explicitly).
+    /// Manual checkpoint management (user calls `save_checkpoint` explicitly).
     Manual,
 }
 
@@ -410,8 +410,7 @@ where
                     match self.config.error_policy {
                         ErrorPolicy::Fail => return Err(e),
                         ErrorPolicy::Skip => {
-                            eprintln!("Skipping event due to error: {}", e);
-                            continue;
+                            eprintln!("Skipping event due to error: {e}");
                         }
                         ErrorPolicy::Retry => {
                             // For now, just fail - full retry logic would need backoff
@@ -540,7 +539,7 @@ mod tests {
     #[test]
     fn test_event_filter_debug() {
         let filter = EventFilter::all();
-        let debug = format!("{:?}", filter);
+        let debug = format!("{filter:?}");
         assert!(debug.contains("All"));
     }
 
@@ -723,7 +722,7 @@ mod tests {
         // Add some events
         for i in 0..5 {
             store.add_event(create_test_envelope(
-                &format!("Event{}", i),
+                &format!("Event{i}"),
                 "TestAggregate",
             ));
         }
@@ -785,7 +784,7 @@ mod tests {
         // Add events
         for i in 0..5 {
             store.add_event(create_test_envelope(
-                &format!("Event{}", i),
+                &format!("Event{i}"),
                 "TestAggregate",
             ));
         }

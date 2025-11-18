@@ -355,6 +355,7 @@ pub trait EventStore: Send + Sync {
 
         let aggregate_id = aggregate.aggregate_id().to_uuid();
         let aggregate_type = A::aggregate_type();
+        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
         let expected_version = Version::new(
             aggregate
                 .version()
@@ -396,15 +397,13 @@ pub trait EventStore: Send + Sync {
                     // Log error but don't fail commit
                     if let Err(e) = self.save_snapshot(snapshot).await {
                         eprintln!(
-                            "Warning: Failed to save snapshot for {} {}: {}",
-                            aggregate_type, aggregate_id, e
+                            "Warning: Failed to save snapshot for {aggregate_type} {aggregate_id}: {e}"
                         );
                     }
                 }
                 Err(e) => {
                     eprintln!(
-                        "Warning: Failed to serialize aggregate {} {} for snapshot: {}",
-                        aggregate_type, aggregate_id, e
+                        "Warning: Failed to serialize aggregate {aggregate_type} {aggregate_id} for snapshot: {e}"
                     );
                 }
             }
@@ -551,7 +550,7 @@ mod tests {
     #[test]
     fn test_stream_id_debug() {
         let stream_id = StreamId::new("User", Uuid::new_v4());
-        let debug = format!("{:?}", stream_id);
+        let debug = format!("{stream_id:?}");
 
         assert!(debug.contains("StreamId"));
     }
@@ -633,7 +632,7 @@ mod tests {
             serde_json::json!({}),
         );
 
-        let debug = format!("{:?}", snapshot);
+        let debug = format!("{snapshot:?}");
         assert!(debug.contains("Snapshot"));
     }
 
@@ -641,7 +640,7 @@ mod tests {
     use async_trait::async_trait;
     use futures::stream;
 
-    /// Mock EventStore for testing default snapshot implementations
+    /// Mock `EventStore` for testing default snapshot implementations
     struct MockEventStore;
 
     #[async_trait]
@@ -726,7 +725,7 @@ mod tests {
     }
 
     // Test utilities
-    use std::sync::{Arc, Mutex};
+    
     use crate::{Aggregate, AggregateError, AggregateId, DomainEvent};
     use chrono::Utc;
     use std::fmt;

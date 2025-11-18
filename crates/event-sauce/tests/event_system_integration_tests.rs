@@ -9,7 +9,7 @@
 
 use chrono::Utc;
 use event_sauce_core::{Aggregate, AggregateId, DomainEvent, Version};
-use event_sauce_macros::{Aggregate as DeriveAggregate, AggregateError, Event as DeriveEvent};
+use event_sauce_macros::{Aggregate as DeriveAggregate, AggregateError};
 use std::fmt;
 use thiserror::Error;
 use uuid::Uuid;
@@ -66,8 +66,7 @@ enum TestAccountError {
     AccountNotActive(AccountStatus),
 }
 
-#[derive(DeriveEvent, Debug, Clone)]
-#[event(version = 1, type_prefix = "TestAccount")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 enum TestAccountEvent {
     Opened {
         owner: String,
@@ -85,6 +84,32 @@ enum TestAccountEvent {
     Frozen {
         timestamp: chrono::DateTime<Utc>,
     },
+}
+
+impl DomainEvent for TestAccountEvent {
+    type Aggregate = TestAccount;
+
+    fn event_type(&self) -> &'static str {
+        match self {
+            TestAccountEvent::Opened { .. } => "TestAccountOpened",
+            TestAccountEvent::Deposited { .. } => "TestAccountDeposited",
+            TestAccountEvent::Withdrawn { .. } => "TestAccountWithdrawn",
+            TestAccountEvent::Frozen { .. } => "TestAccountFrozen",
+        }
+    }
+
+    fn event_version(&self) -> i32 {
+        1
+    }
+
+    fn occurred_at(&self) -> chrono::DateTime<Utc> {
+        match self {
+            TestAccountEvent::Opened { timestamp, .. }
+            | TestAccountEvent::Deposited { timestamp, .. }
+            | TestAccountEvent::Withdrawn { timestamp, .. }
+            | TestAccountEvent::Frozen { timestamp } => *timestamp,
+        }
+    }
 }
 
 #[derive(DeriveAggregate, Debug, Clone)]

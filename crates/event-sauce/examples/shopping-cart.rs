@@ -249,6 +249,7 @@ impl ApplyEvent<ShoppingCartAggregate, CartError> for CartCheckedOutEvent {
 /// Shopping cart state - contains only business data
 #[derive(AggregateState, Debug, Clone, Serialize, Deserialize)]
 #[aggregate(id = "CartId", event = "CartEvent", error = "CartError")]
+#[derive(Default)]
 struct ShoppingCartState {
     #[aggregate_id]
     id: CartId,
@@ -257,16 +258,6 @@ struct ShoppingCartState {
     checked_out: bool,
 }
 
-impl Default for ShoppingCartState {
-    fn default() -> Self {
-        Self {
-            id: CartId::default(),
-            customer_id: String::new(),
-            items: HashMap::new(),
-            checked_out: false,
-        }
-    }
-}
 
 impl ShoppingCartState {
     fn new(id: CartId) -> Self {
@@ -384,7 +375,7 @@ fn main() -> Result<(), CartError> {
     // Create cart
     let cart_id = CartId::new();
     let mut cart = ShoppingCartAggregate::create(cart_id, "customer-123".to_string());
-    println!("✓ Created cart: {}", cart_id);
+    println!("✓ Created cart: {cart_id}");
     println!("  Customer: {}", cart.customer_id);
 
     // Add items

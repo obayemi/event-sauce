@@ -5,8 +5,8 @@
 
 use async_trait::async_trait;
 use event_sauce_core::{
-    Error, EventEnvelope, EventPublisher, EventStore, Position, Result, Snapshot, SnapshotConfig,
-    StreamId, Version,
+    Error, EventEnvelope, EventStore, Position, Result, Snapshot, SnapshotConfig, StreamId,
+    Version,
 };
 use futures::stream::{self, Stream};
 use parking_lot::RwLock;
@@ -56,8 +56,6 @@ struct InMemoryEventStoreInner {
     global_events: RwLock<Vec<EventEnvelope>>,
     /// Snapshot configuration
     snapshot_config: SnapshotConfig,
-    /// Optional event publisher for automatic event publishing
-    event_bus: Option<Arc<dyn EventPublisher>>,
 }
 
 impl InMemoryEventStore {
@@ -107,41 +105,7 @@ impl InMemoryEventStore {
                 snapshots: RwLock::new(HashMap::new()),
                 global_events: RwLock::new(Vec::new()),
                 snapshot_config,
-                event_bus: None,
             }),
-        }
-    }
-
-    /// Configures this event store to automatically publish events to an event publisher.
-    ///
-    /// When an event publisher is configured, all events appended to the store will be
-    /// automatically published after successful persistence. This works with any type
-    /// that implements the `EventPublisher` trait, including `InMemoryEventBus` and
-    /// `PostgresEventBus`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use event_sauce_memory::{InMemoryEventStore, InMemoryEventBus};
-    ///
-    /// let bus = InMemoryEventBus::new();
-    /// let store = InMemoryEventStore::new().with_event_bus(bus);
-    ///
-    /// // Events will now be automatically published to the bus
-    /// ```
-    #[must_use]
-    pub fn with_event_bus(self, event_bus: impl EventPublisher + 'static) -> Self {
-        // Create new Inner with event_bus set
-        let new_inner = InMemoryEventStoreInner {
-            streams: RwLock::new(self.inner.streams.read().clone()),
-            snapshots: RwLock::new(self.inner.snapshots.read().clone()),
-            global_events: RwLock::new(self.inner.global_events.read().clone()),
-            snapshot_config: self.inner.snapshot_config.clone(),
-            event_bus: Some(Arc::new(event_bus)),
-        };
-
-        Self {
-            inner: Arc::new(new_inner),
         }
     }
 }
@@ -187,13 +151,6 @@ impl EventStore for InMemoryEventStore {
         } // Locks are dropped here
 
         Ok(())
-    }
-
-    fn event_publisher(&self) -> Option<&dyn EventPublisher> {
-        self.inner
-            .event_bus
-            .as_ref()
-            .map(|arc| arc.as_ref() as &dyn EventPublisher)
     }
 
     async fn load_stream(
@@ -450,7 +407,7 @@ mod tests {
 
         // Add 5 events
         for i in 0..5 {
-            let event = create_test_envelope(&format!("Event{}", i), aggregate_id);
+            let event = create_test_envelope(&format!("Event{i}"), aggregate_id);
             store
                 .append(stream_id.clone(), vec![event], Version::new(i))
                 .await
@@ -471,7 +428,7 @@ mod tests {
         for i in 0..5 {
             let aggregate_id = Uuid::new_v4();
             let stream_id = StreamId::new("User", aggregate_id);
-            let event = create_test_envelope(&format!("Event{}", i), aggregate_id);
+            let event = create_test_envelope(&format!("Event{i}"), aggregate_id);
 
             store
                 .append(stream_id, vec![event], Version::initial())
@@ -619,175 +576,6 @@ mod tests {
         // Events should still be stored
         let version = store.get_version(stream_id).await.unwrap();
         assert_eq!(version, Version::new(1));
-    }
-
-    #[tokio::test]
-    async fn test_commit_publishes_to_event_bus() {
-        use crate::InMemoryEventBus;
-        use event_sauce_core::{Aggregate, AggregateError, AggregateId, DomainEvent, EventBus, EventFilter};
-        use chrono::Utc;
-        use std::fmt;
-        use thiserror::Error;
-
-        // Test aggregate
-        #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-        struct TestId(Uuid);
-
-        impl TestId {
-            fn new() -> Self {
-                Self(Uuid::new_v4())
-            }
-        }
-
-        impl fmt::Display for TestId {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                write!(f, "Test-{}", self.0)
-            }
-        }
-
-        impl AggregateId for TestId {
-            fn to_uuid(&self) -> Uuid {
-                self.0
-            }
-        }
-
-        #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-        enum TestEvent {
-            Created { value: i32 },
-            Updated { value: i32 },
-        }
-
-        impl DomainEvent for TestEvent {
-            type Aggregate = TestAgg;
-
-            fn event_type(&self) -> &'static str {
-                match self {
-                    TestEvent::Created { .. } => "Test.Created",
-                    TestEvent::Updated { .. } => "Test.Updated",
-                }
-            }
-
-            fn event_version(&self) -> i32 {
-                1
-            }
-
-            fn occurred_at(&self) -> chrono::DateTime<Utc> {
-                Utc::now()
-            }
-        }
-
-        #[derive(Debug, Error)]
-        #[error("Test error")]
-        struct TestErr;
-
-        impl AggregateError for TestErr {}
-
-        #[derive(serde::Serialize)]
-        struct TestAgg {
-            id: TestId,
-            value: i32,
-            version: Version,
-            pending_events: Vec<TestEvent>,
-        }
-
-        impl TestAgg {
-            fn create(&mut self, value: i32) -> std::result::Result<(), TestErr> {
-                self.apply(TestEvent::Created { value })
-            }
-
-            fn update(&mut self, value: i32) -> std::result::Result<(), TestErr> {
-                self.apply(TestEvent::Updated { value })
-            }
-
-            fn apply_event(&mut self, event: &TestEvent) {
-                match event {
-                    TestEvent::Created { value } | TestEvent::Updated { value } => {
-                        self.value = *value;
-                    }
-                }
-            }
-        }
-
-        impl Aggregate for TestAgg {
-            type Event = TestEvent;
-            type Id = TestId;
-            type Error = TestErr;
-
-            fn new(id: Self::Id) -> Self {
-                Self {
-                    id,
-                    value: 0,
-                    version: Version::initial(),
-                    pending_events: Vec::new(),
-                }
-            }
-
-            fn aggregate_id(&self) -> &Self::Id {
-                &self.id
-            }
-
-            fn version(&self) -> Version {
-                self.version
-            }
-
-            fn pending_events(&self) -> &[Self::Event] {
-                &self.pending_events
-            }
-
-            fn clear_pending_events(&mut self) {
-                self.pending_events.clear();
-            }
-
-            fn apply<E: Into<Self::Event>>(&mut self, event: E) -> std::result::Result<(), Self::Error> {
-                let event = event.into();
-                self.apply_internal(&event)?;
-                self.pending_events.push(event);
-                Ok(())
-            }
-
-            fn apply_internal(&mut self, event: &Self::Event) -> std::result::Result<(), Self::Error> {
-                self.apply_event(event);
-                self.version = self.version.next();
-                Ok(())
-            }
-        }
-
-        // Test commit() with event bus
-        let bus = InMemoryEventBus::new();
-        let store = InMemoryEventStore::new().with_event_bus(bus.clone());
-
-        // Subscribe before committing
-        let subscription = bus
-            .subscribe(EventFilter::by_aggregate_type("TestAgg"))
-            .await
-            .unwrap();
-        futures::pin_mut!(subscription);
-
-        // Create and commit aggregate
-        let mut aggregate = TestAgg::new(TestId::new());
-        aggregate.create(42).unwrap();
-        aggregate.update(100).unwrap();
-
-        store.commit(&mut aggregate).await.unwrap();
-
-        // Verify events were published
-        let event1 = tokio::time::timeout(
-            std::time::Duration::from_millis(100),
-            subscription.next(),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        assert_eq!(event1.event_type, "Test.Created");
-
-        let event2 = tokio::time::timeout(
-            std::time::Duration::from_millis(100),
-            subscription.next(),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        assert_eq!(event2.event_type, "Test.Updated");
     }
 
 }

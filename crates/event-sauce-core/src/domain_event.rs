@@ -433,7 +433,7 @@ mod tests {
             timestamp,
         };
 
-        let debug_str = format!("{:?}", event);
+        let debug_str = format!("{event:?}");
         assert!(debug_str.contains("Created"));
         assert!(debug_str.contains("test-1"));
     }

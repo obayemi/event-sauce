@@ -119,7 +119,7 @@ mod tests {
         let mut projection = CounterProjection::new("test");
 
         for i in 0..10 {
-            let event = create_test_envelope(&format!("Event{}", i));
+            let event = create_test_envelope(&format!("Event{i}"));
             projection.handle(&event).await.unwrap();
         }
 

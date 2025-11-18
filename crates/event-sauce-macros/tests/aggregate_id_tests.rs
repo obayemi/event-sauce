@@ -33,7 +33,7 @@ fn test_aggregate_id_display() {
 #[test]
 fn test_aggregate_id_clone() {
     let id1 = UserId(Uuid::new_v4());
-    let id2 = id1.clone();
+    let id2 = id1;
 
     assert_eq!(id1, id2);
 }
@@ -282,7 +282,7 @@ fn test_debug_formatting() {
     let uuid = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
     let id = UserId(uuid);
 
-    let debug_str = format!("{:?}", id);
+    let debug_str = format!("{id:?}");
     assert!(debug_str.contains("UserId"));
     assert!(debug_str.contains("550e8400"));
 }
@@ -308,11 +308,9 @@ fn test_use_in_hashmap() {
 
 #[test]
 fn test_use_in_vec() {
-    let ids = vec![
+    let ids = [UserId(Uuid::new_v4()),
         UserId(Uuid::new_v4()),
-        UserId(Uuid::new_v4()),
-        UserId(Uuid::new_v4()),
-    ];
+        UserId(Uuid::new_v4())];
 
     assert_eq!(ids.len(), 3);
 }
@@ -378,6 +376,6 @@ fn test_format_macro() {
     let id = SequenceId(42);
 
     // Test various format! macro usage
-    assert_eq!(format!("{}", id), "42");
-    assert_eq!(format!("ID: {}", id), "ID: 42");
+    assert_eq!(format!("{id}"), "42");
+    assert_eq!(format!("ID: {id}"), "ID: 42");
 }

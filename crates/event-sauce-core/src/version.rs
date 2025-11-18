@@ -166,7 +166,7 @@ mod tests {
     #[test]
     fn test_version_display() {
         let version = Version::new(42);
-        assert_eq!(format!("{}", version), "v42");
+        assert_eq!(format!("{version}"), "v42");
     }
 
     #[test]
@@ -192,7 +192,7 @@ mod tests {
     #[test]
     fn test_version_debug() {
         let version = Version::new(42);
-        let debug_str = format!("{:?}", version);
+        let debug_str = format!("{version:?}");
         assert!(debug_str.contains("42"));
     }
 }

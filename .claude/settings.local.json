@@ -18,7 +18,8 @@
       "Bash(/dev/null)",
       "Bash(cargo check:*)",
       "Bash(cargo fmt:*)",
-      "Bash(TRYBUILD=overwrite cargo test:*)"
+      "Bash(TRYBUILD=overwrite cargo test:*)",
+      "Bash(cargo fix:*)"
     ],
     "deny": [],
     "ask": []

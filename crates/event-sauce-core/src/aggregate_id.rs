@@ -106,7 +106,7 @@ mod tests {
     fn test_aggregate_id_display() {
         let uuid = Uuid::nil();
         let id = TestId::from_uuid(uuid);
-        let display = format!("{}", id);
+        let display = format!("{id}");
         assert!(display.starts_with("Test-"));
         assert!(display.contains(&uuid.to_string()));
     }
@@ -114,7 +114,7 @@ mod tests {
     #[test]
     fn test_aggregate_id_debug() {
         let id = TestId::new();
-        let debug = format!("{:?}", id);
+        let debug = format!("{id:?}");
         assert!(debug.contains("TestId"));
     }
 
@@ -172,7 +172,7 @@ mod tests {
 
         assert_eq!(id1, id2);
         assert_ne!(id1, id3);
-        assert_eq!(format!("{}", id1), "42");
+        assert_eq!(format!("{id1}"), "42");
     }
 
     // Test with string-based ID
@@ -210,7 +210,7 @@ mod tests {
 
         assert_eq!(id1, id2);
         assert_ne!(id1, id3);
-        assert_eq!(format!("{}", id1), "user-123");
+        assert_eq!(format!("{id1}"), "user-123");
     }
 
     #[test]

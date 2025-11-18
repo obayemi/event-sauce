@@ -153,20 +153,13 @@ impl ApplyEvent<CounterAggregate, CounterError> for CounterResetEvent {
 /// Counter state - contains only business data
 #[derive(AggregateState, Debug, Clone, Serialize, Deserialize)]
 #[aggregate(id = "CounterId", event = "CounterEvent", error = "CounterError")]
+#[derive(Default)]
 struct CounterState {
     #[aggregate_id]
     id: CounterId,
     value: i32,
 }
 
-impl Default for CounterState {
-    fn default() -> Self {
-        Self {
-            id: CounterId::default(),
-            value: 0,
-        }
-    }
-}
 
 impl CounterState {
     /// Create a new counter state
@@ -242,7 +235,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let id = CounterId::new();
     let mut counter = CounterAggregate::create(id);
     println!("--- Step 1: Create Counter ---");
-    println!("✓ Created counter: {}", id);
+    println!("✓ Created counter: {id}");
     println!("  Initial value: {}", counter.value());
     println!("  Initial version: {}", counter.version());
 
@@ -273,7 +266,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let num_events = counter.pending_events().len();
 
     store.commit(&mut counter).await?;
-    println!("✓ Saved {} events to store", num_events);
+    println!("✓ Saved {num_events} events to store");
     println!(
         "✓ Pending events cleared: {}",
         counter.pending_events().len()
@@ -308,7 +301,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let num_new_events = counter.pending_events().len();
 
     store.commit(&mut counter).await?;
-    println!("✓ Saved {} new events to store", num_new_events);
+    println!("✓ Saved {num_new_events} new events to store");
     println!("✓ Final version: {}", counter.version());
 
     // Load complete history using the load function
@@ -328,12 +321,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match test_counter.increment(0) {
         Ok(_) => println!("❌ Should have failed"),
-        Err(e) => println!("✓ Rejected invalid increment: {}", e),
+        Err(e) => println!("✓ Rejected invalid increment: {e}"),
     }
 
     match test_counter.decrement(100) {
         Ok(_) => println!("❌ Should have failed"),
-        Err(e) => println!("✓ Rejected invalid decrement: {}", e),
+        Err(e) => println!("✓ Rejected invalid decrement: {e}"),
     }
 
     // Final summary

@@ -108,13 +108,13 @@ struct CommitMetrics {
 
 impl CommitMetrics {
     fn print(&self, label: &str) {
-        println!("  📊 {} Commit Performance:", label);
+        println!("  📊 {label} Commit Performance:");
         println!("     Total commits:         {}", self.total_commits);
         println!("     Total commit time:     {:?}", self.total_commit_time);
         println!("     Average commit time:   {:?}", self.avg_commit_time);
         if let Some(avg_snap) = self.avg_snapshot_commit_time {
             println!("     Snapshot commits:      {}", self.commits_with_snapshot);
-            println!("     Avg snapshot commit:   {:?}", avg_snap);
+            println!("     Avg snapshot commit:   {avg_snap:?}");
         }
     }
 }
@@ -203,7 +203,7 @@ async fn demo_no_snapshots() -> Result<(), Box<dyn std::error::Error>> {
 
     let counter: CounterAggregate = load(&store, id).await?;
     println!("✓ Counter value: {}", counter.value());
-    println!("✓ Load time: {:?}", load_time);
+    println!("✓ Load time: {load_time:?}");
     println!("✓ No snapshots created (as expected)\n");
 
     commit_metrics.print("WITHOUT Snapshots");
@@ -228,7 +228,7 @@ async fn demo_default_behavior() -> Result<(), Box<dyn std::error::Error>> {
 
     let counter: CounterAggregate = load(&store, id).await?;
     println!("✓ Counter value: {}", counter.value());
-    println!("✓ Load time: {:?}", load_time);
+    println!("✓ Load time: {load_time:?}");
     println!("✓ Snapshots created at versions: 100, 200, 300, 400, 500");
     println!("✓ Only latest snapshot (v500) kept - zero storage overhead!");
     println!("✓ Default config provides excellent performance out-of-the-box!\n");
@@ -256,7 +256,7 @@ async fn demo_always_snapshot() -> Result<(), Box<dyn std::error::Error>> {
 
     let counter: CounterAggregate = load(&store, id).await?;
     println!("✓ Counter value: {}", counter.value());
-    println!("✓ Load time: {:?}", load_time);
+    println!("✓ Load time: {load_time:?}");
     println!(
         "✓ Snapshot created at version: {}",
         counter.version().as_i32()
@@ -285,7 +285,7 @@ async fn demo_interval_snapshots() -> Result<(), Box<dyn std::error::Error>> {
 
     let counter: CounterAggregate = load(&store, id).await?;
     println!("✓ Counter value: {}", counter.value());
-    println!("✓ Load time: {:?}", load_time);
+    println!("✓ Load time: {load_time:?}");
     println!("✓ Snapshots created at versions: 50, 100, 150, 200... 500");
 
     Ok(())
@@ -315,7 +315,7 @@ async fn demo_per_type_configuration() -> Result<(), Box<dyn std::error::Error>>
 
     let counter: CounterAggregate = load(&store, id).await?;
     println!("✓ Counter value: {}", counter.value());
-    println!("✓ Load time: {:?}", load_time);
+    println!("✓ Load time: {load_time:?}");
     println!("✓ Snapshots created at versions: 50, 100, 150, 200");
     println!("✓ Counter used its specific strategy (every 50 vs default 100)");
 
@@ -330,7 +330,7 @@ async fn demo_performance_comparison() -> Result<(), Box<dyn std::error::Error>>
     let event_counts = vec![100, 500, 1000, 2000];
 
     for count in event_counts {
-        println!("\n--- Testing with {} events ---", count);
+        println!("\n--- Testing with {count} events ---");
 
         // Test without snapshots (explicitly disabled)
         let store_no_snap = InMemoryEventStore::with_config(SnapshotConfig::disabled());
@@ -349,9 +349,9 @@ async fn demo_performance_comparison() -> Result<(), Box<dyn std::error::Error>>
 
         let speedup = time_no_snap.as_nanos() as f64 / time_with_snap.as_nanos() as f64;
 
-        println!("  Without snapshots: {:?}", time_no_snap);
-        println!("  With snapshots:    {:?}", time_with_snap);
-        println!("  Speedup:           {:.2}x faster", speedup);
+        println!("  Without snapshots: {time_no_snap:?}");
+        println!("  With snapshots:    {time_with_snap:?}");
+        println!("  Speedup:           {speedup:.2}x faster");
     }
 
     Ok(())
@@ -378,7 +378,7 @@ async fn demo_snapshot_disabled_on_load() -> Result<(), Box<dyn std::error::Erro
 
     let counter: CounterAggregate = load(&store, id).await?;
     println!("✓ Counter value: {}", counter.value());
-    println!("✓ Load time: {:?}", load_time);
+    println!("✓ Load time: {load_time:?}");
     println!("✓ Snapshots were created but ignored during load");
     println!("  (Useful for debugging or verifying event replay)");
 

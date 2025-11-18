@@ -11,7 +11,7 @@
 //! Run with: cargo run -p event-sauce --example bank-account --features "memory,macros"
 
 use chrono::Utc;
-use event_sauce_core::{Aggregate, AggregateError, ApplyEvent, DomainEvent};
+use event_sauce_core::{Aggregate, ApplyEvent, DomainEvent};
 use event_sauce_macros::{AggregateError, AggregateId, AggregateState, Event as DeriveEvent};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -39,17 +39,14 @@ impl Default for AccountId {
 /// Account status
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[allow(dead_code)]
+#[derive(Default)]
 enum AccountStatus {
+    #[default]
     Active,
     Frozen,
     Closed,
 }
 
-impl Default for AccountStatus {
-    fn default() -> Self {
-        AccountStatus::Active
-    }
-}
 
 // ============================================================================
 // Event Structs - Separated event definitions
@@ -362,7 +359,7 @@ fn main() -> Result<(), AccountError> {
     match account.deposit(-100) {
         Err(AccountError::InvalidAmount(amount)) => {
             println!("✓ Correctly rejected negative deposit");
-            println!("  Amount: {}", amount);
+            println!("  Amount: {amount}");
         }
         _ => println!("❌ Should have rejected negative amount!"),
     }

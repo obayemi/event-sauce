@@ -27,7 +27,7 @@ fn test_aggregate_error_implements_trait() {
 #[test]
 fn test_aggregate_error_with_thiserror() {
     let error = SimpleError::GenericError;
-    let error_msg = format!("{}", error);
+    let error_msg = format!("{error}");
     assert_eq!(error_msg, "Something went wrong");
 }
 
@@ -57,28 +57,28 @@ fn test_complex_error_with_fields() {
         requested: 200,
     };
 
-    let error_msg = format!("{}", error);
+    let error_msg = format!("{error}");
     assert_eq!(error_msg, "Insufficient funds: balance=100, requested=200");
 }
 
 #[test]
 fn test_error_with_tuple_variant() {
     let error = BankAccountError::InvalidAmount(-50);
-    let error_msg = format!("{}", error);
+    let error_msg = format!("{error}");
     assert_eq!(error_msg, "Invalid amount: -50 (must be positive)");
 }
 
 #[test]
 fn test_error_with_string() {
     let error = BankAccountError::NotFound("ACC-123".to_string());
-    let error_msg = format!("{}", error);
+    let error_msg = format!("{error}");
     assert_eq!(error_msg, "Account not found: ACC-123");
 }
 
 #[test]
 fn test_error_unit_variant() {
     let error = BankAccountError::AccountClosed;
-    let error_msg = format!("{}", error);
+    let error_msg = format!("{error}");
     assert_eq!(error_msg, "Account is closed");
 }
 
@@ -113,7 +113,7 @@ fn test_aggregate_error_is_static() {
 #[test]
 fn test_aggregate_error_can_be_boxed() {
     let error: Box<dyn std::error::Error> = Box::new(BankAccountError::AccountClosed);
-    let error_msg = format!("{}", error);
+    let error_msg = format!("{error}");
     assert_eq!(error_msg, "Account is closed");
 }
 
@@ -272,7 +272,7 @@ fn test_debug_formatting() {
         requested: 200,
     };
 
-    let debug_str = format!("{:?}", error);
+    let debug_str = format!("{error:?}");
     assert!(debug_str.contains("InsufficientFunds"));
     assert!(debug_str.contains("balance"));
     assert!(debug_str.contains("100"));
@@ -297,7 +297,7 @@ fn test_struct_error_type() {
         message: "Invalid input".to_string(),
     };
 
-    let error_msg = format!("{}", error);
+    let error_msg = format!("{error}");
     assert_eq!(error_msg, "Validation failed: Invalid input");
 }
 

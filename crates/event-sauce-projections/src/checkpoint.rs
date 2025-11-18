@@ -241,7 +241,7 @@ mod tests {
     #[test]
     fn test_checkpoint_debug() {
         let checkpoint = Checkpoint::new("test", Uuid::new_v4(), 1);
-        let debug = format!("{:?}", checkpoint);
+        let debug = format!("{checkpoint:?}");
 
         assert!(debug.contains("Checkpoint"));
         assert!(debug.contains("test"));

@@ -4,12 +4,11 @@
 
 use async_trait::async_trait;
 use event_sauce_core::{
-    Error, EventEnvelope, EventPublisher, EventStore, Position, Result, Snapshot, SnapshotConfig,
-    StreamId, Version,
+    Error, EventEnvelope, EventStore, Position, Result, Snapshot, SnapshotConfig, StreamId,
+    Version,
 };
 use futures::stream::{self, Stream};
 use sqlx::PgPool;
-use std::sync::Arc;
 
 /// `PostgreSQL` event store implementation.
 ///
@@ -50,7 +49,6 @@ pub struct PostgresEventStore {
     pool: PgPool,
     snapshot_config: SnapshotConfig,
     schema: String,
-    event_bus: Option<Arc<dyn EventPublisher>>,
 }
 
 /// Builder for configuring `PostgresEventStore`.
@@ -80,14 +78,13 @@ pub struct PostgresEventStoreBuilder {
     pool: Option<PgPool>,
     snapshot_config: Option<SnapshotConfig>,
     schema: Option<String>,
-    event_bus: Option<Arc<dyn EventPublisher>>,
 }
 
 impl PostgresEventStore {
     /// Creates a new `PostgreSQL` event store with default configuration.
     ///
     /// This is a convenience method that uses the builder with all defaults:
-    /// - **Schema**: "event_sauce" (isolated from your app)
+    /// - **Schema**: "`event_sauce`" (isolated from your app)
     /// - **Snapshots**: Every 100 events
     ///
     /// Equivalent to `PostgresEventStore::builder().pool(pool).build()`.
@@ -111,7 +108,7 @@ impl PostgresEventStore {
 
     /// Creates a new `PostgreSQL` event store with custom snapshot configuration.
     ///
-    /// Uses default schema "event_sauce".
+    /// Uses default schema "`event_sauce`".
     ///
     /// # Examples
     ///
@@ -229,12 +226,11 @@ impl PostgresEventStore {
         // Create migration tracking table in the custom schema
         let migrations_table = self.qualify_table("_event_sauce_migrations");
         let create_migrations_table = format!(
-            "CREATE TABLE IF NOT EXISTS {} (
+            "CREATE TABLE IF NOT EXISTS {migrations_table} (
                 version BIGINT PRIMARY KEY,
                 description TEXT NOT NULL,
                 applied_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
-            )",
-            migrations_table
+            )"
         );
         sqlx::query(&create_migrations_table)
             .execute(&self.pool)
@@ -243,8 +239,7 @@ impl PostgresEventStore {
 
         // Check if migration has already been applied
         let check_query = format!(
-            "SELECT COUNT(*) FROM {} WHERE version = $1",
-            migrations_table
+            "SELECT COUNT(*) FROM {migrations_table} WHERE version = $1"
         );
         let count: i64 = sqlx::query_scalar(&check_query)
             .bind(20250101000000i64)
@@ -264,7 +259,7 @@ impl PostgresEventStore {
 
         // Create events table
         let create_events = format!(
-            "CREATE TABLE IF NOT EXISTS {} (
+            "CREATE TABLE IF NOT EXISTS {events_table} (
                 id BIGSERIAL PRIMARY KEY,
                 event_id UUID NOT NULL UNIQUE,
                 aggregate_id UUID NOT NULL,
@@ -279,8 +274,7 @@ impl PostgresEventStore {
                 causation_id UUID,
                 metadata JSONB,
                 UNIQUE(aggregate_id, aggregate_type, stream_version)
-            )",
-            events_table
+            )"
         );
         sqlx::query(&create_events)
             .execute(&self.pool)
@@ -306,15 +300,14 @@ impl PostgresEventStore {
 
         // Create snapshots table
         let create_snapshots = format!(
-            "CREATE TABLE IF NOT EXISTS {} (
+            "CREATE TABLE IF NOT EXISTS {snapshots_table} (
                 aggregate_id UUID NOT NULL,
                 aggregate_type VARCHAR(255) NOT NULL,
                 snapshot_version BIGINT NOT NULL,
                 snapshot_data JSONB NOT NULL,
                 created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
                 PRIMARY KEY (aggregate_id, aggregate_type)
-            )",
-            snapshots_table
+            )"
         );
         sqlx::query(&create_snapshots)
             .execute(&self.pool)
@@ -323,8 +316,7 @@ impl PostgresEventStore {
 
         // Create index for snapshots table
         let snapshots_index = format!(
-            "CREATE INDEX IF NOT EXISTS idx_snapshots_type ON {}(aggregate_type)",
-            snapshots_table
+            "CREATE INDEX IF NOT EXISTS idx_snapshots_type ON {snapshots_table}(aggregate_type)"
         );
         sqlx::query(&snapshots_index)
             .execute(&self.pool)
@@ -333,8 +325,7 @@ impl PostgresEventStore {
 
         // Record the migration
         let record_query = format!(
-            "INSERT INTO {} (version, description) VALUES ($1, $2)",
-            migrations_table
+            "INSERT INTO {migrations_table} (version, description) VALUES ($1, $2)"
         );
         sqlx::query(&record_query)
             .bind(20250101000000i64)
@@ -355,7 +346,6 @@ impl PostgresEventStoreBuilder {
             pool: None,
             snapshot_config: None,
             schema: None,
-            event_bus: None,
         }
     }
 
@@ -400,9 +390,9 @@ impl PostgresEventStoreBuilder {
 
     /// Sets the schema name for event store tables.
     ///
-    /// Defaults to "event_sauce" to isolate event-sauce migrations from your
+    /// Defaults to "`event_sauce`" to isolate event-sauce migrations from your
     /// application's migration system. Use "public" if you want to use the
-    /// default PostgreSQL schema.
+    /// default `PostgreSQL` schema.
     ///
     /// # Examples
     ///
@@ -419,34 +409,11 @@ impl PostgresEventStoreBuilder {
         self
     }
 
-    /// Configures the event store to publish events to an event bus.
-    ///
-    /// When configured, events will be automatically published to the bus
-    /// after successful persistence to the database.
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// use event_sauce_postgres::PostgresEventStore;
-    /// use event_sauce_memory::InMemoryEventBus;
-    ///
-    /// let bus = InMemoryEventBus::new();
-    /// let store = PostgresEventStore::builder()
-    ///     .pool(pool)
-    ///     .with_event_bus(bus)
-    ///     .build();
-    /// ```
-    #[must_use]
-    pub fn with_event_bus(mut self, event_bus: impl EventPublisher + 'static) -> Self {
-        self.event_bus = Some(Arc::new(event_bus));
-        self
-    }
-
     /// Builds the `PostgresEventStore` with the configured settings.
     ///
     /// # Defaults
     ///
-    /// - **Schema**: "event_sauce" (isolates migrations from your app)
+    /// - **Schema**: "`event_sauce`" (isolates migrations from your app)
     /// - **Snapshot config**: Every 100 events
     ///
     /// # Panics
@@ -474,7 +441,6 @@ impl PostgresEventStoreBuilder {
                 .snapshot_config
                 .unwrap_or_else(|| SnapshotConfig::builder().build()),
             schema: self.schema.unwrap_or_else(|| "event_sauce".to_string()),
-            event_bus: self.event_bus,
         }
     }
 }
@@ -506,8 +472,7 @@ impl EventStore for PostgresEventStore {
         // Check current version
         let events_table = self.qualify_table("events");
         let query = format!(
-            "SELECT MAX(stream_version) FROM {} WHERE aggregate_id = $1 AND aggregate_type = $2",
-            events_table
+            "SELECT MAX(stream_version) FROM {events_table} WHERE aggregate_id = $1 AND aggregate_type = $2"
         );
         let current_version: Option<i64> = sqlx::query_scalar(&query)
             .bind(stream_id.aggregate_id())
@@ -532,11 +497,10 @@ impl EventStore for PostgresEventStore {
             let stream_version = i64::from(expected_version.as_i32()) + idx as i64;
 
             let insert_query = format!(
-                "INSERT INTO {} (
+                "INSERT INTO {events_table} (
                     event_id, aggregate_id, aggregate_type, event_type, event_version,
                     event_data, stream_version, created_by, correlation_id, causation_id, metadata
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
-                events_table
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)"
             );
 
             sqlx::query(&insert_query)
@@ -563,12 +527,6 @@ impl EventStore for PostgresEventStore {
         Ok(())
     }
 
-    fn event_publisher(&self) -> Option<&dyn EventPublisher> {
-        self.event_bus
-            .as_ref()
-            .map(|arc| arc.as_ref() as &dyn EventPublisher)
-    }
-
     async fn load_stream(
         &self,
         stream_id: StreamId,
@@ -578,10 +536,9 @@ impl EventStore for PostgresEventStore {
         let query = format!(
             "SELECT event_id, aggregate_id, aggregate_type, event_type, event_version,
                     event_data, created_by, created_at, correlation_id, causation_id, metadata
-             FROM {}
+             FROM {events_table}
              WHERE aggregate_id = $1 AND aggregate_type = $2 AND stream_version >= $3
-             ORDER BY stream_version ASC",
-            events_table
+             ORDER BY stream_version ASC"
         );
 
         let events: Vec<EventEnvelope> = sqlx::query_as::<_, EventRow>(&query)
@@ -606,10 +563,9 @@ impl EventStore for PostgresEventStore {
         let query = format!(
             "SELECT event_id, aggregate_id, aggregate_type, event_type, event_version,
                     event_data, created_by, created_at, correlation_id, causation_id, metadata
-             FROM {}
+             FROM {events_table}
              WHERE id > $1
-             ORDER BY id ASC",
-            events_table
+             ORDER BY id ASC"
         );
 
         let events: Vec<EventEnvelope> = sqlx::query_as::<_, EventRow>(&query)
@@ -627,8 +583,7 @@ impl EventStore for PostgresEventStore {
     async fn get_version(&self, stream_id: StreamId) -> Result<Version> {
         let events_table = self.qualify_table("events");
         let query = format!(
-            "SELECT MAX(stream_version) FROM {} WHERE aggregate_id = $1 AND aggregate_type = $2",
-            events_table
+            "SELECT MAX(stream_version) FROM {events_table} WHERE aggregate_id = $1 AND aggregate_type = $2"
         );
 
         let version: Option<i64> = sqlx::query_scalar(&query)
@@ -646,11 +601,10 @@ impl EventStore for PostgresEventStore {
     async fn save_snapshot(&self, snapshot: Snapshot) -> Result<()> {
         let snapshots_table = self.qualify_table("snapshots");
         let query = format!(
-            "INSERT INTO {} (aggregate_id, aggregate_type, snapshot_version, snapshot_data)
+            "INSERT INTO {snapshots_table} (aggregate_id, aggregate_type, snapshot_version, snapshot_data)
              VALUES ($1, $2, $3, $4)
              ON CONFLICT (aggregate_id, aggregate_type)
-             DO UPDATE SET snapshot_version = $3, snapshot_data = $4, created_at = NOW()",
-            snapshots_table
+             DO UPDATE SET snapshot_version = $3, snapshot_data = $4, created_at = NOW()"
         );
 
         sqlx::query(&query)
@@ -669,9 +623,8 @@ impl EventStore for PostgresEventStore {
         let snapshots_table = self.qualify_table("snapshots");
         let query = format!(
             "SELECT aggregate_id, aggregate_type, snapshot_version, snapshot_data
-             FROM {}
-             WHERE aggregate_id = $1 AND aggregate_type = $2",
-            snapshots_table
+             FROM {snapshots_table}
+             WHERE aggregate_id = $1 AND aggregate_type = $2"
         );
 
         let row: Option<SnapshotRow> = sqlx::query_as::<_, SnapshotRow>(&query)
@@ -767,7 +720,7 @@ mod tests {
     use testcontainers_modules::{postgres::Postgres, testcontainers::runners::AsyncRunner};
     use uuid::Uuid;
 
-    /// Test database helper using testcontainers for isolated PostgreSQL testing.
+    /// Test database helper using testcontainers for isolated `PostgreSQL` testing.
     struct TestDatabase {
         pool: PgPool,
         #[allow(dead_code)]
@@ -795,7 +748,7 @@ mod tests {
                 .map_err(|e| Error::custom(format!("Failed to get container port: {e}")))?;
 
             let connection_string =
-                format!("postgresql://postgres:postgres@{}:{}/postgres", host, port);
+                format!("postgresql://postgres:postgres@{host}:{port}/postgres");
 
             // Connect to database
             let pool = PgPool::connect(&connection_string)
@@ -1002,7 +955,7 @@ mod tests {
 
         // Add 5 events
         for i in 0..5 {
-            let event = create_test_envelope(&format!("Event{}", i), aggregate_id);
+            let event = create_test_envelope(&format!("Event{i}"), aggregate_id);
             store
                 .append(stream_id.clone(), vec![event], Version::new(i))
                 .await
@@ -1024,7 +977,7 @@ mod tests {
         for i in 0..5 {
             let aggregate_id = Uuid::new_v4();
             let stream_id = StreamId::new("User", aggregate_id);
-            let event = create_test_envelope(&format!("Event{}", i), aggregate_id);
+            let event = create_test_envelope(&format!("Event{i}"), aggregate_id);
 
             store
                 .append(stream_id, vec![event], Version::initial())
@@ -1201,7 +1154,7 @@ mod tests {
         let host = container.get_host().await.unwrap();
         let port = container.get_host_port_ipv4(5432).await.unwrap();
         let connection_string =
-            format!("postgresql://postgres:postgres@{}:{}/postgres", host, port);
+            format!("postgresql://postgres:postgres@{host}:{port}/postgres");
 
         let pool = PgPool::connect(&connection_string).await.unwrap();
 
@@ -1246,7 +1199,7 @@ mod tests {
         let host = container.get_host().await.unwrap();
         let port = container.get_host_port_ipv4(5432).await.unwrap();
         let connection_string =
-            format!("postgresql://postgres:postgres@{}:{}/postgres", host, port);
+            format!("postgresql://postgres:postgres@{host}:{port}/postgres");
 
         let pool = PgPool::connect(&connection_string).await.unwrap();
         let store = PostgresEventStore::new(pool.clone());
@@ -1350,7 +1303,7 @@ mod tests {
         let host = container.get_host().await.unwrap();
         let port = container.get_host_port_ipv4(5432).await.unwrap();
         let connection_string =
-            format!("postgresql://postgres:postgres@{}:{}/postgres", host, port);
+            format!("postgresql://postgres:postgres@{host}:{port}/postgres");
 
         let pool = PgPool::connect(&connection_string).await.unwrap();
 
@@ -1404,7 +1357,7 @@ mod tests {
         let host = container.get_host().await.unwrap();
         let port = container.get_host_port_ipv4(5432).await.unwrap();
         let connection_string =
-            format!("postgresql://postgres:postgres@{}:{}/postgres", host, port);
+            format!("postgresql://postgres:postgres@{host}:{port}/postgres");
 
         let pool = PgPool::connect(&connection_string).await.unwrap();
 

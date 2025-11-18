@@ -139,7 +139,7 @@ mod tests {
 
     #[async_trait]
     impl Projection for CounterProjection {
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "counter"
         }
 
@@ -268,7 +268,7 @@ mod tests {
 
     #[async_trait]
     impl Projection for FailingProjection {
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "failing"
         }
 

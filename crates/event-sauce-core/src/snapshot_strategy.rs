@@ -188,7 +188,7 @@ impl EveryNEvents {
     /// let strategy = EveryNEvents::new(50);
     /// assert_eq!(strategy.interval(), 50);
     /// ```
-    pub fn new(interval: u32) -> Self {
+    #[must_use] pub fn new(interval: u32) -> Self {
         assert!(interval > 0, "Snapshot interval must be greater than 0");
         Self(interval)
     }
@@ -203,7 +203,7 @@ impl EveryNEvents {
     /// let strategy = EveryNEvents(100);
     /// assert_eq!(strategy.interval(), 100);
     /// ```
-    pub fn interval(&self) -> u32 {
+    #[must_use] pub fn interval(&self) -> u32 {
         self.0
     }
 }
@@ -352,8 +352,8 @@ mod tests {
 
     #[test]
     fn test_strategy_debug_format() {
-        assert_eq!(format!("{:?}", AlwaysSnapshot), "AlwaysSnapshot");
-        assert_eq!(format!("{:?}", NeverSnapshot), "NeverSnapshot");
+        assert_eq!(format!("{AlwaysSnapshot:?}"), "AlwaysSnapshot");
+        assert_eq!(format!("{NeverSnapshot:?}"), "NeverSnapshot");
         assert_eq!(format!("{:?}", EveryNEvents(100)), "EveryNEvents(100)");
     }
 

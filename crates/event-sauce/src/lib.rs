@@ -51,8 +51,8 @@ pub use event_sauce_sqlite;
 #[cfg(feature = "projections")]
 pub use event_sauce_projections;
 
-#[cfg(feature = "sagas")]
-pub use event_sauce_sagas;
+// #[cfg(feature = "sagas")]
+// pub use event_sauce_sagas;  // TODO: Re-enable after refactoring sagas
 
 /// Prelude module for convenient imports
 ///

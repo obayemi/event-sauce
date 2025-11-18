@@ -14,13 +14,9 @@ use serde::{Deserialize, Serialize};
 
 /// Test aggregate ID
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Default)]
 struct TestId(i32);
 
-impl Default for TestId {
-    fn default() -> Self {
-        Self(0)
-    }
-}
 
 impl std::fmt::Display for TestId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -336,7 +332,7 @@ fn test_apply_event_integration_with_aggregate_lifecycle() {
     assert_eq!(aggregate.pending_events().len(), 2);
 
     // Replay events using apply_event
-    let events: Vec<_> = aggregate.pending_events().iter().cloned().collect();
+    let events: Vec<_> = aggregate.pending_events().to_vec();
     let mut replayed = TestAggregate::from_state(TestState {
         id: TestId(1),
         value: 0,
