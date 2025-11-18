@@ -285,10 +285,10 @@ pub trait Aggregate: Send + Sync {
     /// }
     ///
     /// impl AggregateId for CounterId {
-///     fn to_uuid(&self) -> Uuid {
-///         self.0
-///     }
-/// }
+    ///     fn to_uuid(&self) -> Uuid {
+    ///         self.0
+    ///     }
+    /// }
     ///
     /// #[derive(Debug, Clone)]
     /// enum CounterEvent {

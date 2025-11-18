@@ -20,9 +20,7 @@
 //! Note: This example requires Docker to be running for testcontainers.
 
 use chrono::Utc;
-use event_sauce_core::{
-    load, Aggregate, ApplyEvent, EventStore, EveryNEvents, SnapshotConfig,
-};
+use event_sauce_core::{load, Aggregate, ApplyEvent, EventStore, EveryNEvents, SnapshotConfig};
 use event_sauce_macros::{AggregateError, AggregateId, AggregateState, Event as DeriveEvent};
 use event_sauce_postgres::PostgresEventStore;
 use serde::{Deserialize, Serialize};
@@ -121,28 +119,27 @@ impl TestDatabase {
         println!("🐳 Starting PostgreSQL container...");
 
         // Start PostgreSQL container
-        let container = Postgres::default()
-            .with_tag("16-alpine")
-            .start()
-            .await?;
+        let container = Postgres::default().with_tag("16-alpine").start().await?;
 
         // Get connection string
         let host = container.get_host().await?;
         let port = container.get_host_port_ipv4(5432).await?;
 
-        let connection_string = format!("postgresql://postgres:postgres@{}:{}/postgres", host, port);
+        let connection_string =
+            format!("postgresql://postgres:postgres@{}:{}/postgres", host, port);
 
         println!("📦 Connecting to database at {}:{}...", host, port);
 
         // Connect to database
         let pool = PgPool::connect(&connection_string).await?;
 
+        // Create temporary store to run migrations
+        let temp_store = PostgresEventStore::new(pool.clone());
+
         println!("🔧 Running migrations...");
 
-        // Run migrations
-        sqlx::migrate!("../event-sauce-postgres/migrations")
-            .run(&pool)
-            .await?;
+        // Run migrations using the event store's migrate method
+        temp_store.migrate().await?;
 
         println!("✅ Database ready!\n");
 
@@ -221,9 +218,14 @@ impl PerformanceMetrics {
         if let Some(avg_snap) = self.avg_snapshot_commit_time {
             println!("     Snapshot commits:  {}", self.commits_with_snapshot);
             println!("     Avg snapshot commit: {:?}", avg_snap);
-            let overhead_pct = ((avg_snap.as_nanos() as f64 / self.avg_commit_time.as_nanos() as f64) - 1.0) * 100.0;
+            let overhead_pct =
+                ((avg_snap.as_nanos() as f64 / self.avg_commit_time.as_nanos() as f64) - 1.0)
+                    * 100.0;
             if overhead_pct > 0.0 {
-                println!("     Snapshot overhead: +{:.1}% per snapshot commit", overhead_pct);
+                println!(
+                    "     Snapshot overhead: +{:.1}% per snapshot commit",
+                    overhead_pct
+                );
             }
         }
     }
@@ -325,7 +327,10 @@ async fn demo_without_snapshots(
     println!("⏳ Creating counter with {} events...", event_count);
     let commit_metrics = create_counter_with_events(&store, id, event_count).await?;
 
-    println!("⏳ Loading counter (replaying all {} events)...", event_count);
+    println!(
+        "⏳ Loading counter (replaying all {} events)...",
+        event_count
+    );
     let load_time = measure_load_time(&store, id).await?;
 
     let counter: CounterAggregate = load(&store, id).await?;
@@ -391,9 +396,7 @@ async fn demo_with_snapshots(
     Ok(metrics)
 }
 
-async fn demo_performance_comparison(
-    pool: &PgPool,
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn demo_performance_comparison(pool: &PgPool) -> Result<(), Box<dyn std::error::Error>> {
     println!("╔═══════════════════════════════════════════════════════════╗");
     println!("║  Scenario 3: Performance Comparison                       ║");
     println!("╚═══════════════════════════════════════════════════════════╝\n");
@@ -420,28 +423,45 @@ async fn demo_performance_comparison(
         let store_with_snap = PostgresEventStore::with_config(pool.clone(), config_with_snap);
         let id2 = CounterId::new();
 
-        let metrics_with_snap = create_counter_with_events(&store_with_snap, id2, event_count).await?;
+        let metrics_with_snap =
+            create_counter_with_events(&store_with_snap, id2, event_count).await?;
         let load_time_with_snap = measure_load_time(&store_with_snap, id2).await?;
 
         // Calculate improvements
-        let load_speedup = load_time_no_snap.as_nanos() as f64 / load_time_with_snap.as_nanos() as f64;
-        let write_overhead =
-            (metrics_with_snap.total_time.as_nanos() as f64 / metrics_no_snap.total_time.as_nanos() as f64 - 1.0)
-                * 100.0;
-        let avg_commit_overhead = if let Some(avg_snap) = metrics_with_snap.avg_snapshot_commit_time {
-            ((avg_snap.as_nanos() as f64 / metrics_no_snap.avg_commit_time.as_nanos() as f64) - 1.0) * 100.0
+        let load_speedup =
+            load_time_no_snap.as_nanos() as f64 / load_time_with_snap.as_nanos() as f64;
+        let write_overhead = (metrics_with_snap.total_time.as_nanos() as f64
+            / metrics_no_snap.total_time.as_nanos() as f64
+            - 1.0)
+            * 100.0;
+        let avg_commit_overhead = if let Some(avg_snap) = metrics_with_snap.avg_snapshot_commit_time
+        {
+            ((avg_snap.as_nanos() as f64 / metrics_no_snap.avg_commit_time.as_nanos() as f64) - 1.0)
+                * 100.0
         } else {
             0.0
         };
 
         println!("  Without snapshots:");
-        println!("    Write: {:?} (avg commit: {:?})", metrics_no_snap.total_time, metrics_no_snap.avg_commit_time);
+        println!(
+            "    Write: {:?} (avg commit: {:?})",
+            metrics_no_snap.total_time, metrics_no_snap.avg_commit_time
+        );
         println!("    Load:  {:?}", load_time_no_snap);
 
         println!("  With snapshots:");
-        println!("    Write: {:?} (+{:.1}% overhead)", metrics_with_snap.total_time, write_overhead);
-        println!("    Avg commit: {:?} (snapshot commits: +{:.1}%)", metrics_with_snap.avg_commit_time, avg_commit_overhead);
-        println!("    Load:  {:?} ({:.2}x faster)", load_time_with_snap, load_speedup);
+        println!(
+            "    Write: {:?} (+{:.1}% overhead)",
+            metrics_with_snap.total_time, write_overhead
+        );
+        println!(
+            "    Avg commit: {:?} (snapshot commits: +{:.1}%)",
+            metrics_with_snap.avg_commit_time, avg_commit_overhead
+        );
+        println!(
+            "    Load:  {:?} ({:.2}x faster)",
+            load_time_with_snap, load_speedup
+        );
         println!();
     }
 
@@ -572,26 +592,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         * 100.0;
 
     println!("  Load Performance:");
+    println!("    Without snapshots: {:?}", metrics_no_snap.load_time);
+    println!("    With snapshots:    {:?}", metrics_with_snap.load_time);
     println!(
-        "    Without snapshots: {:?}",
-        metrics_no_snap.load_time
+        "    🚀 Speedup:         {:.2}x faster with snapshots",
+        load_speedup
     );
-    println!(
-        "    With snapshots:    {:?}",
-        metrics_with_snap.load_time
-    );
-    println!("    🚀 Speedup:         {:.2}x faster with snapshots", load_speedup);
     println!();
 
     println!("  Write Performance:");
-    println!(
-        "    Without snapshots: {:?}",
-        metrics_no_snap.write_time
-    );
-    println!(
-        "    With snapshots:    {:?}",
-        metrics_with_snap.write_time
-    );
+    println!("    Without snapshots: {:?}", metrics_no_snap.write_time);
+    println!("    With snapshots:    {:?}", metrics_with_snap.write_time);
     println!(
         "    📊 Overhead:        +{:.1}% with snapshot creation",
         write_overhead
@@ -616,7 +627,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("     • Load time improvement is substantial with real DB\n");
 
     println!("  2. Write Overhead:");
-    println!("     • Snapshot creation adds ~{}% write overhead", write_overhead as i32);
+    println!(
+        "     • Snapshot creation adds ~{}% write overhead",
+        write_overhead as i32
+    );
     println!("     • Overhead only affects commits that create snapshots");
     println!("     • Acceptable for typical read-heavy workloads");
     println!("     • Batch commits help amortize snapshot costs\n");

@@ -256,7 +256,10 @@ async fn demo_always_snapshot() -> Result<(), Box<dyn std::error::Error>> {
     let counter: CounterAggregate = load(&store, id).await?;
     println!("✓ Counter value: {}", counter.value());
     println!("✓ Load time: {:?}", load_time);
-    println!("✓ Snapshot created at version: {}", counter.version().as_i32());
+    println!(
+        "✓ Snapshot created at version: {}",
+        counter.version().as_i32()
+    );
 
     Ok(())
 }

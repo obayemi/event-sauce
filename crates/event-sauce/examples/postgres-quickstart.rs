@@ -170,19 +170,17 @@ async fn setup_event_store() -> Result<PostgresEventStore, Box<dyn std::error::E
     // Create connection pool
     let pool = PgPool::connect(&database_url).await?;
 
+    // Create the event store with default configuration
+    // Default: snapshots every 100 events for better performance
+    let store = PostgresEventStore::new(pool);
+
     println!("🔧 Running database migrations...");
 
     // Run migrations to create the necessary tables
     // This is safe to run multiple times - it only applies new migrations
-    sqlx::migrate!("../event-sauce-postgres/migrations")
-        .run(&pool)
-        .await?;
+    store.migrate().await?;
 
     println!("✅ Database ready!\n");
-
-    // Create the event store with default configuration
-    // Default: snapshots every 100 events for better performance
-    let store = PostgresEventStore::new(pool);
 
     Ok(store)
 }

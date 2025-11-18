@@ -5,8 +5,7 @@
 
 use async_trait::async_trait;
 use event_sauce_core::{
-    Error, EventEnvelope, EventStore, Position, Result, Snapshot, SnapshotConfig, StreamId,
-    Version,
+    Error, EventEnvelope, EventStore, Position, Result, Snapshot, SnapshotConfig, StreamId, Version,
 };
 use futures::stream::{self, Stream};
 use parking_lot::RwLock;

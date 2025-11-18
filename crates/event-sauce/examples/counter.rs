@@ -274,7 +274,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     store.commit(&mut counter).await?;
     println!("✓ Saved {} events to store", num_events);
-    println!("✓ Pending events cleared: {}", counter.pending_events().len());
+    println!(
+        "✓ Pending events cleared: {}",
+        counter.pending_events().len()
+    );
 
     // Load events from store and rebuild aggregate using the new load function
     println!("\n--- Step 5: Load from Event Store ---");

@@ -4,8 +4,7 @@
 
 use async_trait::async_trait;
 use event_sauce_core::{
-    Error, EventEnvelope, EventStore, Position, Result, Snapshot, SnapshotConfig, StreamId,
-    Version,
+    Error, EventEnvelope, EventStore, Position, Result, Snapshot, SnapshotConfig, StreamId, Version,
 };
 use futures::stream::{self, Stream};
 use sqlx::PgPool;
@@ -95,6 +94,44 @@ impl PostgresEventStore {
     #[must_use]
     pub fn pool(&self) -> &PgPool {
         &self.pool
+    }
+
+    /// Runs database migrations to set up the event store schema.
+    ///
+    /// This method creates the necessary tables (`events` and `snapshots`) and indexes
+    /// for the event store. It is idempotent and safe to call multiple times.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use event_sauce_postgres::PostgresEventStore;
+    /// use sqlx::PgPool;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let pool = PgPool::connect("postgresql://localhost/events").await?;
+    ///     let store = PostgresEventStore::new(pool);
+    ///
+    ///     // Run migrations to set up schema
+    ///     store.migrate().await?;
+    ///
+    ///     // Store is now ready to use
+    ///     Ok(())
+    /// }
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The database connection fails
+    /// - The migrations cannot be applied due to permission issues
+    /// - There are SQL syntax errors in migration files
+    pub async fn migrate(&self) -> Result<()> {
+        sqlx::migrate!("./migrations")
+            .run(&self.pool)
+            .await
+            .map_err(|e| Error::custom(format!("Failed to run migrations: {e}")))?;
+        Ok(())
     }
 }
 
@@ -760,5 +797,82 @@ mod tests {
         let (r1, r2) = tokio::join!(result1, result2);
         assert!(r1.is_ok());
         assert!(r2.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_migrate_creates_tables() {
+        // Create a fresh database without running migrations
+        let container = Postgres::default()
+            .with_tag("16-alpine")
+            .start()
+            .await
+            .unwrap();
+
+        let host = container.get_host().await.unwrap();
+        let port = container.get_host_port_ipv4(5432).await.unwrap();
+        let connection_string =
+            format!("postgresql://postgres:postgres@{}:{}/postgres", host, port);
+
+        let pool = PgPool::connect(&connection_string).await.unwrap();
+
+        // Create store and call migrate
+        let store = PostgresEventStore::new(pool.clone());
+        store.migrate().await.unwrap();
+
+        // Verify tables exist by querying them
+        let events_exist: bool = sqlx::query_scalar(
+            "SELECT EXISTS (
+                SELECT FROM information_schema.tables
+                WHERE table_name = 'events'
+            )",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        let snapshots_exist: bool = sqlx::query_scalar(
+            "SELECT EXISTS (
+                SELECT FROM information_schema.tables
+                WHERE table_name = 'snapshots'
+            )",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert!(events_exist);
+        assert!(snapshots_exist);
+    }
+
+    #[tokio::test]
+    async fn test_migrate_is_idempotent() {
+        // Create a fresh database without running migrations
+        let container = Postgres::default()
+            .with_tag("16-alpine")
+            .start()
+            .await
+            .unwrap();
+
+        let host = container.get_host().await.unwrap();
+        let port = container.get_host_port_ipv4(5432).await.unwrap();
+        let connection_string =
+            format!("postgresql://postgres:postgres@{}:{}/postgres", host, port);
+
+        let pool = PgPool::connect(&connection_string).await.unwrap();
+        let store = PostgresEventStore::new(pool.clone());
+
+        // Call migrate twice - should not fail
+        store.migrate().await.unwrap();
+        store.migrate().await.unwrap();
+
+        // Verify we can use the store
+        let aggregate_id = Uuid::new_v4();
+        let stream_id = StreamId::new("User", aggregate_id);
+        let event = create_test_envelope("UserCreated", aggregate_id);
+
+        let result = store
+            .append(stream_id, vec![event], Version::initial())
+            .await;
+        assert!(result.is_ok());
     }
 }

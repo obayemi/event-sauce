@@ -558,11 +558,7 @@ mod tests {
 
         assert!(config.use_snapshots_on_load());
         // Default is EveryNEvents(100)
-        assert!(config
-            .default_strategy()
-            .should_snapshot(Version::new(100)));
-        assert!(!config
-            .default_strategy()
-            .should_snapshot(Version::new(99)));
+        assert!(config.default_strategy().should_snapshot(Version::new(100)));
+        assert!(!config.default_strategy().should_snapshot(Version::new(99)));
     }
 }

@@ -478,9 +478,9 @@ where
         match store.load_snapshot(stream_id.clone()).await? {
             Some(snapshot) => {
                 // Deserialize aggregate from snapshot
-                let aggregate: A = serde_json::from_value(snapshot.snapshot_data).map_err(
-                    |e| crate::Error::custom(format!("Failed to deserialize snapshot: {e}")),
-                )?;
+                let aggregate: A = serde_json::from_value(snapshot.snapshot_data).map_err(|e| {
+                    crate::Error::custom(format!("Failed to deserialize snapshot: {e}"))
+                })?;
 
                 // Start loading events from after the snapshot
                 (aggregate, snapshot.snapshot_version.next())
