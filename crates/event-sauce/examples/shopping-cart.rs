@@ -9,7 +9,7 @@
 //! Run with: cargo run -p event-sauce --example shopping-cart --features "memory,macros"
 
 use chrono::Utc;
-use event_sauce_core::{Aggregate, ApplyEvent};
+use event_sauce_core::{Aggregate, ApplyEvent, DomainEvent};
 use event_sauce_macros::{AggregateError, AggregateId, AggregateState, Event as DeriveEvent};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

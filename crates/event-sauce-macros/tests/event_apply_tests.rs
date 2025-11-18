@@ -355,10 +355,60 @@ fn test_apply_event_integration_with_aggregate_lifecycle() {
 // ============================================================================
 
 /// Event enum without aggregate attribute - should NOT generate apply_event
-#[derive(DeriveEvent, Debug, Clone)]
-#[event(version = 1, type_prefix = "Basic")]
+#[derive(DeriveEvent, Debug, Clone, Serialize, Deserialize)]
+#[event(version = 1, type_prefix = "Basic", aggregate = "BasicAggregate")]
 enum BasicEvent {
     Happened { timestamp: DateTime<Utc> },
+}
+
+// Mock aggregate for BasicEvent
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct BasicAggregate {
+    id: TestId,
+    version: event_sauce_core::Version,
+    pending_events: Vec<BasicEvent>,
+}
+
+impl Aggregate for BasicAggregate {
+    type Event = BasicEvent;
+    type Id = TestId;
+    type Error = TestError;
+
+    fn new(id: Self::Id) -> Self {
+        Self {
+            id,
+            version: event_sauce_core::Version::initial(),
+            pending_events: Vec::new(),
+        }
+    }
+
+    fn aggregate_id(&self) -> &Self::Id {
+        &self.id
+    }
+
+    fn version(&self) -> event_sauce_core::Version {
+        self.version
+    }
+
+    fn pending_events(&self) -> &[Self::Event] {
+        &self.pending_events
+    }
+
+    fn clear_pending_events(&mut self) {
+        self.pending_events.clear();
+    }
+
+    fn apply<E: Into<Self::Event>>(&mut self, event: E) -> Result<(), Self::Error> {
+        let event = event.into();
+        self.apply_internal(&event)?;
+        self.pending_events.push(event);
+        Ok(())
+    }
+
+    fn apply_internal(&mut self, _event: &Self::Event) -> Result<(), Self::Error> {
+        self.version = self.version.next();
+        Ok(())
+    }
 }
 
 #[test]
@@ -371,7 +421,7 @@ fn test_without_aggregate_attribute_no_apply_event() {
     };
 
     // We can still use the DomainEvent trait
-    assert_eq!(event.event_type(), "BasicHappened");
+    assert_eq!(event.event_type(), "Basic.Happened");
     assert_eq!(event.event_version(), 1);
 }
 

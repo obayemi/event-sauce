@@ -250,6 +250,41 @@ impl EventEnvelope {
         self.created_at = timestamp;
         self
     }
+
+    /// Attempts to deserialize this envelope into a concrete domain event.
+    ///
+    /// This provides a more ergonomic API for converting envelopes back to events,
+    /// similar to the `TryFrom` pattern but without orphan rule issues.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use event_sauce_core::{EventEnvelope, DomainEvent};
+    ///
+    /// fn process_envelope(envelope: &EventEnvelope) -> Result<()> {
+    ///     let event: UserEvent = envelope.try_into_event()?;
+    ///     // Process the event...
+    ///     Ok(())
+    /// }
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the envelope cannot be deserialized into the target event type.
+    pub fn try_into_event<T: crate::DomainEvent>(&self) -> crate::Result<T> {
+        T::from_envelope(self)
+    }
+
+    /// Consumes this envelope and attempts to deserialize it into a concrete domain event.
+    ///
+    /// Similar to `try_into_event` but consumes the envelope.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the envelope cannot be deserialized into the target event type.
+    pub fn into_event<T: crate::DomainEvent>(self) -> crate::Result<T> {
+        T::from_envelope(&self)
+    }
 }
 
 #[cfg(test)]

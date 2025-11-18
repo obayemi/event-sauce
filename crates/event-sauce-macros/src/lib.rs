@@ -272,7 +272,7 @@ pub fn derive_event(input: TokenStream) -> TokenStream {
     let event_type_arms = variants.iter().map(|variant| {
         let variant_name = &variant.ident;
         let variant_str = variant_name.to_string();
-        let event_type_name = format!("{type_prefix}{variant_str}");
+        let event_type_name = format!("{type_prefix}.{variant_str}");
 
         // Check if this is a tuple variant or named field variant
         match &variant.fields {
@@ -375,7 +375,7 @@ pub fn derive_event(input: TokenStream) -> TokenStream {
                 /// # Errors
                 ///
                 /// Returns an error if validation (pre or post) fails.
-                pub fn apply_event(&mut self, event: &#name) -> Result<(), <Self as event_sauce_core::Aggregate>::Error> {
+                pub fn apply_event(&mut self, event: &#name) -> std::result::Result<(), <Self as event_sauce_core::Aggregate>::Error> {
                     match event {
                         #(#apply_arms)*
                     }
@@ -387,9 +387,45 @@ pub fn derive_event(input: TokenStream) -> TokenStream {
         quote! {}
     };
 
+    // Generate aggregate type - required for the DomainEvent trait
+    let aggregate_type = if let Some(aggregate_type_str) = &attrs.aggregate {
+        let aggregate_ident = Ident::new(aggregate_type_str, proc_macro2::Span::call_site());
+        quote! { type Aggregate = #aggregate_ident; }
+    } else {
+        return syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "Missing aggregate type. Add aggregate = \"AggregateType\" to #[event(...)] attribute",
+        )
+        .to_compile_error()
+        .into();
+    };
+
+    // Generate TryFrom implementations for EventEnvelope conversions
+    let try_from_impls = quote! {
+        // TryFrom<EventEnvelope> for owned conversion
+        impl TryFrom<event_sauce_core::EventEnvelope> for #name {
+            type Error = event_sauce_core::Error;
+
+            fn try_from(envelope: event_sauce_core::EventEnvelope) -> event_sauce_core::Result<Self> {
+                Self::from_envelope(&envelope)
+            }
+        }
+
+        // TryFrom<&EventEnvelope> for reference conversion
+        impl TryFrom<&event_sauce_core::EventEnvelope> for #name {
+            type Error = event_sauce_core::Error;
+
+            fn try_from(envelope: &event_sauce_core::EventEnvelope) -> event_sauce_core::Result<Self> {
+                Self::from_envelope(envelope)
+            }
+        }
+    };
+
     // Generate the implementation
     let gen = quote! {
         impl event_sauce_core::DomainEvent for #name {
+            #aggregate_type
+
             fn event_type(&self) -> &'static str {
                 match self {
                     #(#event_type_arms)*
@@ -412,6 +448,9 @@ pub fn derive_event(input: TokenStream) -> TokenStream {
 
         // Generate Into implementations for each variant
         #(#into_impls)*
+
+        // Generate TryFrom implementations for idiomatic Rust conversions
+        #try_from_impls
     };
 
     gen.into()
@@ -601,14 +640,14 @@ pub fn derive_aggregate_state(input: TokenStream) -> TokenStream {
                 self.pending_events.clear();
             }
 
-            fn apply<E: Into<Self::Event>>(&mut self, event: E) -> Result<(), Self::Error> {
+            fn apply<E: Into<Self::Event>>(&mut self, event: E) -> std::result::Result<(), Self::Error> {
                 let event = event.into();
                 self.apply_internal(&event)?;
                 self.pending_events.push(event);
                 Ok(())
             }
 
-            fn apply_internal(&mut self, event: &Self::Event) -> Result<(), Self::Error> {
+            fn apply_internal(&mut self, event: &Self::Event) -> std::result::Result<(), Self::Error> {
                 self.apply_event(event)?;
                 self.version = self.version.next();
                 Ok(())

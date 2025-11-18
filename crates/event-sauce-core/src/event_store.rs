@@ -362,21 +362,12 @@ pub trait EventStore: Send + Sync {
                 .saturating_sub(pending.len() as i32),
         );
 
-        // Convert events to envelopes
-        let envelopes: Vec<EventEnvelope> = pending
+        // Convert events to envelopes using the new to_envelope() method
+        let envelopes: Result<Vec<EventEnvelope>> = pending
             .iter()
-            .enumerate()
-            .map(|(idx, event)| {
-                EventEnvelope::new(
-                    Uuid::new_v4(),
-                    aggregate_id,
-                    aggregate_type.to_string(),
-                    event.event_type().to_string(),
-                    Version::new(expected_version.as_i32() + idx as i32 + 1),
-                    serde_json::to_value(event).expect("Event should be serializable"),
-                )
-            })
+            .map(|event| event.to_envelope(aggregate_id))
             .collect();
+        let envelopes = envelopes?;
 
         // Append to store
         self.append(
@@ -502,8 +493,8 @@ where
     // Replay events
     while let Some(envelope) = event_stream.next().await {
         let envelope = envelope?;
-        let event: A::Event = serde_json::from_value(envelope.event_data)
-            .map_err(|e| crate::Error::custom(format!("Failed to deserialize event: {e}")))?;
+        // Use the new try_into_event() method for idiomatic event deserialization
+        let event: A::Event = envelope.try_into_event()?;
 
         aggregate.apply_unchecked(&event);
     }

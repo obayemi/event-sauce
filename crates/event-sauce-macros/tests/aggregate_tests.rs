@@ -5,6 +5,7 @@
 
 use chrono::{DateTime, Utc};
 use event_sauce_core::{Aggregate, AggregateError, AggregateId, DomainEvent, Version};
+use serde::{Deserialize, Serialize};
 use std::fmt;
 use thiserror::Error;
 
@@ -48,7 +49,7 @@ impl AggregateId for TestCounterId {
 }
 
 // Define a simple event for testing
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(dead_code)]
 enum TestCounterEvent {
     Incremented {
@@ -62,6 +63,8 @@ enum TestCounterEvent {
 }
 
 impl DomainEvent for TestCounterEvent {
+    type Aggregate = TestCounter;
+
     fn event_type(&self) -> &'static str {
         match self {
             TestCounterEvent::Incremented { .. } => "CounterIncremented",

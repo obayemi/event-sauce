@@ -17,7 +17,8 @@
       "Bash(docker info:*)",
       "Bash(/dev/null)",
       "Bash(cargo check:*)",
-      "Bash(cargo fmt:*)"
+      "Bash(cargo fmt:*)",
+      "Bash(TRYBUILD=overwrite cargo test:*)"
     ],
     "deny": [],
     "ask": []

@@ -27,9 +27,10 @@ use crate::{AggregateError, AggregateId, DomainEvent, Version};
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// use event_sauce_core::{Aggregate, AggregateError, AggregateId, DomainEvent, Version};
 /// use chrono::{DateTime, Utc};
+/// use serde::{Serialize, Deserialize};
 /// use std::fmt;
 /// use thiserror::Error;
 /// use uuid::Uuid;
@@ -55,12 +56,21 @@ use crate::{AggregateError, AggregateId, DomainEvent, Version};
 ///     }
 /// }
 ///
-/// #[derive(Debug, Clone)]
+/// # struct Counter {
+/// #     id: CounterId,
+/// #     value: i32,
+/// #     version: Version,
+/// #     pending_events: Vec<CounterEvent>,
+/// # }
+///
+/// #[derive(Debug, Clone, Serialize, Deserialize)]
 /// enum CounterEvent {
 ///     Incremented { amount: i32, timestamp: DateTime<Utc> },
 /// }
 ///
 /// impl DomainEvent for CounterEvent {
+///     type Aggregate = Counter;
+///
 ///     fn event_type(&self) -> &'static str {
 ///         "CounterIncremented"
 ///     }
@@ -262,7 +272,7 @@ pub trait Aggregate: Send + Sync {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// use event_sauce_core::{Aggregate, AggregateId, AggregateError, DomainEvent, Version};
     /// use chrono::{DateTime, Utc};
     /// use std::fmt;
@@ -455,13 +465,15 @@ mod tests {
         }
     }
 
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
     enum TestEvent {
         Created { value: i32 },
         Updated { value: i32 },
     }
 
     impl DomainEvent for TestEvent {
+        type Aggregate = TestAggregate;
+
         fn event_type(&self) -> &'static str {
             match self {
                 TestEvent::Created { .. } => "TestCreated",

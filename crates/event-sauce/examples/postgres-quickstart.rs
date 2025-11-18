@@ -30,7 +30,7 @@
 //! ```
 
 use chrono::Utc;
-use event_sauce_core::{load, Aggregate, ApplyEvent, EventStore, Version};
+use event_sauce_core::{load, Aggregate, ApplyEvent, DomainEvent, EventStore, Version};
 use event_sauce_macros::{AggregateError, AggregateId, AggregateState, Event as DeriveEvent};
 use event_sauce_postgres::PostgresEventStore;
 use serde::{Deserialize, Serialize};

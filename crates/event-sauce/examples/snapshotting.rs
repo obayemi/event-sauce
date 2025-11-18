@@ -11,7 +11,8 @@
 
 use chrono::Utc;
 use event_sauce_core::{
-    load, Aggregate, ApplyEvent, EventStore, EveryNEvents, NeverSnapshot, SnapshotConfig,
+    load, Aggregate, ApplyEvent, DomainEvent, EventStore, EveryNEvents, NeverSnapshot,
+    SnapshotConfig,
 };
 use event_sauce_macros::{AggregateError, AggregateId, AggregateState, Event as DeriveEvent};
 use event_sauce_memory::InMemoryEventStore;

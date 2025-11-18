@@ -62,6 +62,8 @@ pub enum TestCounterEvent {
 }
 
 impl DomainEvent for TestCounterEvent {
+    type Aggregate = TestCounterAggregate;
+
     fn event_type(&self) -> &'static str {
         match self {
             TestCounterEvent::Incremented { .. } => "CounterIncremented",
@@ -89,10 +91,10 @@ impl DomainEvent for TestCounterEvent {
     event = "TestCounterEvent",
     error = "TestCounterError"
 )]
-struct TestCounterState {
+pub struct TestCounterState {
     #[aggregate_id]
     id: TestCounterId,
-    value: i32,
+    pub value: i32,
 }
 
 impl Default for TestCounterId {
