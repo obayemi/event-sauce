@@ -295,13 +295,9 @@ mod tests {
         let project_name = "test-project";
         let project_path = temp_dir.path().join(project_name);
 
-        run(
-            project_name,
-            Some(project_path.to_str().unwrap()),
-            "memory",
-        )
-        .await
-        .unwrap();
+        run(project_name, Some(project_path.to_str().unwrap()), "memory")
+            .await
+            .unwrap();
 
         // Verify structure
         assert!(project_path.exists());
@@ -343,21 +339,12 @@ mod tests {
         let project_path = temp_dir.path().join(project_name);
 
         // Create first time - should succeed
-        run(
-            project_name,
-            Some(project_path.to_str().unwrap()),
-            "memory",
-        )
-        .await
-        .unwrap();
+        run(project_name, Some(project_path.to_str().unwrap()), "memory")
+            .await
+            .unwrap();
 
         // Create second time - should fail
-        let result = run(
-            project_name,
-            Some(project_path.to_str().unwrap()),
-            "memory",
-        )
-        .await;
+        let result = run(project_name, Some(project_path.to_str().unwrap()), "memory").await;
 
         assert!(result.is_err());
         match result.unwrap_err() {
@@ -369,7 +356,12 @@ mod tests {
     #[tokio::test]
     async fn test_run_invalid_project_name() {
         let temp_dir = TempDir::new().unwrap();
-        let result = run("-invalid", Some(temp_dir.path().to_str().unwrap()), "memory").await;
+        let result = run(
+            "-invalid",
+            Some(temp_dir.path().to_str().unwrap()),
+            "memory",
+        )
+        .await;
 
         assert!(result.is_err());
         match result.unwrap_err() {

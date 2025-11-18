@@ -135,7 +135,8 @@ mod tests {
         }
 
         async fn compensate(&mut self, event: &EventEnvelope) -> Result<()> {
-            self.events_handled.push(format!("compensate:{}", event.event_type));
+            self.events_handled
+                .push(format!("compensate:{}", event.event_type));
             Ok(())
         }
 

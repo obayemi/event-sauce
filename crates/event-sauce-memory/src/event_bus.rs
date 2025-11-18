@@ -168,13 +168,11 @@ mod tests {
         bus.publish(event.clone()).await.unwrap();
 
         // Receive event
-        let received = tokio::time::timeout(
-            std::time::Duration::from_millis(100),
-            subscription.next(),
-        )
-        .await
-        .unwrap()
-        .unwrap();
+        let received =
+            tokio::time::timeout(std::time::Duration::from_millis(100), subscription.next())
+                .await
+                .unwrap()
+                .unwrap();
 
         assert_eq!(received.event_type, "UserCreated");
     }
@@ -199,13 +197,11 @@ mod tests {
             .unwrap();
 
         // Should only receive the matching event
-        let received = tokio::time::timeout(
-            std::time::Duration::from_millis(100),
-            subscription.next(),
-        )
-        .await
-        .unwrap()
-        .unwrap();
+        let received =
+            tokio::time::timeout(std::time::Duration::from_millis(100), subscription.next())
+                .await
+                .unwrap()
+                .unwrap();
 
         assert_eq!(received.event_type, "UserCreated");
     }
@@ -233,20 +229,16 @@ mod tests {
             .unwrap();
 
         // Should receive both User events
-        let received1 = tokio::time::timeout(
-            std::time::Duration::from_millis(100),
-            subscription.next(),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        let received2 = tokio::time::timeout(
-            std::time::Duration::from_millis(100),
-            subscription.next(),
-        )
-        .await
-        .unwrap()
-        .unwrap();
+        let received1 =
+            tokio::time::timeout(std::time::Duration::from_millis(100), subscription.next())
+                .await
+                .unwrap()
+                .unwrap();
+        let received2 =
+            tokio::time::timeout(std::time::Duration::from_millis(100), subscription.next())
+                .await
+                .unwrap()
+                .unwrap();
 
         assert_eq!(received1.event_type, "UserCreated");
         assert_eq!(received2.event_type, "UserUpdated");
@@ -265,20 +257,14 @@ mod tests {
         bus.publish(event.clone()).await.unwrap();
 
         // Both subscribers should receive the event
-        let received1 = tokio::time::timeout(
-            std::time::Duration::from_millis(100),
-            sub1.next(),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        let received2 = tokio::time::timeout(
-            std::time::Duration::from_millis(100),
-            sub2.next(),
-        )
-        .await
-        .unwrap()
-        .unwrap();
+        let received1 = tokio::time::timeout(std::time::Duration::from_millis(100), sub1.next())
+            .await
+            .unwrap()
+            .unwrap();
+        let received2 = tokio::time::timeout(std::time::Duration::from_millis(100), sub2.next())
+            .await
+            .unwrap()
+            .unwrap();
 
         assert_eq!(received1.event_type, "UserCreated");
         assert_eq!(received2.event_type, "UserCreated");
@@ -300,13 +286,11 @@ mod tests {
 
         // Should receive all three events
         for i in 1..=3 {
-            let received = tokio::time::timeout(
-                std::time::Duration::from_millis(100),
-                subscription.next(),
-            )
-            .await
-            .unwrap()
-            .unwrap();
+            let received =
+                tokio::time::timeout(std::time::Duration::from_millis(100), subscription.next())
+                    .await
+                    .unwrap()
+                    .unwrap();
             assert_eq!(received.event_type, format!("Event{}", i));
         }
     }
@@ -324,13 +308,11 @@ mod tests {
         bus_clone.publish(event).await.unwrap();
 
         // Should receive via original subscription
-        let received = tokio::time::timeout(
-            std::time::Duration::from_millis(100),
-            subscription.next(),
-        )
-        .await
-        .unwrap()
-        .unwrap();
+        let received =
+            tokio::time::timeout(std::time::Duration::from_millis(100), subscription.next())
+                .await
+                .unwrap()
+                .unwrap();
 
         assert_eq!(received.event_type, "UserCreated");
     }

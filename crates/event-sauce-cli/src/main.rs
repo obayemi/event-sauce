@@ -125,7 +125,11 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Init { name, path, backend } => {
+        Commands::Init {
+            name,
+            path,
+            backend,
+        } => {
             commands::init::run(&name, path.as_deref(), &backend).await?;
         }
         Commands::Generate(gen_cmd) => match gen_cmd {

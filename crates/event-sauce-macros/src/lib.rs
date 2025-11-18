@@ -9,10 +9,10 @@
 #![warn(clippy::pedantic)]
 #![allow(clippy::module_name_repetitions)]
 
+use darling::FromMeta;
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{parse_macro_input, DeriveInput, Data, Fields, Attribute, Meta, Ident};
-use darling::FromMeta;
+use syn::{parse_macro_input, Attribute, Data, DeriveInput, Fields, Ident, Meta};
 
 /// Attributes for the #[aggregate(...)] container attribute
 #[derive(Debug, FromMeta)]
@@ -26,7 +26,10 @@ struct AggregateAttrs {
 }
 
 /// Derive macro for Aggregate trait
-#[proc_macro_derive(Aggregate, attributes(aggregate, aggregate_id, aggregate_version, aggregate_events))]
+#[proc_macro_derive(
+    Aggregate,
+    attributes(aggregate, aggregate_id, aggregate_version, aggregate_events)
+)]
 pub fn derive_aggregate(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
 
@@ -52,7 +55,7 @@ pub fn derive_aggregate(input: TokenStream) -> TokenStream {
         _ => {
             return syn::Error::new_spanned(
                 &input.ident,
-                "Aggregate can only be derived for structs"
+                "Aggregate can only be derived for structs",
             )
             .to_compile_error()
             .into();
@@ -65,12 +68,23 @@ pub fn derive_aggregate(input: TokenStream) -> TokenStream {
         Err(err) => return err,
     };
 
-    // Generate the implementation
+    // Generate the implementation with Default bound for new()
     let gen = quote! {
-        impl event_sauce_core::Aggregate for #name {
+        impl event_sauce_core::Aggregate for #name
+        where
+            Self: Default,
+        {
             type Event = #event_type;
             type Id = #id_type;
             type Error = #error_type;
+
+            fn new(id: Self::Id) -> Self {
+                let mut aggregate = Self::default();
+                aggregate.#id_field = id;
+                aggregate.#version_field = event_sauce_core::Version::initial();
+                aggregate.#events_field = Vec::new();
+                aggregate
+            }
 
             fn aggregate_id(&self) -> &Self::Id {
                 &self.#id_field
@@ -88,15 +102,21 @@ pub fn derive_aggregate(input: TokenStream) -> TokenStream {
                 self.#events_field.clear();
             }
 
-            fn apply<E: Into<Self::Event>>(&mut self, event: E) {
+            fn apply<E: Into<Self::Event>>(&mut self, event: E) -> Result<(), Self::Error> {
                 let event = event.into();
-                self.apply_internal(&event);
+                self.apply_internal(&event)?;
                 self.#events_field.push(event);
+                Ok(())
             }
 
-            fn apply_internal(&mut self, event: &Self::Event) {
-                self.apply_event(event);
+            fn apply_internal(&mut self, event: &Self::Event) -> Result<(), Self::Error> {
+                // The apply_event method is expected to return Result<(), Self::Error>.
+                // If the Event derive macro is used with aggregate="...", it will generate
+                // an apply_event method that handles validation, apply, and post_validate.
+                // Otherwise, the user provides their own apply_event that should return Ok(()).
+                self.apply_event(event)?;
                 self.#version_field = self.#version_field.next();
+                Ok(())
             }
         }
     };
@@ -105,7 +125,9 @@ pub fn derive_aggregate(input: TokenStream) -> TokenStream {
 }
 
 /// Extract aggregate attributes from the #[aggregate(...)] attribute
-fn extract_aggregate_attrs(attrs: &[Attribute]) -> Result<(Ident, Ident, Option<Ident>), TokenStream> {
+fn extract_aggregate_attrs(
+    attrs: &[Attribute],
+) -> Result<(Ident, Ident, Option<Ident>), TokenStream> {
     for attr in attrs {
         if attr.path().is_ident("aggregate") {
             let nested = match &attr.meta {
@@ -114,17 +136,20 @@ fn extract_aggregate_attrs(attrs: &[Attribute]) -> Result<(Ident, Ident, Option<
             };
 
             // Parse the attribute arguments
-            let aggregate_attrs: AggregateAttrs = match darling::ast::NestedMeta::parse_meta_list(nested.clone()) {
-                Ok(nested) => match AggregateAttrs::from_list(&nested) {
-                    Ok(attrs) => attrs,
-                    Err(err) => return Err(err.write_errors().into()),
-                },
-                Err(err) => return Err(err.to_compile_error().into()),
-            };
+            let aggregate_attrs: AggregateAttrs =
+                match darling::ast::NestedMeta::parse_meta_list(nested.clone()) {
+                    Ok(nested) => match AggregateAttrs::from_list(&nested) {
+                        Ok(attrs) => attrs,
+                        Err(err) => return Err(err.write_errors().into()),
+                    },
+                    Err(err) => return Err(err.to_compile_error().into()),
+                };
 
             let id_type = Ident::new(&aggregate_attrs.id, proc_macro2::Span::call_site());
             let event_type = Ident::new(&aggregate_attrs.event, proc_macro2::Span::call_site());
-            let error_type = aggregate_attrs.error.map(|e| Ident::new(&e, proc_macro2::Span::call_site()));
+            let error_type = aggregate_attrs
+                .error
+                .map(|e| Ident::new(&e, proc_macro2::Span::call_site()));
 
             return Ok((id_type, event_type, error_type));
         }
@@ -132,7 +157,7 @@ fn extract_aggregate_attrs(attrs: &[Attribute]) -> Result<(Ident, Ident, Option<
 
     Err(syn::Error::new(
         proc_macro2::Span::call_site(),
-        "Missing #[aggregate(id = \"...\", event = \"...\")] attribute"
+        "Missing #[aggregate(id = \"...\", event = \"...\")] attribute",
     )
     .to_compile_error()
     .into())
@@ -161,27 +186,33 @@ fn extract_field_names(fields: &Fields) -> Result<(Ident, Ident, Ident), TokenSt
     }
 
     let id_field = id_field.ok_or_else(|| {
-        TokenStream::from(syn::Error::new(
-            proc_macro2::Span::call_site(),
-            "Missing #[aggregate_id] field attribute"
+        TokenStream::from(
+            syn::Error::new(
+                proc_macro2::Span::call_site(),
+                "Missing #[aggregate_id] field attribute",
+            )
+            .to_compile_error(),
         )
-        .to_compile_error())
     })?;
 
     let version_field = version_field.ok_or_else(|| {
-        TokenStream::from(syn::Error::new(
-            proc_macro2::Span::call_site(),
-            "Missing #[aggregate_version] field attribute"
+        TokenStream::from(
+            syn::Error::new(
+                proc_macro2::Span::call_site(),
+                "Missing #[aggregate_version] field attribute",
+            )
+            .to_compile_error(),
         )
-        .to_compile_error())
     })?;
 
     let events_field = events_field.ok_or_else(|| {
-        TokenStream::from(syn::Error::new(
-            proc_macro2::Span::call_site(),
-            "Missing #[aggregate_events] field attribute"
+        TokenStream::from(
+            syn::Error::new(
+                proc_macro2::Span::call_site(),
+                "Missing #[aggregate_events] field attribute",
+            )
+            .to_compile_error(),
         )
-        .to_compile_error())
     })?;
 
     Ok((id_field, version_field, events_field))
@@ -221,24 +252,21 @@ pub fn derive_event(input: TokenStream) -> TokenStream {
     let variants = match &input.data {
         Data::Enum(data) => &data.variants,
         _ => {
-            return syn::Error::new_spanned(
-                &input.ident,
-                "Event can only be derived for enums"
-            )
-            .to_compile_error()
-            .into();
+            return syn::Error::new_spanned(&input.ident, "Event can only be derived for enums")
+                .to_compile_error()
+                .into();
         }
     };
 
     // Generate event_type match arms
-    let type_prefix = attrs.type_prefix.clone()
-        .unwrap_or_else(|| {
-            // Extract the base name by removing "Event" suffix if present
-            let name_str = name.to_string();
-            name_str.strip_suffix("Event")
-                .map(std::string::ToString::to_string)
-                .unwrap_or(name_str)
-        });
+    let type_prefix = attrs.type_prefix.clone().unwrap_or_else(|| {
+        // Extract the base name by removing "Event" suffix if present
+        let name_str = name.to_string();
+        name_str
+            .strip_suffix("Event")
+            .map(std::string::ToString::to_string)
+            .unwrap_or(name_str)
+    });
 
     let event_type_arms = variants.iter().map(|variant| {
         let variant_name = &variant.ident;
@@ -305,19 +333,27 @@ pub fn derive_event(input: TokenStream) -> TokenStream {
     let apply_event_impl = if let Some(aggregate_type_str) = &attrs.aggregate {
         let aggregate_type = Ident::new(aggregate_type_str, proc_macro2::Span::call_site());
 
-        // Generate match arms for apply_event
+        // Generate match arms for apply_event that implement full validation flow:
+        // 1. validate() - pre-conditions
+        // 2. apply() - state transformation
+        // 3. post_validate() - post-conditions/invariants
         let apply_arms = variants.iter().map(|variant| {
             let variant_name = &variant.ident;
 
-            // For tuple variants, extract the inner event and call ApplyEvent::apply
+            // For tuple variants, extract the inner event and call validation -> apply -> post_validate
             match &variant.fields {
                 Fields::Unnamed(_) => {
                     quote! {
-                        #name::#variant_name(e) => event_sauce_core::ApplyEvent::apply(e, self),
+                        #name::#variant_name(e) => {
+                            use event_sauce_core::ApplyEvent;
+                            e.validate(self)?;
+                            e.apply(self);
+                            e.post_validate(self)?;
+                        },
                     }
                 }
                 _ => {
-                    // For named fields, generate empty arm
+                    // For named fields, generate empty arm (no validation)
                     quote! {
                         #name::#variant_name { .. } => {},
                     }
@@ -328,11 +364,21 @@ pub fn derive_event(input: TokenStream) -> TokenStream {
         quote! {
             impl #aggregate_type {
                 /// Auto-generated method that applies events to the aggregate
-                /// by delegating to each event's ApplyEvent implementation
-                pub fn apply_event(&mut self, event: &#name) {
+                /// by delegating to each event's ApplyEvent implementation.
+                ///
+                /// This method runs the full event application lifecycle:
+                /// 1. Validates pre-conditions using `validate()`
+                /// 2. Applies state changes using `apply()`
+                /// 3. Validates post-conditions using `post_validate()`
+                ///
+                /// # Errors
+                ///
+                /// Returns an error if validation (pre or post) fails.
+                pub fn apply_event(&mut self, event: &#name) -> Result<(), <Self as event_sauce_core::Aggregate>::Error> {
                     match event {
                         #(#apply_arms)*
                     }
+                    Ok(())
                 }
             }
         }
@@ -380,13 +426,14 @@ fn extract_event_attrs(attrs: &[Attribute]) -> Result<EventAttrs, TokenStream> {
             };
 
             // Parse the attribute arguments
-            let event_attrs: EventAttrs = match darling::ast::NestedMeta::parse_meta_list(nested.clone()) {
-                Ok(nested) => match EventAttrs::from_list(&nested) {
-                    Ok(attrs) => attrs,
-                    Err(err) => return Err(err.write_errors().into()),
-                },
-                Err(err) => return Err(err.to_compile_error().into()),
-            };
+            let event_attrs: EventAttrs =
+                match darling::ast::NestedMeta::parse_meta_list(nested.clone()) {
+                    Ok(nested) => match EventAttrs::from_list(&nested) {
+                        Ok(attrs) => attrs,
+                        Err(err) => return Err(err.write_errors().into()),
+                    },
+                    Err(err) => return Err(err.to_compile_error().into()),
+                };
 
             return Ok(event_attrs);
         }
@@ -394,7 +441,7 @@ fn extract_event_attrs(attrs: &[Attribute]) -> Result<EventAttrs, TokenStream> {
 
     Err(syn::Error::new(
         proc_macro2::Span::call_site(),
-        "Missing #[event(version = ...)] attribute"
+        "Missing #[event(version = ...)] attribute",
     )
     .to_compile_error()
     .into())
@@ -421,10 +468,11 @@ pub fn derive_aggregate_state(input: TokenStream) -> TokenStream {
     let vis = &input.vis;
 
     // Parse the #[aggregate(...)] attribute
-    let (id_type, event_type, error_type, wrapper_name) = match extract_aggregate_state_attrs(&input.attrs, state_name) {
-        Ok(attrs) => attrs,
-        Err(err) => return err,
-    };
+    let (id_type, event_type, error_type, wrapper_name) =
+        match extract_aggregate_state_attrs(&input.attrs, state_name) {
+            Ok(attrs) => attrs,
+            Err(err) => return err,
+        };
 
     // Extract fields to find the ID field
     let fields = match &input.data {
@@ -432,7 +480,7 @@ pub fn derive_aggregate_state(input: TokenStream) -> TokenStream {
         _ => {
             return syn::Error::new_spanned(
                 &input.ident,
-                "AggregateState can only be derived for structs"
+                "AggregateState can only be derived for structs",
             )
             .to_compile_error()
             .into();
@@ -486,8 +534,10 @@ pub fn derive_aggregate_state(input: TokenStream) -> TokenStream {
                 &mut self.state
             }
 
-            // NOTE: apply_event is now auto-generated by the Event macro
-            // when you use #[event(aggregate = "YourAggregate")]
+            // NOTE: apply_event is auto-generated by the Event macro
+            // when you use #[event(aggregate = "YourAggregate")].
+            // The Event macro generates an implementation that includes
+            // validation, state application, and post-validation.
         }
 
         // Implement Default if the state implements Default
@@ -522,6 +572,16 @@ pub fn derive_aggregate_state(input: TokenStream) -> TokenStream {
             type Id = #id_type;
             type Error = #error_type;
 
+            fn new(id: Self::Id) -> Self {
+                let mut state = #state_name::default();
+                state.#id_field = id;
+                Self {
+                    state,
+                    version: event_sauce_core::Version::initial(),
+                    pending_events: Vec::new(),
+                }
+            }
+
             fn aggregate_id(&self) -> &Self::Id {
                 &self.state.#id_field
             }
@@ -538,15 +598,17 @@ pub fn derive_aggregate_state(input: TokenStream) -> TokenStream {
                 self.pending_events.clear();
             }
 
-            fn apply<E: Into<Self::Event>>(&mut self, event: E) {
+            fn apply<E: Into<Self::Event>>(&mut self, event: E) -> Result<(), Self::Error> {
                 let event = event.into();
-                self.apply_internal(&event);
+                self.apply_internal(&event)?;
                 self.pending_events.push(event);
+                Ok(())
             }
 
-            fn apply_internal(&mut self, event: &Self::Event) {
-                self.apply_event(event);
+            fn apply_internal(&mut self, event: &Self::Event) -> Result<(), Self::Error> {
+                self.apply_event(event)?;
                 self.version = self.version.next();
+                Ok(())
             }
         }
     };
@@ -555,7 +617,10 @@ pub fn derive_aggregate_state(input: TokenStream) -> TokenStream {
 }
 
 /// Extract aggregate state attributes and generate wrapper name
-fn extract_aggregate_state_attrs(attrs: &[Attribute], state_name: &Ident) -> Result<(Ident, Ident, proc_macro2::TokenStream, Ident), TokenStream> {
+fn extract_aggregate_state_attrs(
+    attrs: &[Attribute],
+    state_name: &Ident,
+) -> Result<(Ident, Ident, proc_macro2::TokenStream, Ident), TokenStream> {
     // Extract aggregate attrs using existing function
     let (id_type, event_type, error_type_opt) = extract_aggregate_attrs(attrs)?;
 
@@ -673,18 +738,19 @@ pub fn derive_aggregate_id(input: TokenStream) -> TokenStream {
             }
         },
         _ => {
-            return syn::Error::new_spanned(
-                name,
-                "AggregateId can only be derived for structs"
-            )
-            .to_compile_error()
-            .into();
+            return syn::Error::new_spanned(name, "AggregateId can only be derived for structs")
+                .to_compile_error()
+                .into();
         }
     };
 
     // Generate the implementation
     let gen = quote! {
-        impl event_sauce_core::AggregateId for #name {}
+        impl event_sauce_core::AggregateId for #name {
+            fn to_uuid(&self) -> uuid::Uuid {
+                self.0
+            }
+        }
 
         // Auto-implement Display by delegating to the inner type
         impl std::fmt::Display for #name {

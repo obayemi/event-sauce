@@ -58,10 +58,7 @@ fn test_complex_error_with_fields() {
     };
 
     let error_msg = format!("{}", error);
-    assert_eq!(
-        error_msg,
-        "Insufficient funds: balance=100, requested=200"
-    );
+    assert_eq!(error_msg, "Insufficient funds: balance=100, requested=200");
 }
 
 #[test]

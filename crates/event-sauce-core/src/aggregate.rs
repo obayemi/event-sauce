@@ -49,7 +49,11 @@ use crate::{AggregateError, AggregateId, DomainEvent, Version};
 ///     }
 /// }
 ///
-/// impl AggregateId for CounterId {}
+/// impl AggregateId for CounterId {
+///     fn to_uuid(&self) -> Uuid {
+///         self.0
+///     }
+/// }
 ///
 /// #[derive(Debug, Clone)]
 /// enum CounterEvent {
@@ -114,6 +118,15 @@ use crate::{AggregateError, AggregateId, DomainEvent, Version};
 ///     type Id = CounterId;
 ///     type Error = CounterError;
 ///
+///     fn new(id: Self::Id) -> Self {
+///         Self {
+///             id,
+///             value: 0,
+///             version: Version::initial(),
+///             pending_events: Vec::new(),
+///         }
+///     }
+///
 ///     fn aggregate_id(&self) -> &Self::Id {
 ///         &self.id
 ///     }
@@ -130,15 +143,17 @@ use crate::{AggregateError, AggregateId, DomainEvent, Version};
 ///         self.pending_events.clear();
 ///     }
 ///
-///     fn apply<E: Into<Self::Event>>(&mut self, event: E) {
+///     fn apply<E: Into<Self::Event>>(&mut self, event: E) -> Result<(), Self::Error> {
 ///         let event = event.into();
-///         self.apply_internal(&event);
+///         self.apply_internal(&event)?;
 ///         self.pending_events.push(event);
+///         Ok(())
 ///     }
 ///
-///     fn apply_internal(&mut self, event: &Self::Event) {
+///     fn apply_internal(&mut self, event: &Self::Event) -> Result<(), Self::Error> {
 ///         self.apply_event(event);
 ///         self.version = self.version.next();
+///         Ok(())
 ///     }
 /// }
 /// ```
@@ -154,6 +169,19 @@ pub trait Aggregate: Send + Sync {
     /// This is used by events that implement `ApplyEvent` trait
     /// to return validation errors.
     type Error: AggregateError;
+
+    /// Creates a new aggregate with the given identifier.
+    ///
+    /// This is the canonical way to create a new aggregate instance.
+    /// The aggregate should be initialized with version 0 and no pending events.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let id = UserId::new();
+    /// let user = User::new(id);
+    /// ```
+    fn new(id: Self::Id) -> Self;
 
     /// Returns the aggregate's unique identifier.
     fn aggregate_id(&self) -> &Self::Id;
@@ -178,32 +206,44 @@ pub trait Aggregate: Send + Sync {
     ///
     /// This method:
     /// 1. Converts the event into the aggregate's event type (via Into)
-    /// 2. Updates the aggregate's internal state based on the event
-    /// 3. Adds the event to pending events
-    /// 4. Increments the version
+    /// 2. Validates the event can be applied (pre-validation)
+    /// 3. Updates the aggregate's internal state based on the event
+    /// 4. Validates the aggregate state after applying (post-validation)
+    /// 5. Adds the event to pending events if all validations pass
+    /// 6. Increments the version
     ///
     /// This method is typically called by business logic methods to apply
     /// and record new events.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Pre-validation fails (event cannot be applied)
+    /// - Post-validation fails (aggregate state invalid after applying)
     ///
     /// # Examples
     ///
     /// ```ignore
     /// // Instead of:
     /// let event = AccountEvent::Withdrawn(AccountWithdrawnEvent { amount: 100, timestamp: Utc::now() });
-    /// self.apply(&event);
+    /// self.apply(&event)?;
     /// self.pending_events.push(event);
     ///
     /// // You can now write:
-    /// self.apply(AccountWithdrawnEvent { amount: 100, timestamp: Utc::now() });
+    /// self.apply(AccountWithdrawnEvent { amount: 100, timestamp: Utc::now() })?;
     /// ```
-    fn apply<E: Into<Self::Event>>(&mut self, event: E);
+    fn apply<E: Into<Self::Event>>(&mut self, event: E) -> Result<(), Self::Error>;
 
     /// Applies an event to update the aggregate's state (internal use).
     ///
     /// This method is used internally by `apply()` and for event replay.
     /// It only updates state and increments version, without recording
     /// the event in pending events.
-    fn apply_internal(&mut self, event: &Self::Event);
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if validation fails.
+    fn apply_internal(&mut self, event: &Self::Event) -> Result<(), Self::Error>;
 
     /// Applies an event without validation (for event replay).
     ///
@@ -244,7 +284,11 @@ pub trait Aggregate: Send + Sync {
     ///     }
     /// }
     ///
-    /// impl AggregateId for CounterId {}
+    /// impl AggregateId for CounterId {
+///     fn to_uuid(&self) -> Uuid {
+///         self.0
+///     }
+/// }
     ///
     /// #[derive(Debug, Clone)]
     /// enum CounterEvent {
@@ -282,6 +326,15 @@ pub trait Aggregate: Send + Sync {
     ///     type Id = CounterId;
     ///     type Error = CounterError;
     ///
+    ///     fn new(id: Self::Id) -> Self {
+    ///         Self {
+    ///             id,
+    ///             value: 0,
+    ///             version: Version::initial(),
+    ///             pending_events: Vec::new(),
+    ///         }
+    ///     }
+    ///
     ///     fn aggregate_id(&self) -> &Self::Id {
     ///         &self.id
     ///     }
@@ -298,19 +351,21 @@ pub trait Aggregate: Send + Sync {
     ///         self.pending_events.clear();
     ///     }
     ///
-    ///     fn apply<E: Into<Self::Event>>(&mut self, event: E) {
+    ///     fn apply<E: Into<Self::Event>>(&mut self, event: E) -> Result<(), Self::Error> {
     ///         let event = event.into();
-    ///         self.apply_internal(&event);
+    ///         self.apply_internal(&event)?;
     ///         self.pending_events.push(event);
+    ///         Ok(())
     ///     }
     ///
-    ///     fn apply_internal(&mut self, event: &Self::Event) {
+    ///     fn apply_internal(&mut self, event: &Self::Event) -> Result<(), Self::Error> {
     ///         match event {
     ///             CounterEvent::Incremented { amount, .. } => {
     ///                 self.value += amount;
     ///             }
     ///         }
     ///         self.version = self.version.next();
+    ///         Ok(())
     ///     }
     /// }
     ///
@@ -334,7 +389,11 @@ pub trait Aggregate: Send + Sync {
     /// assert_eq!(counter.value, 8);
     /// ```
     fn apply_unchecked(&mut self, event: &Self::Event) {
-        self.apply_internal(event);
+        // For event replay, we don't expect validation to fail since
+        // events are historical facts. If validation fails, it indicates
+        // a bug in the event application logic.
+        self.apply_internal(event)
+            .expect("Event replay should not fail validation");
     }
 
     /// Returns the aggregate type name.
@@ -352,7 +411,10 @@ pub trait Aggregate: Send + Sync {
     where
         Self: Sized,
     {
-        std::any::type_name::<Self>().split("::").last().unwrap_or("Unknown")
+        std::any::type_name::<Self>()
+            .split("::")
+            .last()
+            .unwrap_or("Unknown")
     }
 }
 
@@ -387,7 +449,11 @@ mod tests {
         }
     }
 
-    impl AggregateId for TestId {}
+    impl AggregateId for TestId {
+        fn to_uuid(&self) -> Uuid {
+            self.0
+        }
+    }
 
     #[derive(Debug, Clone)]
     enum TestEvent {
@@ -431,12 +497,12 @@ mod tests {
 
         fn create(id: TestId, value: i32) -> Self {
             let mut aggregate = Self::new(id);
-            aggregate.apply(TestEvent::Created { value });
+            aggregate.apply(TestEvent::Created { value }).unwrap();
             aggregate
         }
 
         fn update(&mut self, value: i32) {
-            self.apply(TestEvent::Updated { value });
+            self.apply(TestEvent::Updated { value }).unwrap();
         }
 
         fn apply_event(&mut self, event: &TestEvent) {
@@ -452,6 +518,15 @@ mod tests {
         type Event = TestEvent;
         type Id = TestId;
         type Error = TestAggregateError;
+
+        fn new(id: Self::Id) -> Self {
+            Self {
+                id,
+                value: 0,
+                version: Version::initial(),
+                pending_events: Vec::new(),
+            }
+        }
 
         fn aggregate_id(&self) -> &Self::Id {
             &self.id
@@ -469,15 +544,17 @@ mod tests {
             self.pending_events.clear();
         }
 
-        fn apply<E: Into<Self::Event>>(&mut self, event: E) {
+        fn apply<E: Into<Self::Event>>(&mut self, event: E) -> Result<(), Self::Error> {
             let event = event.into();
-            self.apply_internal(&event);
+            self.apply_internal(&event)?;
             self.pending_events.push(event);
+            Ok(())
         }
 
-        fn apply_internal(&mut self, event: &Self::Event) {
+        fn apply_internal(&mut self, event: &Self::Event) -> Result<(), Self::Error> {
             self.apply_event(event);
             self.version = self.version.next();
+            Ok(())
         }
     }
 
@@ -500,7 +577,7 @@ mod tests {
     fn test_aggregate_apply_increments_version() {
         let mut aggregate = TestAggregate::new(TestId::new());
 
-        aggregate.apply(TestEvent::Created { value: 42 });
+        aggregate.apply(TestEvent::Created { value: 42 }).unwrap();
 
         assert_eq!(aggregate.version(), Version::new(1));
     }
@@ -509,7 +586,7 @@ mod tests {
     fn test_aggregate_apply_updates_state() {
         let mut aggregate = TestAggregate::new(TestId::new());
 
-        aggregate.apply(TestEvent::Created { value: 42 });
+        aggregate.apply(TestEvent::Created { value: 42 }).unwrap();
 
         assert_eq!(aggregate.value, 42);
     }
@@ -557,13 +634,13 @@ mod tests {
 
         assert_eq!(aggregate.version(), Version::new(0));
 
-        aggregate.apply(TestEvent::Created { value: 1 });
+        aggregate.apply(TestEvent::Created { value: 1 }).unwrap();
         assert_eq!(aggregate.version(), Version::new(1));
 
-        aggregate.apply(TestEvent::Updated { value: 2 });
+        aggregate.apply(TestEvent::Updated { value: 2 }).unwrap();
         assert_eq!(aggregate.version(), Version::new(2));
 
-        aggregate.apply(TestEvent::Updated { value: 3 });
+        aggregate.apply(TestEvent::Updated { value: 3 }).unwrap();
         assert_eq!(aggregate.version(), Version::new(3));
     }
 
@@ -608,14 +685,14 @@ mod tests {
         let mut aggregate = TestAggregate::new(TestId::new());
 
         // Apply updates state, version, AND adds to pending
-        aggregate.apply(TestEvent::Created { value: 42 });
+        aggregate.apply(TestEvent::Created { value: 42 }).unwrap();
 
         assert_eq!(aggregate.value, 42);
         assert_eq!(aggregate.version(), Version::new(1));
         assert_eq!(aggregate.pending_events().len(), 1);
 
         // Applying another event adds to pending
-        aggregate.apply(TestEvent::Updated { value: 99 });
+        aggregate.apply(TestEvent::Updated { value: 99 }).unwrap();
 
         assert_eq!(aggregate.pending_events().len(), 2);
     }

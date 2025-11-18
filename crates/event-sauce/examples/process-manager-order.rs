@@ -24,11 +24,26 @@ use event_sauce_sagas::{Command, CommandExecutor, ProcessManager, ProcessRunner,
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 enum FulfillmentCommand {
-    ProcessPayment { order_id: String, amount: f64 },
-    ReserveInventory { order_id: String, items: Vec<String> },
-    CreateShipment { order_id: String, address: String },
-    SendConfirmation { order_id: String, email: String },
-    CancelOrder { order_id: String, reason: String },
+    ProcessPayment {
+        order_id: String,
+        amount: f64,
+    },
+    ReserveInventory {
+        order_id: String,
+        items: Vec<String>,
+    },
+    CreateShipment {
+        order_id: String,
+        address: String,
+    },
+    SendConfirmation {
+        order_id: String,
+        email: String,
+    },
+    CancelOrder {
+        order_id: String,
+        reason: String,
+    },
 }
 
 impl Command for FulfillmentCommand {}
@@ -236,9 +251,10 @@ impl CommandExecutor<FulfillmentCommand> for FulfillmentCommandExecutor {
                 "PaymentProcessed",
                 json!({"status": "success"}),
             )),
-            FulfillmentCommand::ReserveInventory { .. } => {
-                Some(create_event("InventoryReserved", json!({"status": "reserved"})))
-            }
+            FulfillmentCommand::ReserveInventory { .. } => Some(create_event(
+                "InventoryReserved",
+                json!({"status": "reserved"}),
+            )),
             FulfillmentCommand::CreateShipment { .. } => Some(create_event(
                 "ShipmentCreated",
                 json!({"tracking": "TRACK123"}),

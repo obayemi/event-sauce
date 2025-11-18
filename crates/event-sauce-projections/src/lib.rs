@@ -165,9 +165,18 @@ mod tests {
     async fn test_projection_can_filter_events() {
         let mut projection = FilteringProjection::new("filter", "UserCreated");
 
-        projection.handle(&create_test_envelope("UserCreated")).await.unwrap();
-        projection.handle(&create_test_envelope("UserUpdated")).await.unwrap();
-        projection.handle(&create_test_envelope("UserCreated")).await.unwrap();
+        projection
+            .handle(&create_test_envelope("UserCreated"))
+            .await
+            .unwrap();
+        projection
+            .handle(&create_test_envelope("UserUpdated"))
+            .await
+            .unwrap();
+        projection
+            .handle(&create_test_envelope("UserCreated"))
+            .await
+            .unwrap();
 
         assert_eq!(projection.matched_count(), 2);
     }

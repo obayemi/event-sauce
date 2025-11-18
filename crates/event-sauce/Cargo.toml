@@ -58,6 +58,10 @@ required-features = ["memory", "projections"]
 name = "bank-account"
 required-features = ["macros", "memory"]
 
+[[example]]
+name = "counter"
+required-features = ["macros", "memory"]
+
 [[bench]]
 name = "event_application"
 harness = false

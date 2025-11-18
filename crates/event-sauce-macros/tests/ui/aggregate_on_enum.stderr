@@ -1,7 +1,7 @@
 error: Aggregate can only be derived for structs
-  --> tests/ui/aggregate_on_enum.rs:37:6
+  --> tests/ui/aggregate_on_enum.rs:48:6
    |
-37 | enum TestAggregate {
+48 | enum TestAggregate {
    |      ^^^^^^^^^^^^^
 
 warning: unused import: `Aggregate`

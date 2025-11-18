@@ -12,7 +12,18 @@ impl std::fmt::Display for TestId {
     }
 }
 
-impl AggregateId for TestId {}
+impl AggregateId for TestId {
+    fn to_uuid(&self) -> uuid::Uuid {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        self.0.hash(&mut hasher);
+        let hash = hasher.finish();
+        let mut bytes = [0u8; 16];
+        bytes[0..8].copy_from_slice(&hash.to_le_bytes());
+        uuid::Uuid::from_bytes(bytes)
+    }
+}
 
 #[derive(Debug, Clone)]
 enum TestEvent {

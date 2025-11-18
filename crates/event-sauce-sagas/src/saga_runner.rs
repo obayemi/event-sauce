@@ -100,7 +100,8 @@ impl<S: Saga + 'static, E: EventBus + 'static> SagaRunner<S, E> {
         match saga.handle(&event).await {
             Ok(()) => {
                 info!(saga = %saga_name, event_type = %event.event_type, "Event handled successfully");
-                self.history.push(SagaStep::success(event.event_type.clone()));
+                self.history
+                    .push(SagaStep::success(event.event_type.clone()));
                 Ok(())
             }
             Err(e) => {
@@ -111,10 +112,8 @@ impl<S: Saga + 'static, E: EventBus + 'static> SagaRunner<S, E> {
                     "Event handling failed, attempting compensation"
                 );
 
-                self.history.push(SagaStep::failure(
-                    event.event_type.clone(),
-                    e.to_string(),
-                ));
+                self.history
+                    .push(SagaStep::failure(event.event_type.clone(), e.to_string()));
 
                 match saga.compensate(&event).await {
                     Ok(()) => {
@@ -133,13 +132,13 @@ impl<S: Saga + 'static, E: EventBus + 'static> SagaRunner<S, E> {
     }
 
     /// Returns the saga execution history
-    #[must_use] 
+    #[must_use]
     pub fn history(&self) -> &[SagaStep] {
         &self.history
     }
 
     /// Returns a reference to the saga
-    #[must_use] 
+    #[must_use]
     pub fn saga(&self) -> Arc<RwLock<S>> {
         Arc::clone(&self.saga)
     }

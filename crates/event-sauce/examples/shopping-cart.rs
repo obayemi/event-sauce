@@ -9,7 +9,7 @@
 //! Run with: cargo run -p event-sauce --example shopping-cart --features "memory,macros"
 
 use chrono::Utc;
-use event_sauce_core::{Aggregate, AggregateError, ApplyEvent};
+use event_sauce_core::{Aggregate, ApplyEvent};
 use event_sauce_macros::{AggregateError, AggregateId, AggregateState, Event as DeriveEvent};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -200,6 +200,17 @@ impl ApplyEvent<ShoppingCartAggregate, CartError> for CartItemRemovedEvent {
             }
         }
     }
+
+    // Post-validation: Ensure cart remains in consistent state
+    // All items should have positive quantities
+    fn post_validate(&self, cart: &ShoppingCartAggregate) -> Result<(), CartError> {
+        for item in cart.items.values() {
+            if item.quantity == 0 {
+                return Err(CartError::InvalidQuantity(item.quantity));
+            }
+        }
+        Ok(())
+    }
 }
 
 impl ApplyEvent<ShoppingCartAggregate, CartError> for CartClearedEvent {
@@ -236,7 +247,7 @@ impl ApplyEvent<ShoppingCartAggregate, CartError> for CartCheckedOutEvent {
 // ============================================================================
 
 /// Shopping cart state - contains only business data
-#[derive(AggregateState, Debug, Clone, Default)]
+#[derive(AggregateState, Debug, Clone)]
 #[aggregate(id = "CartId", event = "CartEvent", error = "CartError")]
 struct ShoppingCartState {
     #[aggregate_id]
@@ -244,6 +255,17 @@ struct ShoppingCartState {
     customer_id: String,
     items: HashMap<ProductId, CartItem>,
     checked_out: bool,
+}
+
+impl Default for ShoppingCartState {
+    fn default() -> Self {
+        Self {
+            id: CartId::default(),
+            customer_id: String::new(),
+            items: HashMap::new(),
+            checked_out: false,
+        }
+    }
 }
 
 impl ShoppingCartState {
@@ -264,15 +286,17 @@ impl ShoppingCartState {
 // ============================================================================
 
 impl ShoppingCartAggregate {
-    /// Create a new shopping cart
+    /// Create a new shopping cart using the Aggregate trait's new method
     fn create(id: CartId, customer_id: String) -> Self {
-        let mut cart = Self::from_state(ShoppingCartState::new(id));
+        let mut cart = <Self as Aggregate>::new(id);
 
+        // apply() automatically runs: validate() → apply() → post_validate()
         cart.apply(CartCreatedEvent {
             cart_id: id.to_string(),
             customer_id,
             timestamp: Utc::now(),
-        });
+        })
+        .expect("Creating cart should never fail");
 
         cart
     }
@@ -292,8 +316,8 @@ impl ShoppingCartAggregate {
             quantity,
             timestamp: Utc::now(),
         };
-        event.validate(self)?;
-        self.apply(event);
+        // apply() automatically runs: validate() → apply() → post_validate()
+        self.apply(event)?;
         Ok(())
     }
 
@@ -304,8 +328,8 @@ impl ShoppingCartAggregate {
             quantity,
             timestamp: Utc::now(),
         };
-        event.validate(self)?;
-        self.apply(event);
+        // apply() automatically runs: validate() → apply() → post_validate()
+        self.apply(event)?;
         Ok(())
     }
 
@@ -315,8 +339,8 @@ impl ShoppingCartAggregate {
         let event = CartClearedEvent {
             timestamp: Utc::now(),
         };
-        event.validate(self)?;
-        self.apply(event);
+        // apply() automatically runs: validate() → apply() → post_validate()
+        self.apply(event)?;
         Ok(())
     }
 
@@ -327,8 +351,8 @@ impl ShoppingCartAggregate {
             total,
             timestamp: Utc::now(),
         };
-        event.validate(self)?;
-        self.apply(event);
+        // apply() automatically runs: validate() → apply() → post_validate()
+        self.apply(event)?;
         Ok(())
     }
 

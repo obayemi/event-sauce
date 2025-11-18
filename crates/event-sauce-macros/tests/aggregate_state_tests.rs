@@ -3,9 +3,9 @@
 //! These tests verify that the AggregateState derive macro correctly generates
 //! the wrapper aggregate struct and Aggregate trait implementation.
 
+use chrono::{DateTime, Utc};
 use event_sauce_core::{Aggregate, AggregateId, DomainEvent, Version};
 use event_sauce_macros::AggregateError;
-use chrono::{DateTime, Utc};
 use std::fmt;
 use thiserror::Error;
 
@@ -30,14 +30,34 @@ impl fmt::Display for TestCounterId {
     }
 }
 
-impl AggregateId for TestCounterId {}
+impl AggregateId for TestCounterId {
+    fn to_uuid(&self) -> uuid::Uuid {
+        // For testing purposes, create a deterministic UUID from the string
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let mut hasher = DefaultHasher::new();
+        self.0.hash(&mut hasher);
+        let hash = hasher.finish();
+
+        let mut bytes = [0u8; 16];
+        bytes[0..8].copy_from_slice(&hash.to_le_bytes());
+        uuid::Uuid::from_bytes(bytes)
+    }
+}
 
 // Define a simple event for testing
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub enum TestCounterEvent {
-    Incremented { amount: i32, timestamp: DateTime<Utc> },
-    Decremented { amount: i32, timestamp: DateTime<Utc> },
+    Incremented {
+        amount: i32,
+        timestamp: DateTime<Utc>,
+    },
+    Decremented {
+        amount: i32,
+        timestamp: DateTime<Utc>,
+    },
 }
 
 impl DomainEvent for TestCounterEvent {
@@ -63,7 +83,11 @@ impl DomainEvent for TestCounterEvent {
 // This is the state-only struct that uses the AggregateState derive macro
 // The macro should generate a wrapper struct and Aggregate trait implementation
 #[derive(event_sauce_macros::AggregateState, Debug, Clone, Default)]
-#[aggregate(id = "TestCounterId", event = "TestCounterEvent", error = "TestCounterError")]
+#[aggregate(
+    id = "TestCounterId",
+    event = "TestCounterEvent",
+    error = "TestCounterError"
+)]
 struct TestCounterState {
     #[aggregate_id]
     id: TestCounterId,
@@ -81,7 +105,7 @@ impl TestCounterState {
         Self { id, value: 0 }
     }
 
-    fn apply_event(&mut self, event: &TestCounterEvent) {
+    fn apply_event(&mut self, event: &TestCounterEvent) -> Result<(), TestCounterError> {
         match event {
             TestCounterEvent::Incremented { amount, .. } => {
                 self.value += amount;
@@ -90,6 +114,7 @@ impl TestCounterState {
                 self.value -= amount;
             }
         }
+        Ok(())
     }
 }
 
@@ -191,7 +216,7 @@ fn test_aggregate_state_apply_event() {
     };
 
     let initial_version = counter.version();
-    counter.apply(event);
+    counter.apply(event).unwrap();
 
     // Version should be incremented
     assert_eq!(counter.version(), initial_version.next());
@@ -207,14 +232,18 @@ fn test_aggregate_state_multiple_events() {
     let state = TestCounterState::new(id);
     let mut counter = TestCounterAggregate::from_state(state);
 
-    counter.apply(TestCounterEvent::Incremented {
-        amount: 5,
-        timestamp: Utc::now(),
-    });
-    counter.apply(TestCounterEvent::Incremented {
-        amount: 3,
-        timestamp: Utc::now(),
-    });
+    counter
+        .apply(TestCounterEvent::Incremented {
+            amount: 5,
+            timestamp: Utc::now(),
+        })
+        .unwrap();
+    counter
+        .apply(TestCounterEvent::Incremented {
+            amount: 3,
+            timestamp: Utc::now(),
+        })
+        .unwrap();
 
     assert_eq!(counter.pending_events().len(), 2);
     assert_eq!(counter.value, 8);
@@ -227,10 +256,12 @@ fn test_aggregate_state_clear_pending_events() {
     let state = TestCounterState::new(id);
     let mut counter = TestCounterAggregate::from_state(state);
 
-    counter.apply(TestCounterEvent::Incremented {
-        amount: 5,
-        timestamp: Utc::now(),
-    });
+    counter
+        .apply(TestCounterEvent::Incremented {
+            amount: 5,
+            timestamp: Utc::now(),
+        })
+        .unwrap();
     assert_eq!(counter.pending_events().len(), 1);
 
     counter.clear_pending_events();
@@ -252,7 +283,12 @@ fn test_aggregate_state_implements_default() {
 
 // Test with custom name attribute
 #[derive(event_sauce_macros::AggregateState, Debug, Clone, Default)]
-#[aggregate(id = "TestCounterId", event = "TestCounterEvent", error = "TestCounterError", name = "CustomCounter")]
+#[aggregate(
+    id = "TestCounterId",
+    event = "TestCounterEvent",
+    error = "TestCounterError",
+    name = "CustomCounter"
+)]
 struct CustomCounterState {
     #[aggregate_id]
     id: TestCounterId,
@@ -260,7 +296,7 @@ struct CustomCounterState {
 }
 
 impl CustomCounterState {
-    fn apply_event(&mut self, event: &TestCounterEvent) {
+    fn apply_event(&mut self, event: &TestCounterEvent) -> Result<(), TestCounterError> {
         match event {
             TestCounterEvent::Incremented { amount, .. } => {
                 self.value += amount;
@@ -269,6 +305,7 @@ impl CustomCounterState {
                 self.value -= amount;
             }
         }
+        Ok(())
     }
 }
 
@@ -280,7 +317,11 @@ fn test_aggregate_state_custom_name() {
 
 // Test with public visibility
 #[derive(event_sauce_macros::AggregateState, Debug, Clone, Default)]
-#[aggregate(id = "TestCounterId", event = "TestCounterEvent", error = "TestCounterError")]
+#[aggregate(
+    id = "TestCounterId",
+    event = "TestCounterEvent",
+    error = "TestCounterError"
+)]
 pub struct PublicCounterState {
     #[aggregate_id]
     id: TestCounterId,
@@ -288,7 +329,7 @@ pub struct PublicCounterState {
 }
 
 impl PublicCounterState {
-    fn apply_event(&mut self, event: &TestCounterEvent) {
+    fn apply_event(&mut self, event: &TestCounterEvent) -> Result<(), TestCounterError> {
         match event {
             TestCounterEvent::Incremented { amount, .. } => {
                 self.value += amount;
@@ -297,6 +338,7 @@ impl PublicCounterState {
                 self.value -= amount;
             }
         }
+        Ok(())
     }
 }
 

@@ -92,7 +92,11 @@ struct BenchAccount {
 }
 
 impl BenchAccount {
-    fn open(id: BenchAccountId, owner: String, initial_balance: i64) -> Result<Self, BenchAccountError> {
+    fn open(
+        id: BenchAccountId,
+        owner: String,
+        initial_balance: i64,
+    ) -> Result<Self, BenchAccountError> {
         if initial_balance < 0 {
             return Err(BenchAccountError::InvalidAmount(initial_balance));
         }
@@ -247,21 +251,19 @@ fn bench_event_replay(c: &mut Criterion) {
             initial_balance: 10000,
             timestamp: Utc::now(),
         })
-        .chain(
-            (0..*event_count).map(|i| {
-                if i % 2 == 0 {
-                    BenchAccountEvent::Deposited {
-                        amount: 10,
-                        timestamp: Utc::now(),
-                    }
-                } else {
-                    BenchAccountEvent::Withdrawn {
-                        amount: 5,
-                        timestamp: Utc::now(),
-                    }
+        .chain((0..*event_count).map(|i| {
+            if i % 2 == 0 {
+                BenchAccountEvent::Deposited {
+                    amount: 10,
+                    timestamp: Utc::now(),
                 }
-            }),
-        )
+            } else {
+                BenchAccountEvent::Withdrawn {
+                    amount: 5,
+                    timestamp: Utc::now(),
+                }
+            }
+        }))
         .collect();
 
         group.throughput(Throughput::Elements(*event_count as u64));
@@ -325,21 +327,19 @@ fn bench_from_events(c: &mut Criterion) {
             initial_balance: 10000,
             timestamp: Utc::now(),
         })
-        .chain(
-            (0..*event_count).map(|i| {
-                if i % 2 == 0 {
-                    BenchAccountEvent::Deposited {
-                        amount: 10,
-                        timestamp: Utc::now(),
-                    }
-                } else {
-                    BenchAccountEvent::Withdrawn {
-                        amount: 5,
-                        timestamp: Utc::now(),
-                    }
+        .chain((0..*event_count).map(|i| {
+            if i % 2 == 0 {
+                BenchAccountEvent::Deposited {
+                    amount: 10,
+                    timestamp: Utc::now(),
                 }
-            }),
-        )
+            } else {
+                BenchAccountEvent::Withdrawn {
+                    amount: 5,
+                    timestamp: Utc::now(),
+                }
+            }
+        }))
         .collect();
 
         group.throughput(Throughput::Elements(*event_count as u64));
@@ -349,10 +349,8 @@ fn bench_from_events(c: &mut Criterion) {
             &events,
             |b, events| {
                 b.iter(|| {
-                    let account = BenchAccount::from_events(
-                        BenchAccountId::new(),
-                        black_box(events.clone()),
-                    );
+                    let account =
+                        BenchAccount::from_events(BenchAccountId::new(), black_box(events.clone()));
                     black_box(account)
                 });
             },

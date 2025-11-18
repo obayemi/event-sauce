@@ -3,8 +3,8 @@
 //! These tests verify that the Aggregate derive macro correctly generates
 //! the Aggregate trait implementation.
 
-use event_sauce_core::{Aggregate, AggregateError, AggregateId, DomainEvent, Version};
 use chrono::{DateTime, Utc};
+use event_sauce_core::{Aggregate, AggregateError, AggregateId, DomainEvent, Version};
 use std::fmt;
 use thiserror::Error;
 
@@ -16,7 +16,7 @@ struct TestCounterError;
 impl AggregateError for TestCounterError {}
 
 // Define a simple aggregate ID for testing
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 struct TestCounterId(String);
 
 impl TestCounterId {
@@ -31,14 +31,34 @@ impl fmt::Display for TestCounterId {
     }
 }
 
-impl AggregateId for TestCounterId {}
+impl AggregateId for TestCounterId {
+    fn to_uuid(&self) -> uuid::Uuid {
+        // For testing purposes, create a deterministic UUID from the string
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let mut hasher = DefaultHasher::new();
+        self.0.hash(&mut hasher);
+        let hash = hasher.finish();
+
+        let mut bytes = [0u8; 16];
+        bytes[0..8].copy_from_slice(&hash.to_le_bytes());
+        uuid::Uuid::from_bytes(bytes)
+    }
+}
 
 // Define a simple event for testing
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 enum TestCounterEvent {
-    Incremented { amount: i32, timestamp: DateTime<Utc> },
-    Decremented { amount: i32, timestamp: DateTime<Utc> },
+    Incremented {
+        amount: i32,
+        timestamp: DateTime<Utc>,
+    },
+    Decremented {
+        amount: i32,
+        timestamp: DateTime<Utc>,
+    },
 }
 
 impl DomainEvent for TestCounterEvent {
@@ -64,7 +84,11 @@ impl DomainEvent for TestCounterEvent {
 // This is the aggregate struct that uses the derive macro
 // The macro should generate the Aggregate trait implementation
 #[derive(event_sauce_macros::Aggregate, Debug, Clone)]
-#[aggregate(id = "TestCounterId", event = "TestCounterEvent", error = "TestCounterError")]
+#[aggregate(
+    id = "TestCounterId",
+    event = "TestCounterEvent",
+    error = "TestCounterError"
+)]
 struct TestCounter {
     #[aggregate_id]
     id: TestCounterId,
@@ -73,6 +97,17 @@ struct TestCounter {
     version: Version,
     #[aggregate_events]
     pending_events: Vec<TestCounterEvent>,
+}
+
+impl Default for TestCounter {
+    fn default() -> Self {
+        Self {
+            id: TestCounterId::default(),
+            value: 0,
+            version: Version::initial(),
+            pending_events: Vec::new(),
+        }
+    }
 }
 
 impl TestCounter {
@@ -89,10 +124,11 @@ impl TestCounter {
         self.apply(TestCounterEvent::Incremented {
             amount,
             timestamp: Utc::now(),
-        });
+        })
+        .expect("increment should not fail");
     }
 
-    fn apply_event(&mut self, event: &TestCounterEvent) {
+    fn apply_event(&mut self, event: &TestCounterEvent) -> Result<(), TestCounterError> {
         match event {
             TestCounterEvent::Incremented { amount, .. } => {
                 self.value += amount;
@@ -101,6 +137,7 @@ impl TestCounter {
                 self.value -= amount;
             }
         }
+        Ok(())
     }
 }
 
@@ -166,7 +203,7 @@ fn test_aggregate_derive_apply() {
     };
 
     let initial_version = counter.version();
-    counter.apply(event);
+    counter.apply(event).unwrap();
 
     // Version should be incremented
     assert_eq!(counter.version(), initial_version.next());

@@ -27,7 +27,14 @@ impl std::fmt::Display for TestId {
     }
 }
 
-impl AggregateId for TestId {}
+impl AggregateId for TestId {
+    fn to_uuid(&self) -> uuid::Uuid {
+        // For testing purposes, create a deterministic UUID from the i32
+        let mut bytes = [0u8; 16];
+        bytes[0..4].copy_from_slice(&self.0.to_le_bytes());
+        uuid::Uuid::from_bytes(bytes)
+    }
+}
 
 /// Test error type
 #[derive(AggregateError, Debug, thiserror::Error)]
@@ -135,7 +142,7 @@ fn test_aggregate_attribute_generates_apply_event() {
     });
 
     // This should compile and work - apply_event is auto-generated
-    aggregate.apply_event(&event);
+    aggregate.apply_event(&event).unwrap();
 
     assert_eq!(aggregate.value, 42);
 }
@@ -152,7 +159,7 @@ fn test_apply_event_dispatches_to_apply_event_impl() {
         value: 20,
         timestamp: Utc::now(),
     });
-    aggregate.apply_event(&set_event);
+    aggregate.apply_event(&set_event).unwrap();
     assert_eq!(aggregate.value, 20);
 
     // Test Incremented event
@@ -160,14 +167,14 @@ fn test_apply_event_dispatches_to_apply_event_impl() {
         amount: 5,
         timestamp: Utc::now(),
     });
-    aggregate.apply_event(&inc_event);
+    aggregate.apply_event(&inc_event).unwrap();
     assert_eq!(aggregate.value, 25);
 
     // Test Reset event
     let reset_event = TestEvent::Reset(ValueResetEvent {
         timestamp: Utc::now(),
     });
-    aggregate.apply_event(&reset_event);
+    aggregate.apply_event(&reset_event).unwrap();
     assert_eq!(aggregate.value, 0);
 }
 
@@ -194,7 +201,7 @@ fn test_apply_event_with_multiple_events() {
     ];
 
     for event in events {
-        aggregate.apply_event(&event);
+        aggregate.apply_event(&event).unwrap();
     }
 
     assert_eq!(aggregate.value, 18); // 10 + 5 + 3
@@ -208,10 +215,12 @@ fn test_apply_event_through_aggregate_trait() {
     });
 
     // Use the Aggregate trait's apply method
-    aggregate.apply(ValueSetEvent {
-        value: 100,
-        timestamp: Utc::now(),
-    });
+    aggregate
+        .apply(ValueSetEvent {
+            value: 100,
+            timestamp: Utc::now(),
+        })
+        .unwrap();
 
     assert_eq!(aggregate.value, 100);
     assert_eq!(aggregate.version(), Version::from(1));
@@ -230,7 +239,7 @@ fn test_apply_event_preserves_aggregate_state() {
         timestamp: Utc::now(),
     });
 
-    aggregate.apply_event(&event);
+    aggregate.apply_event(&event).unwrap();
 
     // Check that the aggregate state is preserved
     assert_eq!(aggregate.id, TestId(42));
@@ -247,10 +256,12 @@ fn test_apply_event_works_with_deref() {
     // The aggregate derefs to state, so we can access state fields directly
     assert_eq!(aggregate.value, 0);
 
-    aggregate.apply_event(&TestEvent::Set(ValueSetEvent {
-        value: 50,
-        timestamp: Utc::now(),
-    }));
+    aggregate
+        .apply_event(&TestEvent::Set(ValueSetEvent {
+            value: 50,
+            timestamp: Utc::now(),
+        }))
+        .unwrap();
 
     // After applying, we can still access through deref
     assert_eq!(aggregate.value, 50);
@@ -267,7 +278,7 @@ fn test_generated_apply_event_is_public() {
     });
 
     // This should compile without errors
-    aggregate.apply_event(&event);
+    aggregate.apply_event(&event).unwrap();
 }
 
 #[test]
@@ -278,10 +289,12 @@ fn test_apply_event_with_validation() {
     });
 
     // Valid event through apply (which validates)
-    aggregate.apply(ValueSetEvent {
-        value: 10,
-        timestamp: Utc::now(),
-    });
+    aggregate
+        .apply(ValueSetEvent {
+            value: 10,
+            timestamp: Utc::now(),
+        })
+        .unwrap();
 
     // Get the event before applying to avoid borrow checker issue
     let event = aggregate.pending_events()[0].clone();
@@ -290,7 +303,7 @@ fn test_apply_event_with_validation() {
     aggregate.value = 0;
 
     // This should work since validation passes
-    aggregate.apply_event(&event);
+    aggregate.apply_event(&event).unwrap();
     assert_eq!(aggregate.value, 10);
 }
 
@@ -303,14 +316,18 @@ fn test_apply_event_integration_with_aggregate_lifecycle() {
     });
 
     // Apply events through the Aggregate trait
-    aggregate.apply(ValueSetEvent {
-        value: 10,
-        timestamp: Utc::now(),
-    });
-    aggregate.apply(ValueIncrementedEvent {
-        amount: 5,
-        timestamp: Utc::now(),
-    });
+    aggregate
+        .apply(ValueSetEvent {
+            value: 10,
+            timestamp: Utc::now(),
+        })
+        .unwrap();
+    aggregate
+        .apply(ValueIncrementedEvent {
+            amount: 5,
+            timestamp: Utc::now(),
+        })
+        .unwrap();
 
     // Check state
     assert_eq!(aggregate.value, 15);
@@ -340,9 +357,7 @@ fn test_apply_event_integration_with_aggregate_lifecycle() {
 #[derive(DeriveEvent, Debug, Clone)]
 #[event(version = 1, type_prefix = "Basic")]
 enum BasicEvent {
-    Happened {
-        timestamp: DateTime<Utc>,
-    },
+    Happened { timestamp: DateTime<Utc> },
 }
 
 #[test]
@@ -370,9 +385,11 @@ fn test_apply_event_with_reset_to_zero() {
         value: 100,
     });
 
-    aggregate.apply_event(&TestEvent::Reset(ValueResetEvent {
-        timestamp: Utc::now(),
-    }));
+    aggregate
+        .apply_event(&TestEvent::Reset(ValueResetEvent {
+            timestamp: Utc::now(),
+        }))
+        .unwrap();
 
     assert_eq!(aggregate.value, 0);
 }
@@ -391,7 +408,7 @@ fn test_apply_event_multiple_times_same_event() {
 
     // Apply the same event multiple times
     for _ in 0..10 {
-        aggregate.apply_event(&event);
+        aggregate.apply_event(&event).unwrap();
     }
 
     assert_eq!(aggregate.value, 10);
@@ -409,14 +426,14 @@ fn test_apply_event_is_deterministic() {
         id: TestId(1),
         value: 0,
     });
-    aggregate1.apply_event(&event);
+    aggregate1.apply_event(&event).unwrap();
 
     // Apply to second aggregate
     let mut aggregate2 = TestAggregate::from_state(TestState {
         id: TestId(1),
         value: 0,
     });
-    aggregate2.apply_event(&event);
+    aggregate2.apply_event(&event).unwrap();
 
     // Results should be identical
     assert_eq!(aggregate1.value, aggregate2.value);

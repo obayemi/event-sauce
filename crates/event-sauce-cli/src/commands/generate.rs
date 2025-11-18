@@ -396,12 +396,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let output_path = temp_dir.path().join("order_placed.rs");
 
-        event(
-            "OrderPlaced",
-            "Order",
-            Some(output_path.to_str().unwrap()),
-        )
-        .unwrap();
+        event("OrderPlaced", "Order", Some(output_path.to_str().unwrap())).unwrap();
 
         assert!(output_path.exists());
         let content = std::fs::read_to_string(&output_path).unwrap();

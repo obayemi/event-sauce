@@ -104,8 +104,23 @@ fn test_multiple_id_types_display() {
 // Integer ID Types
 // ============================================================================
 
-#[derive(AggregateId, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct SequenceId(i64);
+
+impl AggregateIdTrait for SequenceId {
+    fn to_uuid(&self) -> Uuid {
+        // For testing: create deterministic UUID from i64
+        let mut bytes = [0u8; 16];
+        bytes[0..8].copy_from_slice(&self.0.to_le_bytes());
+        Uuid::from_bytes(bytes)
+    }
+}
+
+impl std::fmt::Display for SequenceId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.0, f)
+    }
+}
 
 #[test]
 fn test_integer_id_display() {
@@ -136,8 +151,30 @@ fn test_integer_id_implements_copy() {
 // String ID Types
 // ============================================================================
 
-#[derive(AggregateId, Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct EmailId(String);
+
+impl AggregateIdTrait for EmailId {
+    fn to_uuid(&self) -> Uuid {
+        // For testing: create deterministic UUID from string hash
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let mut hasher = DefaultHasher::new();
+        self.0.hash(&mut hasher);
+        let hash = hasher.finish();
+
+        let mut bytes = [0u8; 16];
+        bytes[0..8].copy_from_slice(&hash.to_le_bytes());
+        Uuid::from_bytes(bytes)
+    }
+}
+
+impl std::fmt::Display for EmailId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.0, f)
+    }
+}
 
 #[test]
 fn test_string_id_display() {
@@ -180,8 +217,27 @@ impl std::fmt::Display for CustomValue {
     }
 }
 
-#[derive(AggregateId, Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct CustomId(CustomValue);
+
+impl AggregateIdTrait for CustomId {
+    fn to_uuid(&self) -> Uuid {
+        // For testing: create deterministic UUID from custom value
+        let mut bytes = [0u8; 16];
+        bytes[0..4].copy_from_slice(&self.0.value.to_le_bytes());
+        // Add prefix bytes
+        for (i, &byte) in self.0.prefix.as_bytes().iter().take(12).enumerate() {
+            bytes[i + 4] = byte;
+        }
+        Uuid::from_bytes(bytes)
+    }
+}
+
+impl std::fmt::Display for CustomId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.0, f)
+    }
+}
 
 #[test]
 fn test_custom_type_display() {

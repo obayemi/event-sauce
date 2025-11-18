@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use futures::Stream;
 use uuid::Uuid;
 
-use crate::{EventEnvelope, Result, Version};
+use crate::{Aggregate, AggregateId, DomainEvent, EventEnvelope, Result, Version};
 
 /// Stream ID uniquely identifying an event stream.
 ///
@@ -288,6 +288,135 @@ pub trait EventStore: Send + Sync {
         let _ = stream_id;
         Ok(None) // Default: no snapshots
     }
+
+    /// Commits pending events from an aggregate to the event store.
+    ///
+    /// This method:
+    /// 1. Extracts pending events from the aggregate
+    /// 2. Converts them to event envelopes
+    /// 3. Appends them to the event store with optimistic concurrency control
+    /// 4. Clears the pending events from the aggregate on success
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let mut user = User::new(UserId::new());
+    /// user.register("alice@example.com")?;
+    /// user.verify_email()?;
+    ///
+    /// // Commit all pending events
+    /// event_store.commit(&mut user).await?;
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::ConcurrencyConflict` if another process modified the aggregate.
+    async fn commit<A>(&self, aggregate: &mut A) -> Result<()>
+    where
+        A: Aggregate,
+        A::Event: serde::Serialize,
+    {
+        let pending = aggregate.pending_events();
+        if pending.is_empty() {
+            return Ok(());
+        }
+
+        let aggregate_id = aggregate.aggregate_id().to_uuid();
+        let aggregate_type = A::aggregate_type();
+        let expected_version = Version::new(
+            aggregate
+                .version()
+                .as_i32()
+                .saturating_sub(pending.len() as i32),
+        );
+
+        // Convert events to envelopes
+        let envelopes: Vec<EventEnvelope> = pending
+            .iter()
+            .enumerate()
+            .map(|(idx, event)| {
+                EventEnvelope::new(
+                    Uuid::new_v4(),
+                    aggregate_id,
+                    aggregate_type.to_string(),
+                    event.event_type().to_string(),
+                    Version::new(expected_version.as_i32() + idx as i32 + 1),
+                    serde_json::to_value(event).expect("Event should be serializable"),
+                )
+            })
+            .collect();
+
+        // Append to store
+        self.append(
+            StreamId::new(aggregate_type, aggregate_id),
+            envelopes,
+            expected_version,
+        )
+        .await?;
+
+        // Clear pending events
+        aggregate.clear_pending_events();
+
+        Ok(())
+    }
+}
+
+/// Loads an aggregate from the event store by its ID.
+///
+/// This helper function:
+/// 1. Loads all events for the aggregate
+/// 2. Deserializes them into domain events
+/// 3. Replays them onto a new aggregate instance
+///
+/// # Note
+///
+/// Due to Rust's async trait limitations with generic return types, this must be
+/// a standalone function rather than a trait method.
+///
+/// # Examples
+///
+/// ```ignore
+/// use event_sauce_core::load;
+///
+/// let user_id = UserId::from(uuid);
+/// let user: User = load(&event_store, user_id).await?;
+/// ```
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The aggregate doesn't exist (no events found)
+/// - Events cannot be deserialized
+/// - Event replay fails
+pub async fn load<S, A>(store: &S, aggregate_id: A::Id) -> Result<A>
+where
+    S: EventStore,
+    A: Aggregate,
+    A::Event: serde::de::DeserializeOwned,
+{
+    use futures::StreamExt;
+
+    let uuid = aggregate_id.to_uuid();
+    let aggregate_type = A::aggregate_type();
+    let stream_id = StreamId::new(aggregate_type, uuid);
+
+    // Load all events for this aggregate
+    let event_stream = store.load_stream(stream_id, Version::initial()).await?;
+    futures::pin_mut!(event_stream);
+
+    // Create new aggregate instance with the correct ID using the trait method
+    let mut aggregate = A::new(aggregate_id);
+
+    // Replay events
+    while let Some(envelope) = event_stream.next().await {
+        let envelope = envelope?;
+        let event: A::Event = serde_json::from_value(envelope.event_data)
+            .map_err(|e| crate::Error::custom(format!("Failed to deserialize event: {e}")))?;
+
+        aggregate.apply_unchecked(&event);
+    }
+
+    Ok(aggregate)
 }
 
 #[cfg(test)]

@@ -9,9 +9,9 @@
 //! Run with: `cargo run --example task-projections --features "memory,projections"`
 
 use async_trait::async_trait;
-use event_sauce::{EventBus, EventEnvelope, EventFilter, Result, Version};
 use event_sauce::event_sauce_memory::InMemoryEventBus;
 use event_sauce::event_sauce_projections;
+use event_sauce::{EventBus, EventEnvelope, EventFilter, Result, Version};
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -105,8 +105,10 @@ impl Projection for TaskCountByStatusProjection {
     }
 
     async fn handle(&mut self, event: &EventEnvelope) -> Result<()> {
-        let event_data = serde_json::from_value::<TaskEvent>(event.event_data.clone())
-            .map_err(|e| event_sauce_core::Error::custom(format!("Failed to deserialize: {}", e)))?;
+        let event_data =
+            serde_json::from_value::<TaskEvent>(event.event_data.clone()).map_err(|e| {
+                event_sauce_core::Error::custom(format!("Failed to deserialize: {}", e))
+            })?;
 
         match event_data {
             TaskEvent::Created { .. } => {
@@ -153,10 +155,7 @@ impl TasksByAssigneeProjection {
     }
 
     fn get_tasks_for_assignee(&self, assignee: &str) -> Vec<Uuid> {
-        self.assignments
-            .get(assignee)
-            .cloned()
-            .unwrap_or_default()
+        self.assignments.get(assignee).cloned().unwrap_or_default()
     }
 
     fn assignee_count(&self) -> usize {
@@ -171,8 +170,10 @@ impl Projection for TasksByAssigneeProjection {
     }
 
     async fn handle(&mut self, event: &EventEnvelope) -> Result<()> {
-        let event_data = serde_json::from_value::<TaskEvent>(event.event_data.clone())
-            .map_err(|e| event_sauce_core::Error::custom(format!("Failed to deserialize: {}", e)))?;
+        let event_data =
+            serde_json::from_value::<TaskEvent>(event.event_data.clone()).map_err(|e| {
+                event_sauce_core::Error::custom(format!("Failed to deserialize: {}", e))
+            })?;
 
         match event_data {
             TaskEvent::Created {
@@ -239,7 +240,9 @@ impl Projection for CompletedTasksProjection {
         // Only process TaskCompleted events
         if event.event_type == "TaskCompleted" {
             let event_data = serde_json::from_value::<TaskEvent>(event.event_data.clone())
-                .map_err(|e| event_sauce_core::Error::custom(format!("Failed to deserialize: {}", e)))?;
+                .map_err(|e| {
+                    event_sauce_core::Error::custom(format!("Failed to deserialize: {}", e))
+                })?;
 
             if let TaskEvent::Completed { task_id } = event_data {
                 self.count += 1;
@@ -421,7 +424,9 @@ async fn main() -> Result<()> {
                 let seq = i64::from(event.event_version.as_i32());
                 async move {
                     let checkpoint = Checkpoint::new("tasks_by_assignee", event_id, seq);
-                    checkpoint_store.save("tasks_by_assignee", checkpoint).await?;
+                    checkpoint_store
+                        .save("tasks_by_assignee", checkpoint)
+                        .await?;
                     Ok(())
                 }
             }
@@ -450,23 +455,14 @@ async fn main() -> Result<()> {
     );
     println!(
         "  - Completed: {}",
-        status_runner
-            .projection()
-            .get_count(&TaskStatus::Completed)
+        status_runner.projection().get_count(&TaskStatus::Completed)
     );
-    println!(
-        "  - Total: {}\n",
-        status_runner.projection().total_tasks()
-    );
+    println!("  - Total: {}\n", status_runner.projection().total_tasks());
 
     // Tasks by assignee
     println!("👥 Tasks by Assignee:");
-    let alice_tasks = assignee_runner
-        .projection()
-        .get_tasks_for_assignee("alice");
-    let bob_tasks = assignee_runner
-        .projection()
-        .get_tasks_for_assignee("bob");
+    let alice_tasks = assignee_runner.projection().get_tasks_for_assignee("alice");
+    let bob_tasks = assignee_runner.projection().get_tasks_for_assignee("bob");
     let charlie_tasks = assignee_runner
         .projection()
         .get_tasks_for_assignee("charlie");
@@ -488,10 +484,7 @@ async fn main() -> Result<()> {
     // Show checkpoint status
     println!("=== Checkpoint Status ===\n");
 
-    if let Some(checkpoint) = checkpoint_store
-        .load("task_count_by_status")
-        .await?
-    {
+    if let Some(checkpoint) = checkpoint_store.load("task_count_by_status").await? {
         println!("✓ Status projection checkpoint:");
         println!("  - Sequence: {}", checkpoint.sequence());
         println!("  - Timestamp: {}", checkpoint.timestamp());

@@ -3,15 +3,18 @@
 //! This example demonstrates the basics of event sourcing with event-sauce:
 //! - Defining aggregates with AggregateState (cleaner separation)
 //! - Using derive macros
-//! - In-memory event store
+//! - In-memory event store for persistence
 //! - Command execution
-//! - Event replay
+//! - Saving events to storage
+//! - Loading events from storage
+//! - Event replay and aggregate reconstruction
 //!
 //! Run with: cargo run -p event-sauce --example counter --features "memory,macros"
 
 use chrono::Utc;
-use event_sauce_core::{Aggregate, ApplyEvent};
+use event_sauce_core::{load, Aggregate, ApplyEvent, DomainEvent, EventStore};
 use event_sauce_macros::{AggregateError, AggregateId, AggregateState, Event as DeriveEvent};
+use event_sauce_memory::InMemoryEventStore;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -116,6 +119,18 @@ impl ApplyEvent<CounterAggregate, CounterError> for CounterDecrementedEvent {
     fn apply(&self, counter: &mut CounterAggregate) {
         counter.value -= self.amount;
     }
+
+    // Post-validation: Ensure counter never goes negative (defense in depth)
+    // This catches any bugs in the apply logic or validation
+    fn post_validate(&self, counter: &CounterAggregate) -> Result<(), CounterError> {
+        if counter.value < 0 {
+            return Err(CounterError::WouldBeNegative {
+                current: counter.value,
+                requested: self.amount,
+            });
+        }
+        Ok(())
+    }
 }
 
 impl ApplyEvent<CounterAggregate, CounterError> for CounterResetEvent {
@@ -136,12 +151,21 @@ impl ApplyEvent<CounterAggregate, CounterError> for CounterResetEvent {
 // This separates infrastructure concerns from business state.
 
 /// Counter state - contains only business data
-#[derive(AggregateState, Debug, Clone, Default)]
+#[derive(AggregateState, Debug, Clone)]
 #[aggregate(id = "CounterId", event = "CounterEvent", error = "CounterError")]
 struct CounterState {
     #[aggregate_id]
     id: CounterId,
     value: i32,
+}
+
+impl Default for CounterState {
+    fn default() -> Self {
+        Self {
+            id: CounterId::default(),
+            value: 0,
+        }
+    }
 }
 
 impl CounterState {
@@ -163,9 +187,9 @@ impl CounterState {
 // ============================================================================
 
 impl CounterAggregate {
-    /// Create a new counter
+    /// Create a new counter using the Aggregate trait's new method
     fn create(id: CounterId) -> Self {
-        Self::from_state(CounterState::new(id))
+        <Self as Aggregate>::new(id)
     }
 
     /// Increment the counter
@@ -175,11 +199,8 @@ impl CounterAggregate {
             timestamp: Utc::now(),
         };
 
-        // Validate using the event's validation logic
-        event.validate(self)?;
-
-        // apply() automatically adds to pending_events
-        self.apply(event);
+        // apply() automatically runs: validate() → apply() → post_validate()
+        self.apply(event)?;
         Ok(())
     }
 
@@ -190,20 +211,18 @@ impl CounterAggregate {
             timestamp: Utc::now(),
         };
 
-        // Validate using the event's validation logic
-        event.validate(self)?;
-
-        // apply() automatically adds to pending_events
-        self.apply(event);
+        // apply() automatically runs: validate() → apply() → post_validate()
+        self.apply(event)?;
         Ok(())
     }
 
     /// Reset the counter to zero
     fn reset(&mut self) {
-        // apply() automatically adds to pending_events
+        // apply() automatically runs: validate() → apply() → post_validate()
         self.apply(CounterResetEvent {
             timestamp: Utc::now(),
-        });
+        })
+        .expect("Reset should never fail");
     }
 }
 
@@ -213,16 +232,22 @@ impl CounterAggregate {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("=== Event Sourcing Counter Example ===\n");
+    println!("=== Event Sourcing Counter Example with Storage ===\n");
+
+    // Initialize the event store
+    let store = InMemoryEventStore::new();
+    println!("✓ Created in-memory event store\n");
 
     // Create a new counter
     let id = CounterId::new();
     let mut counter = CounterAggregate::create(id);
+    println!("--- Step 1: Create Counter ---");
     println!("✓ Created counter: {}", id);
     println!("  Initial value: {}", counter.value());
+    println!("  Initial version: {}", counter.version());
 
     // Execute some commands
-    println!("\n--- Executing Commands ---");
+    println!("\n--- Step 2: Execute Commands ---");
 
     counter.increment(5)?;
     println!("✓ Incremented by 5 → value: {}", counter.value());
@@ -233,57 +258,92 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     counter.decrement(2)?;
     println!("✓ Decremented by 2 → value: {}", counter.value());
 
-    println!("\nCurrent value: {}", counter.value());
-    println!("Version: {}", counter.version());
-    println!("Pending events: {}", counter.pending_events().len());
+    println!("\n  Current value: {}", counter.value());
+    println!("  Current version: {}", counter.version());
+    println!("  Pending events: {}", counter.pending_events().len());
 
-    // Show the events
-    println!("\n--- Generated Events ---");
+    // Show the generated events
+    println!("\n--- Step 3: Generated Events ---");
     for (i, event) in counter.pending_events().iter().enumerate() {
-        println!("{}. {:?}", i + 1, event);
+        println!("  {}. {:?}", i + 1, event.event_type());
     }
 
-    // Demonstrate error handling
-    println!("\n--- Testing Error Handling ---");
+    // Save events to the store using the new commit method
+    println!("\n--- Step 4: Save to Event Store ---");
+    let num_events = counter.pending_events().len();
 
-    match counter.increment(0) {
+    store.commit(&mut counter).await?;
+    println!("✓ Saved {} events to store", num_events);
+    println!("✓ Pending events cleared: {}", counter.pending_events().len());
+
+    // Load events from store and rebuild aggregate using the new load function
+    println!("\n--- Step 5: Load from Event Store ---");
+    println!("Loading counter from event store...");
+
+    let loaded_counter: CounterAggregate = load(&store, id).await?;
+
+    println!("✓ Loaded counter from store");
+    println!("  Loaded value: {}", loaded_counter.value());
+    println!("  Loaded version: {}", loaded_counter.version());
+
+    // Verify state matches
+    assert_eq!(counter.value(), loaded_counter.value());
+    assert_eq!(counter.version(), loaded_counter.version());
+    println!("✓ State matches original!");
+
+    // Continue with more operations on the loaded counter
+    println!("\n--- Step 6: Continue Operations ---");
+    let mut counter = loaded_counter;
+    counter.increment(10)?;
+    println!("✓ Incremented by 10 → value: {}", counter.value());
+
+    counter.reset();
+    println!("✓ Reset counter → value: {}", counter.value());
+
+    // Save the new events using commit
+    println!("\n--- Step 7: Save New Events ---");
+    let num_new_events = counter.pending_events().len();
+
+    store.commit(&mut counter).await?;
+    println!("✓ Saved {} new events to store", num_new_events);
+    println!("✓ Final version: {}", counter.version());
+
+    // Load complete history using the load function
+    println!("\n--- Step 8: Load Complete History ---");
+    let final_counter: CounterAggregate = load(&store, id).await?;
+
+    println!("✓ Loaded complete counter history");
+    println!("  Final value: {}", final_counter.value());
+    println!("  Final version: {}", final_counter.version());
+    println!("  Total events: {}", final_counter.version().as_i32());
+
+    // Demonstrate error handling
+    println!("\n--- Step 9: Test Business Rules ---");
+
+    let mut test_counter = CounterAggregate::create(CounterId::new());
+    test_counter.increment(5)?;
+
+    match test_counter.increment(0) {
         Ok(_) => println!("❌ Should have failed"),
         Err(e) => println!("✓ Rejected invalid increment: {}", e),
     }
 
-    match counter.decrement(100) {
+    match test_counter.decrement(100) {
         Ok(_) => println!("❌ Should have failed"),
         Err(e) => println!("✓ Rejected invalid decrement: {}", e),
     }
 
-    // Demonstrate event replay
-    println!("\n--- Event Replay ---");
-
-    let events: Vec<_> = counter.pending_events().iter().cloned().collect();
-    let mut replayed = CounterAggregate::create(id);
-
-    println!("Replaying {} events...", events.len());
-    for event in events {
-        replayed.apply_unchecked(&event);
-    }
-
-    println!("✓ Replayed counter value: {}", replayed.value());
-    println!("✓ Replayed counter version: {}", replayed.version());
-
-    assert_eq!(counter.value(), replayed.value());
-    assert_eq!(counter.version(), replayed.version());
-    println!("✓ State matches original!");
-
-    // Reset demonstration
-    println!("\n--- Reset ---");
-    counter.reset();
-    println!("✓ Reset counter → value: {}", counter.value());
-
     // Final summary
     println!("\n--- Summary ---");
-    println!("Total events generated: {}", counter.pending_events().len());
-    println!("Final value: {}", counter.value());
-    println!("Final version: {}", counter.version());
+    println!("✓ Created counter and executed commands");
+    println!("✓ Saved events to in-memory store");
+    println!("✓ Loaded events and reconstructed state");
+    println!("✓ Continued with more operations");
+    println!("✓ Maintained consistency across save/load cycles");
+    println!("✓ Enforced business rules");
+    println!("\nFinal state:");
+    println!("  Value: {}", final_counter.value());
+    println!("  Version: {}", final_counter.version());
 
     Ok(())
 }

@@ -38,10 +38,7 @@ struct PaymentSaga {
 #[async_trait]
 impl Saga for PaymentSaga {
     fn interested_in(&self, event: &EventEnvelope) -> bool {
-        matches!(
-            event.event_type.as_str(),
-            "OrderPlaced" | "OrderCancelled"
-        )
+        matches!(event.event_type.as_str(), "OrderPlaced" | "OrderCancelled")
     }
 
     async fn handle(&mut self, event: &EventEnvelope) -> Result<()> {
@@ -306,7 +303,11 @@ async fn test_process_manager_handles_payment_failure() {
             "Order",
             json!({"order_id": "order-999", "total": 299.99}),
         ),
-        create_event("PaymentFailed", "Payment", json!({"reason": "insufficient funds"})),
+        create_event(
+            "PaymentFailed",
+            "Payment",
+            json!({"reason": "insufficient funds"}),
+        ),
     ];
 
     let event_bus = Arc::new(TestEventBus::with_events(events));

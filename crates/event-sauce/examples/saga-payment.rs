@@ -98,7 +98,10 @@ impl Saga for PaymentSaga {
                     .unwrap_or("unknown")
                     .to_string();
 
-                println!("⚠️  Order {} cancelled/failed - initiating refund", order_id);
+                println!(
+                    "⚠️  Order {} cancelled/failed - initiating refund",
+                    order_id
+                );
                 self.compensate(event).await
             }
             _ => Ok(()),

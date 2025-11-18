@@ -313,7 +313,10 @@ mod tests {
         assert_eq!(commands3.len(), 0);
         assert!(pm.is_complete());
 
-        assert_eq!(pm.events_processed, vec!["Started", "StepCompleted", "Completed"]);
+        assert_eq!(
+            pm.events_processed,
+            vec!["Started", "StepCompleted", "Completed"]
+        );
     }
 
     #[test]

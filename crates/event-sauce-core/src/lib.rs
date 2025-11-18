@@ -37,5 +37,5 @@ pub use domain_event::DomainEvent;
 pub use error::{Error, Result};
 pub use event_bus::{EventBus, EventFilter};
 pub use event_envelope::{EventEnvelope, EventMetadata};
-pub use event_store::{EventStore, Position, Snapshot, StreamId};
+pub use event_store::{load, EventStore, Position, Snapshot, StreamId};
 pub use version::Version;

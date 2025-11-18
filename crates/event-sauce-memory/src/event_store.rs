@@ -102,7 +102,10 @@ impl EventStore for InMemoryEventStore {
         #[allow(clippy::cast_possible_truncation)]
         let current_version = Version::new(stream.len() as i32);
         if current_version != expected_version {
-            return Err(Error::concurrency_conflict(expected_version, current_version));
+            return Err(Error::concurrency_conflict(
+                expected_version,
+                current_version,
+            ));
         }
 
         // Append events
@@ -186,9 +189,7 @@ impl EventStore for InMemoryEventStore {
 
 #[cfg(test)]
 mod tests {
-    use event_sauce_core::{
-        EventEnvelope, EventStore, Position, Snapshot, StreamId, Version,
-    };
+    use event_sauce_core::{EventEnvelope, EventStore, Position, Snapshot, StreamId, Version};
     use futures::StreamExt;
     use serde_json::json;
     use uuid::Uuid;
@@ -374,10 +375,7 @@ mod tests {
         }
 
         // Load from version 2
-        let stream = store
-            .load_stream(stream_id, Version::new(2))
-            .await
-            .unwrap();
+        let stream = store.load_stream(stream_id, Version::new(2)).await.unwrap();
         let events: Vec<_> = stream.collect::<Vec<_>>().await;
 
         assert_eq!(events.len(), 3); // Should get events 2, 3, 4

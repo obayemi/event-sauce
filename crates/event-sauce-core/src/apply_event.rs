@@ -244,6 +244,67 @@ pub trait ApplyEvent<A, E: AggregateError> {
     /// assert_eq!(counter.value, 5);
     /// ```
     fn apply(&self, aggregate: &mut A);
+
+    /// Validates the aggregate state after the event has been applied.
+    ///
+    /// This method allows checking business invariants after state changes.
+    /// Unlike `validate()` which checks pre-conditions, `post_validate()`
+    /// checks post-conditions and invariants.
+    ///
+    /// The default implementation always succeeds, making post-validation optional.
+    /// Only override this method when your event requires post-application validation.
+    ///
+    /// # Arguments
+    ///
+    /// * `aggregate` - Immutable reference to the aggregate after the event was applied
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` if the post-conditions are satisfied
+    /// * `Err(E)` if validation fails
+    ///
+    /// # Errors
+    ///
+    /// Returns an error of type `E` if the aggregate state violates
+    /// business invariants after applying the event.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use event_sauce_core::{ApplyEvent, AggregateError};
+    /// use thiserror::Error;
+    ///
+    /// #[derive(Debug, Error)]
+    /// enum BankAccountError {
+    ///     #[error("Balance cannot be negative: {0}")]
+    ///     NegativeBalance(i64),
+    /// }
+    /// impl AggregateError for BankAccountError {}
+    ///
+    /// struct BankAccount {
+    ///     balance: i64,
+    /// }
+    ///
+    /// struct MoneyWithdrawn {
+    ///     amount: i64,
+    /// }
+    ///
+    /// impl ApplyEvent<BankAccount, BankAccountError> for MoneyWithdrawn {
+    ///     fn apply(&self, account: &mut BankAccount) {
+    ///         account.balance -= self.amount;
+    ///     }
+    ///
+    ///     fn post_validate(&self, account: &BankAccount) -> Result<(), BankAccountError> {
+    ///         if account.balance < 0 {
+    ///             return Err(BankAccountError::NegativeBalance(account.balance));
+    ///         }
+    ///         Ok(())
+    ///     }
+    /// }
+    /// ```
+    fn post_validate(&self, _aggregate: &A) -> Result<(), E> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -350,7 +411,10 @@ mod tests {
         let result = event.validate(&aggregate);
 
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err().to_string(), "Test error: Aggregate is inactive");
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "Test error: Aggregate is inactive"
+        );
     }
 
     #[test]
@@ -424,5 +488,103 @@ mod tests {
         event.apply(&mut aggregate2);
 
         assert_eq!(aggregate1.value, aggregate2.value);
+    }
+
+    // Tests for post_validate
+    struct PostValidatedEvent {
+        amount: i32,
+        max_value: i32,
+    }
+
+    impl ApplyEvent<TestAggregate, TestError> for PostValidatedEvent {
+        fn apply(&self, aggregate: &mut TestAggregate) {
+            aggregate.value += self.amount;
+        }
+
+        fn post_validate(&self, aggregate: &TestAggregate) -> Result<(), TestError> {
+            if aggregate.value > self.max_value {
+                return Err(TestError(format!(
+                    "Value {} exceeds maximum {}",
+                    aggregate.value, self.max_value
+                )));
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn test_post_validate_default_succeeds() {
+        let aggregate = TestAggregate {
+            value: 10,
+            status: Status::Active,
+        };
+        let event = SimpleEvent { amount: 5 };
+
+        let result = event.post_validate(&aggregate);
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_post_validate_succeeds() {
+        let mut aggregate = TestAggregate {
+            value: 10,
+            status: Status::Active,
+        };
+        let event = PostValidatedEvent {
+            amount: 5,
+            max_value: 20,
+        };
+
+        event.apply(&mut aggregate);
+        let result = event.post_validate(&aggregate);
+
+        assert!(result.is_ok());
+        assert_eq!(aggregate.value, 15);
+    }
+
+    #[test]
+    fn test_post_validate_fails() {
+        let mut aggregate = TestAggregate {
+            value: 10,
+            status: Status::Active,
+        };
+        let event = PostValidatedEvent {
+            amount: 15,
+            max_value: 20,
+        };
+
+        event.apply(&mut aggregate);
+        let result = event.post_validate(&aggregate);
+
+        assert!(result.is_err());
+        assert_eq!(aggregate.value, 25); // State was modified
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "Test error: Value 25 exceeds maximum 20"
+        );
+    }
+
+    #[test]
+    fn test_post_validate_checks_invariants() {
+        let mut aggregate = TestAggregate {
+            value: 18,
+            status: Status::Active,
+        };
+        let event = PostValidatedEvent {
+            amount: 1,
+            max_value: 20,
+        };
+
+        event.apply(&mut aggregate);
+        assert!(event.post_validate(&aggregate).is_ok());
+
+        // Now push over the limit
+        let event2 = PostValidatedEvent {
+            amount: 2,
+            max_value: 20,
+        };
+        event2.apply(&mut aggregate);
+        assert!(event2.post_validate(&aggregate).is_err());
     }
 }

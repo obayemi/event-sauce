@@ -73,9 +73,11 @@ impl EventStore for PostgresEventStore {
             return Ok(());
         }
 
-        let mut tx = self.pool.begin().await.map_err(|e| {
-            Error::custom(format!("Failed to start transaction: {e}"))
-        })?;
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| Error::custom(format!("Failed to start transaction: {e}")))?;
 
         // Check current version
         let current_version: Option<i64> = sqlx::query_scalar(
@@ -91,7 +93,10 @@ impl EventStore for PostgresEventStore {
         let current_version = Version::new((current_version.unwrap_or(-1) + 1) as i32);
 
         if current_version != expected_version {
-            return Err(Error::concurrency_conflict(expected_version, current_version));
+            return Err(Error::concurrency_conflict(
+                expected_version,
+                current_version,
+            ));
         }
 
         // Insert events
@@ -103,7 +108,7 @@ impl EventStore for PostgresEventStore {
                 "INSERT INTO events (
                     event_id, aggregate_id, aggregate_type, event_type, event_version,
                     event_data, stream_version, created_by, correlation_id, causation_id, metadata
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)"
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
             )
             .bind(event.id)
             .bind(event.aggregate_id)
@@ -121,9 +126,9 @@ impl EventStore for PostgresEventStore {
             .map_err(|e| Error::custom(format!("Failed to insert event: {e}")))?;
         }
 
-        tx.commit().await.map_err(|e| {
-            Error::custom(format!("Failed to commit transaction: {e}"))
-        })?;
+        tx.commit()
+            .await
+            .map_err(|e| Error::custom(format!("Failed to commit transaction: {e}")))?;
 
         Ok(())
     }
@@ -138,7 +143,7 @@ impl EventStore for PostgresEventStore {
                     event_data, created_by, created_at, correlation_id, causation_id, metadata
              FROM events
              WHERE aggregate_id = $1 AND aggregate_type = $2 AND stream_version >= $3
-             ORDER BY stream_version ASC"
+             ORDER BY stream_version ASC",
         )
         .bind(stream_id.aggregate_id())
         .bind(stream_id.aggregate_type())
@@ -162,7 +167,7 @@ impl EventStore for PostgresEventStore {
                     event_data, created_by, created_at, correlation_id, causation_id, metadata
              FROM events
              WHERE id > $1
-             ORDER BY id ASC"
+             ORDER BY id ASC",
         )
         .bind(from_position.as_i64())
         .fetch_all(&self.pool)
@@ -195,7 +200,7 @@ impl EventStore for PostgresEventStore {
             "INSERT INTO snapshots (aggregate_id, aggregate_type, snapshot_version, snapshot_data)
              VALUES ($1, $2, $3, $4)
              ON CONFLICT (aggregate_id, aggregate_type)
-             DO UPDATE SET snapshot_version = $3, snapshot_data = $4, created_at = NOW()"
+             DO UPDATE SET snapshot_version = $3, snapshot_data = $4, created_at = NOW()",
         )
         .bind(snapshot.aggregate_id)
         .bind(&snapshot.aggregate_type)
@@ -212,7 +217,7 @@ impl EventStore for PostgresEventStore {
         let row: Option<SnapshotRow> = sqlx::query_as::<_, SnapshotRow>(
             "SELECT aggregate_id, aggregate_type, snapshot_version, snapshot_data
              FROM snapshots
-             WHERE aggregate_id = $1 AND aggregate_type = $2"
+             WHERE aggregate_id = $1 AND aggregate_type = $2",
         )
         .bind(stream_id.aggregate_id())
         .bind(stream_id.aggregate_type())
@@ -242,16 +247,18 @@ struct EventRow {
 
 impl From<EventRow> for EventEnvelope {
     fn from(row: EventRow) -> Self {
-        let metadata = if row.correlation_id.is_some() || row.causation_id.is_some() || row.metadata.is_some() {
-            Some(event_sauce_core::EventMetadata {
-                correlation_id: row.correlation_id,
-                causation_id: row.causation_id,
-                timestamp: row.created_at,
-                additional: row.metadata,
-            })
-        } else {
-            None
-        };
+        let metadata =
+            if row.correlation_id.is_some() || row.causation_id.is_some() || row.metadata.is_some()
+            {
+                Some(event_sauce_core::EventMetadata {
+                    correlation_id: row.correlation_id,
+                    causation_id: row.causation_id,
+                    timestamp: row.created_at,
+                    additional: row.metadata,
+                })
+            } else {
+                None
+            };
 
         EventEnvelope {
             id: row.event_id,
@@ -292,9 +299,7 @@ impl From<SnapshotRow> for Snapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use event_sauce_core::{
-        EventEnvelope, EventStore, Position, Snapshot, StreamId, Version,
-    };
+    use event_sauce_core::{EventEnvelope, EventStore, Position, Snapshot, StreamId, Version};
     use futures::StreamExt;
     use serde_json::json;
     use sqlx::PgPool;
@@ -320,22 +325,22 @@ mod tests {
                 .map_err(|e| Error::custom(format!("Failed to start PostgreSQL container: {e}")))?;
 
             // Get connection string
-            let host = container.get_host().await.map_err(|e| {
-                Error::custom(format!("Failed to get container host: {e}"))
-            })?;
-            let port = container.get_host_port_ipv4(5432).await.map_err(|e| {
-                Error::custom(format!("Failed to get container port: {e}"))
-            })?;
+            let host = container
+                .get_host()
+                .await
+                .map_err(|e| Error::custom(format!("Failed to get container host: {e}")))?;
+            let port = container
+                .get_host_port_ipv4(5432)
+                .await
+                .map_err(|e| Error::custom(format!("Failed to get container port: {e}")))?;
 
-            let connection_string = format!(
-                "postgresql://postgres:postgres@{}:{}/postgres",
-                host, port
-            );
+            let connection_string =
+                format!("postgresql://postgres:postgres@{}:{}/postgres", host, port);
 
             // Connect to database
-            let pool = PgPool::connect(&connection_string).await.map_err(|e| {
-                Error::custom(format!("Failed to connect to test database: {e}"))
-            })?;
+            let pool = PgPool::connect(&connection_string)
+                .await
+                .map_err(|e| Error::custom(format!("Failed to connect to test database: {e}")))?;
 
             // Run migrations
             sqlx::migrate!("./migrations")
@@ -355,7 +360,11 @@ mod tests {
         create_test_envelope_with_type(event_type, "User", aggregate_id)
     }
 
-    fn create_test_envelope_with_type(event_type: &str, aggregate_type: &str, aggregate_id: Uuid) -> EventEnvelope {
+    fn create_test_envelope_with_type(
+        event_type: &str,
+        aggregate_type: &str,
+        aggregate_id: Uuid,
+    ) -> EventEnvelope {
         EventEnvelope::new(
             Uuid::new_v4(),
             aggregate_id,
@@ -533,10 +542,7 @@ mod tests {
         }
 
         // Load from version 2
-        let stream = store
-            .load_stream(stream_id, Version::new(2))
-            .await
-            .unwrap();
+        let stream = store.load_stream(stream_id, Version::new(2)).await.unwrap();
         let events: Vec<_> = stream.collect::<Vec<_>>().await;
 
         assert_eq!(events.len(), 3); // Should get events 2, 3, 4

@@ -80,7 +80,11 @@ struct AccountWithdrawnEvent {
 
 /// Bank account events wrapping the separated event structs
 #[derive(DeriveEvent, Debug, Clone)]
-#[event(version = 1, type_prefix = "Account", aggregate = "BankAccountAggregate")]
+#[event(
+    version = 1,
+    type_prefix = "Account",
+    aggregate = "BankAccountAggregate"
+)]
 enum AccountEvent {
     Opened(AccountOpenedEvent),
     Deposited(AccountDepositedEvent),
@@ -167,6 +171,18 @@ impl ApplyEvent<BankAccountAggregate, AccountError> for AccountWithdrawnEvent {
     fn apply(&self, account: &mut BankAccountAggregate) {
         account.balance -= self.amount;
     }
+
+    // Post-validation: Ensure balance never goes negative (defense in depth)
+    // This catches any bugs in the apply logic or validation
+    fn post_validate(&self, account: &BankAccountAggregate) -> Result<(), AccountError> {
+        if account.balance < 0 {
+            return Err(AccountError::InsufficientFunds {
+                balance: account.balance,
+                requested: self.amount,
+            });
+        }
+        Ok(())
+    }
 }
 
 // ============================================================================
@@ -176,7 +192,7 @@ impl ApplyEvent<BankAccountAggregate, AccountError> for AccountWithdrawnEvent {
 // The AggregateState macro generates a BankAccountAggregate wrapper
 
 /// Bank account state - contains only business data
-#[derive(AggregateState, Debug, Clone, Default)]
+#[derive(AggregateState, Debug, Clone)]
 #[aggregate(id = "AccountId", event = "AccountEvent", error = "AccountError")]
 struct BankAccountState {
     #[aggregate_id]
@@ -184,6 +200,17 @@ struct BankAccountState {
     owner: String,
     balance: i64,
     status: AccountStatus,
+}
+
+impl Default for BankAccountState {
+    fn default() -> Self {
+        Self {
+            id: AccountId::default(),
+            owner: String::new(),
+            balance: 0,
+            status: AccountStatus::Active,
+        }
+    }
 }
 
 impl BankAccountState {
@@ -215,9 +242,9 @@ impl BankAccountState {
 // ============================================================================
 
 impl BankAccountAggregate {
-    /// Create a new bank account
+    /// Create a new bank account using the Aggregate trait's new method
     fn open(id: AccountId, owner: String, initial_balance: i64) -> Result<Self, AccountError> {
-        let mut account = Self::from_state(BankAccountState::new(id.clone()));
+        let mut account = <Self as Aggregate>::new(id.clone());
 
         let event = AccountOpenedEvent {
             account_id: id.to_string(),
@@ -226,10 +253,8 @@ impl BankAccountAggregate {
             timestamp: Utc::now(),
         };
 
-        // Validate using the event's validation logic
-        event.validate(&account)?;
-
-        account.apply(event);
+        // apply() automatically runs: validate() → apply() → post_validate()
+        account.apply(event)?;
         Ok(account)
     }
 
@@ -240,10 +265,8 @@ impl BankAccountAggregate {
             timestamp: Utc::now(),
         };
 
-        // Validate using the event's validation logic
-        event.validate(self)?;
-
-        self.apply(event);
+        // apply() automatically runs: validate() → apply() → post_validate()
+        self.apply(event)?;
         Ok(())
     }
 
@@ -254,10 +277,8 @@ impl BankAccountAggregate {
             timestamp: Utc::now(),
         };
 
-        // Validate using the event's validation logic
-        event.validate(self)?;
-
-        self.apply(event);
+        // apply() automatically runs: validate() → apply() → post_validate()
+        self.apply(event)?;
         Ok(())
     }
 }
@@ -284,7 +305,10 @@ fn main() -> Result<(), AccountError> {
 
     println!("✓ Opened account: {}", account.aggregate_id());
     println!("  Owner: {}", account.owner);
-    println!("  Initial balance: ${:.2}", account.balance() as f64 / 100.0);
+    println!(
+        "  Initial balance: ${:.2}",
+        account.balance() as f64 / 100.0
+    );
     println!("  Pending events: {}", account.pending_events().len());
 
     // Perform transactions
@@ -309,12 +333,16 @@ fn main() -> Result<(), AccountError> {
     println!("{}", "-".repeat(70));
 
     for (i, event) in account.pending_events().iter().enumerate() {
-        println!("Event #{}: {} (v{})",
+        println!(
+            "Event #{}: {} (v{})",
             i + 1,
             event.event_type(),
             event.event_version()
         );
-        println!("  Occurred at: {}", event.occurred_at().format("%Y-%m-%d %H:%M:%S"));
+        println!(
+            "  Occurred at: {}",
+            event.occurred_at().format("%Y-%m-%d %H:%M:%S")
+        );
     }
 
     // Test business rules

@@ -114,10 +114,13 @@ impl EventBus for PostgresEventBus {
         // Send NOTIFY with event payload
         // Note: NOTIFY does not support parameterized queries, so we must escape the payload
         let escaped_payload = payload.replace('\\', "\\\\").replace('\'', "''");
-        sqlx::query(&format!("NOTIFY {}, '{}'", self.inner.channel, escaped_payload))
-            .execute(&self.inner.pool)
-            .await
-            .map_err(|e| Error::custom(format!("Failed to publish event: {e}")))?;
+        sqlx::query(&format!(
+            "NOTIFY {}, '{}'",
+            self.inner.channel, escaped_payload
+        ))
+        .execute(&self.inner.pool)
+        .await
+        .map_err(|e| Error::custom(format!("Failed to publish event: {e}")))?;
 
         Ok(())
     }
@@ -145,7 +148,9 @@ impl EventBus for PostgresEventBus {
                     match listener.recv().await {
                         Ok(notification) => {
                             // Deserialize event
-                            if let Ok(event) = serde_json::from_str::<EventEnvelope>(notification.payload()) {
+                            if let Ok(event) =
+                                serde_json::from_str::<EventEnvelope>(notification.payload())
+                            {
                                 // Check if event matches filter
                                 if filter.matches(&event) {
                                     return Some((event, (listener, filter)));
@@ -194,22 +199,22 @@ mod tests {
                 .map_err(|e| Error::custom(format!("Failed to start PostgreSQL container: {e}")))?;
 
             // Get connection string
-            let host = container.get_host().await.map_err(|e| {
-                Error::custom(format!("Failed to get container host: {e}"))
-            })?;
-            let port = container.get_host_port_ipv4(5432).await.map_err(|e| {
-                Error::custom(format!("Failed to get container port: {e}"))
-            })?;
+            let host = container
+                .get_host()
+                .await
+                .map_err(|e| Error::custom(format!("Failed to get container host: {e}")))?;
+            let port = container
+                .get_host_port_ipv4(5432)
+                .await
+                .map_err(|e| Error::custom(format!("Failed to get container port: {e}")))?;
 
-            let connection_string = format!(
-                "postgresql://postgres:postgres@{}:{}/postgres",
-                host, port
-            );
+            let connection_string =
+                format!("postgresql://postgres:postgres@{}:{}/postgres", host, port);
 
             // Connect to database
-            let pool = PgPool::connect(&connection_string).await.map_err(|e| {
-                Error::custom(format!("Failed to connect to test database: {e}"))
-            })?;
+            let pool = PgPool::connect(&connection_string)
+                .await
+                .map_err(|e| Error::custom(format!("Failed to connect to test database: {e}")))?;
 
             Ok(Self { pool, container })
         }
@@ -258,13 +263,11 @@ mod tests {
         bus.publish(event.clone()).await.unwrap();
 
         // Receive event
-        let received = tokio::time::timeout(
-            std::time::Duration::from_millis(1000),
-            subscription.next(),
-        )
-        .await
-        .unwrap()
-        .unwrap();
+        let received =
+            tokio::time::timeout(std::time::Duration::from_millis(1000), subscription.next())
+                .await
+                .unwrap()
+                .unwrap();
 
         assert_eq!(received.event_type, "UserCreated");
     }
@@ -290,13 +293,11 @@ mod tests {
             .unwrap();
 
         // Should only receive the matching event
-        let received = tokio::time::timeout(
-            std::time::Duration::from_millis(1000),
-            subscription.next(),
-        )
-        .await
-        .unwrap()
-        .unwrap();
+        let received =
+            tokio::time::timeout(std::time::Duration::from_millis(1000), subscription.next())
+                .await
+                .unwrap()
+                .unwrap();
 
         assert_eq!(received.event_type, "UserCreated");
     }
@@ -325,20 +326,16 @@ mod tests {
             .unwrap();
 
         // Should receive both User events
-        let received1 = tokio::time::timeout(
-            std::time::Duration::from_millis(1000),
-            subscription.next(),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        let received2 = tokio::time::timeout(
-            std::time::Duration::from_millis(1000),
-            subscription.next(),
-        )
-        .await
-        .unwrap()
-        .unwrap();
+        let received1 =
+            tokio::time::timeout(std::time::Duration::from_millis(1000), subscription.next())
+                .await
+                .unwrap()
+                .unwrap();
+        let received2 =
+            tokio::time::timeout(std::time::Duration::from_millis(1000), subscription.next())
+                .await
+                .unwrap()
+                .unwrap();
 
         assert_eq!(received1.event_type, "UserCreated");
         assert_eq!(received2.event_type, "UserUpdated");
@@ -358,20 +355,14 @@ mod tests {
         bus.publish(event.clone()).await.unwrap();
 
         // Both subscribers should receive the event
-        let received1 = tokio::time::timeout(
-            std::time::Duration::from_millis(1000),
-            sub1.next(),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        let received2 = tokio::time::timeout(
-            std::time::Duration::from_millis(1000),
-            sub2.next(),
-        )
-        .await
-        .unwrap()
-        .unwrap();
+        let received1 = tokio::time::timeout(std::time::Duration::from_millis(1000), sub1.next())
+            .await
+            .unwrap()
+            .unwrap();
+        let received2 = tokio::time::timeout(std::time::Duration::from_millis(1000), sub2.next())
+            .await
+            .unwrap()
+            .unwrap();
 
         assert_eq!(received1.event_type, "UserCreated");
         assert_eq!(received2.event_type, "UserCreated");
@@ -394,13 +385,11 @@ mod tests {
 
         // Should receive all three events
         for i in 1..=3 {
-            let received = tokio::time::timeout(
-                std::time::Duration::from_millis(1000),
-                subscription.next(),
-            )
-            .await
-            .unwrap()
-            .unwrap();
+            let received =
+                tokio::time::timeout(std::time::Duration::from_millis(1000), subscription.next())
+                    .await
+                    .unwrap()
+                    .unwrap();
             assert_eq!(received.event_type, format!("Event{}", i));
         }
     }
@@ -419,13 +408,11 @@ mod tests {
         bus_clone.publish(event).await.unwrap();
 
         // Should receive via original subscription
-        let received = tokio::time::timeout(
-            std::time::Duration::from_millis(1000),
-            subscription.next(),
-        )
-        .await
-        .unwrap()
-        .unwrap();
+        let received =
+            tokio::time::timeout(std::time::Duration::from_millis(1000), subscription.next())
+                .await
+                .unwrap()
+                .unwrap();
 
         assert_eq!(received.event_type, "UserCreated");
     }
@@ -433,8 +420,7 @@ mod tests {
     #[tokio::test]
     async fn test_with_custom_channel() {
         let db = TestDatabase::new().await.unwrap();
-        let bus = PostgresEventBus::with_channel(db.pool().clone(), "custom_channel")
-            .unwrap();
+        let bus = PostgresEventBus::with_channel(db.pool().clone(), "custom_channel").unwrap();
 
         let subscription = bus.subscribe(EventFilter::all()).await.unwrap();
         futures::pin_mut!(subscription);
@@ -442,13 +428,11 @@ mod tests {
         let event = create_test_envelope("UserCreated", "User");
         bus.publish(event).await.unwrap();
 
-        let received = tokio::time::timeout(
-            std::time::Duration::from_millis(1000),
-            subscription.next(),
-        )
-        .await
-        .unwrap()
-        .unwrap();
+        let received =
+            tokio::time::timeout(std::time::Duration::from_millis(1000), subscription.next())
+                .await
+                .unwrap()
+                .unwrap();
 
         assert_eq!(received.event_type, "UserCreated");
     }
@@ -470,13 +454,11 @@ mod tests {
         bus.publish(event).await.unwrap();
 
         // Should receive event
-        let received = tokio::time::timeout(
-            std::time::Duration::from_millis(1000),
-            subscription.next(),
-        )
-        .await
-        .unwrap()
-        .unwrap();
+        let received =
+            tokio::time::timeout(std::time::Duration::from_millis(1000), subscription.next())
+                .await
+                .unwrap()
+                .unwrap();
 
         assert_eq!(received.event_type, "UserCreated");
     }

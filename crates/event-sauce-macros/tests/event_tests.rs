@@ -3,8 +3,8 @@
 //! These tests verify that the Event derive macro correctly generates
 //! the DomainEvent trait implementation.
 
-use event_sauce_core::DomainEvent;
 use chrono::{DateTime, Utc};
+use event_sauce_core::DomainEvent;
 
 // Test: Simple enum with timestamp field
 #[derive(event_sauce_macros::Event, Debug, Clone)]
@@ -174,9 +174,7 @@ fn test_event_derive_custom_type_prefix() {
 #[derive(event_sauce_macros::Event, Debug, Clone)]
 #[event(version = 1)]
 enum SimpleEvent {
-    Occurred {
-        timestamp: DateTime<Utc>,
-    },
+    Occurred { timestamp: DateTime<Utc> },
 }
 
 #[test]

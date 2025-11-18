@@ -6,6 +6,13 @@ Welcome to the event-sauce documentation! This directory contains comprehensive 
 
 - **[Getting Started Guide](getting-started.md)** - Start here if you're new to event-sauce or event sourcing
 
+## Core Concepts
+
+- **[Aggregates](aggregates.md)** - Business entities and consistency boundaries
+- **[Events](events.md)** - Domain events and event modeling
+- **[Event Store](event-store.md)** - Persisting and loading event streams
+- **[Validation](validation.md)** - Event validation and business rules
+
 ## Guides
 
 - **[Architecture Overview](architecture.md)** - Understand the system design, crate structure, and design decisions

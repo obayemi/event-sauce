@@ -4,6 +4,7 @@
 
 use std::fmt::{Debug, Display};
 use std::hash::Hash;
+use uuid::Uuid;
 
 /// Trait for aggregate identifiers.
 ///
@@ -15,6 +16,7 @@ use std::hash::Hash;
 /// - Must be `Clone`, `Debug`, `Display`, `PartialEq`, `Eq`, and `Hash`
 /// - Must be `Send + Sync` for async usage
 /// - Should be a unique identifier (UUID, composite key, etc.)
+/// - Must be convertible to a UUID for event store operations
 ///
 /// # Examples
 ///
@@ -38,9 +40,18 @@ use std::hash::Hash;
 ///     }
 /// }
 ///
-/// impl AggregateId for UserId {}
+/// impl AggregateId for UserId {
+///     fn to_uuid(&self) -> Uuid {
+///         self.0
+///     }
+/// }
 /// ```
-pub trait AggregateId: Clone + Debug + Display + PartialEq + Eq + Hash + Send + Sync {}
+pub trait AggregateId: Clone + Debug + Display + PartialEq + Eq + Hash + Send + Sync {
+    /// Converts the aggregate ID to a UUID.
+    ///
+    /// This is used by the event store for persistence.
+    fn to_uuid(&self) -> Uuid;
+}
 
 #[cfg(test)]
 mod tests {
@@ -67,7 +78,11 @@ mod tests {
         }
     }
 
-    impl AggregateId for TestId {}
+    impl AggregateId for TestId {
+        fn to_uuid(&self) -> Uuid {
+            self.0
+        }
+    }
 
     #[test]
     fn test_aggregate_id_can_be_cloned() {
@@ -139,7 +154,15 @@ mod tests {
         }
     }
 
-    impl AggregateId for IntegerId {}
+    impl AggregateId for IntegerId {
+        fn to_uuid(&self) -> Uuid {
+            // For non-UUID IDs, we can create a deterministic UUID from the ID
+            // This is just for testing purposes
+            let mut bytes = [0u8; 16];
+            bytes[0..8].copy_from_slice(&self.0.to_le_bytes());
+            Uuid::from_bytes(bytes)
+        }
+    }
 
     #[test]
     fn test_integer_aggregate_id() {
@@ -162,7 +185,22 @@ mod tests {
         }
     }
 
-    impl AggregateId for StringId {}
+    impl AggregateId for StringId {
+        fn to_uuid(&self) -> Uuid {
+            // For string IDs, we can create a UUID from the string hash
+            // This is just for testing purposes
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::Hasher;
+
+            let mut hasher = DefaultHasher::new();
+            hasher.write(self.0.as_bytes());
+            let hash = hasher.finish();
+
+            let mut bytes = [0u8; 16];
+            bytes[0..8].copy_from_slice(&hash.to_le_bytes());
+            Uuid::from_bytes(bytes)
+        }
+    }
 
     #[test]
     fn test_string_aggregate_id() {
@@ -173,5 +211,24 @@ mod tests {
         assert_eq!(id1, id2);
         assert_ne!(id1, id3);
         assert_eq!(format!("{}", id1), "user-123");
+    }
+
+    #[test]
+    fn test_to_uuid() {
+        let uuid = Uuid::new_v4();
+        let id = TestId::from_uuid(uuid);
+        assert_eq!(id.to_uuid(), uuid);
+    }
+
+    #[test]
+    fn test_to_uuid_deterministic() {
+        // Same input should produce same UUID
+        let id1 = IntegerId(42);
+        let id2 = IntegerId(42);
+        assert_eq!(id1.to_uuid(), id2.to_uuid());
+
+        // Different input should produce different UUID
+        let id3 = IntegerId(99);
+        assert_ne!(id1.to_uuid(), id3.to_uuid());
     }
 }

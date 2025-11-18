@@ -153,13 +153,13 @@ where
     }
 
     /// Returns the number of events processed
-    #[must_use] 
+    #[must_use]
     pub fn events_processed(&self) -> usize {
         self.events_processed
     }
 
     /// Returns a reference to the process manager
-    #[must_use] 
+    #[must_use]
     pub fn process_manager(&self) -> Arc<RwLock<PM>> {
         Arc::clone(&self.process_manager)
     }

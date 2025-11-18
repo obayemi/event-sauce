@@ -1,7 +1,7 @@
 error: Missing #[aggregate_id] field attribute
-  --> tests/ui/aggregate_missing_id_field.rs:48:10
+  --> tests/ui/aggregate_missing_id_field.rs:59:10
    |
-48 | #[derive(event_sauce_macros::Aggregate)]
+59 | #[derive(event_sauce_macros::Aggregate)]
    |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
    |
    = note: this error originates in the derive macro `event_sauce_macros::Aggregate` (in Nightly builds, run with -Z macro-backtrace for more info)

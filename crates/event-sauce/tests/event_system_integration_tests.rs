@@ -21,6 +21,12 @@ use uuid::Uuid;
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct TestAccountId(Uuid);
 
+impl Default for TestAccountId {
+    fn default() -> Self {
+        Self(Uuid::nil())
+    }
+}
+
 impl TestAccountId {
     fn new() -> Self {
         Self(Uuid::new_v4())
@@ -33,11 +39,16 @@ impl fmt::Display for TestAccountId {
     }
 }
 
-impl AggregateId for TestAccountId {}
+impl AggregateId for TestAccountId {
+    fn to_uuid(&self) -> Uuid {
+        self.0
+    }
+}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[allow(dead_code)]
 enum AccountStatus {
+    #[default]
     Active,
     Frozen,
     Closed,
@@ -77,7 +88,11 @@ enum TestAccountEvent {
 }
 
 #[derive(DeriveAggregate, Debug, Clone)]
-#[aggregate(id = "TestAccountId", event = "TestAccountEvent", error = "TestAccountError")]
+#[aggregate(
+    id = "TestAccountId",
+    event = "TestAccountEvent",
+    error = "TestAccountError"
+)]
 struct TestAccount {
     #[aggregate_id]
     id: TestAccountId,
@@ -90,8 +105,25 @@ struct TestAccount {
     pending_events: Vec<TestAccountEvent>,
 }
 
+impl Default for TestAccount {
+    fn default() -> Self {
+        Self {
+            id: TestAccountId::default(),
+            owner: String::new(),
+            balance: 0,
+            status: AccountStatus::Active,
+            version: Version::initial(),
+            pending_events: Vec::new(),
+        }
+    }
+}
+
 impl TestAccount {
-    fn open(id: TestAccountId, owner: String, initial_balance: i64) -> Result<Self, TestAccountError> {
+    fn open(
+        id: TestAccountId,
+        owner: String,
+        initial_balance: i64,
+    ) -> Result<Self, TestAccountError> {
         if initial_balance < 0 {
             return Err(TestAccountError::InvalidAmount(initial_balance));
         }
@@ -105,11 +137,13 @@ impl TestAccount {
             pending_events: Vec::new(),
         };
 
-        account.apply(TestAccountEvent::Opened {
-            owner,
-            initial_balance,
-            timestamp: Utc::now(),
-        });
+        account
+            .apply(TestAccountEvent::Opened {
+                owner,
+                initial_balance,
+                timestamp: Utc::now(),
+            })
+            .unwrap();
 
         Ok(account)
     }
@@ -126,7 +160,8 @@ impl TestAccount {
         self.apply(TestAccountEvent::Deposited {
             amount,
             timestamp: Utc::now(),
-        });
+        })
+        .unwrap();
 
         Ok(())
     }
@@ -150,7 +185,8 @@ impl TestAccount {
         self.apply(TestAccountEvent::Withdrawn {
             amount,
             timestamp: Utc::now(),
-        });
+        })
+        .unwrap();
 
         Ok(())
     }
@@ -158,12 +194,13 @@ impl TestAccount {
     fn freeze(&mut self) -> Result<(), TestAccountError> {
         self.apply(TestAccountEvent::Frozen {
             timestamp: Utc::now(),
-        });
+        })
+        .unwrap();
 
         Ok(())
     }
 
-    fn apply_event(&mut self, event: &TestAccountEvent) {
+    fn apply_event(&mut self, event: &TestAccountEvent) -> Result<(), TestAccountError> {
         match event {
             TestAccountEvent::Opened {
                 owner,
@@ -184,6 +221,7 @@ impl TestAccount {
                 self.status = AccountStatus::Frozen;
             }
         }
+        Ok(())
     }
 }
 
@@ -379,7 +417,7 @@ fn test_apply_vs_apply_unchecked() {
     };
 
     // apply records the event while apply_unchecked doesn't
-    account1.apply(event.clone());
+    account1.apply(event.clone()).unwrap();
     account2.apply_unchecked(&event);
 
     // Both update state and version the same way
