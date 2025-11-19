@@ -63,6 +63,10 @@ required-features = ["macros", "memory"]
 name = "snapshotting-postgres"
 required-features = ["macros", "postgres"]
 
+[[example]]
+name = "postgres-quickstart"
+required-features = ["macros", "postgres"]
+
 [[bench]]
 name = "event_application"
 harness = false
