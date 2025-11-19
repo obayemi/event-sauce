@@ -73,6 +73,17 @@
 //! 4. ✅ Commands stay simple - just event creation
 //! 5. ✅ Separation of concerns - validation logic separate from commands
 //!
+//! ## Event Design Pattern
+//!
+//! Events contain **only decision data**, not derived or redundant information:
+//!
+//! - ❌ No aggregate_id (stored in EventEnvelope)
+//! - ❌ No calculated values (computed in apply())
+//! - ❌ No previous state (available from aggregate)
+//! - ✅ Only the decision made and necessary context
+//!
+//! Example: `StockAdded` only contains `quantity`, not `new_total` or `product_id`
+//!
 //! ## Running the Example
 //!
 //! ```bash
@@ -134,11 +145,37 @@ enum ProductError {
 // ============================================================================
 // Events
 // ============================================================================
+//
+// EVENT DESIGN PRINCIPLES:
+//
+// Events contain ONLY the decision data (what was decided), not derived data.
+//
+// ❌ DON'T include:
+// - Aggregate ID (already in EventEnvelope.aggregate_id)
+// - Calculated values (e.g., new_total = current + quantity)
+// - Previous state (e.g., old_price - available from aggregate)
+// - Derived data that can be computed
+//
+// ✅ DO include:
+// - The decision made (e.g., quantity added/removed, new price)
+// - Context for the decision (e.g., timestamp, reason if needed)
+// - Data needed to apply the event
+//
+// Benefits:
+// 1. Smaller events = less storage, faster serialization
+// 2. Single source of truth for calculations (in apply())
+// 3. No risk of inconsistent derived data
+// 4. Easier event evolution and versioning
+//
+// Examples in this code:
+// - StockAdded: Only quantity (not new_total, not product_id)
+// - StockRemoved: Only quantity (not new_total, not product_id)
+// - PriceChanged: Only new_price_cents (not old_price_cents, not product_id)
+// - ProductCreated: Only name, initial_stock, price_cents (not product_id)
 
 /// Product was created
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ProductCreated {
-    product_id: ProductId,
     name: String,
     initial_stock: i32,
     price_cents: i64,
@@ -148,26 +185,20 @@ struct ProductCreated {
 /// Stock was added to inventory
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct StockAdded {
-    product_id: ProductId,
     quantity: i32,
-    new_total: i32,
     timestamp: DateTime<Utc>,
 }
 
 /// Stock was removed from inventory
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct StockRemoved {
-    product_id: ProductId,
     quantity: i32,
-    new_total: i32,
     timestamp: DateTime<Utc>,
 }
 
 /// Product price was changed
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PriceChanged {
-    product_id: ProductId,
-    old_price_cents: i64,
     new_price_cents: i64,
     timestamp: DateTime<Utc>,
 }
@@ -243,7 +274,7 @@ impl ApplyEvent<ProductAggregate, ProductError> for ProductCreated {
     }
 
     fn apply(&self, product: &mut ProductAggregate) {
-        product.id = self.product_id;
+        // Note: product.id is already set by the Aggregate framework from the envelope
         product.name = self.name.clone();
         product.stock = self.initial_stock;
         product.price_cents = self.price_cents;
@@ -264,7 +295,8 @@ impl ApplyEvent<ProductAggregate, ProductError> for StockAdded {
     }
 
     fn apply(&self, product: &mut ProductAggregate) {
-        product.stock = self.new_total;
+        // Calculate new total from current stock + quantity
+        product.stock += self.quantity;
         product.updated_at = self.timestamp;
     }
 }
@@ -290,13 +322,15 @@ impl ApplyEvent<ProductAggregate, ProductError> for StockRemoved {
     }
 
     fn apply(&self, product: &mut ProductAggregate) {
-        product.stock = self.new_total;
+        // Calculate new total by subtracting quantity from current stock
+        product.stock -= self.quantity;
         product.updated_at = self.timestamp;
     }
 
     /// Validate stock is not negative after removal (invariant check)
     fn post_validate(&self, product: &ProductAggregate) -> Result<(), ProductError> {
         // Ensure the resulting stock is not negative (business invariant)
+        // This is a defensive check - should never happen if validate() worked correctly
         if product.stock < 0 {
             return Err(ProductError::NegativeStock);
         }
@@ -317,6 +351,7 @@ impl ApplyEvent<ProductAggregate, ProductError> for PriceChanged {
     }
 
     fn apply(&self, product: &mut ProductAggregate) {
+        // Simply set the new price (old price is available in aggregate state if needed)
         product.price_cents = self.new_price_cents;
         product.updated_at = self.timestamp;
     }
@@ -369,15 +404,15 @@ impl Default for ProductState {
 impl ProductAggregate {
     /// Create a new product - returns the creation event
     ///
+    /// Note: product_id is not in the event - it's stored in the event envelope
     /// Validation happens when the event is applied via ApplyEvent::validate()
     pub fn create_product(
-        id: ProductId,
+        _id: ProductId,  // Not used - aggregate_id comes from envelope
         name: String,
         initial_stock: i32,
         price_cents: i64,
     ) -> ProductEvent {
         ProductEvent::Created(ProductCreated {
-            product_id: id,
             name,
             initial_stock,
             price_cents,
@@ -387,36 +422,33 @@ impl ProductAggregate {
 
     /// Add stock command
     ///
+    /// Note: new_total is calculated in apply(), not stored in event
     /// Validation happens when the event is applied via ApplyEvent::validate()
     pub fn cmd_add_stock(&self, quantity: i32) -> ProductEvent {
         ProductEvent::StockAdded(StockAdded {
-            product_id: self.id,
             quantity,
-            new_total: self.stock + quantity,
             timestamp: Utc::now(),
         })
     }
 
     /// Remove stock command
     ///
+    /// Note: new_total is calculated in apply(), not stored in event
     /// Validation happens when the event is applied via ApplyEvent::validate()
     /// and ApplyEvent::post_validate()
     pub fn cmd_remove_stock(&self, quantity: i32) -> ProductEvent {
         ProductEvent::StockRemoved(StockRemoved {
-            product_id: self.id,
             quantity,
-            new_total: self.stock - quantity,
             timestamp: Utc::now(),
         })
     }
 
     /// Change price command
     ///
+    /// Note: old_price is available from aggregate state, not stored in event
     /// Validation happens when the event is applied via ApplyEvent::validate()
     pub fn cmd_change_price(&self, new_price_cents: i64) -> ProductEvent {
         ProductEvent::PriceChanged(PriceChanged {
-            product_id: self.id,
-            old_price_cents: self.price_cents,
             new_price_cents,
             timestamp: Utc::now(),
         })
@@ -470,6 +502,9 @@ impl ProductSummaryProjection {
 
     /// Handle a product event and update the projection
     async fn handle_event(&self, event: &EventEnvelope) -> std::result::Result<(), Box<dyn std::error::Error>> {
+        // Get product_id from the event envelope (aggregate_id)
+        let product_id = event.aggregate_id;
+
         // Deserialize the event
         let product_event: ProductEvent = event.try_into_event()?;
 
@@ -489,7 +524,7 @@ impl ProductSummaryProjection {
                         last_updated = EXCLUDED.last_updated
                     "#,
                 )
-                .bind(e.product_id.0)
+                .bind(product_id)  // From envelope, not event
                 .bind(&e.name)
                 .bind(e.initial_stock)
                 .bind(e.price_cents)
@@ -498,34 +533,34 @@ impl ProductSummaryProjection {
                 .await?;
             }
             ProductEvent::StockAdded(e) => {
-                // Update stock
+                // Update stock by adding quantity to current value
                 sqlx::query(
                     r#"
                     UPDATE product_summary
-                    SET current_stock = $1,
+                    SET current_stock = current_stock + $1,
                         last_updated = $2
                     WHERE product_id = $3
                     "#,
                 )
-                .bind(e.new_total)
+                .bind(e.quantity)  // Add quantity, not set to new_total
                 .bind(e.timestamp)
-                .bind(e.product_id.0)
+                .bind(product_id)  // From envelope
                 .execute(&self.pool)
                 .await?;
             }
             ProductEvent::StockRemoved(e) => {
-                // Update stock
+                // Update stock by subtracting quantity from current value
                 sqlx::query(
                     r#"
                     UPDATE product_summary
-                    SET current_stock = $1,
+                    SET current_stock = current_stock - $1,
                         last_updated = $2
                     WHERE product_id = $3
                     "#,
                 )
-                .bind(e.new_total)
+                .bind(e.quantity)  // Subtract quantity, not set to new_total
                 .bind(e.timestamp)
-                .bind(e.product_id.0)
+                .bind(product_id)  // From envelope
                 .execute(&self.pool)
                 .await?;
             }
@@ -541,7 +576,7 @@ impl ProductSummaryProjection {
                 )
                 .bind(e.new_price_cents)
                 .bind(e.timestamp)
-                .bind(e.product_id.0)
+                .bind(product_id)  // From envelope
                 .execute(&self.pool)
                 .await?;
             }
