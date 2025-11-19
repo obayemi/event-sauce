@@ -622,8 +622,8 @@ mod tests {
 
     // === Checkpoint Store Integration Tests ===
 
-    use event_sauce_core::{CheckpointStore, SnapshotConfig};
     use super::super::checkpoint_store::InMemoryCheckpointStore;
+    use event_sauce_core::{CheckpointStore, SnapshotConfig};
 
     #[tokio::test]
     async fn test_checkpoint_store_returns_none_by_default() {
@@ -749,7 +749,7 @@ mod tests {
             .unwrap();
 
         let stream = subscription.into_stream().await.unwrap();
-        futures::pin_mut!(stream);  // Pin the stream for iteration
+        futures::pin_mut!(stream); // Pin the stream for iteration
         let mut count = 0;
 
         while let Some(result) = stream.next().await {

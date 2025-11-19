@@ -261,6 +261,28 @@ pub trait EventStore: Send + Sync {
     /// Returns `Version::initial()` if the stream doesn't exist.
     async fn get_version(&self, stream_id: StreamId) -> Result<Version>;
 
+    /// Checks if a stream exists.
+    ///
+    /// Returns `true` if the stream has any events, `false` otherwise.
+    ///
+    /// # Default Implementation
+    ///
+    /// The default implementation uses `get_version()` to check if the stream
+    /// exists by comparing the version to `Version::initial()`. Backends may
+    /// override this for optimized existence checks.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// if store.stream_exists(stream_id).await? {
+    ///     println!("Stream exists with events");
+    /// }
+    /// ```
+    async fn stream_exists(&self, stream_id: StreamId) -> Result<bool> {
+        let version = self.get_version(stream_id).await?;
+        Ok(version != Version::initial())
+    }
+
     /// Saves a snapshot.
     ///
     /// Optional operation - implementations may choose not to support snapshots.
@@ -556,6 +578,53 @@ where
     }
 
     Ok(aggregate)
+}
+
+/// Counts the number of events in a stream.
+///
+/// Returns the total count of events in the specified stream, or 0 if
+/// the stream doesn't exist.
+///
+/// This is a generic helper function that works with any `EventStore`
+/// implementation. It loads all events from the stream and counts them using
+/// streaming for memory efficiency. Backends may provide optimized count
+/// methods (e.g., `SELECT COUNT(*)`), but this function provides a universal
+/// fallback.
+///
+/// # Note
+///
+/// Due to Rust's async trait limitations with generic return types, this must be
+/// a standalone function rather than a trait method (similar to `load()`).
+///
+/// # Examples
+///
+/// ```ignore
+/// use event_sauce_core::count_events;
+///
+/// let stream_id = StreamId::new("User", uuid);
+/// let count = count_events(&event_store, stream_id).await?;
+/// println!("Stream has {} events", count);
+/// ```
+///
+/// # Errors
+///
+/// Returns an error if the event store fails to load the stream.
+pub async fn count_events<S>(store: &S, stream_id: StreamId) -> Result<usize>
+where
+    S: EventStore,
+{
+    use futures::StreamExt;
+
+    let event_stream = store.load_stream(stream_id, Version::initial()).await?;
+    futures::pin_mut!(event_stream);
+
+    let mut count = 0;
+    while let Some(result) = event_stream.next().await {
+        result?; // Propagate any errors
+        count += 1;
+    }
+
+    Ok(count)
 }
 
 #[cfg(test)]
@@ -912,5 +981,131 @@ mod tests {
             self.version = self.version.next();
             Ok(())
         }
+    }
+
+    // Tests for new helper methods: stream_exists() and count_events()
+
+    /// Mock `EventStore` with some streams for testing helper methods
+    struct MockEventStoreWithStreams {
+        streams: std::collections::HashMap<StreamId, Vec<EventEnvelope>>,
+    }
+
+    impl MockEventStoreWithStreams {
+        fn new() -> Self {
+            Self {
+                streams: std::collections::HashMap::new(),
+            }
+        }
+
+        fn with_stream(mut self, stream_id: StreamId, count: usize) -> Self {
+            let mut events = Vec::new();
+            for i in 0..count {
+                #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+                let envelope = EventEnvelope::new(
+                    Uuid::new_v4(),
+                    stream_id.aggregate_id(),
+                    stream_id.aggregate_type().to_string(),
+                    "TestEvent".to_string(),
+                    Version::new(i as i32 + 1),
+                    serde_json::json!({"index": i}),
+                );
+                events.push(envelope);
+            }
+            self.streams.insert(stream_id, events);
+            self
+        }
+    }
+
+    #[async_trait]
+    impl EventStore for MockEventStoreWithStreams {
+        async fn append(
+            &self,
+            _stream_id: StreamId,
+            _events: Vec<EventEnvelope>,
+            _expected_version: Version,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        async fn load_stream(
+            &self,
+            stream_id: StreamId,
+            from_version: Version,
+        ) -> Result<impl Stream<Item = Result<EventEnvelope>> + Send> {
+            let events = self
+                .streams
+                .get(&stream_id)
+                .map(|events| {
+                    events
+                        .iter()
+                        .filter(|e| e.event_version >= from_version)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+
+            Ok(stream::iter(events.into_iter().map(Ok)))
+        }
+
+        async fn stream_all(
+            &self,
+            _from_position: Position,
+        ) -> Result<impl Stream<Item = Result<EventEnvelope>> + Send> {
+            Ok(stream::empty())
+        }
+
+        async fn get_version(&self, stream_id: StreamId) -> Result<Version> {
+            Ok(self
+                .streams
+                .get(&stream_id)
+                .and_then(|events| events.last())
+                .map(|e| e.event_version)
+                .unwrap_or_else(Version::initial))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_stream_exists_returns_true_for_existing_stream() {
+        let stream_id = StreamId::new("User", Uuid::new_v4());
+        let store = MockEventStoreWithStreams::new().with_stream(stream_id.clone(), 5);
+
+        let exists = store.stream_exists(stream_id).await.unwrap();
+        assert!(exists, "Stream with events should exist");
+    }
+
+    #[tokio::test]
+    async fn test_stream_exists_returns_false_for_nonexistent_stream() {
+        let store = MockEventStoreWithStreams::new();
+        let stream_id = StreamId::new("User", Uuid::new_v4());
+
+        let exists = store.stream_exists(stream_id).await.unwrap();
+        assert!(!exists, "Nonexistent stream should not exist");
+    }
+
+    #[tokio::test]
+    async fn test_count_events_returns_correct_count() {
+        let stream_id = StreamId::new("Order", Uuid::new_v4());
+        let store = MockEventStoreWithStreams::new().with_stream(stream_id.clone(), 10);
+
+        let count = count_events(&store, stream_id).await.unwrap();
+        assert_eq!(count, 10, "Should count all events in stream");
+    }
+
+    #[tokio::test]
+    async fn test_count_events_returns_zero_for_empty_stream() {
+        let stream_id = StreamId::new("Order", Uuid::new_v4());
+        let store = MockEventStoreWithStreams::new().with_stream(stream_id.clone(), 0);
+
+        let count = count_events(&store, stream_id).await.unwrap();
+        assert_eq!(count, 0, "Empty stream should have zero events");
+    }
+
+    #[tokio::test]
+    async fn test_count_events_returns_zero_for_nonexistent_stream() {
+        let store = MockEventStoreWithStreams::new();
+        let stream_id = StreamId::new("Order", Uuid::new_v4());
+
+        let count = count_events(&store, stream_id).await.unwrap();
+        assert_eq!(count, 0, "Nonexistent stream should have zero events");
     }
 }

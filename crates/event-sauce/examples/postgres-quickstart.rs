@@ -94,7 +94,10 @@
 //! No manual setup required!
 
 use chrono::{DateTime, Utc};
-use event_sauce_core::{load, Aggregate, ApplyEvent, CheckpointStore, CheckpointStrategy, DomainEvent, ErrorPolicy, EventEnvelope, EventStore};
+use event_sauce_core::{
+    load, Aggregate, ApplyEvent, CheckpointStore, CheckpointStrategy, DomainEvent, ErrorPolicy,
+    EventEnvelope, EventStore,
+};
 use event_sauce_macros::{AggregateError, AggregateId, AggregateState, Event as DeriveEvent};
 use event_sauce_postgres::{PostgresCheckpointStore, PostgresEventStore};
 use futures::StreamExt;
@@ -407,7 +410,7 @@ impl ProductAggregate {
     /// Note: product_id is not in the event - it's stored in the event envelope
     /// Validation happens when the event is applied via ApplyEvent::validate()
     pub fn create_product(
-        _id: ProductId,  // Not used - aggregate_id comes from envelope
+        _id: ProductId, // Not used - aggregate_id comes from envelope
         name: String,
         initial_stock: i32,
         price_cents: i64,
@@ -501,7 +504,10 @@ impl ProductSummaryProjection {
     }
 
     /// Handle a product event and update the projection
-    async fn handle_event(&self, event: &EventEnvelope) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    async fn handle_event(
+        &self,
+        event: &EventEnvelope,
+    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
         // Get product_id from the event envelope (aggregate_id)
         let product_id = event.aggregate_id;
 
@@ -524,7 +530,7 @@ impl ProductSummaryProjection {
                         last_updated = EXCLUDED.last_updated
                     "#,
                 )
-                .bind(product_id)  // From envelope, not event
+                .bind(product_id) // From envelope, not event
                 .bind(&e.name)
                 .bind(e.initial_stock)
                 .bind(e.price_cents)
@@ -542,9 +548,9 @@ impl ProductSummaryProjection {
                     WHERE product_id = $3
                     "#,
                 )
-                .bind(e.quantity)  // Add quantity, not set to new_total
+                .bind(e.quantity) // Add quantity, not set to new_total
                 .bind(e.timestamp)
-                .bind(product_id)  // From envelope
+                .bind(product_id) // From envelope
                 .execute(&self.pool)
                 .await?;
             }
@@ -558,9 +564,9 @@ impl ProductSummaryProjection {
                     WHERE product_id = $3
                     "#,
                 )
-                .bind(e.quantity)  // Subtract quantity, not set to new_total
+                .bind(e.quantity) // Subtract quantity, not set to new_total
                 .bind(e.timestamp)
-                .bind(product_id)  // From envelope
+                .bind(product_id) // From envelope
                 .execute(&self.pool)
                 .await?;
             }
@@ -576,7 +582,7 @@ impl ProductSummaryProjection {
                 )
                 .bind(e.new_price_cents)
                 .bind(e.timestamp)
-                .bind(product_id)  // From envelope
+                .bind(product_id) // From envelope
                 .execute(&self.pool)
                 .await?;
             }
@@ -586,7 +592,10 @@ impl ProductSummaryProjection {
     }
 
     /// Query the projection - get product summary
-    async fn get_product_summary(&self, product_id: ProductId) -> Result<Option<ProductSummary>, sqlx::Error> {
+    async fn get_product_summary(
+        &self,
+        product_id: ProductId,
+    ) -> Result<Option<ProductSummary>, sqlx::Error> {
         let result = sqlx::query_as::<_, ProductSummary>(
             r#"
             SELECT product_id, name, current_stock, current_price_cents, last_updated
@@ -648,10 +657,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     let host = postgres_container.get_host().await?;
     let port = postgres_container.get_host_port_ipv4(5432).await?;
-    let connection_string = format!(
-        "postgresql://postgres:postgres@{}:{}/postgres",
-        host, port
-    );
+    let connection_string = format!("postgresql://postgres:postgres@{}:{}/postgres", host, port);
 
     println!("✓ PostgreSQL running on port {}\n", port);
 
@@ -781,11 +787,12 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         event_count += 1;
 
         // Show event being processed
-        let event_type = event.event_type.split("::").last().unwrap_or(&event.event_type);
-        println!(
-            "  [{}/7] Processing: {}",
-            event_count, event_type
-        );
+        let event_type = event
+            .event_type
+            .split("::")
+            .last()
+            .unwrap_or(&event.event_type);
+        println!("  [{}/7] Processing: {}", event_count, event_type);
 
         // Update projection
         projection.handle_event(&event).await?;
@@ -808,7 +815,10 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             "  Price: ${:.2}",
             summary.current_price_cents as f64 / 100.0
         );
-        println!("  Last Updated: {}", summary.last_updated.format("%Y-%m-%d %H:%M:%S UTC"));
+        println!(
+            "  Last Updated: {}",
+            summary.last_updated.format("%Y-%m-%d %H:%M:%S UTC")
+        );
     }
 
     println!();

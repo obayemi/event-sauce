@@ -550,9 +550,7 @@ where
     /// Returns an error if:
     /// - Checkpoint loading fails
     /// - Event streaming fails
-    pub async fn into_stream(
-        self,
-    ) -> Result<impl futures::Stream<Item = Result<EventEnvelope>>> {
+    pub async fn into_stream(self) -> Result<impl futures::Stream<Item = Result<EventEnvelope>>> {
         use async_stream::stream;
         use futures::StreamExt;
 

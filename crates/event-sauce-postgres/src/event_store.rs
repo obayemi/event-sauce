@@ -672,6 +672,44 @@ impl EventStore for PostgresEventStore {
     }
 }
 
+impl PostgresEventStore {
+    /// Counts events in a stream using an optimized SQL COUNT(*) query.
+    ///
+    /// This is a Postgres-specific optimization that's much faster than using
+    /// the generic [`count_events()`](event_sauce_core::count_events) function,
+    /// especially for streams with many events.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let count = postgres_store.count_events_fast(stream_id).await?;
+    /// println!("Stream has {} events", count);
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    pub async fn count_events_fast(&self, stream_id: StreamId) -> event_sauce_core::Result<usize> {
+        let events_table = self.qualify_table("events");
+
+        let query = format!(
+            "SELECT COUNT(*) as count
+             FROM {events_table}
+             WHERE aggregate_id = $1 AND aggregate_type = $2"
+        );
+
+        let count: i64 = sqlx::query_scalar(&query)
+            .bind(stream_id.aggregate_id())
+            .bind(stream_id.aggregate_type())
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| event_sauce_core::Error::custom(format!("Failed to count events: {e}")))?;
+
+        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+        Ok(count as usize)
+    }
+}
+
 // Database row types
 #[derive(sqlx::FromRow)]
 struct EventRow {
@@ -1424,5 +1462,72 @@ mod tests {
 
         // Should fail because table doesn't exist in public schema
         assert!(count_in_public.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_count_events_fast_returns_correct_count() {
+        let db = TestDatabase::new().await.unwrap();
+        let store = db.store();
+        let aggregate_id = Uuid::new_v4();
+        let stream_id = StreamId::new("User", aggregate_id);
+
+        // Append 5 events
+        for i in 0..5 {
+            let event = create_test_envelope(&format!("Event{i}"), aggregate_id);
+            store
+                .append(
+                    stream_id.clone(),
+                    vec![event],
+                    Version::new(i32::try_from(i).unwrap()),
+                )
+                .await
+                .unwrap();
+        }
+
+        // Test optimized count
+        let count = store.count_events_fast(stream_id).await.unwrap();
+        assert_eq!(count, 5, "Should count all 5 events using optimized query");
+    }
+
+    #[tokio::test]
+    async fn test_count_events_fast_returns_zero_for_nonexistent_stream() {
+        let db = TestDatabase::new().await.unwrap();
+        let store = db.store();
+        let stream_id = StreamId::new("NonExistent", Uuid::new_v4());
+
+        let count = store.count_events_fast(stream_id).await.unwrap();
+        assert_eq!(count, 0, "Should return 0 for nonexistent stream");
+    }
+
+    #[tokio::test]
+    async fn test_count_events_fast_matches_generic_count() {
+        let db = TestDatabase::new().await.unwrap();
+        let store = db.store();
+        let aggregate_id = Uuid::new_v4();
+        let stream_id = StreamId::new("User", aggregate_id);
+
+        // Append 10 events
+        for i in 0..10 {
+            let event = create_test_envelope(&format!("Event{i}"), aggregate_id);
+            store
+                .append(
+                    stream_id.clone(),
+                    vec![event],
+                    Version::new(i32::try_from(i).unwrap()),
+                )
+                .await
+                .unwrap();
+        }
+
+        // Compare optimized and generic counts
+        let fast_count = store.count_events_fast(stream_id.clone()).await.unwrap();
+        let generic_count = event_sauce_core::count_events(&store, stream_id)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            fast_count, generic_count,
+            "Optimized count should match generic count"
+        );
     }
 }
