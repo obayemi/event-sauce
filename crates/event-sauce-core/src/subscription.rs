@@ -269,8 +269,8 @@ pub trait CheckpointStore: Send + Sync {
 /// ```
 pub struct SubscriptionBuilder<S> {
     name: String,
-    store: std::sync::Arc<S>,
-    checkpoint_store: Option<std::sync::Arc<dyn CheckpointStore>>,
+    store: crate::EventStoreRef<S>,
+    checkpoint_store: Option<crate::CheckpointStoreRef>,
     config: SubscriptionConfig,
 }
 
@@ -282,7 +282,7 @@ where
     ///
     /// This method is public to allow event stores to create subscription builders.
     /// Users should prefer using `Subscription::builder()` or `EventStore::subscription_builder()`.
-    pub fn new(name: impl Into<String>, store: std::sync::Arc<S>) -> Self {
+    pub fn new(name: impl Into<String>, store: crate::EventStoreRef<S>) -> Self {
         Self {
             name: name.into(),
             store,
@@ -293,7 +293,7 @@ where
 
     /// Sets the checkpoint store.
     #[must_use]
-    pub fn checkpoint_store(mut self, store: std::sync::Arc<dyn CheckpointStore>) -> Self {
+    pub fn checkpoint_store(mut self, store: crate::CheckpointStoreRef) -> Self {
         self.checkpoint_store = Some(store);
         self
     }
@@ -364,8 +364,8 @@ where
 /// ```
 pub struct Subscription<S> {
     name: String,
-    store: std::sync::Arc<S>,
-    checkpoint_store: Option<std::sync::Arc<dyn CheckpointStore>>,
+    store: crate::EventStoreRef<S>,
+    checkpoint_store: Option<crate::CheckpointStoreRef>,
     config: SubscriptionConfig,
 }
 
@@ -382,7 +382,7 @@ where
     ///     .checkpoint_store(checkpoint_store)
     ///     .build()?;
     /// ```
-    pub fn builder(name: impl Into<String>, store: std::sync::Arc<S>) -> SubscriptionBuilder<S> {
+    pub fn builder(name: impl Into<String>, store: crate::EventStoreRef<S>) -> SubscriptionBuilder<S> {
         SubscriptionBuilder::new(name, store)
     }
 
@@ -462,7 +462,12 @@ where
                     match self.config.error_policy {
                         ErrorPolicy::Fail => return Err(e),
                         ErrorPolicy::Skip => {
-                            eprintln!("Skipping event due to error: {e}");
+                            tracing::warn!(
+                                subscription = %self.name,
+                                position = %current_position.as_i64(),
+                                error = %e,
+                                "Skipping event due to error"
+                            );
                         }
                         ErrorPolicy::Retry => {
                             // For now, just fail - full retry logic would need backoff

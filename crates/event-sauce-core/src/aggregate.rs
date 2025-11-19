@@ -539,7 +539,7 @@ mod tests {
 
     struct TestAggregate {
         id: TestId,
-        value: i32,
+        state: TestAggregateState,
         version: Version,
         pending_events: Vec<TestEvent>,
     }
@@ -548,7 +548,7 @@ mod tests {
         fn new(id: TestId) -> Self {
             Self {
                 id,
-                value: 0,
+                state: TestAggregateState { value: 0 },
                 version: Version::initial(),
                 pending_events: Vec::new(),
             }
@@ -567,7 +567,7 @@ mod tests {
         fn apply_event(&mut self, event: &TestEvent) {
             match event {
                 TestEvent::Created { value } | TestEvent::Updated { value } => {
-                    self.value = *value;
+                    self.state.value = *value;
                 }
             }
         }
@@ -582,7 +582,7 @@ mod tests {
         fn new(id: Self::Id) -> Self {
             Self {
                 id,
-                value: 0,
+                state: TestAggregateState { value: 0 },
                 version: Version::initial(),
                 pending_events: Vec::new(),
             }
@@ -618,26 +618,13 @@ mod tests {
         }
 
         fn state(&self) -> &Self::State {
-            // For testing, create state on the fly
-            // In production, aggregates should store their state
-            thread_local! {
-                static STATE: std::cell::RefCell<TestAggregateState> = std::cell::RefCell::new(TestAggregateState { value: 0 });
-            }
-            STATE.with(|s| {
-                *s.borrow_mut() = TestAggregateState { value: self.value };
-                unsafe {
-                    // SAFETY: This is only for testing purposes and the reference is valid
-                    // for the duration of the test. In production code, state should be
-                    // properly stored in the aggregate struct.
-                    &*(s.as_ptr() as *const TestAggregateState)
-                }
-            })
+            &self.state
         }
 
         fn from_snapshot(id: Self::Id, version: Version, state: Self::State) -> Self {
             Self {
                 id,
-                value: state.value,
+                state,
                 version,
                 pending_events: Vec::new(),
             }
@@ -674,7 +661,7 @@ mod tests {
 
         aggregate.apply(TestEvent::Created { value: 42 }).unwrap();
 
-        assert_eq!(aggregate.value, 42);
+        assert_eq!(aggregate.state.value, 42);
     }
 
     #[test]
@@ -710,7 +697,7 @@ mod tests {
         aggregate.update(30);
 
         assert_eq!(aggregate.pending_events().len(), 3);
-        assert_eq!(aggregate.value, 30);
+        assert_eq!(aggregate.state.value, 30);
         assert_eq!(aggregate.version(), Version::new(3));
     }
 
@@ -761,7 +748,7 @@ mod tests {
             aggregate.apply_unchecked(event);
         }
 
-        assert_eq!(aggregate.value, 30);
+        assert_eq!(aggregate.state.value, 30);
         assert_eq!(aggregate.version(), Version::new(3));
         assert_eq!(aggregate.pending_events().len(), 0); // No pending events when replaying
     }
@@ -773,7 +760,7 @@ mod tests {
         // Apply updates state, version, AND adds to pending
         aggregate.apply(TestEvent::Created { value: 42 }).unwrap();
 
-        assert_eq!(aggregate.value, 42);
+        assert_eq!(aggregate.state.value, 42);
         assert_eq!(aggregate.version(), Version::new(1));
         assert_eq!(aggregate.pending_events().len(), 1);
 
@@ -791,7 +778,7 @@ mod tests {
         let event = TestEvent::Created { value: 42 };
         aggregate.apply_unchecked(&event);
 
-        assert_eq!(aggregate.value, 42);
+        assert_eq!(aggregate.state.value, 42);
         assert_eq!(aggregate.version(), Version::new(1));
     }
 
@@ -811,7 +798,7 @@ mod tests {
             aggregate.apply_unchecked(event);
         }
 
-        assert_eq!(aggregate.value, 30);
+        assert_eq!(aggregate.state.value, 30);
         assert_eq!(aggregate.version(), Version::new(3));
         assert_eq!(aggregate.pending_events().len(), 0); // No pending events when replaying
     }

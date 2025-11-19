@@ -354,7 +354,7 @@ pub trait EventStore: Send + Sync {
     ///     checkpoint_store.save_checkpoint("my-sub", Position::new(42)).await?;
     /// }
     /// ```
-    fn checkpoint_store(&self) -> Option<std::sync::Arc<dyn crate::CheckpointStore>> {
+    fn checkpoint_store(&self) -> Option<crate::CheckpointStoreRef> {
         None
     }
 
@@ -379,13 +379,13 @@ pub trait EventStore: Send + Sync {
     ///     .build()?;
     /// ```
     fn subscription_builder(
-        self: &std::sync::Arc<Self>,
+        self: &crate::EventStoreRef<Self>,
         name: impl Into<String>,
     ) -> crate::SubscriptionBuilder<Self>
     where
         Self: Sized + 'static,
     {
-        let mut builder = crate::SubscriptionBuilder::new(name, std::sync::Arc::clone(self));
+        let mut builder = crate::SubscriptionBuilder::new(name, crate::EventStoreRef::clone(self));
 
         if let Some(checkpoint_store) = self.checkpoint_store() {
             builder = builder.checkpoint_store(checkpoint_store);
@@ -475,14 +475,20 @@ pub trait EventStore: Send + Sync {
 
                     // Log error but don't fail commit
                     if let Err(e) = self.save_snapshot(snapshot).await {
-                        eprintln!(
-                            "Warning: Failed to save snapshot for {aggregate_type} {aggregate_id}: {e}"
+                        tracing::warn!(
+                            aggregate_type = %aggregate_type,
+                            aggregate_id = %aggregate_id,
+                            error = %e,
+                            "Failed to save snapshot"
                         );
                     }
                 }
                 Err(e) => {
-                    eprintln!(
-                        "Warning: Failed to serialize state for {aggregate_type} {aggregate_id} snapshot: {e}"
+                    tracing::warn!(
+                        aggregate_type = %aggregate_type,
+                        aggregate_id = %aggregate_id,
+                        error = %e,
+                        "Failed to serialize state for snapshot"
                     );
                 }
             }

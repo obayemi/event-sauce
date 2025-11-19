@@ -29,6 +29,7 @@ mod event_store;
 mod snapshot_config;
 mod snapshot_strategy;
 mod subscription;
+mod types;
 mod version;
 
 pub use aggregate::Aggregate;
@@ -45,4 +46,5 @@ pub use subscription::{
     CheckpointStore, CheckpointStrategy, ErrorPolicy, EventFilter, Subscription,
     SubscriptionBuilder, SubscriptionConfig,
 };
+pub use types::{CheckpointStoreRef, EventStoreRef};
 pub use version::Version;
