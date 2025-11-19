@@ -8,6 +8,7 @@
 //! - `EventStore` trait for event persistence
 //! - `EventBus` trait for event publishing
 //! - Core types like `EventEnvelope`, `StreamId`, `Version`
+//! - Helper macros like `command_handler!` for reducing boilerplate
 //!
 //! ## TDD Approach
 //!
@@ -26,6 +27,7 @@ mod domain_event;
 mod error;
 mod event_envelope;
 mod event_store;
+mod macros;
 mod snapshot_config;
 mod snapshot_strategy;
 mod subscription;
