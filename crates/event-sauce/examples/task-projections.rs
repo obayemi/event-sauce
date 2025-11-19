@@ -1,11 +1,18 @@
-//! Task Management with Subscriptions - Simplified
+//! Task Management with Subscriptions
 //!
-//! This example demonstrates:
-//! - Creating events from a task management domain
-//! - Using the Subscription system for guaranteed delivery
-//! - Building projections with subscriptions (without Projection trait)
-//! - Using checkpoints to track progress
-//! - Running multiple subscriptions
+//! This example demonstrates the **recommended patterns** for using subscriptions:
+//!
+//! **Key Patterns:**
+//! 1. Configure event store with checkpoint store during setup
+//! 2. Use the tokio Stream API (into_stream) for composable event processing
+//! 3. Use builder pattern for subscription configuration
+//! 4. Apply event filters for targeted subscriptions
+//!
+//! **Why Stream API?**
+//! - Composable with futures ecosystem
+//! - Type-safe error handling
+//! - Natural async/await integration
+//! - Better control flow with standard iterators
 //!
 //! Run with: `cargo run --example task-projections --features "memory,macros"`
 
@@ -13,7 +20,7 @@ use chrono::{DateTime, Utc};
 use event_sauce::event_sauce_memory::{InMemoryCheckpointStore, InMemoryEventStore};
 use event_sauce::{
     ApplyEvent, CheckpointStore, DomainEvent, EventEnvelope, EventFilter, EventStore, Result,
-    StreamId, Subscription, Version,
+    StreamId, Version,
 };
 use event_sauce_macros::{AggregateError, AggregateId, AggregateState, Event};
 use serde::{Deserialize, Serialize};
@@ -210,13 +217,15 @@ async fn main() -> Result<()> {
     println!("🛒 Task Management - Subscriptions Example");
     println!("{}\n", "=".repeat(70));
 
-    // Create event store
-    let store = Arc::new(InMemoryEventStore::new());
-    println!("✓ Created event store");
-
     // Create checkpoint store
     let checkpoint_store = Arc::new(InMemoryCheckpointStore::new());
-    println!("✓ Created checkpoint store\n");
+
+    // Create event store WITH integrated checkpoint store (recommended pattern)
+    let store = Arc::new(InMemoryEventStore::with_checkpoint_store(
+        event_sauce::SnapshotConfig::builder().build(),
+        checkpoint_store.clone(),
+    ));
+    println!("✓ Created event store with integrated checkpoint store\n");
 
     // Generate task IDs
     let task1_id = Uuid::new_v4();
@@ -295,60 +304,65 @@ async fn main() -> Result<()> {
 
     println!("✓ Appended {} events to event store\n", events.len());
 
-    println!("--- Processing Events with Subscriptions ---");
+    println!("--- Processing Events with Stream API (Recommended Pattern) ---");
 
     // Create projection states
     let status_state = Arc::new(Mutex::new(TaskCountState::default()));
     let assignee_state = Arc::new(Mutex::new(TasksByAssigneeState::default()));
     let completed_state = Arc::new(Mutex::new(CompletedTasksState::default()));
 
-    // Run status projection subscription
+    use futures::StreamExt;
+
+    // Run status projection subscription using Stream API
     {
         let state = status_state.clone();
-        let mut subscription = Subscription::builder("task_count_by_status", store.clone())
-            .checkpoint_store(checkpoint_store.clone())
-            .build()?;
+        // Note: subscription_builder() is a trait method that automatically includes checkpoint store!
+        let subscription = store.subscription_builder("task_count_by_status").build()?;
 
-        subscription
-            .run(move |event| {
-                let mut s = state.lock().unwrap();
-                s.handle_event(&event)
-            })
-            .await?;
+        let stream = subscription.into_stream().await?;
+        tokio::pin!(stream);
+
+        while let Some(result) = stream.next().await {
+            let event = result?;
+            let mut s = state.lock().unwrap();
+            s.handle_event(&event)?;
+        }
     }
 
-    // Run assignee projection subscription
+    // Run assignee projection subscription using Stream API
     {
         let state = assignee_state.clone();
-        let mut subscription = Subscription::builder("tasks_by_assignee", store.clone())
-            .checkpoint_store(checkpoint_store.clone())
-            .build()?;
+        let subscription = store.subscription_builder("tasks_by_assignee").build()?;
 
-        subscription
-            .run(move |event| {
-                let mut s = state.lock().unwrap();
-                s.handle_event(&event)
-            })
-            .await?;
+        let stream = subscription.into_stream().await?;
+        tokio::pin!(stream);
+
+        while let Some(result) = stream.next().await {
+            let event = result?;
+            let mut s = state.lock().unwrap();
+            s.handle_event(&event)?;
+        }
     }
 
-    // Run completed tasks projection subscription
+    // Run completed tasks projection subscription with event filter
     {
         let state = completed_state.clone();
-        let mut subscription = Subscription::builder("completed_tasks_counter", store.clone())
-            .checkpoint_store(checkpoint_store.clone())
+        let subscription = store
+            .subscription_builder("completed_tasks_counter")
             .filter(EventFilter::by_event_type("Task.Completed"))
             .build()?;
 
-        subscription
-            .run(move |event| {
-                let mut s = state.lock().unwrap();
-                s.handle_event(&event)
-            })
-            .await?;
+        let stream = subscription.into_stream().await?;
+        tokio::pin!(stream);
+
+        while let Some(result) = stream.next().await {
+            let event = result?;
+            let mut s = state.lock().unwrap();
+            s.handle_event(&event)?;
+        }
     }
 
-    println!("✓ All subscriptions processed events\n");
+    println!("✓ All subscriptions processed events using Stream API\n");
 
     // Display results
     println!("=== Projection Results ===\n");
@@ -422,52 +436,34 @@ async fn main() -> Result<()> {
         );
     }
 
-    println!("\n{}", "=".repeat(70));
-    println!("🔄 Demonstrating Stream API");
-    println!("{}\n", "=".repeat(70));
-
-    // Create new projection state for stream example
-    let stream_state = Arc::new(Mutex::new(CompletedTasksState::default()));
-
-    // Using the new stream API - more flexible than the callback-based run() method
-    println!("--- Processing Events with Stream API ---");
-
-    {
-        let state = stream_state.clone();
-        let subscription = Subscription::builder("stream_completed_tasks", store.clone())
-            .checkpoint_store(checkpoint_store.clone())
-            .filter(EventFilter::by_event_type("Task.Completed"))
-            .build()?;
-
-        let stream = subscription.into_stream().await?;
-        tokio::pin!(stream);
-
-        use futures::StreamExt;
-        while let Some(result) = stream.next().await {
-            let event = result?;
-            let mut s = state.lock().unwrap();
-            s.handle_event(&event)?;
-        }
-    }
-
-    println!("✓ Stream-based subscription processed events\n");
-
-    // Display stream results
-    {
-        let state = stream_state.lock().unwrap();
-        println!("✅ Completed Tasks (Stream API): {}\n", state.count);
-    }
-
     println!("{}", "=".repeat(70));
     println!("✅ Example completed!");
-    println!("\nKey Takeaways:");
-    println!("1. Subscriptions provide guaranteed delivery from event store");
-    println!("2. Multiple subscriptions can process the same events independently");
-    println!("3. Each subscription builds its own optimized read model");
-    println!("4. Checkpoints enable resuming subscriptions after restart");
-    println!("5. Event filtering reduces processing for specialized subscriptions");
-    println!("6. NEW: Stream API (into_stream) provides a composable alternative to run()");
-    println!("7. NEW: Streams work seamlessly with futures combinators and tokio ecosystem");
+    println!("\n📚 Key Patterns Demonstrated:");
+    println!();
+    println!("1. **Integrated Setup**: Event store configured with checkpoint store");
+    println!("   - Single configuration point eliminates boilerplate");
+    println!("   - Checkpoint store automatically available to subscriptions");
+    println!();
+    println!("2. **Stream API (Recommended)**: Using into_stream() for event processing");
+    println!("   - Composable with futures/tokio ecosystem");
+    println!("   - Type-safe error handling with Result<T>");
+    println!("   - Natural async/await patterns");
+    println!();
+    println!("3. **Builder Pattern**: Fluent API for subscription configuration");
+    println!("   - subscription_builder() from EventStore trait");
+    println!("   - Checkpoint store included automatically");
+    println!("   - Filter, strategy, and error policy configuration");
+    println!();
+    println!("4. **Event Filtering**: Targeted subscriptions for efficiency");
+    println!("   - Filter by event type, aggregate type, or both");
+    println!("   - Reduces processing overhead");
+    println!("   - Enables specialized projections");
+    println!();
+    println!("5. **Multiple Subscriptions**: Independent event processing");
+    println!("   - Each builds its own read model");
+    println!("   - Process same events differently");
+    println!("   - Guaranteed delivery with checkpoints");
+    println!();
     println!("{}", "=".repeat(70));
     println!();
 

@@ -126,6 +126,46 @@ impl CounterAggregate {
 - ✅ Type-safe event handling with `ApplyEvent` trait
 - ✅ Validation separate from application (fast replay)
 
+### Building Projections with Subscriptions
+
+Create read models from events using the **recommended pattern** (Stream API + integrated checkpoint store):
+
+```rust
+use futures::StreamExt;
+use std::sync::Arc;
+
+// 1. Configure event store with checkpoint store
+let checkpoint_store = Arc::new(PostgresCheckpointStore::new(pool.clone()));
+let event_store = Arc::new(PostgresEventStore::builder()
+    .pool(pool)
+    .checkpoint_store(checkpoint_store)  // Single configuration point
+    .build());
+
+// 2. Create subscription using trait method
+let subscription = event_store
+    .subscription_builder("user-projection")
+    .filter(EventFilter::by_event_type("UserCreated"))
+    .build()?;
+
+// 3. Process events with Stream API (recommended)
+let stream = subscription.into_stream().await?;
+tokio::pin!(stream);
+
+while let Some(result) = stream.next().await {
+    let event = result?;
+    // Update your read model
+    // Checkpoints saved automatically!
+}
+```
+
+**Why this pattern?**
+- ✅ **Integrated setup**: Checkpoint store configured once with event store
+- ✅ **Stream API**: Composable with futures, type-safe, familiar async patterns
+- ✅ **Builder pattern**: Fluent configuration with automatic checkpoint injection
+- ✅ **Guaranteed delivery**: Events never lost, resumable after failures
+
+See the [task-projections example](crates/event-sauce/examples/task-projections.rs) for a complete working example.
+
 ## Installation
 
 Add to your `Cargo.toml`:

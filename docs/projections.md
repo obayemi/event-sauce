@@ -245,39 +245,70 @@ impl UserDetailsProjection {
 
 ## Using Subscriptions
 
-### Basic Setup: Running a Projection
+### Recommended Pattern: Stream API + Integrated Checkpoint Store
+
+The **recommended** way to use subscriptions is with the Stream API and integrated checkpoint store configuration:
 
 ```rust
-use event_sauce_core::{Subscription, EventFilter, CheckpointStrategy};
+use event_sauce_core::{EventFilter, EventStore};
+use futures::StreamExt;
 use std::sync::{Arc, Mutex};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // 1. Create event store
-    let store = Arc::new(InMemoryEventStore::new());
+    // 1. Configure checkpoint store
+    let checkpoint_store = Arc::new(PostgresCheckpointStore::new(pool.clone()));
 
-    // 2. Create checkpoint store
-    let checkpoint_store = Arc::new(SimpleCheckpointStore::default());
+    // 2. Create event store WITH integrated checkpoint store (recommended!)
+    let store = Arc::new(PostgresEventStore::builder()
+        .pool(pool)
+        .checkpoint_store(checkpoint_store)  // Configure once
+        .build());
 
     // 3. Create projection state
     let projection = Arc::new(Mutex::new(UserCountProjection::new()));
 
-    // 4. Create subscription
-    let mut subscription = Subscription::builder("user-count", store)
-        .checkpoint_store(checkpoint_store)
+    // 4. Create subscription using trait method (checkpoint store included automatically!)
+    let subscription = store
+        .subscription_builder("user-count")
         .filter(EventFilter::by_aggregate_type("User"))
         .build()?;
-        // Default checkpoint_strategy is EveryEvent
 
-    // 5. Run projection with closure
+    // 5. Process events using Stream API (recommended!)
+    let stream = subscription.into_stream().await?;
+    tokio::pin!(stream);
+
     let proj = projection.clone();
-    subscription.run(move |event| {
+    while let Some(result) = stream.next().await {
+        let event = result?;
         let mut p = proj.lock().unwrap();
-        p.handle_event(&event)
-    }).await?;
+        p.handle_event(&event)?;
+    }
 
     Ok(())
 }
+```
+
+**Why this pattern?**
+- ✅ **Single configuration**: Checkpoint store set up once with event store
+- ✅ **Stream API**: Composable with futures, type-safe error handling
+- ✅ **Automatic injection**: Checkpoint store automatically included in subscriptions
+- ✅ **Familiar patterns**: Standard async iterator with `tokio::pin!` and `.next().await`
+
+### Alternative: Callback API
+
+For simpler use cases, the callback API is still available:
+
+```rust
+let mut subscription = store
+    .subscription_builder("user-count")
+    .filter(EventFilter::by_aggregate_type("User"))
+    .build()?;
+
+subscription.run(move |event| {
+    let mut p = projection.lock().unwrap();
+    p.handle_event(&event)
+}).await?;
 ```
 
 ### Running Multiple Projections
@@ -587,7 +618,9 @@ async fn main() -> Result<()> {
 }
 ```
 
-**See the complete example**: `cargo run --example task-projections --features "memory,macros"`
+**See the complete example with recommended patterns**: `cargo run --example task-projections --features "memory,macros"`
+
+> **Note**: The example above uses the older pattern for illustration. The task-projections example demonstrates the **recommended Stream API pattern** with integrated checkpoint stores.
 
 ## Production Patterns
 

@@ -3,6 +3,55 @@
 //! Provides durable subscriptions with guaranteed delivery, checkpoint management,
 //! and rebuild capabilities. Unlike pub/sub systems, subscriptions always read from
 //! the durable event store ensuring eventual consistency and no message loss.
+//!
+//! # Recommended Pattern
+//!
+//! The recommended way to use subscriptions is with the **Stream API** and **integrated checkpoint stores**:
+//!
+//! ```ignore
+//! use futures::StreamExt;
+//! use std::sync::Arc;
+//!
+//! // 1. Configure event store with checkpoint store
+//! let checkpoint_store = Arc::new(PostgresCheckpointStore::new(pool.clone()));
+//! let event_store = Arc::new(PostgresEventStore::builder()
+//!     .pool(pool)
+//!     .checkpoint_store(checkpoint_store)
+//!     .build());
+//!
+//! // 2. Create subscription using trait method (checkpoint store included automatically!)
+//! let subscription = event_store
+//!     .subscription_builder("my-projection")
+//!     .filter(EventFilter::by_event_type("UserCreated"))
+//!     .build()?;
+//!
+//! // 3. Process events using Stream API (composable, type-safe)
+//! let stream = subscription.into_stream().await?;
+//! tokio::pin!(stream);
+//!
+//! while let Some(result) = stream.next().await {
+//!     let event = result?;
+//!     // Process event - checkpoints saved automatically
+//! }
+//! ```
+//!
+//! # Why Stream API?
+//!
+//! - **Composable**: Works with futures combinators, tokio ecosystem
+//! - **Type-safe**: Explicit error handling with `Result<EventEnvelope>`
+//! - **Familiar**: Standard async iterator pattern
+//! - **Flexible**: Use with `filter_map`, `take_while`, etc.
+//!
+//! # Alternative: Callback API
+//!
+//! For simpler cases, the callback API (`run()`) is also available:
+//!
+//! ```ignore
+//! subscription.run(|event| {
+//!     // Process event
+//!     Ok(())
+//! }).await?;
+//! ```
 
 use async_trait::async_trait;
 use std::time::Duration;
