@@ -535,7 +535,7 @@ pub trait EventStore: Send + Sync {
 /// - Events cannot be deserialized
 /// - Snapshot cannot be deserialized
 /// - Event replay fails
-pub async fn load<S, A>(store: &S, aggregate_id: AggregateId) -> Result<A>
+pub async fn load<S, A>(store: &S, aggregate_id: A::Id) -> Result<A>
 where
     S: EventStore,
     A: Aggregate + serde::de::DeserializeOwned,
@@ -559,14 +559,14 @@ where
                     })?;
 
                 // Reconstruct aggregate from snapshot components
-                let aggregate = A::from_snapshot(aggregate_id, snapshot.snapshot_version, state);
+                let aggregate = A::from_snapshot(aggregate_id.clone(), snapshot.snapshot_version, state);
 
                 // Start loading events from after the snapshot
                 (aggregate, snapshot.snapshot_version.next())
             }
             None => {
                 // No snapshot, load from beginning
-                (A::new(aggregate_id), Version::initial())
+                (A::new(aggregate_id.clone()), Version::initial())
             }
         }
     } else {
@@ -862,11 +862,11 @@ mod tests {
 
     // Test utilities
 
-    use crate::{Aggregate, AggregateError, AggregateId, DomainEvent};
+    use crate::{Aggregate, AggregateError, AggregateId, DefaultAggregateId, DomainEvent};
     use chrono::Utc;
     use thiserror::Error;
 
-    // Test aggregate for event bus testing - now uses AggregateId directly
+    // Test aggregate for event bus testing - now uses DefaultAggregateId
 
     #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
     enum TestAggregateEvent {
@@ -905,12 +905,13 @@ mod tests {
     }
 
     struct TestAgg {
-        id: AggregateId,
+        id: DefaultAggregateId,
         state: TestAggState,
         version: Version,
         pending_events: Vec<TestAggregateEvent>,
     }
 
+    #[allow(dead_code)]
     impl TestAgg {
         fn create(&mut self, value: i32) -> std::result::Result<(), TestAggErr> {
             self.apply(TestAggregateEvent::Created { value })
@@ -930,11 +931,12 @@ mod tests {
     }
 
     impl Aggregate for TestAgg {
+        type Id = DefaultAggregateId;
         type Event = TestAggregateEvent;
         type Error = TestAggErr;
         type State = TestAggState;
 
-        fn new(id: AggregateId) -> Self {
+        fn new(id: Self::Id) -> Self {
             Self {
                 id,
                 state: TestAggState { value: 0 },
@@ -943,7 +945,7 @@ mod tests {
             }
         }
 
-        fn aggregate_id(&self) -> &AggregateId {
+        fn aggregate_id(&self) -> &Self::Id {
             &self.id
         }
 
@@ -979,7 +981,7 @@ mod tests {
             &self.state
         }
 
-        fn from_snapshot(id: AggregateId, version: Version, state: Self::State) -> Self {
+        fn from_snapshot(id: Self::Id, version: Version, state: Self::State) -> Self {
             Self {
                 id,
                 state,

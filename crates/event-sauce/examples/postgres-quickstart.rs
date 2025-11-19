@@ -107,21 +107,15 @@ use std::sync::Arc;
 use testcontainers::ImageExt;
 use testcontainers_modules::{postgres::Postgres, testcontainers::runners::AsyncRunner};
 use thiserror::Error;
-use uuid::Uuid;
 
 // ============================================================================
 // Domain Types
 // ============================================================================
 
 /// Product ID type
-#[derive(AggregateId, Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-struct ProductId(Uuid);
-
-impl ProductId {
-    fn new() -> Self {
-        Self(Uuid::new_v4())
-    }
-}
+#[derive(Default, AggregateId, Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[repr(transparent)]
+struct ProductId(event_sauce_core::AggregateId);
 
 // ============================================================================
 // Errors

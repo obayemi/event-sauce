@@ -780,18 +780,19 @@ mod tests {
     }
 
     struct TestAggregate {
-        id: AggregateId,
+        id: crate::DefaultAggregateId,
         state: TestState,
         version: Version,
         pending_events: Vec<TestEvent>,
     }
 
     impl crate::Aggregate for TestAggregate {
+        type Id = crate::DefaultAggregateId;
         type Event = TestEvent;
         type Error = TestError;
         type State = TestState;
 
-        fn new(id: AggregateId) -> Self {
+        fn new(id: Self::Id) -> Self {
             Self {
                 id,
                 state: TestState {
@@ -803,7 +804,7 @@ mod tests {
             }
         }
 
-        fn aggregate_id(&self) -> &AggregateId {
+        fn aggregate_id(&self) -> &Self::Id {
             &self.id
         }
 
@@ -842,7 +843,7 @@ mod tests {
             &self.state
         }
 
-        fn from_snapshot(id: AggregateId, version: Version, state: Self::State) -> Self {
+        fn from_snapshot(id: Self::Id, version: Version, state: Self::State) -> Self {
             Self {
                 id,
                 state,
@@ -887,7 +888,7 @@ mod tests {
 
     #[test]
     fn test_apply_event_without_validation() {
-        let mut aggregate = TestAggregate::new(AggregateId::new());
+        let mut aggregate = TestAggregate::new(crate::DefaultAggregateId::new());
         aggregate.state.value = 10;
         aggregate.state.status = Status::Active;
 
@@ -900,7 +901,7 @@ mod tests {
 
     #[test]
     fn test_apply_event_default_validation_succeeds() {
-        let mut aggregate = TestAggregate::new(AggregateId::new());
+        let mut aggregate = TestAggregate::new(crate::DefaultAggregateId::new());
         aggregate.state.value = 10;
         aggregate.state.status = Status::Active;
 
@@ -913,7 +914,7 @@ mod tests {
 
     #[test]
     fn test_apply_event_with_successful_validation() {
-        let mut aggregate = TestAggregate::new(AggregateId::new());
+        let mut aggregate = TestAggregate::new(crate::DefaultAggregateId::new());
         aggregate.state.value = 10;
         aggregate.state.status = Status::Active;
 
@@ -928,7 +929,7 @@ mod tests {
 
     #[test]
     fn test_apply_event_validation_fails_on_inactive_status() {
-        let mut aggregate = TestAggregate::new(AggregateId::new());
+        let mut aggregate = TestAggregate::new(crate::DefaultAggregateId::new());
         aggregate.state.value = 10;
         aggregate.state.status = Status::Inactive;
 
@@ -945,7 +946,7 @@ mod tests {
 
     #[test]
     fn test_apply_event_validation_fails_on_negative_amount() {
-        let mut aggregate = TestAggregate::new(AggregateId::new());
+        let mut aggregate = TestAggregate::new(crate::DefaultAggregateId::new());
         aggregate.state.value = 10;
         aggregate.state.status = Status::Active;
 
@@ -964,7 +965,7 @@ mod tests {
     fn test_apply_event_apply_without_validation() {
         // Apply should work even if validation would fail
         // (for event replay scenarios)
-        let mut aggregate = TestAggregate::new(AggregateId::new());
+        let mut aggregate = TestAggregate::new(crate::DefaultAggregateId::new());
         aggregate.state.value = 10;
         aggregate.state.status = Status::Inactive;
 
@@ -981,7 +982,7 @@ mod tests {
 
     #[test]
     fn test_apply_event_multiple_applications() {
-        let mut aggregate = TestAggregate::new(AggregateId::new());
+        let mut aggregate = TestAggregate::new(crate::DefaultAggregateId::new());
         aggregate.state.value = 0;
         aggregate.state.status = Status::Active;
 
@@ -1000,12 +1001,12 @@ mod tests {
     fn test_apply_event_is_deterministic() {
         let event = SimpleEvent { amount: 5 };
 
-        let mut aggregate1 = TestAggregate::new(AggregateId::new());
+        let mut aggregate1 = TestAggregate::new(crate::DefaultAggregateId::new());
         aggregate1.state.value = 10;
         aggregate1.state.status = Status::Active;
         event.apply(&mut aggregate1);
 
-        let mut aggregate2 = TestAggregate::new(AggregateId::new());
+        let mut aggregate2 = TestAggregate::new(crate::DefaultAggregateId::new());
         aggregate2.state.value = 10;
         aggregate2.state.status = Status::Active;
         event.apply(&mut aggregate2);
@@ -1040,7 +1041,7 @@ mod tests {
 
     #[test]
     fn test_post_validate_default_succeeds() {
-        let mut aggregate = TestAggregate::new(AggregateId::new());
+        let mut aggregate = TestAggregate::new(crate::DefaultAggregateId::new());
         aggregate.state.value = 10;
         aggregate.state.status = Status::Active;
 
@@ -1053,7 +1054,7 @@ mod tests {
 
     #[test]
     fn test_post_validate_succeeds() {
-        let mut aggregate = TestAggregate::new(AggregateId::new());
+        let mut aggregate = TestAggregate::new(crate::DefaultAggregateId::new());
         aggregate.state.value = 10;
         aggregate.state.status = Status::Active;
 
@@ -1071,7 +1072,7 @@ mod tests {
 
     #[test]
     fn test_post_validate_fails() {
-        let mut aggregate = TestAggregate::new(AggregateId::new());
+        let mut aggregate = TestAggregate::new(crate::DefaultAggregateId::new());
         aggregate.state.value = 10;
         aggregate.state.status = Status::Active;
 
@@ -1093,7 +1094,7 @@ mod tests {
 
     #[test]
     fn test_post_validate_checks_invariants() {
-        let mut aggregate = TestAggregate::new(AggregateId::new());
+        let mut aggregate = TestAggregate::new(crate::DefaultAggregateId::new());
         aggregate.state.value = 18;
         aggregate.state.status = Status::Active;
 

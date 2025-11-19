@@ -121,7 +121,10 @@ macro_rules! command_handler {
 
 #[cfg(test)]
 mod tests {
-    use crate::{Aggregate, AggregateError, AggregateId, ApplyEvent, DomainEvent, Version};
+    use crate::{
+        Aggregate, AggregateError, AggregateId, ApplyEvent, DefaultAggregateId, DomainEvent,
+        Version,
+    };
     use chrono::{DateTime, Utc};
     use serde::{Deserialize, Serialize};
 
@@ -211,18 +214,19 @@ mod tests {
     // Test Aggregate
     #[derive(Debug, Serialize, Deserialize)]
     struct TestAggregate {
-        id: AggregateId,
+        id: DefaultAggregateId,
         state: TestAggregateState,
         version: Version,
         pending_events: Vec<TestEvent>,
     }
 
     impl Aggregate for TestAggregate {
+        type Id = DefaultAggregateId;
         type Event = TestEvent;
         type Error = TestError;
         type State = TestAggregateState;
 
-        fn new(id: AggregateId) -> Self {
+        fn new(id: Self::Id) -> Self {
             Self {
                 id,
                 state: TestAggregateState::default(),
@@ -231,7 +235,7 @@ mod tests {
             }
         }
 
-        fn aggregate_id(&self) -> &AggregateId {
+        fn aggregate_id(&self) -> &Self::Id {
             &self.id
         }
 
@@ -264,7 +268,7 @@ mod tests {
             &self.state
         }
 
-        fn from_snapshot(id: AggregateId, version: Version, state: Self::State) -> Self {
+        fn from_snapshot(id: Self::Id, version: Version, state: Self::State) -> Self {
             Self {
                 id,
                 state,
@@ -346,7 +350,7 @@ mod tests {
 
     #[test]
     fn test_command_handler_increment() {
-        let mut aggregate = TestAggregate::new(AggregateId::new());
+        let mut aggregate = TestAggregate::new(DefaultAggregateId::new());
 
         // Test that generated method exists and works
         let result = aggregate.increment(5);
@@ -359,7 +363,7 @@ mod tests {
 
     #[test]
     fn test_command_handler_decrement() {
-        let mut aggregate = TestAggregate::new(AggregateId::new());
+        let mut aggregate = TestAggregate::new(DefaultAggregateId::new());
         aggregate.increment(10).unwrap();
 
         // Test that generated decrement method works
@@ -372,7 +376,7 @@ mod tests {
 
     #[test]
     fn test_command_handler_reset() {
-        let mut aggregate = TestAggregate::new(AggregateId::new());
+        let mut aggregate = TestAggregate::new(DefaultAggregateId::new());
         aggregate.increment(10).unwrap();
 
         // Test that generated reset method works
@@ -385,7 +389,7 @@ mod tests {
 
     #[test]
     fn test_command_handler_validation() {
-        let mut aggregate = TestAggregate::new(AggregateId::new());
+        let mut aggregate = TestAggregate::new(DefaultAggregateId::new());
 
         // Test that validation is applied through the generated method
         let result = aggregate.increment(0);
@@ -397,7 +401,7 @@ mod tests {
 
     #[test]
     fn test_command_handler_timestamp() {
-        let mut aggregate = TestAggregate::new(AggregateId::new());
+        let mut aggregate = TestAggregate::new(DefaultAggregateId::new());
         let before = Utc::now();
 
         aggregate.increment(5).unwrap();
@@ -414,7 +418,7 @@ mod tests {
 
     #[test]
     fn test_command_handler_multiple_commands() {
-        let mut aggregate = TestAggregate::new(AggregateId::new());
+        let mut aggregate = TestAggregate::new(DefaultAggregateId::new());
 
         // Test multiple commands in sequence
         aggregate.increment(5).unwrap();
@@ -430,7 +434,7 @@ mod tests {
 
     #[test]
     fn test_command_handler_return_type() {
-        let mut aggregate = TestAggregate::new(AggregateId::new());
+        let mut aggregate = TestAggregate::new(DefaultAggregateId::new());
 
         // Verify the return type is Result<(), TestError>
         let result: Result<(), TestError> = aggregate.increment(5);

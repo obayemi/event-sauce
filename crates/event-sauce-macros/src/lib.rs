@@ -323,62 +323,60 @@ fn find_id_field_flexible(fields: &Fields) -> Result<Ident, TokenStream> {
     .into())
 }
 
-/// Derive macro for creating strongly-typed `AggregateId` wrappers.
+/// Derive macro for implementing the `AggregateId` trait.
 ///
-/// This macro provides a zero-boilerplate way to create custom aggregate IDs with
-/// transparent access to all `AggregateId` methods via `Deref`.
+/// This macro provides a zero-boilerplate way to create custom aggregate IDs that
+/// implement the `AggregateId` trait.
 ///
 /// # What it generates
 ///
-/// - `Deref` implementation for transparent method access
-/// - `AsRef<AggregateId>` for reference conversion
-/// - `From<AggregateId>` and `Into<AggregateId>` for conversions
+/// - `AggregateId` trait implementation with `to_uuid()` and `from_uuid()` methods
 /// - `Display` implementation (customizable with `#[display]` attribute)
-/// - `new()` constructor that generates a random ID
+/// - The trait provides default implementations for `new()` and `nil()`
 ///
 /// # Examples
 ///
-/// ## Basic usage (just 3 lines!)
+/// ## Basic usage
 ///
 /// ```ignore
 /// use event_sauce_macros::AggregateId;
+/// use uuid::Uuid;
 ///
-/// #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, AggregateId)]
+/// #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, AggregateId)]
 /// #[repr(transparent)]
-/// struct UserId(event_sauce_core::AggregateId);
+/// struct CounterId(Uuid);
 ///
-/// let user_id = UserId::new();
-/// // Can call AggregateId methods directly via Deref:
-/// let uuid = user_id.to_uuid();
-/// println!("{}", user_id);
+/// let counter_id = CounterId::new();
+/// let uuid = counter_id.to_uuid();
+/// println!("{}", counter_id);
 /// ```
 ///
 /// ## With custom display format
 ///
 /// ```ignore
-/// #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, AggregateId)]
+/// #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, AggregateId)]
 /// #[repr(transparent)]
-/// #[display("User-{}")]
-/// struct UserId(event_sauce_core::AggregateId);
+/// #[display("Counter-{}")]
+/// struct CounterId(Uuid);
 ///
-/// let user_id = UserId::new();
-/// assert!(format!("{}", user_id).starts_with("User-"));
+/// let counter_id = CounterId::new();
+/// assert!(format!("{}", counter_id).starts_with("Counter-"));
 /// ```
 ///
 /// # Requirements
 ///
-/// - Must be a tuple struct with exactly one field of type `AggregateId`
+/// - Must be a tuple struct with exactly one field of type `Uuid` (or path ending in `Uuid`)
 /// - Add `#[repr(transparent)]` for zero-cost abstraction
-/// - Add standard derives: `Debug`, `Clone`, `Copy`, `PartialEq`, `Eq`, `Hash`
+/// - Add standard derives: `Debug`, `Clone`, `PartialEq`, `Eq`, `Hash`, `Serialize`, `Deserialize`
+/// - Must be `Copy` if you want to use it efficiently (recommended)
 ///
 /// # Panics
 ///
-/// Will fail to compile if not a tuple struct with exactly one `AggregateId` field.
+/// Will fail to compile if not a tuple struct with exactly one `Uuid` field.
 #[proc_macro_derive(AggregateId, attributes(display))]
 pub fn derive_aggregate_id(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let name = &input.ident;
-    let vis = &input.vis;
 
     // Check that this is a tuple struct with one field
     let field_type = match &input.data {
@@ -390,7 +388,7 @@ pub fn derive_aggregate_id(input: TokenStream) -> TokenStream {
                 return syn::Error::new_spanned(
                     name,
                     "AggregateId can only be derived for tuple structs with exactly one field.\n\
-                     Example: #[derive(AggregateId)] struct UserId(AggregateId);"
+                     Example: #[derive(AggregateId)] struct CounterId(Uuid);",
                 )
                 .to_compile_error()
                 .into();
@@ -399,22 +397,22 @@ pub fn derive_aggregate_id(input: TokenStream) -> TokenStream {
         _ => {
             return syn::Error::new_spanned(
                 name,
-                "AggregateId can only be derived for tuple structs"
+                "AggregateId can only be derived for tuple structs",
             )
             .to_compile_error()
             .into();
         }
     };
 
-    // Check if the field type is AggregateId
+    // Check if the field type is Uuid (or contains Uuid in the path)
     let field_type_str = quote! { #field_type }.to_string();
-    let is_aggregate_id = field_type_str.contains("AggregateId");
+    let is_uuid = field_type_str.contains("Uuid");
 
-    if !is_aggregate_id {
+    if !is_uuid {
         return syn::Error::new_spanned(
             field_type,
-            "The derive(AggregateId) macro expects the inner type to be AggregateId.\n\
-             Example: #[derive(AggregateId)] struct UserId(AggregateId);"
+            "The derive(AggregateId) macro expects the inner type to be Uuid.\n\
+             Example: #[derive(AggregateId)] struct CounterId(Uuid);",
         )
         .to_compile_error()
         .into();
@@ -451,45 +449,19 @@ pub fn derive_aggregate_id(input: TokenStream) -> TokenStream {
 
     // Generate the implementation
     let gen = quote! {
-        // Implement Deref for transparent access to AggregateId methods
-        impl std::ops::Deref for #name {
-            type Target = event_sauce_core::AggregateId;
-
-            fn deref(&self) -> &Self::Target {
-                &self.0
+        // Implement the AggregateId trait
+        impl event_sauce_core::AggregateId for #name {
+            fn to_uuid(&self) -> uuid::Uuid {
+                self.0
             }
-        }
 
-        // Implement AsRef for conversion to &AggregateId
-        impl std::convert::AsRef<event_sauce_core::AggregateId> for #name {
-            fn as_ref(&self) -> &event_sauce_core::AggregateId {
-                &self.0
-            }
-        }
-
-        // Implement From<AggregateId> for easy construction
-        impl std::convert::From<event_sauce_core::AggregateId> for #name {
-            fn from(id: event_sauce_core::AggregateId) -> Self {
-                Self(id)
-            }
-        }
-
-        // Implement Into<AggregateId> for easy conversion
-        impl std::convert::From<#name> for event_sauce_core::AggregateId {
-            fn from(id: #name) -> Self {
-                id.0
+            fn from_uuid(uuid: uuid::Uuid) -> Self {
+                Self(uuid)
             }
         }
 
         // Implement Display
         #display_impl
-
-        // Add a convenient constructor
-        impl #name {
-            #vis fn new() -> Self {
-                Self(event_sauce_core::AggregateId::new())
-            }
-        }
     };
 
     gen.into()
@@ -743,21 +715,9 @@ pub fn aggregate(attr: TokenStream, item: TokenStream) -> TokenStream {
             }
         }
 
-        // Implement Default if both state and ID have Default
-        impl Default for #aggregate_name
-        where
-            #state_name: Default,
-            #id_type: Default,
-        {
-            fn default() -> Self {
-                Self {
-                    id: #id_type::default(),
-                    state: #state_name::default(),
-                    version: event_sauce_core::Version::initial(),
-                    pending_events: Vec::new(),
-                }
-            }
-        }
+        // Note: We don't implement Default for the aggregate wrapper
+        // because aggregate IDs typically don't have a sensible default value.
+        // Users should explicitly create aggregates with Aggregate::new(id).
 
         // Implement Deref for transparent field access
         impl std::ops::Deref for #aggregate_name {
@@ -777,22 +737,22 @@ pub fn aggregate(attr: TokenStream, item: TokenStream) -> TokenStream {
 
         // Implement Aggregate trait
         impl event_sauce_core::Aggregate for #aggregate_name {
-            type Event = #event_type;
             type Id = #id_type;
+            type Event = #event_type;
             type Error = #error_type;
             type State = #state_name;
 
             fn new(id: Self::Id) -> Self {
                 Self {
-                    id,                                         // ID stored in wrapper
-                    state: #state_name::default(),              // State is pure business logic
+                    id,
+                    state: #state_name::default(),
                     version: event_sauce_core::Version::initial(),
                     pending_events: Vec::new(),
                 }
             }
 
             fn aggregate_id(&self) -> &Self::Id {
-                &self.id                                        // ID accessed from wrapper
+                &self.id
             }
 
             fn version(&self) -> event_sauce_core::Version {

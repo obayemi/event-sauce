@@ -4,6 +4,9 @@
 
 use crate::{AggregateError, AggregateId, DomainEvent, Version};
 
+#[cfg(test)]
+use crate::DefaultAggregateId;
+
 /// Trait for event-sourced aggregates.
 ///
 /// An aggregate is the fundamental building block of event sourcing and DDD.
@@ -144,6 +147,23 @@ use crate::{AggregateError, AggregateId, DomainEvent, Version};
 /// }
 /// ```
 pub trait Aggregate: Send + Sync {
+    /// The type of the aggregate's unique identifier.
+    ///
+    /// This can be any type that implements the `AggregateId` trait, allowing
+    /// for strongly-typed, domain-specific IDs.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// struct Counter { /* ... */ }
+    ///
+    /// impl Aggregate for Counter {
+    ///     type Id = CounterId;  // Custom, type-safe ID
+    ///     // ...
+    /// }
+    /// ```
+    type Id: AggregateId;
+
     /// The type of events this aggregate produces.
     type Event: DomainEvent;
 
@@ -167,13 +187,13 @@ pub trait Aggregate: Send + Sync {
     /// # Examples
     ///
     /// ```ignore
-    /// let id = AggregateId::new();
-    /// let user = User::new(id);
+    /// let id = CounterId::new();
+    /// let counter = Counter::new(id);
     /// ```
-    fn new(id: AggregateId) -> Self;
+    fn new(id: Self::Id) -> Self;
 
     /// Returns the aggregate's unique identifier.
-    fn aggregate_id(&self) -> &AggregateId;
+    fn aggregate_id(&self) -> &Self::Id;
 
     /// Returns the current version of the aggregate.
     ///
@@ -438,7 +458,7 @@ pub trait Aggregate: Send + Sync {
     /// assert_eq!(counter.version(), Version::new(10));
     /// assert_eq!(counter.state().value, 42);
     /// ```
-    fn from_snapshot(id: AggregateId, version: Version, state: Self::State) -> Self
+    fn from_snapshot(id: Self::Id, version: Version, state: Self::State) -> Self
     where
         Self: Sized;
 }
@@ -487,14 +507,14 @@ mod tests {
     }
 
     struct TestAggregate {
-        id: AggregateId,
+        id: DefaultAggregateId,
         state: TestAggregateState,
         version: Version,
         pending_events: Vec<TestEvent>,
     }
 
     impl TestAggregate {
-        fn new(id: AggregateId) -> Self {
+        fn new(id: DefaultAggregateId) -> Self {
             Self {
                 id,
                 state: TestAggregateState { value: 0 },
@@ -503,7 +523,7 @@ mod tests {
             }
         }
 
-        fn create(id: AggregateId, value: i32) -> Self {
+        fn create(id: DefaultAggregateId, value: i32) -> Self {
             let mut aggregate = Self::new(id);
             aggregate.apply(TestEvent::Created { value }).unwrap();
             aggregate
@@ -523,11 +543,12 @@ mod tests {
     }
 
     impl Aggregate for TestAggregate {
+        type Id = DefaultAggregateId;
         type Event = TestEvent;
         type Error = TestAggregateError;
         type State = TestAggregateState;
 
-        fn new(id: AggregateId) -> Self {
+        fn new(id: Self::Id) -> Self {
             Self {
                 id,
                 state: TestAggregateState { value: 0 },
@@ -536,7 +557,7 @@ mod tests {
             }
         }
 
-        fn aggregate_id(&self) -> &AggregateId {
+        fn aggregate_id(&self) -> &Self::Id {
             &self.id
         }
 
@@ -569,7 +590,7 @@ mod tests {
             &self.state
         }
 
-        fn from_snapshot(id: AggregateId, version: Version, state: Self::State) -> Self {
+        fn from_snapshot(id: Self::Id, version: Version, state: Self::State) -> Self {
             Self {
                 id,
                 state,
@@ -581,7 +602,7 @@ mod tests {
 
     #[test]
     fn test_aggregate_has_id() {
-        let id = AggregateId::new();
+        let id = DefaultAggregateId::new();
         let aggregate = TestAggregate::new(id);
 
         assert_eq!(aggregate.aggregate_id(), &id);
@@ -589,14 +610,14 @@ mod tests {
 
     #[test]
     fn test_aggregate_initial_version() {
-        let aggregate = TestAggregate::new(AggregateId::new());
+        let aggregate = TestAggregate::new(DefaultAggregateId::new());
 
         assert_eq!(aggregate.version(), Version::initial());
     }
 
     #[test]
     fn test_aggregate_apply_increments_version() {
-        let mut aggregate = TestAggregate::new(AggregateId::new());
+        let mut aggregate = TestAggregate::new(DefaultAggregateId::new());
 
         aggregate.apply(TestEvent::Created { value: 42 }).unwrap();
 
@@ -605,7 +626,7 @@ mod tests {
 
     #[test]
     fn test_aggregate_apply_updates_state() {
-        let mut aggregate = TestAggregate::new(AggregateId::new());
+        let mut aggregate = TestAggregate::new(DefaultAggregateId::new());
 
         aggregate.apply(TestEvent::Created { value: 42 }).unwrap();
 
@@ -614,7 +635,7 @@ mod tests {
 
     #[test]
     fn test_aggregate_pending_events() {
-        let id = AggregateId::new();
+        let id = DefaultAggregateId::new();
         let aggregate = TestAggregate::create(id, 42);
 
         assert_eq!(aggregate.pending_events().len(), 1);
@@ -626,7 +647,7 @@ mod tests {
 
     #[test]
     fn test_aggregate_clear_pending_events() {
-        let id = AggregateId::new();
+        let id = DefaultAggregateId::new();
         let mut aggregate = TestAggregate::create(id, 42);
 
         assert_eq!(aggregate.pending_events().len(), 1);
@@ -638,7 +659,7 @@ mod tests {
 
     #[test]
     fn test_aggregate_multiple_events() {
-        let id = AggregateId::new();
+        let id = DefaultAggregateId::new();
         let mut aggregate = TestAggregate::create(id, 10);
 
         aggregate.update(20);
@@ -651,7 +672,7 @@ mod tests {
 
     #[test]
     fn test_aggregate_version_progression() {
-        let mut aggregate = TestAggregate::new(AggregateId::new());
+        let mut aggregate = TestAggregate::new(DefaultAggregateId::new());
 
         assert_eq!(aggregate.version(), Version::new(0));
 
@@ -682,7 +703,7 @@ mod tests {
 
     #[test]
     fn test_aggregate_event_replay() {
-        let id = AggregateId::new();
+        let id = DefaultAggregateId::new();
         let mut aggregate = TestAggregate::new(id);
 
         // Simulate replaying events from event store
@@ -703,7 +724,7 @@ mod tests {
 
     #[test]
     fn test_aggregate_apply_records_event() {
-        let mut aggregate = TestAggregate::new(AggregateId::new());
+        let mut aggregate = TestAggregate::new(DefaultAggregateId::new());
 
         // Apply updates state, version, AND adds to pending
         aggregate.apply(TestEvent::Created { value: 42 }).unwrap();
@@ -720,7 +741,7 @@ mod tests {
 
     #[test]
     fn test_aggregate_apply_unchecked() {
-        let mut aggregate = TestAggregate::new(AggregateId::new());
+        let mut aggregate = TestAggregate::new(DefaultAggregateId::new());
 
         // apply_unchecked should work the same as apply for basic aggregates
         let event = TestEvent::Created { value: 42 };
@@ -732,7 +753,7 @@ mod tests {
 
     #[test]
     fn test_aggregate_apply_unchecked_replay() {
-        let id = AggregateId::new();
+        let id = DefaultAggregateId::new();
         let mut aggregate = TestAggregate::new(id);
 
         // Simulate event replay using apply_unchecked

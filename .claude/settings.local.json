@@ -22,7 +22,11 @@
       "Bash(cargo fix:*)",
       "Bash(cargo install:*)",
       "Bash(cargo expand:*)",
-      "Bash(cargo audit:*)"
+      "Bash(cargo audit:*)",
+      "Bash(cargo clean:*)",
+      "Bash(jj show:*)",
+      "Bash(jj cat:*)",
+      "Bash(jj file show:*)"
     ],
     "deny": [],
     "ask": []

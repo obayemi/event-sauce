@@ -14,27 +14,15 @@ use chrono::Utc;
 use event_sauce_core::{Aggregate, ApplyEvent, DomainEvent};
 use event_sauce_macros::{aggregate, AggregateError, AggregateId, Event as DeriveEvent};
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 // ============================================================================
 // Domain Model
 // ============================================================================
 
 /// Unique identifier for a bank account
-#[derive(AggregateId, Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-struct AccountId(Uuid);
-
-impl AccountId {
-    fn new() -> Self {
-        Self(Uuid::new_v4())
-    }
-}
-
-impl Default for AccountId {
-    fn default() -> Self {
-        Self(Uuid::nil())
-    }
-}
+#[derive(Default, AggregateId, Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[repr(transparent)]
+struct AccountId(event_sauce_core::AggregateId);
 
 /// Account status
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -167,7 +155,10 @@ impl ApplyEvent<BankAccount> for AccountWithdrawnEvent {
 
     // Post-validation: Ensure balance never goes negative (defense in depth)
     // This catches any bugs in the apply logic or validation
-    fn post_validate(&self, account: &BankAccount) -> Result<(), <BankAccount as Aggregate>::Error> {
+    fn post_validate(
+        &self,
+        account: &BankAccount,
+    ) -> Result<(), <BankAccount as Aggregate>::Error> {
         if account.balance < 0 {
             return Err(AccountError::InsufficientFunds {
                 balance: account.balance,
@@ -214,7 +205,7 @@ impl BankAccount {
 impl BankAccount {
     /// Create a new bank account using the Aggregate trait's new method
     fn open(id: AccountId, owner: String, initial_balance: i64) -> Result<Self, AccountError> {
-        let mut account = <Self as Aggregate>::new(id.clone());
+        let mut account = <Self as Aggregate>::new(*id);
 
         let event = AccountOpenedEvent {
             account_id: id.to_string(),

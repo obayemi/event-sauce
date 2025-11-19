@@ -382,7 +382,10 @@ where
     ///     .checkpoint_store(checkpoint_store)
     ///     .build()?;
     /// ```
-    pub fn builder(name: impl Into<String>, store: crate::EventStoreRef<S>) -> SubscriptionBuilder<S> {
+    pub fn builder(
+        name: impl Into<String>,
+        store: crate::EventStoreRef<S>,
+    ) -> SubscriptionBuilder<S> {
         SubscriptionBuilder::new(name, store)
     }
 
@@ -851,6 +854,7 @@ mod tests {
             self.events.lock().unwrap().push(event);
         }
 
+        #[allow(dead_code)]
         fn event_count(&self) -> usize {
             self.events.lock().unwrap().len()
         }

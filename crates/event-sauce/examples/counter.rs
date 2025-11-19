@@ -12,11 +12,10 @@
 //! Run with: cargo run -p event-sauce --example counter --features "memory,macros"
 
 use chrono::Utc;
-use event_sauce_core::{load, Aggregate, ApplyEvent, DomainEvent, EventStore};
+use event_sauce_core::{load, Aggregate, AggregateId as _, ApplyEvent, DomainEvent, EventStore};
 use event_sauce_macros::{aggregate, AggregateError, AggregateId, Event as DeriveEvent};
 use event_sauce_memory::InMemoryEventStore;
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 // ============================================================================
 // Domain Model
@@ -24,19 +23,8 @@ use uuid::Uuid;
 
 /// Unique identifier for a counter
 #[derive(AggregateId, Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-struct CounterId(Uuid);
-
-impl CounterId {
-    fn new() -> Self {
-        Self(Uuid::new_v4())
-    }
-}
-
-impl Default for CounterId {
-    fn default() -> Self {
-        Self(Uuid::nil())
-    }
-}
+#[repr(transparent)]
+struct CounterId(uuid::Uuid);
 
 // ============================================================================
 // Event Structs - Separated event definitions

@@ -126,6 +126,7 @@ enum OrderError {
     #[error("Order not found")]
     NotFound,
 
+    #[allow(dead_code)]
     #[error("Invalid quantity: {0}")]
     InvalidQuantity(u32),
 }
@@ -135,6 +136,7 @@ enum ShoppingCartError {
     #[error("Cart is empty")]
     EmptyCart,
 
+    #[allow(dead_code)]
     #[error("Item not found: {0}")]
     ItemNotFound(String),
 }

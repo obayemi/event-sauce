@@ -6,7 +6,6 @@
 use chrono::{DateTime, Utc};
 use event_sauce_core::{DomainEvent, EventEnvelope, Version};
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 // Note: serde_json is only used in TryFrom tests
 #[allow(unused_imports)]
@@ -35,21 +34,6 @@ enum TestEvent {
 // Mock aggregate for TestEvent
 use event_sauce_core::{Aggregate, AggregateError, AggregateId};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-struct TestAggregateId(Uuid);
-
-impl std::fmt::Display for TestAggregateId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl AggregateId for TestAggregateId {
-    fn to_uuid(&self) -> Uuid {
-        self.0
-    }
-}
-
 #[derive(Debug, thiserror::Error)]
 #[error("Test aggregate error")]
 struct TestAggregateError;
@@ -61,7 +45,7 @@ struct TestAggregateState;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct TestAggregate {
-    id: TestAggregateId,
+    id: AggregateId,
     state: TestAggregateState,
     version: event_sauce_core::Version,
     pending_events: Vec<TestEvent>,
@@ -69,11 +53,10 @@ struct TestAggregate {
 
 impl Aggregate for TestAggregate {
     type Event = TestEvent;
-    type Id = TestAggregateId;
     type Error = TestAggregateError;
     type State = TestAggregateState;
 
-    fn new(id: Self::Id) -> Self {
+    fn new(id: AggregateId) -> Self {
         Self {
             id,
             state: TestAggregateState,
@@ -82,7 +65,7 @@ impl Aggregate for TestAggregate {
         }
     }
 
-    fn aggregate_id(&self) -> &Self::Id {
+    fn aggregate_id(&self) -> &AggregateId {
         &self.id
     }
 
@@ -114,7 +97,7 @@ impl Aggregate for TestAggregate {
         &self.state
     }
 
-    fn from_snapshot(id: Self::Id, version: Version, state: Self::State) -> Self {
+    fn from_snapshot(id: AggregateId, version: Version, state: Self::State) -> Self {
         Self {
             id,
             state,
@@ -238,11 +221,10 @@ struct TestAggregateV2 {
 
 impl Aggregate for TestAggregateV2 {
     type Event = TestEventV2;
-    type Id = TestAggregateId;
     type Error = TestAggregateError;
     type State = TestAggregateV2State;
 
-    fn new(id: Self::Id) -> Self {
+    fn new(id: AggregateId) -> Self {
         Self {
             id,
             state: TestAggregateV2State,
@@ -251,7 +233,7 @@ impl Aggregate for TestAggregateV2 {
         }
     }
 
-    fn aggregate_id(&self) -> &Self::Id {
+    fn aggregate_id(&self) -> &AggregateId {
         &self.id
     }
 
@@ -283,7 +265,7 @@ impl Aggregate for TestAggregateV2 {
         &self.state
     }
 
-    fn from_snapshot(id: Self::Id, version: Version, state: Self::State) -> Self {
+    fn from_snapshot(id: AggregateId, version: Version, state: Self::State) -> Self {
         Self {
             id,
             state,
@@ -334,11 +316,10 @@ struct OrderAggregate {
 
 impl Aggregate for OrderAggregate {
     type Event = OrderEvent;
-    type Id = TestAggregateId;
     type Error = TestAggregateError;
     type State = OrderAggregateState;
 
-    fn new(id: Self::Id) -> Self {
+    fn new(id: AggregateId) -> Self {
         Self {
             id,
             state: OrderAggregateState,
@@ -347,7 +328,7 @@ impl Aggregate for OrderAggregate {
         }
     }
 
-    fn aggregate_id(&self) -> &Self::Id {
+    fn aggregate_id(&self) -> &AggregateId {
         &self.id
     }
 
@@ -379,7 +360,7 @@ impl Aggregate for OrderAggregate {
         &self.state
     }
 
-    fn from_snapshot(id: Self::Id, version: Version, state: Self::State) -> Self {
+    fn from_snapshot(id: AggregateId, version: Version, state: Self::State) -> Self {
         Self {
             id,
             state,
@@ -428,11 +409,10 @@ struct SimpleAggregate {
 
 impl Aggregate for SimpleAggregate {
     type Event = SimpleEvent;
-    type Id = TestAggregateId;
     type Error = TestAggregateError;
     type State = SimpleAggregateState;
 
-    fn new(id: Self::Id) -> Self {
+    fn new(id: AggregateId) -> Self {
         Self {
             id,
             state: SimpleAggregateState,
@@ -441,7 +421,7 @@ impl Aggregate for SimpleAggregate {
         }
     }
 
-    fn aggregate_id(&self) -> &Self::Id {
+    fn aggregate_id(&self) -> &AggregateId {
         &self.id
     }
 
@@ -473,7 +453,7 @@ impl Aggregate for SimpleAggregate {
         &self.state
     }
 
-    fn from_snapshot(id: Self::Id, version: Version, state: Self::State) -> Self {
+    fn from_snapshot(id: AggregateId, version: Version, state: Self::State) -> Self {
         Self {
             id,
             state,

@@ -233,10 +233,8 @@ mod tests {
     use serde::{Deserialize, Serialize};
 
     // Test aggregate for DomainEvent
-    use crate::{AggregateError, AggregateId};
+    use crate::{AggregateError, DefaultAggregateId};
     use thiserror::Error;
-
-    // Now using AggregateId directly in tests
 
     #[derive(Debug, Error)]
     #[error("Test aggregate error")]
@@ -252,18 +250,19 @@ mod tests {
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     struct TestAggregate {
-        id: AggregateId,
+        id: DefaultAggregateId,
         state: TestAggregateState,
         version: crate::Version,
         pending_events: Vec<TestEvent>,
     }
 
     impl crate::Aggregate for TestAggregate {
+        type Id = DefaultAggregateId;
         type Event = TestEvent;
         type Error = TestAggregateError;
         type State = TestAggregateState;
 
-        fn new(id: AggregateId) -> Self {
+        fn new(id: Self::Id) -> Self {
             Self {
                 id,
                 state: TestAggregateState { value: 0 },
@@ -272,7 +271,7 @@ mod tests {
             }
         }
 
-        fn aggregate_id(&self) -> &AggregateId {
+        fn aggregate_id(&self) -> &Self::Id {
             &self.id
         }
 
@@ -319,7 +318,7 @@ mod tests {
             &self.state
         }
 
-        fn from_snapshot(id: AggregateId, version: crate::Version, state: Self::State) -> Self {
+        fn from_snapshot(id: Self::Id, version: crate::Version, state: Self::State) -> Self {
             Self {
                 id,
                 state,
@@ -482,18 +481,19 @@ mod tests {
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     struct SimpleAggregate {
-        id: AggregateId,
+        id: DefaultAggregateId,
         state: SimpleAggregateState,
         version: crate::Version,
         pending_events: Vec<SimpleEvent>,
     }
 
     impl crate::Aggregate for SimpleAggregate {
+        type Id = DefaultAggregateId;
         type Event = SimpleEvent;
         type Error = TestAggregateError;
         type State = SimpleAggregateState;
 
-        fn new(id: AggregateId) -> Self {
+        fn new(id: Self::Id) -> Self {
             Self {
                 id,
                 state: SimpleAggregateState,
@@ -502,7 +502,7 @@ mod tests {
             }
         }
 
-        fn aggregate_id(&self) -> &AggregateId {
+        fn aggregate_id(&self) -> &Self::Id {
             &self.id
         }
 
@@ -538,7 +538,7 @@ mod tests {
             &self.state
         }
 
-        fn from_snapshot(id: AggregateId, version: crate::Version, state: Self::State) -> Self {
+        fn from_snapshot(id: Self::Id, version: crate::Version, state: Self::State) -> Self {
             Self {
                 id,
                 state,
@@ -585,18 +585,19 @@ mod tests {
     struct VersionedAggregateState;
 
     struct VersionedAggregate {
-        id: AggregateId,
+        id: DefaultAggregateId,
         state: VersionedAggregateState,
         version: crate::Version,
         pending_events: Vec<VersionedEvent>,
     }
 
     impl crate::Aggregate for VersionedAggregate {
+        type Id = DefaultAggregateId;
         type Event = VersionedEvent;
         type Error = TestAggregateError;
         type State = VersionedAggregateState;
 
-        fn new(id: AggregateId) -> Self {
+        fn new(id: Self::Id) -> Self {
             Self {
                 id,
                 state: VersionedAggregateState,
@@ -605,7 +606,7 @@ mod tests {
             }
         }
 
-        fn aggregate_id(&self) -> &AggregateId {
+        fn aggregate_id(&self) -> &Self::Id {
             &self.id
         }
 
@@ -641,7 +642,7 @@ mod tests {
             &self.state
         }
 
-        fn from_snapshot(id: AggregateId, version: crate::Version, state: Self::State) -> Self {
+        fn from_snapshot(id: Self::Id, version: crate::Version, state: Self::State) -> Self {
             Self {
                 id,
                 state,
