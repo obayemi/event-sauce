@@ -1,36 +1,124 @@
-//! Aggregate identifier trait and types.
+//! Aggregate identifier types.
 //!
-//! Defines the `AggregateId` trait which all aggregate identifiers must implement.
+//! Defines the `AggregateId` struct which represents an aggregate identifier.
 
+use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Display};
-use std::hash::Hash;
 use uuid::Uuid;
 
-/// Trait for aggregate identifiers.
+/// Aggregate identifier.
 ///
-/// All aggregate identifiers must implement this trait. An aggregate ID uniquely
-/// identifies an aggregate instance within the event store.
+/// A unique identifier for an aggregate instance. This is a transparent wrapper
+/// around a UUID, ensuring efficient representation and compatibility with the
+/// event store.
 ///
-/// # Requirements
+/// # Usage
 ///
-/// - Must be `Clone`, `Debug`, `Display`, `PartialEq`, `Eq`, and `Hash`
-/// - Must be `Send + Sync` for async usage
-/// - Should be a unique identifier (UUID, composite key, etc.)
-/// - Must be convertible to a UUID for event store operations
+/// You can use `AggregateId` directly, or create strongly-typed wrappers using
+/// the newtype pattern:
 ///
 /// # Examples
+///
+/// ## Direct Usage
+///
+/// ```
+/// use event_sauce_core::AggregateId;
+///
+/// let id = AggregateId::new();
+/// println!("ID: {}", id);
+/// ```
+///
+/// ## Creating from UUID
 ///
 /// ```
 /// use event_sauce_core::AggregateId;
 /// use uuid::Uuid;
-/// use std::fmt;
 ///
-/// #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-/// struct UserId(Uuid);
+/// let uuid = Uuid::new_v4();
+/// let id = AggregateId::from(uuid);
+/// assert_eq!(id.to_uuid(), uuid);
+/// ```
+///
+/// ## Nil ID (uninitialized)
+///
+/// ```
+/// use event_sauce_core::AggregateId;
+///
+/// let id = AggregateId::nil();
+/// assert_eq!(id.to_string(), "00000000-0000-0000-0000-000000000000");
+/// ```
+///
+/// ## Newtype Pattern (Strongly-Typed IDs)
+///
+/// ### Option 1: Using the derive macro (recommended - just 3 lines!)
+///
+/// ```ignore
+/// use event_sauce_macros::AggregateId;
+///
+/// #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, AggregateId)]
+/// #[repr(transparent)]
+/// struct UserId(AggregateId);
+///
+/// let user_id = UserId::new();
+/// // Can use AggregateId methods directly via Deref
+/// let uuid = user_id.to_uuid();
+/// println!("{}", user_id);
+/// ```
+///
+/// With custom display format:
+///
+/// ```ignore
+/// #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, AggregateId)]
+/// #[repr(transparent)]
+/// #[display("User-{}")]
+/// struct UserId(AggregateId);
+///
+/// let user_id = UserId::new();
+/// assert!(format!("{}", user_id).starts_with("User-"));
+/// ```
+///
+/// ### Option 2: Using derive_more
+///
+/// ```ignore
+/// use derive_more::{Deref, AsRef, From, Display};
+///
+/// #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deref, AsRef, From, Display)]
+/// #[display(fmt = "User-{}", _0)]
+/// #[repr(transparent)]
+/// struct UserId(AggregateId);
 ///
 /// impl UserId {
 ///     fn new() -> Self {
-///         Self(Uuid::new_v4())
+///         Self(AggregateId::new())
+///     }
+/// }
+///
+/// let user_id = UserId::new();
+/// let uuid = user_id.to_uuid();
+/// println!("{}", user_id);
+/// ```
+///
+/// ### Option 3: Manual implementation
+///
+/// ```
+/// use event_sauce_core::AggregateId;
+/// use std::ops::Deref;
+/// use std::fmt;
+///
+/// #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// #[repr(transparent)]
+/// struct UserId(AggregateId);
+///
+/// impl UserId {
+///     fn new() -> Self {
+///         Self(AggregateId::new())
+///     }
+/// }
+///
+/// impl Deref for UserId {
+///     type Target = AggregateId;
+///     fn deref(&self) -> &Self::Target {
+///         &self.0
 ///     }
 /// }
 ///
@@ -40,63 +128,153 @@ use uuid::Uuid;
 ///     }
 /// }
 ///
-/// impl AggregateId for UserId {
-///     fn to_uuid(&self) -> Uuid {
-///         self.0
-///     }
-/// }
+/// let user_id = UserId::new();
+/// let uuid = user_id.to_uuid();
+/// println!("{}", user_id);
+/// # let _ = uuid;
 /// ```
-pub trait AggregateId: Clone + Debug + Display + PartialEq + Eq + Hash + Send + Sync {
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct AggregateId(Uuid);
+
+impl AggregateId {
+    /// Creates a new random `AggregateId`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use event_sauce_core::AggregateId;
+    ///
+    /// let id1 = AggregateId::new();
+    /// let id2 = AggregateId::new();
+    /// assert_ne!(id1, id2);
+    /// ```
+    #[must_use]
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
+
+    /// Creates a nil (all zeros) `AggregateId`.
+    ///
+    /// Useful for uninitialized aggregates or as a placeholder.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use event_sauce_core::AggregateId;
+    ///
+    /// let id = AggregateId::nil();
+    /// assert_eq!(id.to_string(), "00000000-0000-0000-0000-000000000000");
+    /// ```
+    #[must_use]
+    pub const fn nil() -> Self {
+        Self(Uuid::nil())
+    }
+
     /// Converts the aggregate ID to a UUID.
     ///
-    /// This is used by the event store for persistence.
-    fn to_uuid(&self) -> Uuid;
+    /// # Examples
+    ///
+    /// ```
+    /// use event_sauce_core::AggregateId;
+    ///
+    /// let id = AggregateId::new();
+    /// let uuid = id.to_uuid();
+    /// # let _ = uuid;
+    /// ```
+    #[must_use]
+    pub const fn to_uuid(&self) -> Uuid {
+        self.0
+    }
+}
+
+impl Default for AggregateId {
+    /// Creates a new random `AggregateId`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use event_sauce_core::AggregateId;
+    ///
+    /// let id: AggregateId = Default::default();
+    /// # let _ = id;
+    /// ```
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Display for AggregateId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<Uuid> for AggregateId {
+    fn from(uuid: Uuid) -> Self {
+        Self(uuid)
+    }
+}
+
+impl From<AggregateId> for Uuid {
+    fn from(id: AggregateId) -> Self {
+        id.0
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use uuid::Uuid;
 
-    // Test aggregate ID implementation
-    #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-    struct TestId(Uuid);
-
-    impl TestId {
-        fn new() -> Self {
-            Self(Uuid::new_v4())
-        }
-
-        fn from_uuid(uuid: Uuid) -> Self {
-            Self(uuid)
-        }
-    }
-
-    impl Display for TestId {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "Test-{}", self.0)
-        }
-    }
-
-    impl AggregateId for TestId {
-        fn to_uuid(&self) -> Uuid {
-            self.0
-        }
+    #[test]
+    fn test_aggregate_id_new() {
+        let id1 = AggregateId::new();
+        let id2 = AggregateId::new();
+        assert_ne!(id1, id2);
     }
 
     #[test]
-    fn test_aggregate_id_can_be_cloned() {
-        let id1 = TestId::new();
-        let id2 = id1.clone();
+    fn test_aggregate_id_nil() {
+        let id = AggregateId::nil();
+        assert_eq!(id.to_uuid(), Uuid::nil());
+        assert_eq!(id.to_string(), "00000000-0000-0000-0000-000000000000");
+    }
+
+    #[test]
+    fn test_aggregate_id_default() {
+        let id1: AggregateId = Default::default();
+        let id2: AggregateId = Default::default();
+        assert_ne!(id1, id2);
+    }
+
+    #[test]
+    fn test_aggregate_id_from_uuid() {
+        let uuid = Uuid::new_v4();
+        let id: AggregateId = uuid.into();
+        assert_eq!(id.to_uuid(), uuid);
+    }
+
+    #[test]
+    fn test_aggregate_id_to_uuid() {
+        let id = AggregateId::new();
+        let uuid = id.to_uuid();
+        // Just verify we can convert back
+        assert_eq!(AggregateId::from(uuid), id);
+    }
+
+    #[test]
+    fn test_aggregate_id_clone() {
+        let id1 = AggregateId::new();
+        let id2 = id1;
         assert_eq!(id1, id2);
     }
 
     #[test]
     fn test_aggregate_id_equality() {
         let uuid = Uuid::new_v4();
-        let id1 = TestId::from_uuid(uuid);
-        let id2 = TestId::from_uuid(uuid);
-        let id3 = TestId::new();
+        let id1 = AggregateId::from(uuid);
+        let id2 = AggregateId::from(uuid);
+        let id3 = AggregateId::new();
 
         assert_eq!(id1, id2);
         assert_ne!(id1, id3);
@@ -105,17 +283,16 @@ mod tests {
     #[test]
     fn test_aggregate_id_display() {
         let uuid = Uuid::nil();
-        let id = TestId::from_uuid(uuid);
+        let id = AggregateId::from(uuid);
         let display = format!("{id}");
-        assert!(display.starts_with("Test-"));
-        assert!(display.contains(&uuid.to_string()));
+        assert_eq!(display, uuid.to_string());
     }
 
     #[test]
     fn test_aggregate_id_debug() {
-        let id = TestId::new();
+        let id = AggregateId::new();
         let debug = format!("{id:?}");
-        assert!(debug.contains("TestId"));
+        assert!(debug.contains("AggregateId"));
     }
 
     #[test]
@@ -123,12 +300,12 @@ mod tests {
         use std::collections::HashSet;
 
         let uuid = Uuid::new_v4();
-        let id1 = TestId::from_uuid(uuid);
-        let id2 = TestId::from_uuid(uuid);
+        let id1 = AggregateId::from(uuid);
+        let id2 = AggregateId::from(uuid);
 
         let mut set = HashSet::new();
-        set.insert(id1.clone());
-        set.insert(id2.clone());
+        set.insert(id1);
+        set.insert(id2);
 
         // Same UUID should result in only one entry in the set
         assert_eq!(set.len(), 1);
@@ -140,95 +317,118 @@ mod tests {
         fn assert_send<T: Send>() {}
         fn assert_sync<T: Sync>() {}
 
-        assert_send::<TestId>();
-        assert_sync::<TestId>();
-    }
-
-    // Test with different types
-    #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-    struct IntegerId(i64);
-
-    impl Display for IntegerId {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "{}", self.0)
-        }
-    }
-
-    impl AggregateId for IntegerId {
-        fn to_uuid(&self) -> Uuid {
-            // For non-UUID IDs, we can create a deterministic UUID from the ID
-            // This is just for testing purposes
-            let mut bytes = [0u8; 16];
-            bytes[0..8].copy_from_slice(&self.0.to_le_bytes());
-            Uuid::from_bytes(bytes)
-        }
+        assert_send::<AggregateId>();
+        assert_sync::<AggregateId>();
     }
 
     #[test]
-    fn test_integer_aggregate_id() {
-        let id1 = IntegerId(42);
-        let id2 = IntegerId(42);
-        let id3 = IntegerId(99);
-
-        assert_eq!(id1, id2);
-        assert_ne!(id1, id3);
-        assert_eq!(format!("{id1}"), "42");
-    }
-
-    // Test with string-based ID
-    #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-    struct StringId(String);
-
-    impl Display for StringId {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "{}", self.0)
-        }
-    }
-
-    impl AggregateId for StringId {
-        fn to_uuid(&self) -> Uuid {
-            // For string IDs, we can create a UUID from the string hash
-            // This is just for testing purposes
-            use std::collections::hash_map::DefaultHasher;
-            use std::hash::Hasher;
-
-            let mut hasher = DefaultHasher::new();
-            hasher.write(self.0.as_bytes());
-            let hash = hasher.finish();
-
-            let mut bytes = [0u8; 16];
-            bytes[0..8].copy_from_slice(&hash.to_le_bytes());
-            Uuid::from_bytes(bytes)
-        }
-    }
-
-    #[test]
-    fn test_string_aggregate_id() {
-        let id1 = StringId("user-123".to_string());
-        let id2 = StringId("user-123".to_string());
-        let id3 = StringId("user-456".to_string());
-
-        assert_eq!(id1, id2);
-        assert_ne!(id1, id3);
-        assert_eq!(format!("{id1}"), "user-123");
-    }
-
-    #[test]
-    fn test_to_uuid() {
+    fn test_aggregate_id_from_conversion() {
         let uuid = Uuid::new_v4();
-        let id = TestId::from_uuid(uuid);
+        let id: AggregateId = uuid.into();
         assert_eq!(id.to_uuid(), uuid);
     }
 
     #[test]
-    fn test_to_uuid_deterministic() {
-        // Same input should produce same UUID
-        let id1 = IntegerId(42);
-        let id2 = IntegerId(42);
-        assert_eq!(id1.to_uuid(), id2.to_uuid());
+    fn test_aggregate_id_into_conversion() {
+        let uuid = Uuid::new_v4();
+        let id = AggregateId::from(uuid);
+        let converted: Uuid = id.into();
+        assert_eq!(converted, uuid);
+    }
 
-        // Different input should produce different UUID
-        let id3 = IntegerId(99);
-        assert_ne!(id1.to_uuid(), id3.to_uuid());
+    #[test]
+    fn test_aggregate_id_serialization() {
+        let id = AggregateId::new();
+
+        let serialized = serde_json::to_string(&id).unwrap();
+        let deserialized: AggregateId = serde_json::from_str(&serialized).unwrap();
+
+        assert_eq!(id, deserialized);
+    }
+
+    #[test]
+    fn test_aggregate_id_serialization_format() {
+        let uuid = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+        let id = AggregateId::from(uuid);
+
+        let serialized = serde_json::to_string(&id).unwrap();
+        // Should serialize as a quoted UUID string
+        assert_eq!(serialized, r#""550e8400-e29b-41d4-a716-446655440000""#);
+    }
+
+    // Test newtype pattern usage with transparent access
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    #[repr(transparent)]
+    struct UserId(AggregateId);
+
+    impl UserId {
+        fn new() -> Self {
+            Self(AggregateId::new())
+        }
+    }
+
+    impl std::ops::Deref for UserId {
+        type Target = AggregateId;
+        fn deref(&self) -> &Self::Target {
+            &self.0
+        }
+    }
+
+    impl AsRef<AggregateId> for UserId {
+        fn as_ref(&self) -> &AggregateId {
+            &self.0
+        }
+    }
+
+    impl From<UserId> for AggregateId {
+        fn from(id: UserId) -> Self {
+            id.0
+        }
+    }
+
+    impl From<AggregateId> for UserId {
+        fn from(id: AggregateId) -> Self {
+            Self(id)
+        }
+    }
+
+    impl Display for UserId {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "User-{}", self.0)
+        }
+    }
+
+    #[test]
+    fn test_newtype_pattern() {
+        let user_id = UserId::new();
+        // Can access AggregateId via Deref
+        let _uuid = user_id.to_uuid();
+        // Can use as_ref
+        let _aggregate_id: &AggregateId = user_id.as_ref();
+    }
+
+    #[test]
+    fn test_newtype_pattern_display() {
+        let aggregate_id = AggregateId::nil();
+        let user_id = UserId::from(aggregate_id);
+        let display = format!("{user_id}");
+        assert!(display.starts_with("User-"));
+        assert!(display.contains(&Uuid::nil().to_string()));
+    }
+
+    #[test]
+    fn test_newtype_pattern_conversion() {
+        let original = AggregateId::new();
+        let user_id = UserId::from(original);
+        let converted: AggregateId = user_id.into();
+        assert_eq!(original, converted);
+    }
+
+    #[test]
+    fn test_newtype_pattern_deref() {
+        let user_id = UserId::new();
+        // Via Deref, can call AggregateId methods directly
+        let uuid = user_id.to_uuid();
+        assert_eq!(*user_id, AggregateId::from(uuid));
     }
 }

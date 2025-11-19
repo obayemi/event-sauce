@@ -732,9 +732,7 @@ mod tests {
     use super::*;
     use crate::{AggregateId, DomainEvent, Version};
     use chrono::Utc;
-    use std::fmt;
     use thiserror::Error;
-    use uuid::Uuid;
 
     #[derive(Debug, Error)]
     #[error("Test error: {0}")]
@@ -752,27 +750,6 @@ mod tests {
     struct TestState {
         value: i32,
         status: Status,
-    }
-
-    #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-    struct TestId(Uuid);
-
-    impl TestId {
-        fn new() -> Self {
-            Self(Uuid::new_v4())
-        }
-    }
-
-    impl fmt::Display for TestId {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            write!(f, "Test-{}", self.0)
-        }
-    }
-
-    impl AggregateId for TestId {
-        fn to_uuid(&self) -> Uuid {
-            self.0
-        }
     }
 
     #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -803,7 +780,7 @@ mod tests {
     }
 
     struct TestAggregate {
-        id: TestId,
+        id: AggregateId,
         state: TestState,
         version: Version,
         pending_events: Vec<TestEvent>,
@@ -811,11 +788,10 @@ mod tests {
 
     impl crate::Aggregate for TestAggregate {
         type Event = TestEvent;
-        type Id = TestId;
         type Error = TestError;
         type State = TestState;
 
-        fn new(id: Self::Id) -> Self {
+        fn new(id: AggregateId) -> Self {
             Self {
                 id,
                 state: TestState {
@@ -827,7 +803,7 @@ mod tests {
             }
         }
 
-        fn aggregate_id(&self) -> &Self::Id {
+        fn aggregate_id(&self) -> &AggregateId {
             &self.id
         }
 
@@ -866,7 +842,7 @@ mod tests {
             &self.state
         }
 
-        fn from_snapshot(id: Self::Id, version: Version, state: Self::State) -> Self {
+        fn from_snapshot(id: AggregateId, version: Version, state: Self::State) -> Self {
             Self {
                 id,
                 state,
@@ -911,7 +887,7 @@ mod tests {
 
     #[test]
     fn test_apply_event_without_validation() {
-        let mut aggregate = TestAggregate::new(TestId::new());
+        let mut aggregate = TestAggregate::new(AggregateId::new());
         aggregate.state.value = 10;
         aggregate.state.status = Status::Active;
 
@@ -924,7 +900,7 @@ mod tests {
 
     #[test]
     fn test_apply_event_default_validation_succeeds() {
-        let mut aggregate = TestAggregate::new(TestId::new());
+        let mut aggregate = TestAggregate::new(AggregateId::new());
         aggregate.state.value = 10;
         aggregate.state.status = Status::Active;
 
@@ -937,7 +913,7 @@ mod tests {
 
     #[test]
     fn test_apply_event_with_successful_validation() {
-        let mut aggregate = TestAggregate::new(TestId::new());
+        let mut aggregate = TestAggregate::new(AggregateId::new());
         aggregate.state.value = 10;
         aggregate.state.status = Status::Active;
 
@@ -952,7 +928,7 @@ mod tests {
 
     #[test]
     fn test_apply_event_validation_fails_on_inactive_status() {
-        let mut aggregate = TestAggregate::new(TestId::new());
+        let mut aggregate = TestAggregate::new(AggregateId::new());
         aggregate.state.value = 10;
         aggregate.state.status = Status::Inactive;
 
@@ -969,7 +945,7 @@ mod tests {
 
     #[test]
     fn test_apply_event_validation_fails_on_negative_amount() {
-        let mut aggregate = TestAggregate::new(TestId::new());
+        let mut aggregate = TestAggregate::new(AggregateId::new());
         aggregate.state.value = 10;
         aggregate.state.status = Status::Active;
 
@@ -988,7 +964,7 @@ mod tests {
     fn test_apply_event_apply_without_validation() {
         // Apply should work even if validation would fail
         // (for event replay scenarios)
-        let mut aggregate = TestAggregate::new(TestId::new());
+        let mut aggregate = TestAggregate::new(AggregateId::new());
         aggregate.state.value = 10;
         aggregate.state.status = Status::Inactive;
 
@@ -1005,7 +981,7 @@ mod tests {
 
     #[test]
     fn test_apply_event_multiple_applications() {
-        let mut aggregate = TestAggregate::new(TestId::new());
+        let mut aggregate = TestAggregate::new(AggregateId::new());
         aggregate.state.value = 0;
         aggregate.state.status = Status::Active;
 
@@ -1024,12 +1000,12 @@ mod tests {
     fn test_apply_event_is_deterministic() {
         let event = SimpleEvent { amount: 5 };
 
-        let mut aggregate1 = TestAggregate::new(TestId::new());
+        let mut aggregate1 = TestAggregate::new(AggregateId::new());
         aggregate1.state.value = 10;
         aggregate1.state.status = Status::Active;
         event.apply(&mut aggregate1);
 
-        let mut aggregate2 = TestAggregate::new(TestId::new());
+        let mut aggregate2 = TestAggregate::new(AggregateId::new());
         aggregate2.state.value = 10;
         aggregate2.state.status = Status::Active;
         event.apply(&mut aggregate2);
@@ -1064,7 +1040,7 @@ mod tests {
 
     #[test]
     fn test_post_validate_default_succeeds() {
-        let mut aggregate = TestAggregate::new(TestId::new());
+        let mut aggregate = TestAggregate::new(AggregateId::new());
         aggregate.state.value = 10;
         aggregate.state.status = Status::Active;
 
@@ -1077,7 +1053,7 @@ mod tests {
 
     #[test]
     fn test_post_validate_succeeds() {
-        let mut aggregate = TestAggregate::new(TestId::new());
+        let mut aggregate = TestAggregate::new(AggregateId::new());
         aggregate.state.value = 10;
         aggregate.state.status = Status::Active;
 
@@ -1095,7 +1071,7 @@ mod tests {
 
     #[test]
     fn test_post_validate_fails() {
-        let mut aggregate = TestAggregate::new(TestId::new());
+        let mut aggregate = TestAggregate::new(AggregateId::new());
         aggregate.state.value = 10;
         aggregate.state.status = Status::Active;
 
@@ -1117,7 +1093,7 @@ mod tests {
 
     #[test]
     fn test_post_validate_checks_invariants() {
-        let mut aggregate = TestAggregate::new(TestId::new());
+        let mut aggregate = TestAggregate::new(AggregateId::new());
         aggregate.state.value = 18;
         aggregate.state.status = Status::Active;
 

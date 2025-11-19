@@ -323,74 +323,171 @@ fn find_id_field_flexible(fields: &Fields) -> Result<Ident, TokenStream> {
     .into())
 }
 
-/// Derive macro for `AggregateId` trait
+/// Derive macro for creating strongly-typed `AggregateId` wrappers.
 ///
-/// This macro automatically implements the `AggregateId` trait and `Display` trait
-/// for newtype structs wrapping types that implement `Display`.
+/// This macro provides a zero-boilerplate way to create custom aggregate IDs with
+/// transparent access to all `AggregateId` methods via `Deref`.
+///
+/// # What it generates
+///
+/// - `Deref` implementation for transparent method access
+/// - `AsRef<AggregateId>` for reference conversion
+/// - `From<AggregateId>` and `Into<AggregateId>` for conversions
+/// - `Display` implementation (customizable with `#[display]` attribute)
+/// - `new()` constructor that generates a random ID
 ///
 /// # Examples
 ///
+/// ## Basic usage (just 3 lines!)
+///
 /// ```ignore
-/// use uuid::Uuid;
 /// use event_sauce_macros::AggregateId;
 ///
-/// #[derive(AggregateId, Debug, Clone, PartialEq, Eq, Hash)]
-/// struct UserId(Uuid);
+/// #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, AggregateId)]
+/// #[repr(transparent)]
+/// struct UserId(event_sauce_core::AggregateId);
 ///
-/// // Now UserId implements AggregateId and Display automatically
-/// let id = UserId(Uuid::new_v4());
-/// println!("{}", id); // Displays the UUID
+/// let user_id = UserId::new();
+/// // Can call AggregateId methods directly via Deref:
+/// let uuid = user_id.to_uuid();
+/// println!("{}", user_id);
+/// ```
+///
+/// ## With custom display format
+///
+/// ```ignore
+/// #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, AggregateId)]
+/// #[repr(transparent)]
+/// #[display("User-{}")]
+/// struct UserId(event_sauce_core::AggregateId);
+///
+/// let user_id = UserId::new();
+/// assert!(format!("{}", user_id).starts_with("User-"));
 /// ```
 ///
 /// # Requirements
 ///
-/// The macro works with:
-/// - Tuple structs with a single field (e.g., `struct Id(Uuid)`)
-/// - The inner type must implement `Display` for automatic Display implementation
-/// - The struct must implement `Clone`, `Debug`, `PartialEq`, `Eq`, `Hash`
+/// - Must be a tuple struct with exactly one field of type `AggregateId`
+/// - Add `#[repr(transparent)]` for zero-cost abstraction
+/// - Add standard derives: `Debug`, `Clone`, `Copy`, `PartialEq`, `Eq`, `Hash`
 ///
 /// # Panics
 ///
-/// Will fail to compile if the struct is not a tuple struct with exactly one field.
-#[proc_macro_derive(AggregateId)]
+/// Will fail to compile if not a tuple struct with exactly one `AggregateId` field.
+#[proc_macro_derive(AggregateId, attributes(display))]
 pub fn derive_aggregate_id(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let name = &input.ident;
+    let vis = &input.vis;
 
     // Check that this is a tuple struct with one field
-    match &input.data {
+    let field_type = match &input.data {
         Data::Struct(data_struct) => match &data_struct.fields {
             Fields::Unnamed(fields) if fields.unnamed.len() == 1 => {
-                // Valid: tuple struct with one field
+                &fields.unnamed.first().unwrap().ty
             }
             _ => {
                 return syn::Error::new_spanned(
                     name,
-                    "AggregateId can only be derived for tuple structs with exactly one field (e.g., struct Id(Uuid))"
+                    "AggregateId can only be derived for tuple structs with exactly one field.\n\
+                     Example: #[derive(AggregateId)] struct UserId(AggregateId);"
                 )
                 .to_compile_error()
                 .into();
             }
         },
         _ => {
-            return syn::Error::new_spanned(name, "AggregateId can only be derived for structs")
-                .to_compile_error()
-                .into();
+            return syn::Error::new_spanned(
+                name,
+                "AggregateId can only be derived for tuple structs"
+            )
+            .to_compile_error()
+            .into();
+        }
+    };
+
+    // Check if the field type is AggregateId
+    let field_type_str = quote! { #field_type }.to_string();
+    let is_aggregate_id = field_type_str.contains("AggregateId");
+
+    if !is_aggregate_id {
+        return syn::Error::new_spanned(
+            field_type,
+            "The derive(AggregateId) macro expects the inner type to be AggregateId.\n\
+             Example: #[derive(AggregateId)] struct UserId(AggregateId);"
+        )
+        .to_compile_error()
+        .into();
+    }
+
+    // Parse display format attribute if present
+    let mut display_format = None;
+    for attr in &input.attrs {
+        if attr.path().is_ident("display") {
+            if let Ok(value) = attr.parse_args::<syn::LitStr>() {
+                display_format = Some(value.value());
+            }
         }
     }
 
+    let display_impl = if let Some(format) = display_format {
+        quote! {
+            impl std::fmt::Display for #name {
+                fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    write!(f, #format, self.0)
+                }
+            }
+        }
+    } else {
+        // Default: just show the UUID
+        quote! {
+            impl std::fmt::Display for #name {
+                fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    std::fmt::Display::fmt(&self.0, f)
+                }
+            }
+        }
+    };
+
     // Generate the implementation
     let gen = quote! {
-        impl event_sauce_core::AggregateId for #name {
-            fn to_uuid(&self) -> uuid::Uuid {
-                self.0
+        // Implement Deref for transparent access to AggregateId methods
+        impl std::ops::Deref for #name {
+            type Target = event_sauce_core::AggregateId;
+
+            fn deref(&self) -> &Self::Target {
+                &self.0
             }
         }
 
-        // Auto-implement Display by delegating to the inner type
-        impl std::fmt::Display for #name {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                std::fmt::Display::fmt(&self.0, f)
+        // Implement AsRef for conversion to &AggregateId
+        impl std::convert::AsRef<event_sauce_core::AggregateId> for #name {
+            fn as_ref(&self) -> &event_sauce_core::AggregateId {
+                &self.0
+            }
+        }
+
+        // Implement From<AggregateId> for easy construction
+        impl std::convert::From<event_sauce_core::AggregateId> for #name {
+            fn from(id: event_sauce_core::AggregateId) -> Self {
+                Self(id)
+            }
+        }
+
+        // Implement Into<AggregateId> for easy conversion
+        impl std::convert::From<#name> for event_sauce_core::AggregateId {
+            fn from(id: #name) -> Self {
+                id.0
+            }
+        }
+
+        // Implement Display
+        #display_impl
+
+        // Add a convenient constructor
+        impl #name {
+            #vis fn new() -> Self {
+                Self(event_sauce_core::AggregateId::new())
             }
         }
     };

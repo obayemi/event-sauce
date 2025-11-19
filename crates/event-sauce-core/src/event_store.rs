@@ -524,7 +524,7 @@ pub trait EventStore: Send + Sync {
 /// ```ignore
 /// use event_sauce_core::load;
 ///
-/// let user_id = UserId::from(uuid);
+/// let user_id = AggregateId::new();
 /// let user: User = load(&event_store, user_id).await?;
 /// ```
 ///
@@ -535,7 +535,7 @@ pub trait EventStore: Send + Sync {
 /// - Events cannot be deserialized
 /// - Snapshot cannot be deserialized
 /// - Event replay fails
-pub async fn load<S, A>(store: &S, aggregate_id: A::Id) -> Result<A>
+pub async fn load<S, A>(store: &S, aggregate_id: AggregateId) -> Result<A>
 where
     S: EventStore,
     A: Aggregate + serde::de::DeserializeOwned,
@@ -864,30 +864,9 @@ mod tests {
 
     use crate::{Aggregate, AggregateError, AggregateId, DomainEvent};
     use chrono::Utc;
-    use std::fmt;
     use thiserror::Error;
 
-    // Test aggregate for event bus testing
-    #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-    struct TestAggregateId(Uuid);
-
-    impl TestAggregateId {
-        fn new() -> Self {
-            Self(Uuid::new_v4())
-        }
-    }
-
-    impl fmt::Display for TestAggregateId {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            write!(f, "TestAggregate-{}", self.0)
-        }
-    }
-
-    impl AggregateId for TestAggregateId {
-        fn to_uuid(&self) -> Uuid {
-            self.0
-        }
-    }
+    // Test aggregate for event bus testing - now uses AggregateId directly
 
     #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
     enum TestAggregateEvent {
@@ -926,7 +905,7 @@ mod tests {
     }
 
     struct TestAgg {
-        id: TestAggregateId,
+        id: AggregateId,
         state: TestAggState,
         version: Version,
         pending_events: Vec<TestAggregateEvent>,
@@ -952,11 +931,10 @@ mod tests {
 
     impl Aggregate for TestAgg {
         type Event = TestAggregateEvent;
-        type Id = TestAggregateId;
         type Error = TestAggErr;
         type State = TestAggState;
 
-        fn new(id: Self::Id) -> Self {
+        fn new(id: AggregateId) -> Self {
             Self {
                 id,
                 state: TestAggState { value: 0 },
@@ -965,7 +943,7 @@ mod tests {
             }
         }
 
-        fn aggregate_id(&self) -> &Self::Id {
+        fn aggregate_id(&self) -> &AggregateId {
             &self.id
         }
 
@@ -1001,7 +979,7 @@ mod tests {
             &self.state
         }
 
-        fn from_snapshot(id: Self::Id, version: Version, state: Self::State) -> Self {
+        fn from_snapshot(id: AggregateId, version: Version, state: Self::State) -> Self {
             Self {
                 id,
                 state,
