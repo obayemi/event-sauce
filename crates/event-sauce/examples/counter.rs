@@ -160,7 +160,6 @@ struct CounterState {
     value: i32,
 }
 
-
 impl CounterState {
     /// Create a new counter state
     fn new(id: CounterId) -> Self {

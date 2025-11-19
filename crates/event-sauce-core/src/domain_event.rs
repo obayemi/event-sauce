@@ -303,9 +303,13 @@ mod tests {
             self.pending_events.clear();
         }
 
-        fn apply<E: Into<Self::Event>>(&mut self, event: E) -> std::result::Result<(), Self::Error> {
+        fn apply<E: Into<Self::Event>>(
+            &mut self,
+            event: E,
+        ) -> std::result::Result<(), Self::Error> {
             let event = event.into();
-            self.apply_internal(&event).expect("apply should not fail in tests");
+            self.apply_internal(&event)
+                .expect("apply should not fail in tests");
             self.pending_events.push(event);
             Ok(())
         }
@@ -511,9 +515,13 @@ mod tests {
             self.pending_events.clear();
         }
 
-        fn apply<E: Into<Self::Event>>(&mut self, event: E) -> std::result::Result<(), Self::Error> {
+        fn apply<E: Into<Self::Event>>(
+            &mut self,
+            event: E,
+        ) -> std::result::Result<(), Self::Error> {
             let event = event.into();
-            self.apply_internal(&event).expect("apply should not fail in tests");
+            self.apply_internal(&event)
+                .expect("apply should not fail in tests");
             self.pending_events.push(event);
             Ok(())
         }
@@ -593,9 +601,13 @@ mod tests {
             self.pending_events.clear();
         }
 
-        fn apply<E: Into<Self::Event>>(&mut self, event: E) -> std::result::Result<(), Self::Error> {
+        fn apply<E: Into<Self::Event>>(
+            &mut self,
+            event: E,
+        ) -> std::result::Result<(), Self::Error> {
             let event = event.into();
-            self.apply_internal(&event).expect("apply should not fail in tests");
+            self.apply_internal(&event)
+                .expect("apply should not fail in tests");
             self.pending_events.push(event);
             Ok(())
         }

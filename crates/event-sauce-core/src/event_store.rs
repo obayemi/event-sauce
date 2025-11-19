@@ -725,7 +725,7 @@ mod tests {
     }
 
     // Test utilities
-    
+
     use crate::{Aggregate, AggregateError, AggregateId, DomainEvent};
     use chrono::Utc;
     use std::fmt;
@@ -840,7 +840,10 @@ mod tests {
             self.pending_events.clear();
         }
 
-        fn apply<E: Into<Self::Event>>(&mut self, event: E) -> std::result::Result<(), Self::Error> {
+        fn apply<E: Into<Self::Event>>(
+            &mut self,
+            event: E,
+        ) -> std::result::Result<(), Self::Error> {
             let event = event.into();
             self.apply_internal(&event)?;
             self.pending_events.push(event);

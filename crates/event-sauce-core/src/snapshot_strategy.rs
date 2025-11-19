@@ -188,7 +188,8 @@ impl EveryNEvents {
     /// let strategy = EveryNEvents::new(50);
     /// assert_eq!(strategy.interval(), 50);
     /// ```
-    #[must_use] pub fn new(interval: u32) -> Self {
+    #[must_use]
+    pub fn new(interval: u32) -> Self {
         assert!(interval > 0, "Snapshot interval must be greater than 0");
         Self(interval)
     }
@@ -203,7 +204,8 @@ impl EveryNEvents {
     /// let strategy = EveryNEvents(100);
     /// assert_eq!(strategy.interval(), 100);
     /// ```
-    #[must_use] pub fn interval(&self) -> u32 {
+    #[must_use]
+    pub fn interval(&self) -> u32 {
         self.0
     }
 }
@@ -213,7 +215,9 @@ impl SnapshotStrategy for EveryNEvents {
         if current_version.as_i32() <= 0 {
             return false;
         }
-        (current_version.as_i32() as u32) % self.0 == 0
+        #[allow(clippy::cast_sign_loss)] // Safe because we've checked version > 0
+        let version_u32 = current_version.as_i32() as u32;
+        version_u32 % self.0 == 0
     }
 }
 

@@ -258,7 +258,6 @@ struct ShoppingCartState {
     checked_out: bool,
 }
 
-
 impl ShoppingCartState {
     fn new(id: CartId) -> Self {
         Self {

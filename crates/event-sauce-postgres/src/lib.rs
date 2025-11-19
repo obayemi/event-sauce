@@ -4,6 +4,7 @@
 //!
 //! Provides production-ready `PostgreSQL` implementations of:
 //! - `EventStore` - Durable event persistence with ACID guarantees
+//! - `CheckpointStore` - Durable checkpoint tracking for subscriptions
 //!
 //! # Features
 //!
@@ -94,6 +95,8 @@
 #![deny(clippy::all)]
 #![warn(clippy::pedantic)]
 
+mod checkpoint_store;
 mod event_store;
 
+pub use checkpoint_store::{PostgresCheckpointStore, PostgresCheckpointStoreBuilder};
 pub use event_store::{PostgresEventStore, PostgresEventStoreBuilder};

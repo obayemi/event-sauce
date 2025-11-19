@@ -10,48 +10,16 @@
 //! Run with: `cargo run --example task-projections --features "memory,macros"`
 
 use chrono::{DateTime, Utc};
-use event_sauce::event_sauce_memory::InMemoryEventStore;
+use event_sauce::event_sauce_memory::{InMemoryCheckpointStore, InMemoryEventStore};
 use event_sauce::{
-    ApplyEvent, DomainEvent, EventEnvelope, EventFilter, EventStore, Result, Subscription,
-    CheckpointStrategy, CheckpointStore, StreamId, Version, Position,
+    ApplyEvent, CheckpointStore, CheckpointStrategy, DomainEvent, EventEnvelope, EventFilter,
+    EventStore, Result, StreamId, Subscription, Version,
 };
 use event_sauce_macros::{AggregateError, AggregateId, AggregateState, Event};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
-use async_trait::async_trait;
-
-/// Simple in-memory checkpoint store
-#[derive(Clone, Default)]
-struct SimpleCheckpointStore {
-    checkpoints: Arc<Mutex<HashMap<String, Position>>>,
-}
-
-#[async_trait]
-impl CheckpointStore for SimpleCheckpointStore {
-    async fn save_checkpoint(&self, subscription_name: &str, position: Position) -> Result<()> {
-        self.checkpoints
-            .lock()
-            .unwrap()
-            .insert(subscription_name.to_string(), position);
-        Ok(())
-    }
-
-    async fn load_checkpoint(&self, subscription_name: &str) -> Result<Option<Position>> {
-        Ok(self
-            .checkpoints
-            .lock()
-            .unwrap()
-            .get(subscription_name)
-            .copied())
-    }
-
-    async fn delete_checkpoint(&self, subscription_name: &str) -> Result<()> {
-        self.checkpoints.lock().unwrap().remove(subscription_name);
-        Ok(())
-    }
-}
 
 /// Task status enum
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
@@ -99,6 +67,7 @@ struct TaskId(Uuid);
 
 /// Error type for task operations
 #[derive(AggregateError, Debug, Clone, thiserror::Error)]
+#[allow(dead_code)]
 enum TaskError {
     #[error("Task not found")]
     NotFound,
@@ -197,10 +166,7 @@ impl TasksByAssigneeState {
             TaskEvent::Created(Created {
                 task_id, assignee, ..
             }) => {
-                self.assignments
-                    .entry(assignee)
-                    .or_insert_with(Vec::new)
-                    .push(task_id);
+                self.assignments.entry(assignee).or_default().push(task_id);
             }
             TaskEvent::Assigned(Assigned {
                 task_id,
@@ -213,7 +179,7 @@ impl TasksByAssigneeState {
                 }
                 self.assignments
                     .entry(to_assignee)
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .push(task_id);
             }
             _ => {}
@@ -249,7 +215,7 @@ async fn main() -> Result<()> {
     println!("✓ Created event store");
 
     // Create checkpoint store
-    let checkpoint_store = Arc::new(SimpleCheckpointStore::default());
+    let checkpoint_store = Arc::new(InMemoryCheckpointStore::new());
     println!("✓ Created checkpoint store\n");
 
     // Generate task IDs
@@ -320,7 +286,11 @@ async fn main() -> Result<()> {
     // Append all events to the store
     let dummy_id = Uuid::new_v4();
     store
-        .append(StreamId::new("Task", dummy_id), events.clone(), Version::initial())
+        .append(
+            StreamId::new("Task", dummy_id),
+            events.clone(),
+            Version::initial(),
+        )
         .await?;
 
     println!("✓ Appended {} events to event store\n", events.len());
@@ -391,9 +361,18 @@ async fn main() -> Result<()> {
     {
         let state = status_state.lock().unwrap();
         println!("📊 Task Count by Status:");
-        println!("  - Todo: {}", state.counts.get(&TaskStatus::Todo).unwrap_or(&0));
-        println!("  - In Progress: {}", state.counts.get(&TaskStatus::InProgress).unwrap_or(&0));
-        println!("  - Completed: {}", state.counts.get(&TaskStatus::Completed).unwrap_or(&0));
+        println!(
+            "  - Todo: {}",
+            state.counts.get(&TaskStatus::Todo).unwrap_or(&0)
+        );
+        println!(
+            "  - In Progress: {}",
+            state.counts.get(&TaskStatus::InProgress).unwrap_or(&0)
+        );
+        println!(
+            "  - Completed: {}",
+            state.counts.get(&TaskStatus::Completed).unwrap_or(&0)
+        );
         println!("  - Total: {}\n", state.counts.values().sum::<u64>());
     }
 
@@ -404,9 +383,9 @@ async fn main() -> Result<()> {
         let bob_tasks = state.assignments.get("bob").map_or(0, |v| v.len());
         let charlie_tasks = state.assignments.get("charlie").map_or(0, |v| v.len());
 
-        println!("  - Alice: {} task(s)", alice_tasks);
-        println!("  - Bob: {} task(s)", bob_tasks);
-        println!("  - Charlie: {} task(s)", charlie_tasks);
+        println!("  - Alice: {alice_tasks} task(s)");
+        println!("  - Bob: {bob_tasks} task(s)");
+        println!("  - Charlie: {charlie_tasks} task(s)");
         println!("  - Total assignees: {}\n", state.assignments.len());
     }
 
@@ -418,16 +397,34 @@ async fn main() -> Result<()> {
     // Show checkpoint status
     println!("=== Checkpoint Status ===\n");
 
-    if let Some(checkpoint) = checkpoint_store.load_checkpoint("task_count_by_status").await? {
-        println!("✓ Status projection checkpoint: Position {}", checkpoint.as_i64());
+    if let Some(checkpoint) = checkpoint_store
+        .load_checkpoint("task_count_by_status")
+        .await?
+    {
+        println!(
+            "✓ Status projection checkpoint: Position {}",
+            checkpoint.as_i64()
+        );
     }
 
-    if let Some(checkpoint) = checkpoint_store.load_checkpoint("tasks_by_assignee").await? {
-        println!("✓ Assignee projection checkpoint: Position {}", checkpoint.as_i64());
+    if let Some(checkpoint) = checkpoint_store
+        .load_checkpoint("tasks_by_assignee")
+        .await?
+    {
+        println!(
+            "✓ Assignee projection checkpoint: Position {}",
+            checkpoint.as_i64()
+        );
     }
 
-    if let Some(checkpoint) = checkpoint_store.load_checkpoint("completed_tasks_counter").await? {
-        println!("✓ Completed tasks projection checkpoint: Position {}", checkpoint.as_i64());
+    if let Some(checkpoint) = checkpoint_store
+        .load_checkpoint("completed_tasks_counter")
+        .await?
+    {
+        println!(
+            "✓ Completed tasks projection checkpoint: Position {}",
+            checkpoint.as_i64()
+        );
     }
 
     println!("\n{}", "=".repeat(70));

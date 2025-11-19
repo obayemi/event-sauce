@@ -77,7 +77,8 @@ impl SnapshotConfig {
     ///     .default_strategy(NeverSnapshot)
     ///     .build();
     /// ```
-    #[must_use] pub fn builder() -> SnapshotConfigBuilder {
+    #[must_use]
+    pub fn builder() -> SnapshotConfigBuilder {
         SnapshotConfigBuilder::new()
     }
 
@@ -99,7 +100,8 @@ impl SnapshotConfig {
     /// let strategy = config.strategy_for_type("User");
     /// assert!(!strategy.should_snapshot(Version::new(100)));
     /// ```
-    #[must_use] pub fn disabled() -> Self {
+    #[must_use]
+    pub fn disabled() -> Self {
         Self {
             default_strategy: Arc::new(NeverSnapshot),
             per_type_strategies: HashMap::new(),
@@ -126,7 +128,8 @@ impl SnapshotConfig {
     /// assert!(strategy.should_snapshot(Version::new(1)));
     /// assert!(strategy.should_snapshot(Version::new(100)));
     /// ```
-    #[must_use] pub fn always() -> Self {
+    #[must_use]
+    pub fn always() -> Self {
         Self {
             default_strategy: Arc::new(AlwaysSnapshot),
             per_type_strategies: HashMap::new(),
@@ -162,9 +165,12 @@ impl SnapshotConfig {
     /// assert!(!order_strategy.should_snapshot(Version::new(1)));
     /// assert!(order_strategy.should_snapshot(Version::new(100)));
     /// ```
-    #[must_use] pub fn strategy_for_type(&self, aggregate_type: &str) -> &dyn SnapshotStrategy {
-        self.per_type_strategies
-            .get(aggregate_type).map_or_else(|| self.default_strategy.as_ref(), std::convert::AsRef::as_ref)
+    #[must_use]
+    pub fn strategy_for_type(&self, aggregate_type: &str) -> &dyn SnapshotStrategy {
+        self.per_type_strategies.get(aggregate_type).map_or_else(
+            || self.default_strategy.as_ref(),
+            std::convert::AsRef::as_ref,
+        )
     }
 
     /// Returns whether snapshots should be used when loading aggregates.
@@ -181,7 +187,8 @@ impl SnapshotConfig {
     ///
     /// assert!(config.use_snapshots_on_load());
     /// ```
-    #[must_use] pub fn use_snapshots_on_load(&self) -> bool {
+    #[must_use]
+    pub fn use_snapshots_on_load(&self) -> bool {
         self.use_snapshots_on_load
     }
 
@@ -199,7 +206,8 @@ impl SnapshotConfig {
     /// let strategy = config.default_strategy();
     /// assert!(strategy.should_snapshot(Version::new(100)));
     /// ```
-    #[must_use] pub fn default_strategy(&self) -> &dyn SnapshotStrategy {
+    #[must_use]
+    pub fn default_strategy(&self) -> &dyn SnapshotStrategy {
         self.default_strategy.as_ref()
     }
 }
@@ -212,7 +220,7 @@ impl std::fmt::Debug for SnapshotConfig {
                 "per_type_overrides",
                 &self.per_type_strategies.keys().collect::<Vec<_>>(),
             )
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -243,7 +251,8 @@ impl SnapshotConfigBuilder {
     /// - Default strategy: [`EveryNEvents(100)`] - snapshots every 100 events
     /// - No per-type overrides
     /// - Use snapshots on load: `true`
-    #[must_use] pub fn new() -> Self {
+    #[must_use]
+    pub fn new() -> Self {
         Self {
             default_strategy: Arc::new(EveryNEvents(100)),
             per_type_strategies: HashMap::new(),
@@ -269,6 +278,7 @@ impl SnapshotConfigBuilder {
     ///     .default_strategy(EveryNEvents(100))
     ///     .build();
     /// ```
+    #[must_use]
     pub fn default_strategy<S>(mut self, strategy: S) -> Self
     where
         S: SnapshotStrategy + 'static,
@@ -298,6 +308,7 @@ impl SnapshotConfigBuilder {
     ///     .per_type_override("Order", EveryNEvents(50))
     ///     .build();
     /// ```
+    #[must_use]
     pub fn per_type_override<S>(mut self, aggregate_type: impl Into<String>, strategy: S) -> Self
     where
         S: SnapshotStrategy + 'static,
@@ -328,7 +339,8 @@ impl SnapshotConfigBuilder {
     ///
     /// assert!(!config.use_snapshots_on_load());
     /// ```
-    #[must_use] pub fn use_snapshots_on_load(mut self, use_snapshots: bool) -> Self {
+    #[must_use]
+    pub fn use_snapshots_on_load(mut self, use_snapshots: bool) -> Self {
         self.use_snapshots_on_load = use_snapshots;
         self
     }
@@ -344,7 +356,8 @@ impl SnapshotConfigBuilder {
     ///     .default_strategy(EveryNEvents(100))
     ///     .build();
     /// ```
-    #[must_use] pub fn build(self) -> SnapshotConfig {
+    #[must_use]
+    pub fn build(self) -> SnapshotConfig {
         SnapshotConfig {
             default_strategy: self.default_strategy,
             per_type_strategies: self.per_type_strategies,

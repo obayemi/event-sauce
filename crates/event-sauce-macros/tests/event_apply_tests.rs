@@ -13,10 +13,8 @@ use serde::{Deserialize, Serialize};
 // ============================================================================
 
 /// Test aggregate ID
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 struct TestId(i32);
-
 
 impl std::fmt::Display for TestId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

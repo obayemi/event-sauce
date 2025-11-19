@@ -632,7 +632,12 @@ mod tests {
         }
 
         async fn load_checkpoint(&self, subscription_name: &str) -> Result<Option<Position>> {
-            Ok(self.checkpoints.read().await.get(subscription_name).copied())
+            Ok(self
+                .checkpoints
+                .read()
+                .await
+                .get(subscription_name)
+                .copied())
         }
 
         async fn delete_checkpoint(&self, subscription_name: &str) -> Result<()> {
@@ -690,11 +695,7 @@ mod tests {
         ) -> Result<impl Stream<Item = Result<EventEnvelope>> + Send> {
             let events = self.events.lock().unwrap().clone();
             let from_idx = from_position.as_i64() as usize;
-            let filtered_events: Vec<_> = events
-                .into_iter()
-                .skip(from_idx)
-                .map(Ok)
-                .collect();
+            let filtered_events: Vec<_> = events.into_iter().skip(from_idx).map(Ok).collect();
             Ok(stream::iter(filtered_events))
         }
 
@@ -721,10 +722,7 @@ mod tests {
 
         // Add some events
         for i in 0..5 {
-            store.add_event(create_test_envelope(
-                &format!("Event{i}"),
-                "TestAggregate",
-            ));
+            store.add_event(create_test_envelope(&format!("Event{i}"), "TestAggregate"));
         }
 
         let processed = Arc::new(Mutex::new(Vec::<String>::new()));
@@ -783,10 +781,7 @@ mod tests {
 
         // Add events
         for i in 0..5 {
-            store.add_event(create_test_envelope(
-                &format!("Event{i}"),
-                "TestAggregate",
-            ));
+            store.add_event(create_test_envelope(&format!("Event{i}"), "TestAggregate"));
         }
 
         // Save checkpoint at position 2

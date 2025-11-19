@@ -308,9 +308,11 @@ fn test_use_in_hashmap() {
 
 #[test]
 fn test_use_in_vec() {
-    let ids = [UserId(Uuid::new_v4()),
+    let ids = [
         UserId(Uuid::new_v4()),
-        UserId(Uuid::new_v4())];
+        UserId(Uuid::new_v4()),
+        UserId(Uuid::new_v4()),
+    ];
 
     assert_eq!(ids.len(), 3);
 }

@@ -4,8 +4,7 @@
 
 use async_trait::async_trait;
 use event_sauce_core::{
-    Error, EventEnvelope, EventStore, Position, Result, Snapshot, SnapshotConfig, StreamId,
-    Version,
+    Error, EventEnvelope, EventStore, Position, Result, Snapshot, SnapshotConfig, StreamId, Version,
 };
 use futures::stream::{self, Stream};
 use sqlx::PgPool;
@@ -213,6 +212,7 @@ impl PostgresEventStore {
     /// - The database connection fails
     /// - The migrations cannot be applied due to permission issues
     /// - There are SQL syntax errors in migration files
+    #[allow(clippy::too_many_lines)]
     pub async fn migrate(&self) -> Result<()> {
         // Create schema if it doesn't exist (skip for public schema)
         if self.schema != "public" {
@@ -238,11 +238,9 @@ impl PostgresEventStore {
             .map_err(|e| Error::custom(format!("Failed to create migrations table: {e}")))?;
 
         // Check if migration has already been applied
-        let check_query = format!(
-            "SELECT COUNT(*) FROM {migrations_table} WHERE version = $1"
-        );
+        let check_query = format!("SELECT COUNT(*) FROM {migrations_table} WHERE version = $1");
         let count: i64 = sqlx::query_scalar(&check_query)
-            .bind(20250101000000i64)
+            .bind(20_250_101_000_000_i64)
             .fetch_one(&self.pool)
             .await
             .map_err(|e| Error::custom(format!("Failed to check migration status: {e}")))?;
@@ -324,11 +322,10 @@ impl PostgresEventStore {
             .map_err(|e| Error::custom(format!("Failed to create snapshots index: {e}")))?;
 
         // Record the migration
-        let record_query = format!(
-            "INSERT INTO {migrations_table} (version, description) VALUES ($1, $2)"
-        );
+        let record_query =
+            format!("INSERT INTO {migrations_table} (version, description) VALUES ($1, $2)");
         sqlx::query(&record_query)
-            .bind(20250101000000i64)
+            .bind(20_250_101_000_000_i64)
             .bind("create_events_table")
             .execute(&self.pool)
             .await
@@ -1153,8 +1150,7 @@ mod tests {
 
         let host = container.get_host().await.unwrap();
         let port = container.get_host_port_ipv4(5432).await.unwrap();
-        let connection_string =
-            format!("postgresql://postgres:postgres@{host}:{port}/postgres");
+        let connection_string = format!("postgresql://postgres:postgres@{host}:{port}/postgres");
 
         let pool = PgPool::connect(&connection_string).await.unwrap();
 
@@ -1198,8 +1194,7 @@ mod tests {
 
         let host = container.get_host().await.unwrap();
         let port = container.get_host_port_ipv4(5432).await.unwrap();
-        let connection_string =
-            format!("postgresql://postgres:postgres@{host}:{port}/postgres");
+        let connection_string = format!("postgresql://postgres:postgres@{host}:{port}/postgres");
 
         let pool = PgPool::connect(&connection_string).await.unwrap();
         let store = PostgresEventStore::new(pool.clone());
@@ -1302,8 +1297,7 @@ mod tests {
 
         let host = container.get_host().await.unwrap();
         let port = container.get_host_port_ipv4(5432).await.unwrap();
-        let connection_string =
-            format!("postgresql://postgres:postgres@{host}:{port}/postgres");
+        let connection_string = format!("postgresql://postgres:postgres@{host}:{port}/postgres");
 
         let pool = PgPool::connect(&connection_string).await.unwrap();
 
@@ -1356,8 +1350,7 @@ mod tests {
 
         let host = container.get_host().await.unwrap();
         let port = container.get_host_port_ipv4(5432).await.unwrap();
-        let connection_string =
-            format!("postgresql://postgres:postgres@{host}:{port}/postgres");
+        let connection_string = format!("postgresql://postgres:postgres@{host}:{port}/postgres");
 
         let pool = PgPool::connect(&connection_string).await.unwrap();
 
@@ -1380,13 +1373,12 @@ mod tests {
             .unwrap();
 
         // Verify data is in the custom schema, not public
-        let count_in_custom_schema: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM events_schema.events WHERE aggregate_id = $1",
-        )
-        .bind(aggregate_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+        let count_in_custom_schema: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM events_schema.events WHERE aggregate_id = $1")
+                .bind(aggregate_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
 
         assert_eq!(count_in_custom_schema, 1);
 

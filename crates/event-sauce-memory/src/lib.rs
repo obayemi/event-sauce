@@ -5,6 +5,7 @@
 //! This crate provides fast, in-memory implementations of:
 //! - `EventStore`
 //! - `SnapshotStore`
+//! - `CheckpointStore`
 //!
 //! Perfect for unit tests and development.
 
@@ -12,6 +13,8 @@
 #![deny(clippy::all)]
 #![warn(clippy::pedantic)]
 
+mod checkpoint_store;
 mod event_store;
 
+pub use checkpoint_store::InMemoryCheckpointStore;
 pub use event_store::InMemoryEventStore;
