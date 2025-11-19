@@ -499,8 +499,12 @@ mod tests {
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
+    struct SimpleAggregateState;
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
     struct SimpleAggregate {
         id: TestAggregateId,
+        state: SimpleAggregateState,
         version: crate::Version,
         pending_events: Vec<SimpleEvent>,
     }
@@ -509,10 +513,12 @@ mod tests {
         type Event = SimpleEvent;
         type Id = TestAggregateId;
         type Error = TestAggregateError;
+        type State = SimpleAggregateState;
 
         fn new(id: Self::Id) -> Self {
             Self {
                 id,
+                state: SimpleAggregateState,
                 version: crate::Version::initial(),
                 pending_events: Vec::new(),
             }
@@ -548,6 +554,19 @@ mod tests {
         fn apply_internal(&mut self, _event: &Self::Event) -> std::result::Result<(), Self::Error> {
             self.version = self.version.next();
             Ok(())
+        }
+
+        fn state(&self) -> &Self::State {
+            &self.state
+        }
+
+        fn from_snapshot(id: Self::Id, version: crate::Version, state: Self::State) -> Self {
+            Self {
+                id,
+                state,
+                version,
+                pending_events: Vec::new(),
+            }
         }
     }
 

@@ -532,6 +532,11 @@ mod tests {
         }
     }
 
+    #[derive(serde::Serialize, serde::Deserialize, Clone)]
+    struct TestAggregateState {
+        value: i32,
+    }
+
     struct TestAggregate {
         id: TestId,
         value: i32,
@@ -572,6 +577,7 @@ mod tests {
         type Event = TestEvent;
         type Id = TestId;
         type Error = TestAggregateError;
+        type State = TestAggregateState;
 
         fn new(id: Self::Id) -> Self {
             Self {
@@ -609,6 +615,32 @@ mod tests {
             self.apply_event(event);
             self.version = self.version.next();
             Ok(())
+        }
+
+        fn state(&self) -> &Self::State {
+            // For testing, create state on the fly
+            // In production, aggregates should store their state
+            thread_local! {
+                static STATE: std::cell::RefCell<TestAggregateState> = std::cell::RefCell::new(TestAggregateState { value: 0 });
+            }
+            STATE.with(|s| {
+                *s.borrow_mut() = TestAggregateState { value: self.value };
+                unsafe {
+                    // SAFETY: This is only for testing purposes and the reference is valid
+                    // for the duration of the test. In production code, state should be
+                    // properly stored in the aggregate struct.
+                    &*(s.as_ptr() as *const TestAggregateState)
+                }
+            })
+        }
+
+        fn from_snapshot(id: Self::Id, version: Version, state: Self::State) -> Self {
+            Self {
+                id,
+                value: state.value,
+                version,
+                pending_events: Vec::new(),
+            }
         }
     }
 

@@ -21,7 +21,7 @@
 
 use chrono::Utc;
 use event_sauce_core::{load, Aggregate, ApplyEvent, EventStore, EveryNEvents, SnapshotConfig};
-use event_sauce_macros::{AggregateError, AggregateId, aggregate, Event as DeriveEvent};
+use event_sauce_macros::{aggregate, AggregateError, AggregateId, Event as DeriveEvent};
 use event_sauce_postgres::PostgresEventStore;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
@@ -67,7 +67,7 @@ enum CounterError {
     InvalidAmount(i32),
 }
 
-impl ApplyEvent<Counter, CounterError> for IncrementedEvent {
+impl ApplyEvent<Counter> for IncrementedEvent {
     fn apply(&self, counter: &mut Counter) {
         counter.value += self.amount;
     }

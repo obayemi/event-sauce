@@ -891,7 +891,10 @@ mod tests {
     }
 
     impl ApplyEvent<TestAggregate> for ValidatedEvent {
-        fn validate(&self, aggregate: &TestAggregate) -> Result<(), <TestAggregate as crate::Aggregate>::Error> {
+        fn validate(
+            &self,
+            aggregate: &TestAggregate,
+        ) -> Result<(), <TestAggregate as crate::Aggregate>::Error> {
             if aggregate.state.status == Status::Inactive {
                 return Err(TestError("Aggregate is inactive".to_string()));
             }
@@ -1045,7 +1048,10 @@ mod tests {
             aggregate.state.value += self.amount;
         }
 
-        fn post_validate(&self, aggregate: &TestAggregate) -> Result<(), <TestAggregate as crate::Aggregate>::Error> {
+        fn post_validate(
+            &self,
+            aggregate: &TestAggregate,
+        ) -> Result<(), <TestAggregate as crate::Aggregate>::Error> {
             if aggregate.state.value > self.max_value {
                 return Err(TestError(format!(
                     "Value {} exceeds maximum {}",

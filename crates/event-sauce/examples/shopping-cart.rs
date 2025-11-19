@@ -10,7 +10,7 @@
 
 use chrono::Utc;
 use event_sauce_core::{Aggregate, ApplyEvent, DomainEvent};
-use event_sauce_macros::{AggregateError, AggregateId, aggregate, Event as DeriveEvent};
+use event_sauce_macros::{aggregate, AggregateError, AggregateId, Event as DeriveEvent};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
@@ -140,15 +140,15 @@ enum CartError {
 // ApplyEvent Implementations - for GENERATED ShoppingCart
 // ============================================================================
 
-impl ApplyEvent<ShoppingCart, CartError> for CartCreatedEvent {
+impl ApplyEvent<ShoppingCart> for CartCreatedEvent {
     fn apply(&self, cart: &mut ShoppingCart) {
         cart.customer_id = self.customer_id.clone();
     }
 }
 
-impl ApplyEvent<ShoppingCart, CartError> for CartItemAddedEvent {
-    fn validate(&self, cart: &ShoppingCart) -> Result<(), CartError> {
-        if cart.checked_out {
+impl ApplyEvent<ShoppingCart> for CartItemAddedEvent {
+    fn validate(&self, agg: &ShoppingCart) -> Result<(), <ShoppingCart as Aggregate>::Error> {
+        if agg.checked_out {
             return Err(CartError::AlreadyCheckedOut);
         }
         if self.quantity == 0 {
@@ -173,12 +173,12 @@ impl ApplyEvent<ShoppingCart, CartError> for CartItemAddedEvent {
     }
 }
 
-impl ApplyEvent<ShoppingCart, CartError> for CartItemRemovedEvent {
-    fn validate(&self, cart: &ShoppingCart) -> Result<(), CartError> {
-        if cart.checked_out {
+impl ApplyEvent<ShoppingCart> for CartItemRemovedEvent {
+    fn validate(&self, agg: &ShoppingCart) -> Result<(), <ShoppingCart as Aggregate>::Error> {
+        if agg.checked_out {
             return Err(CartError::AlreadyCheckedOut);
         }
-        let item = cart
+        let item = agg
             .items
             .get(&self.product_id)
             .ok_or(CartError::ProductNotFound(self.product_id))?;
@@ -203,8 +203,8 @@ impl ApplyEvent<ShoppingCart, CartError> for CartItemRemovedEvent {
 
     // Post-validation: Ensure cart remains in consistent state
     // All items should have positive quantities
-    fn post_validate(&self, cart: &ShoppingCart) -> Result<(), CartError> {
-        for item in cart.items.values() {
+    fn post_validate(&self, agg: &ShoppingCart) -> Result<(), <ShoppingCart as Aggregate>::Error> {
+        for item in agg.items.values() {
             if item.quantity == 0 {
                 return Err(CartError::InvalidQuantity(item.quantity));
             }
@@ -213,9 +213,9 @@ impl ApplyEvent<ShoppingCart, CartError> for CartItemRemovedEvent {
     }
 }
 
-impl ApplyEvent<ShoppingCart, CartError> for CartClearedEvent {
-    fn validate(&self, cart: &ShoppingCart) -> Result<(), CartError> {
-        if cart.checked_out {
+impl ApplyEvent<ShoppingCart> for CartClearedEvent {
+    fn validate(&self, agg: &ShoppingCart) -> Result<(), <ShoppingCart as Aggregate>::Error> {
+        if agg.checked_out {
             return Err(CartError::AlreadyCheckedOut);
         }
         Ok(())
@@ -226,12 +226,12 @@ impl ApplyEvent<ShoppingCart, CartError> for CartClearedEvent {
     }
 }
 
-impl ApplyEvent<ShoppingCart, CartError> for CartCheckedOutEvent {
-    fn validate(&self, cart: &ShoppingCart) -> Result<(), CartError> {
-        if cart.checked_out {
+impl ApplyEvent<ShoppingCart> for CartCheckedOutEvent {
+    fn validate(&self, agg: &ShoppingCart) -> Result<(), <ShoppingCart as Aggregate>::Error> {
+        if agg.checked_out {
             return Err(CartError::AlreadyCheckedOut);
         }
-        if cart.items.is_empty() {
+        if agg.items.is_empty() {
             return Err(CartError::EmptyCart);
         }
         Ok(())

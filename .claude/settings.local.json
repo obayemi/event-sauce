@@ -21,7 +21,8 @@
       "Bash(TRYBUILD=overwrite cargo test:*)",
       "Bash(cargo fix:*)",
       "Bash(cargo install:*)",
-      "Bash(cargo expand:*)"
+      "Bash(cargo expand:*)",
+      "Bash(cargo audit:*)"
     ],
     "deny": [],
     "ask": []

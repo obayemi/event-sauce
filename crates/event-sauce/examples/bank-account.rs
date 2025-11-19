@@ -12,7 +12,7 @@
 
 use chrono::Utc;
 use event_sauce_core::{Aggregate, ApplyEvent, DomainEvent};
-use event_sauce_macros::{AggregateError, AggregateId, aggregate, Event as DeriveEvent};
+use event_sauce_macros::{aggregate, AggregateError, AggregateId, Event as DeriveEvent};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -77,11 +77,7 @@ struct AccountWithdrawnEvent {
 
 /// Bank account events wrapping the separated event structs
 #[derive(DeriveEvent, Debug, Clone, Serialize, Deserialize)]
-#[event(
-    version = 1,
-    type_prefix = "Account",
-    aggregate = "BankAccount"
-)]
+#[event(version = 1, type_prefix = "Account", aggregate = "BankAccount")]
 enum AccountEvent {
     Opened(AccountOpenedEvent),
     Deposited(AccountDepositedEvent),
@@ -112,8 +108,8 @@ enum AccountError {
 // NOTE: ApplyEvent is implemented for the GENERATED BankAccount type.
 // The Event macro auto-generates the apply_event method that dispatches to these.
 
-impl ApplyEvent<BankAccount, AccountError> for AccountOpenedEvent {
-    fn validate(&self, _account: &BankAccount) -> Result<(), AccountError> {
+impl ApplyEvent<BankAccount> for AccountOpenedEvent {
+    fn validate(&self, _account: &BankAccount) -> Result<(), <BankAccount as Aggregate>::Error> {
         if self.initial_balance < 0 {
             return Err(AccountError::InvalidAmount(self.initial_balance));
         }
@@ -127,8 +123,8 @@ impl ApplyEvent<BankAccount, AccountError> for AccountOpenedEvent {
     }
 }
 
-impl ApplyEvent<BankAccount, AccountError> for AccountDepositedEvent {
-    fn validate(&self, account: &BankAccount) -> Result<(), AccountError> {
+impl ApplyEvent<BankAccount> for AccountDepositedEvent {
+    fn validate(&self, account: &BankAccount) -> Result<(), <BankAccount as Aggregate>::Error> {
         if account.status != AccountStatus::Active {
             return Err(AccountError::AccountNotActive(account.status));
         }
@@ -145,8 +141,8 @@ impl ApplyEvent<BankAccount, AccountError> for AccountDepositedEvent {
     }
 }
 
-impl ApplyEvent<BankAccount, AccountError> for AccountWithdrawnEvent {
-    fn validate(&self, account: &BankAccount) -> Result<(), AccountError> {
+impl ApplyEvent<BankAccount> for AccountWithdrawnEvent {
+    fn validate(&self, account: &BankAccount) -> Result<(), <BankAccount as Aggregate>::Error> {
         if account.status != AccountStatus::Active {
             return Err(AccountError::AccountNotActive(account.status));
         }
@@ -171,7 +167,7 @@ impl ApplyEvent<BankAccount, AccountError> for AccountWithdrawnEvent {
 
     // Post-validation: Ensure balance never goes negative (defense in depth)
     // This catches any bugs in the apply logic or validation
-    fn post_validate(&self, account: &BankAccount) -> Result<(), AccountError> {
+    fn post_validate(&self, account: &BankAccount) -> Result<(), <BankAccount as Aggregate>::Error> {
         if account.balance < 0 {
             return Err(AccountError::InsufficientFunds {
                 balance: account.balance,
@@ -198,7 +194,6 @@ struct BankAccount {
 }
 
 impl BankAccount {
-
     /// Get current balance
     fn balance(&self) -> i64 {
         self.balance

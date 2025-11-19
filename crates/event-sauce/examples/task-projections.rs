@@ -22,7 +22,7 @@ use event_sauce::{
     ApplyEvent, CheckpointStore, DomainEvent, EventEnvelope, EventFilter, EventStore, Result,
     StreamId, Version,
 };
-use event_sauce_macros::{AggregateError, AggregateId, aggregate, Event};
+use event_sauce_macros::{aggregate, AggregateError, AggregateId, Event};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -100,7 +100,7 @@ enum TaskEvent {
 }
 
 // ApplyEvent implementations
-impl ApplyEvent<Task, TaskError> for Created {
+impl ApplyEvent<Task> for Created {
     fn apply(&self, task: &mut Task) {
         task.title = self.title.clone();
         task.assignee = self.assignee.clone();
@@ -108,19 +108,19 @@ impl ApplyEvent<Task, TaskError> for Created {
     }
 }
 
-impl ApplyEvent<Task, TaskError> for StatusChanged {
+impl ApplyEvent<Task> for StatusChanged {
     fn apply(&self, task: &mut Task) {
         task.status = self.new_status.clone();
     }
 }
 
-impl ApplyEvent<Task, TaskError> for Assigned {
+impl ApplyEvent<Task> for Assigned {
     fn apply(&self, task: &mut Task) {
         task.assignee = self.to_assignee.clone();
     }
 }
 
-impl ApplyEvent<Task, TaskError> for Completed {
+impl ApplyEvent<Task> for Completed {
     fn apply(&self, task: &mut Task) {
         task.status = TaskStatus::Completed;
     }

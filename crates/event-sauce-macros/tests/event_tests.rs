@@ -57,8 +57,12 @@ struct TestAggregateError;
 impl AggregateError for TestAggregateError {}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+struct TestAggregateState;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct TestAggregate {
     id: TestAggregateId,
+    state: TestAggregateState,
     version: event_sauce_core::Version,
     pending_events: Vec<TestEvent>,
 }
@@ -67,10 +71,12 @@ impl Aggregate for TestAggregate {
     type Event = TestEvent;
     type Id = TestAggregateId;
     type Error = TestAggregateError;
+    type State = TestAggregateState;
 
     fn new(id: Self::Id) -> Self {
         Self {
             id,
+            state: TestAggregateState,
             version: Version::initial(),
             pending_events: Vec::new(),
         }
@@ -102,6 +108,19 @@ impl Aggregate for TestAggregate {
     fn apply_internal(&mut self, _event: &Self::Event) -> Result<(), Self::Error> {
         self.version = self.version.next();
         Ok(())
+    }
+
+    fn state(&self) -> &Self::State {
+        &self.state
+    }
+
+    fn from_snapshot(id: Self::Id, version: Version, state: Self::State) -> Self {
+        Self {
+            id,
+            state,
+            version,
+            pending_events: Vec::new(),
+        }
     }
 }
 
@@ -207,8 +226,12 @@ enum TestEventV2 {
 
 // Mock aggregate for TestEventV2
 #[derive(Debug, Clone, Serialize, Deserialize)]
+struct TestAggregateV2State;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct TestAggregateV2 {
     id: TestAggregateId,
+    state: TestAggregateV2State,
     version: event_sauce_core::Version,
     pending_events: Vec<TestEventV2>,
 }
@@ -217,10 +240,12 @@ impl Aggregate for TestAggregateV2 {
     type Event = TestEventV2;
     type Id = TestAggregateId;
     type Error = TestAggregateError;
+    type State = TestAggregateV2State;
 
     fn new(id: Self::Id) -> Self {
         Self {
             id,
+            state: TestAggregateV2State,
             version: Version::initial(),
             pending_events: Vec::new(),
         }
@@ -252,6 +277,19 @@ impl Aggregate for TestAggregateV2 {
     fn apply_internal(&mut self, _event: &Self::Event) -> Result<(), Self::Error> {
         self.version = self.version.next();
         Ok(())
+    }
+
+    fn state(&self) -> &Self::State {
+        &self.state
+    }
+
+    fn from_snapshot(id: Self::Id, version: Version, state: Self::State) -> Self {
+        Self {
+            id,
+            state,
+            version,
+            pending_events: Vec::new(),
+        }
     }
 }
 
@@ -284,8 +322,12 @@ enum OrderEvent {
 
 // Mock aggregate for OrderEvent
 #[derive(Debug, Clone, Serialize, Deserialize)]
+struct OrderAggregateState;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct OrderAggregate {
     id: TestAggregateId,
+    state: OrderAggregateState,
     version: event_sauce_core::Version,
     pending_events: Vec<OrderEvent>,
 }
@@ -294,10 +336,12 @@ impl Aggregate for OrderAggregate {
     type Event = OrderEvent;
     type Id = TestAggregateId;
     type Error = TestAggregateError;
+    type State = OrderAggregateState;
 
     fn new(id: Self::Id) -> Self {
         Self {
             id,
+            state: OrderAggregateState,
             version: Version::initial(),
             pending_events: Vec::new(),
         }
@@ -329,6 +373,19 @@ impl Aggregate for OrderAggregate {
     fn apply_internal(&mut self, _event: &Self::Event) -> Result<(), Self::Error> {
         self.version = self.version.next();
         Ok(())
+    }
+
+    fn state(&self) -> &Self::State {
+        &self.state
+    }
+
+    fn from_snapshot(id: Self::Id, version: Version, state: Self::State) -> Self {
+        Self {
+            id,
+            state,
+            version,
+            pending_events: Vec::new(),
+        }
     }
 }
 
@@ -359,8 +416,12 @@ enum SimpleEvent {
 
 // Mock aggregate for SimpleEvent
 #[derive(Debug, Clone, Serialize, Deserialize)]
+struct SimpleAggregateState;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct SimpleAggregate {
     id: TestAggregateId,
+    state: SimpleAggregateState,
     version: event_sauce_core::Version,
     pending_events: Vec<SimpleEvent>,
 }
@@ -369,10 +430,12 @@ impl Aggregate for SimpleAggregate {
     type Event = SimpleEvent;
     type Id = TestAggregateId;
     type Error = TestAggregateError;
+    type State = SimpleAggregateState;
 
     fn new(id: Self::Id) -> Self {
         Self {
             id,
+            state: SimpleAggregateState,
             version: Version::initial(),
             pending_events: Vec::new(),
         }
@@ -404,6 +467,19 @@ impl Aggregate for SimpleAggregate {
     fn apply_internal(&mut self, _event: &Self::Event) -> Result<(), Self::Error> {
         self.version = self.version.next();
         Ok(())
+    }
+
+    fn state(&self) -> &Self::State {
+        &self.state
+    }
+
+    fn from_snapshot(id: Self::Id, version: Version, state: Self::State) -> Self {
+        Self {
+            id,
+            state,
+            version,
+            pending_events: Vec::new(),
+        }
     }
 }
 

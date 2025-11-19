@@ -547,9 +547,10 @@ where
         match store.load_snapshot(stream_id.clone()).await? {
             Some(snapshot) => {
                 // Deserialize state from snapshot (not the entire aggregate)
-                let state: A::State = serde_json::from_value(snapshot.snapshot_data).map_err(|e| {
-                    crate::Error::custom(format!("Failed to deserialize snapshot state: {e}"))
-                })?;
+                let state: A::State =
+                    serde_json::from_value(snapshot.snapshot_data).map_err(|e| {
+                        crate::Error::custom(format!("Failed to deserialize snapshot state: {e}"))
+                    })?;
 
                 // Reconstruct aggregate from snapshot components
                 let aggregate = A::from_snapshot(aggregate_id, snapshot.snapshot_version, state);

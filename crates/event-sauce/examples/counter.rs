@@ -13,7 +13,7 @@
 
 use chrono::Utc;
 use event_sauce_core::{load, Aggregate, ApplyEvent, DomainEvent, EventStore};
-use event_sauce_macros::{AggregateError, AggregateId, aggregate, Event as DeriveEvent};
+use event_sauce_macros::{aggregate, AggregateError, AggregateId, Event as DeriveEvent};
 use event_sauce_memory::InMemoryEventStore;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -88,8 +88,8 @@ enum CounterError {
 // NOTE: ApplyEvent is implemented for the Counter aggregate type.
 // The Event macro auto-generates the apply_event method that dispatches to these.
 
-impl ApplyEvent<Counter, CounterError> for CounterIncrementedEvent {
-    fn validate(&self, _counter: &Counter) -> Result<(), CounterError> {
+impl ApplyEvent<Counter> for CounterIncrementedEvent {
+    fn validate(&self, _counter: &Counter) -> Result<(), <Counter as Aggregate>::Error> {
         if self.amount <= 0 {
             return Err(CounterError::InvalidAmount(self.amount));
         }
@@ -101,8 +101,8 @@ impl ApplyEvent<Counter, CounterError> for CounterIncrementedEvent {
     }
 }
 
-impl ApplyEvent<Counter, CounterError> for CounterDecrementedEvent {
-    fn validate(&self, counter: &Counter) -> Result<(), CounterError> {
+impl ApplyEvent<Counter> for CounterDecrementedEvent {
+    fn validate(&self, counter: &Counter) -> Result<(), <Counter as Aggregate>::Error> {
         if self.amount <= 0 {
             return Err(CounterError::InvalidAmount(self.amount));
         }
@@ -122,7 +122,7 @@ impl ApplyEvent<Counter, CounterError> for CounterDecrementedEvent {
 
     // Post-validation: Ensure counter never goes negative (defense in depth)
     // This catches any bugs in the apply logic or validation
-    fn post_validate(&self, counter: &Counter) -> Result<(), CounterError> {
+    fn post_validate(&self, counter: &Counter) -> Result<(), <Counter as Aggregate>::Error> {
         if counter.value < 0 {
             return Err(CounterError::WouldBeNegative {
                 current: counter.value,
@@ -133,7 +133,7 @@ impl ApplyEvent<Counter, CounterError> for CounterDecrementedEvent {
     }
 }
 
-impl ApplyEvent<Counter, CounterError> for CounterResetEvent {
+impl ApplyEvent<Counter> for CounterResetEvent {
     fn apply(&self, counter: &mut Counter) {
         counter.value = 0;
     }

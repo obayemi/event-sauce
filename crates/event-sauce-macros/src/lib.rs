@@ -21,51 +21,7 @@ struct AggregateAttrs {
     event: String,
     #[darling(default)]
     error: Option<String>,
-    #[darling(default)]
-    name: Option<String>,
 }
-
-
-/// Extract aggregate attributes from the #[aggregate(...)] attribute
-fn extract_aggregate_attrs(
-    attrs: &[Attribute],
-) -> Result<(Ident, Ident, Option<Ident>), TokenStream> {
-    for attr in attrs {
-        if attr.path().is_ident("aggregate") {
-            let nested = match &attr.meta {
-                Meta::List(list) => &list.tokens,
-                _ => continue,
-            };
-
-            // Parse the attribute arguments
-            let aggregate_attrs: AggregateAttrs =
-                match darling::ast::NestedMeta::parse_meta_list(nested.clone()) {
-                    Ok(nested) => match AggregateAttrs::from_list(&nested) {
-                        Ok(attrs) => attrs,
-                        Err(err) => return Err(err.write_errors().into()),
-                    },
-                    Err(err) => return Err(err.to_compile_error().into()),
-                };
-
-            let id_type = Ident::new(&aggregate_attrs.id, proc_macro2::Span::call_site());
-            let event_type = Ident::new(&aggregate_attrs.event, proc_macro2::Span::call_site());
-            let error_type = aggregate_attrs
-                .error
-                .map(|e| Ident::new(&e, proc_macro2::Span::call_site()));
-
-            return Ok((id_type, event_type, error_type));
-        }
-    }
-
-    Err(syn::Error::new(
-        proc_macro2::Span::call_site(),
-        "Missing #[aggregate(id = \"...\", event = \"...\")] attribute",
-    )
-    .to_compile_error()
-    .into())
-}
-
-/// Extract field names from the struct fields
 
 /// Attributes for the #[event(...)] container attribute
 #[derive(Debug, FromMeta)]
@@ -336,29 +292,7 @@ fn extract_event_attrs(attrs: &[Attribute]) -> Result<EventAttrs, TokenStream> {
     .into())
 }
 
-/// Find the ID field marked with `#[aggregate_id]`
-fn find_id_field(fields: &Fields) -> Result<Ident, TokenStream> {
-    if let Fields::Named(named) = fields {
-        for field in &named.named {
-            let field_name = field.ident.as_ref().expect("Named field should have ident");
-
-            for attr in &field.attrs {
-                if attr.path().is_ident("aggregate_id") {
-                    return Ok(field_name.clone());
-                }
-            }
-        }
-    }
-
-    Err(syn::Error::new(
-        proc_macro2::Span::call_site(),
-        "Missing #[aggregate_id] field attribute. State struct must have one field marked with #[aggregate_id]"
-    )
-    .to_compile_error()
-    .into())
-}
-
-/// Find the ID field - looks for #[aggregate_id] attribute or falls back to field named "id"
+/// Find the ID field - looks for `#[aggregate_id]` attribute or falls back to field named "id"
 fn find_id_field_flexible(fields: &Fields) -> Result<Ident, TokenStream> {
     if let Fields::Named(named) = fields {
         // First, try to find field with #[aggregate_id] attribute
@@ -521,7 +455,7 @@ pub fn derive_aggregate_error(input: TokenStream) -> TokenStream {
 ///
 /// This macro transforms an aggregate struct with business fields into:
 /// - A State struct with mirrored fields
-/// - A wrapper struct with infrastructure (version, pending_events)
+/// - A wrapper struct with infrastructure (version, `pending_events`)
 /// - Deref/DerefMut implementations for transparent field access
 /// - Full Aggregate trait implementation
 ///
@@ -545,7 +479,13 @@ pub fn derive_aggregate_error(input: TokenStream) -> TokenStream {
 /// # Attributes
 ///
 /// - `#[aggregate_id]` - Marks the field containing the aggregate ID
+///
+/// # Panics
+///
+/// This macro may panic if:
+/// - The filtered derive tokens cannot be parsed into a valid token stream
 #[proc_macro_attribute]
+#[allow(clippy::too_many_lines)]
 pub fn aggregate(attr: TokenStream, item: TokenStream) -> TokenStream {
     // Parse the attribute arguments
     let attr_tokens: proc_macro2::TokenStream = attr.into();
@@ -606,15 +546,16 @@ pub fn aggregate(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     // Generate State struct name
     let state_name = Ident::new(
-        &format!("{}State", aggregate_name),
+        &format!("{aggregate_name}State"),
         proc_macro2::Span::call_site(),
     );
 
     // Filter out ID field from state fields (state should have NO infrastructure)
     let state_fields: Vec<_> = if let Some(ref id_field_name) = user_provided_id {
-        all_fields.iter().filter(|f| {
-            f.ident.as_ref() != Some(id_field_name)
-        }).collect()
+        all_fields
+            .iter()
+            .filter(|f| f.ident.as_ref() != Some(id_field_name))
+            .collect()
     } else {
         // No ID field provided by user, use all fields for state
         all_fields.iter().collect()
@@ -652,21 +593,26 @@ pub fn aggregate(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     // Preserve other derives from the original struct (excluding Default)
-    let preserved_derives: Vec<_> = input.attrs.iter().filter_map(|attr| {
-        if let Meta::List(list) = &attr.meta {
-            if list.path.is_ident("derive") {
-                let tokens_str = list.tokens.to_string();
-                let derives: Vec<&str> = tokens_str.split(',').map(|s| s.trim()).collect();
-                let filtered: Vec<_> = derives.into_iter().filter(|&d| d != "Default").collect();
-                if !filtered.is_empty() {
-                    let filtered_str = filtered.join(", ");
-                    let tokens: proc_macro2::TokenStream = filtered_str.parse().unwrap();
-                    return Some(quote! { #[derive(#tokens)] });
+    let preserved_derives: Vec<_> = input
+        .attrs
+        .iter()
+        .filter_map(|attr| {
+            if let Meta::List(list) = &attr.meta {
+                if list.path.is_ident("derive") {
+                    let tokens_str = list.tokens.to_string();
+                    let derives: Vec<&str> = tokens_str.split(',').map(str::trim).collect();
+                    let filtered: Vec<_> =
+                        derives.into_iter().filter(|&d| d != "Default").collect();
+                    if !filtered.is_empty() {
+                        let filtered_str = filtered.join(", ");
+                        let tokens: proc_macro2::TokenStream = filtered_str.parse().unwrap();
+                        return Some(quote! { #[derive(#tokens)] });
+                    }
                 }
             }
-        }
-        None
-    }).collect();
+            None
+        })
+        .collect();
 
     // Generate the complete output
     let gen = quote! {

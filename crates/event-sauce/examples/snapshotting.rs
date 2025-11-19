@@ -14,7 +14,7 @@ use event_sauce_core::{
     load, Aggregate, ApplyEvent, DomainEvent, EventStore, EveryNEvents, NeverSnapshot,
     SnapshotConfig,
 };
-use event_sauce_macros::{AggregateError, AggregateId, aggregate, Event as DeriveEvent};
+use event_sauce_macros::{aggregate, AggregateError, AggregateId, Event as DeriveEvent};
 use event_sauce_memory::InMemoryEventStore;
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
@@ -57,7 +57,7 @@ enum CounterError {
     InvalidAmount(i32),
 }
 
-impl ApplyEvent<Counter, CounterError> for IncrementedEvent {
+impl ApplyEvent<Counter> for IncrementedEvent {
     fn apply(&self, counter: &mut Counter) {
         counter.value += self.amount;
     }

@@ -220,26 +220,21 @@ fn test_aggregate_derive_aggregate_type() {
 
 #[test]
 fn test_state_struct_generated() {
-    // The macro should generate TestCounterState
-    let state = TestCounterState {
-        id: TestCounterId::new("test-1".to_string()),
-        value: 42,
-    };
+    // The macro should generate TestCounterState (business fields only, no id)
+    let state = TestCounterState { value: 42 };
 
     assert_eq!(state.value, 42);
 }
 
 #[test]
-fn test_from_state_constructor() {
-    let state = TestCounterState {
-        id: TestCounterId::new("test-1".to_string()),
-        value: 100,
-    };
+fn test_from_snapshot_constructor() {
+    let id = TestCounterId::new("test-1".to_string());
+    let state = TestCounterState { value: 100 };
 
-    let counter = TestCounter::from_state(state);
+    let counter = TestCounter::from_snapshot(id, Version::new(5), state);
 
     assert_eq!(counter.value, 100);
-    assert_eq!(counter.version(), Version::initial());
+    assert_eq!(counter.version(), Version::new(5));
 }
 
 #[test]

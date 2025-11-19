@@ -98,7 +98,7 @@ use event_sauce_core::{
     load, Aggregate, ApplyEvent, CheckpointStore, CheckpointStrategy, DomainEvent, ErrorPolicy,
     EventEnvelope, EventStore,
 };
-use event_sauce_macros::{AggregateError, AggregateId, aggregate, Event as DeriveEvent};
+use event_sauce_macros::{aggregate, AggregateError, AggregateId, Event as DeriveEvent};
 use event_sauce_postgres::{PostgresCheckpointStore, PostgresEventStore};
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
