@@ -1,10 +1,19 @@
-error: Missing #[aggregate_id] field attribute. State struct must have one field marked with #[aggregate_id]
-  --> tests/ui/aggregate_missing_id_field.rs:59:10
+error[E0433]: failed to resolve: could not find `Aggregate` in `event_sauce_macros`
+  --> tests/ui/aggregate_missing_id_field.rs:59:30
    |
 59 | #[derive(event_sauce_macros::Aggregate)]
-   |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |                              ^^^^^^^^^ could not find `Aggregate` in `event_sauce_macros`
+
+error: cannot find attribute `aggregate` in this scope
+  --> tests/ui/aggregate_missing_id_field.rs:60:3
    |
-   = note: this error originates in the derive macro `event_sauce_macros::Aggregate` (in Nightly builds, run with -Z macro-backtrace for more info)
+60 | #[aggregate(id = "TestId", event = "TestEvent", error = "TestError")]
+   |   ^^^^^^^^^
+   |
+help: consider importing this attribute macro
+   |
+4  + use event_sauce_macros::aggregate;
+   |
 
 error: cannot find attribute `aggregate_version` in this scope
   --> tests/ui/aggregate_missing_id_field.rs:63:7
@@ -17,14 +26,6 @@ error: cannot find attribute `aggregate_events` in this scope
    |
 65 |     #[aggregate_events]
    |       ^^^^^^^^^^^^^^^^
-
-warning: use of deprecated macro `event_sauce_macros::Aggregate`: Use #[aggregate(...)] attribute macro instead
-  --> tests/ui/aggregate_missing_id_field.rs:59:10
-   |
-59 | #[derive(event_sauce_macros::Aggregate)]
-   |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-   |
-   = note: `#[warn(deprecated)]` on by default
 
 error[E0277]: the trait bound `TestEvent: serde::Deserialize<'de>` is not satisfied
   --> tests/ui/aggregate_missing_id_field.rs:33:22

@@ -98,7 +98,7 @@ use event_sauce_core::{
     load, Aggregate, ApplyEvent, CheckpointStore, CheckpointStrategy, DomainEvent, ErrorPolicy,
     EventEnvelope, EventStore,
 };
-use event_sauce_macros::{AggregateError, AggregateId, AggregateState, Event as DeriveEvent};
+use event_sauce_macros::{AggregateError, AggregateId, aggregate, Event as DeriveEvent};
 use event_sauce_postgres::{PostgresCheckpointStore, PostgresEventStore};
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -208,7 +208,7 @@ struct PriceChanged {
 
 /// All product events
 #[derive(DeriveEvent, Debug, Clone, Serialize, Deserialize)]
-#[event(version = 1, type_prefix = "Product", aggregate = "ProductAggregate")]
+#[event(version = 1, type_prefix = "Product", aggregate = "Product")]
 enum ProductEvent {
     Created(ProductCreated),
     StockAdded(StockAdded),
@@ -255,9 +255,9 @@ enum ProductEvent {
 // 4. Business rules are in ONE place (not scattered across commands)
 // 5. Commands stay simple - just create events
 
-impl ApplyEvent<ProductAggregate, ProductError> for ProductCreated {
+impl ApplyEvent<Product, ProductError> for ProductCreated {
     /// Validate product creation business rules
-    fn validate(&self, _product: &ProductAggregate) -> Result<(), ProductError> {
+    fn validate(&self, _product: &Product) -> Result<(), ProductError> {
         // Validate product name
         if self.name.is_empty() {
             return Err(ProductError::InvalidName);
@@ -276,7 +276,7 @@ impl ApplyEvent<ProductAggregate, ProductError> for ProductCreated {
         Ok(())
     }
 
-    fn apply(&self, product: &mut ProductAggregate) {
+    fn apply(&self, product: &mut Product) {
         // Note: product.id is already set by the Aggregate framework from the envelope
         product.name = self.name.clone();
         product.stock = self.initial_stock;
@@ -286,9 +286,9 @@ impl ApplyEvent<ProductAggregate, ProductError> for ProductCreated {
     }
 }
 
-impl ApplyEvent<ProductAggregate, ProductError> for StockAdded {
+impl ApplyEvent<Product, ProductError> for StockAdded {
     /// Validate stock addition
-    fn validate(&self, _product: &ProductAggregate) -> Result<(), ProductError> {
+    fn validate(&self, _product: &Product) -> Result<(), ProductError> {
         // Validate quantity is positive
         if self.quantity <= 0 {
             return Err(ProductError::InvalidQuantity);
@@ -297,16 +297,16 @@ impl ApplyEvent<ProductAggregate, ProductError> for StockAdded {
         Ok(())
     }
 
-    fn apply(&self, product: &mut ProductAggregate) {
+    fn apply(&self, product: &mut Product) {
         // Calculate new total from current stock + quantity
         product.stock += self.quantity;
         product.updated_at = self.timestamp;
     }
 }
 
-impl ApplyEvent<ProductAggregate, ProductError> for StockRemoved {
+impl ApplyEvent<Product, ProductError> for StockRemoved {
     /// Validate stock removal pre-conditions
-    fn validate(&self, product: &ProductAggregate) -> Result<(), ProductError> {
+    fn validate(&self, product: &Product) -> Result<(), ProductError> {
         // Validate quantity is positive
         if self.quantity <= 0 {
             return Err(ProductError::InvalidQuantity);
@@ -324,14 +324,14 @@ impl ApplyEvent<ProductAggregate, ProductError> for StockRemoved {
         Ok(())
     }
 
-    fn apply(&self, product: &mut ProductAggregate) {
+    fn apply(&self, product: &mut Product) {
         // Calculate new total by subtracting quantity from current stock
         product.stock -= self.quantity;
         product.updated_at = self.timestamp;
     }
 
     /// Validate stock is not negative after removal (invariant check)
-    fn post_validate(&self, product: &ProductAggregate) -> Result<(), ProductError> {
+    fn post_validate(&self, product: &Product) -> Result<(), ProductError> {
         // Ensure the resulting stock is not negative (business invariant)
         // This is a defensive check - should never happen if validate() worked correctly
         if product.stock < 0 {
@@ -342,9 +342,9 @@ impl ApplyEvent<ProductAggregate, ProductError> for StockRemoved {
     }
 }
 
-impl ApplyEvent<ProductAggregate, ProductError> for PriceChanged {
+impl ApplyEvent<Product, ProductError> for PriceChanged {
     /// Validate price change
-    fn validate(&self, _product: &ProductAggregate) -> Result<(), ProductError> {
+    fn validate(&self, _product: &Product) -> Result<(), ProductError> {
         // Validate new price is non-negative
         if self.new_price_cents < 0 {
             return Err(ProductError::NegativePrice);
@@ -353,7 +353,7 @@ impl ApplyEvent<ProductAggregate, ProductError> for PriceChanged {
         Ok(())
     }
 
-    fn apply(&self, product: &mut ProductAggregate) {
+    fn apply(&self, product: &mut Product) {
         // Simply set the new price (old price is available in aggregate state if needed)
         product.price_cents = self.new_price_cents;
         product.updated_at = self.timestamp;
@@ -365,12 +365,9 @@ impl ApplyEvent<ProductAggregate, ProductError> for PriceChanged {
 // ============================================================================
 
 /// Product aggregate state - manages product lifecycle and inventory
-#[derive(AggregateState, Debug, Clone, Serialize, Deserialize)]
 #[aggregate(id = "ProductId", event = "ProductEvent", error = "ProductError")]
-struct ProductState {
-    /// Product ID
-    #[aggregate_id]
-    id: ProductId,
+#[derive(Default)]
+struct Product {
     /// Product name
     name: String,
     /// Current stock quantity
@@ -383,10 +380,9 @@ struct ProductState {
     updated_at: DateTime<Utc>,
 }
 
-impl Default for ProductState {
+impl Default for Product {
     fn default() -> Self {
         Self {
-            id: ProductId(Uuid::nil()),
             name: String::new(),
             stock: 0,
             price_cents: 0,
@@ -404,7 +400,7 @@ impl Default for ProductState {
 // Validation happens in the ApplyEvent implementations (validate/post_validate),
 // ensuring all business rules are enforced when events are applied.
 
-impl ProductAggregate {
+impl Product {
     /// Create a new product - returns the creation event
     ///
     /// Note: product_id is not in the event - it's stored in the event envelope
@@ -706,13 +702,13 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let laptop_id = ProductId::new();
     println!("Creating product: Laptop");
     // Command creates event (no validation yet)
-    let event = ProductAggregate::create_product(
+    let event = Product::create_product(
         laptop_id,
         "MacBook Pro 16\"".to_string(),
         10,
         299_900, // $2,999.00
     );
-    let mut laptop = <ProductAggregate as Aggregate>::new(laptop_id);
+    let mut laptop = <Product as Aggregate>::new(laptop_id);
     // Validation happens here in apply() via ApplyEvent::validate()
     laptop.apply(event)?;
     event_store.commit(&mut laptop).await?;
@@ -721,20 +717,20 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     // Create second product: Mouse
     let mouse_id = ProductId::new();
     println!("Creating product: Mouse");
-    let event = ProductAggregate::create_product(
+    let event = Product::create_product(
         mouse_id,
         "Magic Mouse".to_string(),
         50,
         9_900, // $99.00
     );
-    let mut mouse = <ProductAggregate as Aggregate>::new(mouse_id);
+    let mut mouse = <Product as Aggregate>::new(mouse_id);
     mouse.apply(event)?;
     event_store.commit(&mut mouse).await?;
     println!("  ✓ Created: {} (${:.2})", "Magic Mouse", 99.00);
 
     // Add stock to laptop
     println!("\nAdding stock to laptop...");
-    let mut laptop: ProductAggregate = load(event_store.as_ref(), laptop_id).await?;
+    let mut laptop: Product = load(event_store.as_ref(), laptop_id).await?;
     // Command creates event, validation happens in apply()
     let event = laptop.cmd_add_stock(5);
     laptop.apply(event)?;
@@ -743,7 +739,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     // Remove stock from mouse
     println!("Removing stock from mouse...");
-    let mut mouse: ProductAggregate = load(event_store.as_ref(), mouse_id).await?;
+    let mut mouse: Product = load(event_store.as_ref(), mouse_id).await?;
     // Command creates event, validation (including stock check) happens in apply()
     let event = mouse.cmd_remove_stock(3);
     mouse.apply(event)?;
@@ -752,7 +748,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     // Change laptop price
     println!("Changing laptop price...");
-    let mut laptop: ProductAggregate = load(event_store.as_ref(), laptop_id).await?;
+    let mut laptop: Product = load(event_store.as_ref(), laptop_id).await?;
     let event = laptop.cmd_change_price(279_900); // $2,799.00
     laptop.apply(event)?;
     event_store.commit(&mut laptop).await?;

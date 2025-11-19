@@ -266,9 +266,14 @@ mod tests {
 
     // Test aggregate implementation
     #[derive(Debug, Clone, Serialize, Deserialize)]
+    struct TestAggregateState {
+        value: i32,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
     struct TestAggregate {
         id: TestAggregateId,
-        value: i32,
+        state: TestAggregateState,
         version: crate::Version,
         pending_events: Vec<TestEvent>,
     }
@@ -277,11 +282,12 @@ mod tests {
         type Event = TestEvent;
         type Id = TestAggregateId;
         type Error = TestAggregateError;
+        type State = TestAggregateState;
 
         fn new(id: Self::Id) -> Self {
             Self {
                 id,
-                value: 0,
+                state: TestAggregateState { value: 0 },
                 version: crate::Version::initial(),
                 pending_events: Vec::new(),
             }
@@ -320,14 +326,27 @@ mod tests {
                     // Created doesn't have a value field
                 }
                 TestEvent::Updated { value, .. } => {
-                    self.value = *value;
+                    self.state.value = *value;
                 }
                 TestEvent::Deleted { .. } => {
-                    self.value = 0;
+                    self.state.value = 0;
                 }
             }
             self.version = self.version.next();
             Ok(())
+        }
+
+        fn state(&self) -> &Self::State {
+            &self.state
+        }
+
+        fn from_snapshot(id: Self::Id, version: crate::Version, state: Self::State) -> Self {
+            Self {
+                id,
+                state,
+                version,
+                pending_events: Vec::new(),
+            }
         }
     }
 
@@ -566,8 +585,11 @@ mod tests {
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
+    struct VersionedAggregateState;
+
     struct VersionedAggregate {
         id: TestAggregateId,
+        state: VersionedAggregateState,
         version: crate::Version,
         pending_events: Vec<VersionedEvent>,
     }
@@ -576,10 +598,12 @@ mod tests {
         type Event = VersionedEvent;
         type Id = TestAggregateId;
         type Error = TestAggregateError;
+        type State = VersionedAggregateState;
 
         fn new(id: Self::Id) -> Self {
             Self {
                 id,
+                state: VersionedAggregateState,
                 version: crate::Version::initial(),
                 pending_events: Vec::new(),
             }
@@ -615,6 +639,19 @@ mod tests {
         fn apply_internal(&mut self, _event: &Self::Event) -> std::result::Result<(), Self::Error> {
             self.version = self.version.next();
             Ok(())
+        }
+
+        fn state(&self) -> &Self::State {
+            &self.state
+        }
+
+        fn from_snapshot(id: Self::Id, version: crate::Version, state: Self::State) -> Self {
+            Self {
+                id,
+                state,
+                version,
+                pending_events: Vec::new(),
+            }
         }
     }
 

@@ -1,2 +1,10 @@
 - [x] do implement a "postgres quikcstart" examples showcasing postgres event store, subscriptions with postgres checkpoints, and an examples projection storing data in a postges table
 - [x] review the implementaiton of the EventStore base trait and its specific implementations, and make sure that all reasonable code is shared in the Eventstore trait and that the only required code in the implementations is the code required for actualy storing an retrieving data
+- [x] implement structured snapshots to separate infrastructure (ID, version) from business state
+  - [x] Created `Snapshot` struct with id, version, and state fields
+  - [x] Updated `EventStore::commit()` to serialize only state (not entire aggregate)
+  - [x] Updated `load()` to reconstruct aggregate from snapshot components
+  - [x] Modified aggregate macro to store ID in wrapper, not state
+  - [x] Removed manual ID fields from all examples
+  - [x] Updated backend implementations (InMemoryEventStore, PostgresEventStore)
+  - [ ] MINOR: Update macro test files to use new API (16 test instances need updating from `from_state` to `new()` or `from_snapshot()`)

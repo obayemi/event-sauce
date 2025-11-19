@@ -180,6 +180,12 @@ pub trait Aggregate: Send + Sync {
     /// to return validation errors.
     type Error: AggregateError;
 
+    /// The type of the aggregate's state (business logic only, no infrastructure).
+    ///
+    /// This is used for snapshotting - only the pure business state is serialized,
+    /// while infrastructure concerns (ID, version, pending events) are stored separately.
+    type State: serde::Serialize + serde::de::DeserializeOwned + Send + Sync;
+
     /// Creates a new aggregate with the given identifier.
     ///
     /// This is the canonical way to create a new aggregate instance.
@@ -426,6 +432,42 @@ pub trait Aggregate: Send + Sync {
             .last()
             .unwrap_or("Unknown")
     }
+
+    /// Returns a reference to the aggregate's state (business logic only).
+    ///
+    /// This is used for snapshotting - only the pure business state is serialized,
+    /// while infrastructure concerns (ID, version, pending events) are stored separately.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let counter = Counter::new(id);
+    /// let state = counter.state();
+    /// // state contains only business fields, no infrastructure
+    /// ```
+    fn state(&self) -> &Self::State;
+
+    /// Reconstructs an aggregate from a snapshot.
+    ///
+    /// This method creates an aggregate instance from its constituent parts:
+    /// - `id`: The aggregate's unique identifier
+    /// - `version`: The version at which the snapshot was taken
+    /// - `state`: The business state at that version
+    ///
+    /// The aggregate is initialized with no pending events, as snapshots represent
+    /// a consistent state after all events have been applied.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let state = CounterState { value: 42 };
+    /// let counter = Counter::from_snapshot(id, Version::new(10), state);
+    /// assert_eq!(counter.version(), Version::new(10));
+    /// assert_eq!(counter.state().value, 42);
+    /// ```
+    fn from_snapshot(id: Self::Id, version: Version, state: Self::State) -> Self
+    where
+        Self: Sized;
 }
 
 #[cfg(test)]

@@ -1,10 +1,14 @@
-error: Missing #[aggregate(id = "...", event = "...")] attribute
-  --> tests/ui/aggregate_missing_attribute.rs:46:10
+error[E0433]: failed to resolve: could not find `Aggregate` in `event_sauce_macros`
+  --> tests/ui/aggregate_missing_attribute.rs:46:30
    |
 46 | #[derive(event_sauce_macros::Aggregate)]
-   |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |                              ^^^^^^^^^ could not find `Aggregate` in `event_sauce_macros`
+
+error: cannot find attribute `aggregate_id` in this scope
+  --> tests/ui/aggregate_missing_attribute.rs:48:7
    |
-   = note: this error originates in the derive macro `event_sauce_macros::Aggregate` (in Nightly builds, run with -Z macro-backtrace for more info)
+48 |     #[aggregate_id]
+   |       ^^^^^^^^^^^^
 
 error: cannot find attribute `aggregate_version` in this scope
   --> tests/ui/aggregate_missing_attribute.rs:50:7
@@ -17,14 +21,6 @@ error: cannot find attribute `aggregate_events` in this scope
    |
 52 |     #[aggregate_events]
    |       ^^^^^^^^^^^^^^^^
-
-warning: use of deprecated macro `event_sauce_macros::Aggregate`: Use #[aggregate(...)] attribute macro instead
-  --> tests/ui/aggregate_missing_attribute.rs:46:10
-   |
-46 | #[derive(event_sauce_macros::Aggregate)]
-   |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-   |
-   = note: `#[warn(deprecated)]` on by default
 
 error[E0277]: the trait bound `TestEvent: serde::Deserialize<'de>` is not satisfied
   --> tests/ui/aggregate_missing_attribute.rs:33:22

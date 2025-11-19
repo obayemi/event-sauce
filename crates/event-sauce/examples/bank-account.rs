@@ -12,7 +12,7 @@
 
 use chrono::Utc;
 use event_sauce_core::{Aggregate, ApplyEvent, DomainEvent};
-use event_sauce_macros::{AggregateError, AggregateId, AggregateState, Event as DeriveEvent};
+use event_sauce_macros::{AggregateError, AggregateId, aggregate, Event as DeriveEvent};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -80,7 +80,7 @@ struct AccountWithdrawnEvent {
 #[event(
     version = 1,
     type_prefix = "Account",
-    aggregate = "BankAccountAggregate"
+    aggregate = "BankAccount"
 )]
 enum AccountEvent {
     Opened(AccountOpenedEvent),
@@ -109,26 +109,26 @@ enum AccountError {
 // ApplyEvent Implementations
 // ============================================================================
 //
-// NOTE: ApplyEvent is implemented for the GENERATED BankAccountAggregate type.
+// NOTE: ApplyEvent is implemented for the GENERATED BankAccount type.
 // The Event macro auto-generates the apply_event method that dispatches to these.
 
-impl ApplyEvent<BankAccountAggregate, AccountError> for AccountOpenedEvent {
-    fn validate(&self, _account: &BankAccountAggregate) -> Result<(), AccountError> {
+impl ApplyEvent<BankAccount, AccountError> for AccountOpenedEvent {
+    fn validate(&self, _account: &BankAccount) -> Result<(), AccountError> {
         if self.initial_balance < 0 {
             return Err(AccountError::InvalidAmount(self.initial_balance));
         }
         Ok(())
     }
 
-    fn apply(&self, account: &mut BankAccountAggregate) {
+    fn apply(&self, account: &mut BankAccount) {
         account.owner = self.owner.clone();
         account.balance = self.initial_balance;
         account.status = AccountStatus::Active;
     }
 }
 
-impl ApplyEvent<BankAccountAggregate, AccountError> for AccountDepositedEvent {
-    fn validate(&self, account: &BankAccountAggregate) -> Result<(), AccountError> {
+impl ApplyEvent<BankAccount, AccountError> for AccountDepositedEvent {
+    fn validate(&self, account: &BankAccount) -> Result<(), AccountError> {
         if account.status != AccountStatus::Active {
             return Err(AccountError::AccountNotActive(account.status));
         }
@@ -140,13 +140,13 @@ impl ApplyEvent<BankAccountAggregate, AccountError> for AccountDepositedEvent {
         Ok(())
     }
 
-    fn apply(&self, account: &mut BankAccountAggregate) {
+    fn apply(&self, account: &mut BankAccount) {
         account.balance += self.amount;
     }
 }
 
-impl ApplyEvent<BankAccountAggregate, AccountError> for AccountWithdrawnEvent {
-    fn validate(&self, account: &BankAccountAggregate) -> Result<(), AccountError> {
+impl ApplyEvent<BankAccount, AccountError> for AccountWithdrawnEvent {
+    fn validate(&self, account: &BankAccount) -> Result<(), AccountError> {
         if account.status != AccountStatus::Active {
             return Err(AccountError::AccountNotActive(account.status));
         }
@@ -165,13 +165,13 @@ impl ApplyEvent<BankAccountAggregate, AccountError> for AccountWithdrawnEvent {
         Ok(())
     }
 
-    fn apply(&self, account: &mut BankAccountAggregate) {
+    fn apply(&self, account: &mut BankAccount) {
         account.balance -= self.amount;
     }
 
     // Post-validation: Ensure balance never goes negative (defense in depth)
     // This catches any bugs in the apply logic or validation
-    fn post_validate(&self, account: &BankAccountAggregate) -> Result<(), AccountError> {
+    fn post_validate(&self, account: &BankAccount) -> Result<(), AccountError> {
         if account.balance < 0 {
             return Err(AccountError::InsufficientFunds {
                 balance: account.balance,
@@ -186,40 +186,18 @@ impl ApplyEvent<BankAccountAggregate, AccountError> for AccountWithdrawnEvent {
 // Bank Account State - Business Logic Only
 // ============================================================================
 //
-// The AggregateState macro generates a BankAccountAggregate wrapper
+// The aggregate macro generates a BankAccount wrapper
 
 /// Bank account state - contains only business data
-#[derive(AggregateState, Debug, Clone, Serialize, Deserialize)]
 #[aggregate(id = "AccountId", event = "AccountEvent", error = "AccountError")]
-struct BankAccountState {
-    #[aggregate_id]
-    id: AccountId,
+#[derive(Default)]
+struct BankAccount {
     owner: String,
     balance: i64,
     status: AccountStatus,
 }
 
-impl Default for BankAccountState {
-    fn default() -> Self {
-        Self {
-            id: AccountId::default(),
-            owner: String::new(),
-            balance: 0,
-            status: AccountStatus::Active,
-        }
-    }
-}
-
-impl BankAccountState {
-    /// Create a new bank account state
-    fn new(id: AccountId) -> Self {
-        Self {
-            id,
-            owner: String::new(),
-            balance: 0,
-            status: AccountStatus::Active,
-        }
-    }
+impl BankAccount {
 
     /// Get current balance
     fn balance(&self) -> i64 {
@@ -235,10 +213,10 @@ impl BankAccountState {
 // apply_event is auto-generated by the Event macro
 
 // ============================================================================
-// Command Methods - Implemented on the generated BankAccountAggregate
+// Command Methods - Implemented on the generated BankAccount
 // ============================================================================
 
-impl BankAccountAggregate {
+impl BankAccount {
     /// Create a new bank account using the Aggregate trait's new method
     fn open(id: AccountId, owner: String, initial_balance: i64) -> Result<Self, AccountError> {
         let mut account = <Self as Aggregate>::new(id.clone());
@@ -286,7 +264,7 @@ impl BankAccountAggregate {
 
 fn main() -> Result<(), AccountError> {
     println!("\n{}", "=".repeat(70));
-    println!("🏦 Bank Account Example - Event Sourcing with AggregateState");
+    println!("🏦 Bank Account Example - Event Sourcing with aggregate");
     println!("{}\n", "=".repeat(70));
 
     // Create a new account
@@ -294,7 +272,7 @@ fn main() -> Result<(), AccountError> {
     println!("{}", "-".repeat(70));
 
     let account_id = AccountId::new();
-    let mut account = BankAccountAggregate::open(
+    let mut account = BankAccount::open(
         account_id.clone(),
         "Alice Johnson".to_string(),
         1000, // $10.00 in cents
@@ -373,7 +351,7 @@ fn main() -> Result<(), AccountError> {
     println!("\n{}", "=".repeat(70));
     println!("✅ Example completed successfully!");
     println!("\nKey Takeaways:");
-    println!("  • #[derive(AggregateState)] separates state from infrastructure");
+    println!("  • #[derive(aggregate)] separates state from infrastructure");
     println!("  • Generated wrapper handles version & event tracking automatically");
     println!("  • #[derive(Event)] generates DomainEvent trait implementation");
     println!("  • Aggregate-specific errors via AggregateError trait");

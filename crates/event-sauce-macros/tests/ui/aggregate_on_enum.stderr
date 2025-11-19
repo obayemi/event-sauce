@@ -1,8 +1,25 @@
-error: Aggregate can only be derived for structs
-  --> tests/ui/aggregate_on_enum.rs:48:6
+error[E0433]: failed to resolve: could not find `Aggregate` in `event_sauce_macros`
+  --> tests/ui/aggregate_on_enum.rs:46:30
    |
-48 | enum TestAggregate {
-   |      ^^^^^^^^^^^^^
+46 | #[derive(event_sauce_macros::Aggregate)]
+   |                              ^^^^^^^^^ could not find `Aggregate` in `event_sauce_macros`
+
+error: cannot find attribute `aggregate` in this scope
+  --> tests/ui/aggregate_on_enum.rs:47:3
+   |
+47 | #[aggregate(id = "TestId", event = "TestEvent")]
+   |   ^^^^^^^^^
+   |
+help: consider importing this attribute macro
+   |
+4  + use event_sauce_macros::aggregate;
+   |
+
+error: cannot find attribute `aggregate_id` in this scope
+  --> tests/ui/aggregate_on_enum.rs:50:11
+   |
+50 |         #[aggregate_id]
+   |           ^^^^^^^^^^^^
 
 error: cannot find attribute `aggregate_version` in this scope
   --> tests/ui/aggregate_on_enum.rs:52:11
@@ -15,14 +32,6 @@ error: cannot find attribute `aggregate_events` in this scope
    |
 54 |         #[aggregate_events]
    |           ^^^^^^^^^^^^^^^^
-
-warning: use of deprecated macro `event_sauce_macros::Aggregate`: Use #[aggregate(...)] attribute macro instead
-  --> tests/ui/aggregate_on_enum.rs:46:10
-   |
-46 | #[derive(event_sauce_macros::Aggregate)]
-   |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-   |
-   = note: `#[warn(deprecated)]` on by default
 
 error[E0277]: the trait bound `TestEvent: serde::Deserialize<'de>` is not satisfied
   --> tests/ui/aggregate_on_enum.rs:33:22

@@ -1,6 +1,6 @@
 //! Shopping Cart Example
 //!
-//! This example demonstrates a complex aggregate with AggregateState:
+//! This example demonstrates a complex aggregate with aggregate:
 //! - Multiple operations (add, remove, clear, checkout)
 //! - Business rules (inventory, pricing, checkout state)
 //! - Complex state (HashMap of items)
@@ -10,7 +10,7 @@
 
 use chrono::Utc;
 use event_sauce_core::{Aggregate, ApplyEvent, DomainEvent};
-use event_sauce_macros::{AggregateError, AggregateId, AggregateState, Event as DeriveEvent};
+use event_sauce_macros::{AggregateError, AggregateId, aggregate, Event as DeriveEvent};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
@@ -105,7 +105,7 @@ struct CartCheckedOutEvent {
 
 /// Domain events wrapping separated event structs
 #[derive(DeriveEvent, Debug, Clone, Serialize, Deserialize)]
-#[event(version = 1, type_prefix = "Cart", aggregate = "ShoppingCartAggregate")]
+#[event(version = 1, type_prefix = "Cart", aggregate = "ShoppingCart")]
 enum CartEvent {
     Created(CartCreatedEvent),
     ItemAdded(CartItemAddedEvent),
@@ -137,17 +137,17 @@ enum CartError {
 }
 
 // ============================================================================
-// ApplyEvent Implementations - for GENERATED ShoppingCartAggregate
+// ApplyEvent Implementations - for GENERATED ShoppingCart
 // ============================================================================
 
-impl ApplyEvent<ShoppingCartAggregate, CartError> for CartCreatedEvent {
-    fn apply(&self, cart: &mut ShoppingCartAggregate) {
+impl ApplyEvent<ShoppingCart, CartError> for CartCreatedEvent {
+    fn apply(&self, cart: &mut ShoppingCart) {
         cart.customer_id = self.customer_id.clone();
     }
 }
 
-impl ApplyEvent<ShoppingCartAggregate, CartError> for CartItemAddedEvent {
-    fn validate(&self, cart: &ShoppingCartAggregate) -> Result<(), CartError> {
+impl ApplyEvent<ShoppingCart, CartError> for CartItemAddedEvent {
+    fn validate(&self, cart: &ShoppingCart) -> Result<(), CartError> {
         if cart.checked_out {
             return Err(CartError::AlreadyCheckedOut);
         }
@@ -160,7 +160,7 @@ impl ApplyEvent<ShoppingCartAggregate, CartError> for CartItemAddedEvent {
         Ok(())
     }
 
-    fn apply(&self, cart: &mut ShoppingCartAggregate) {
+    fn apply(&self, cart: &mut ShoppingCart) {
         cart.items
             .entry(self.product_id)
             .and_modify(|item| item.quantity += self.quantity)
@@ -173,8 +173,8 @@ impl ApplyEvent<ShoppingCartAggregate, CartError> for CartItemAddedEvent {
     }
 }
 
-impl ApplyEvent<ShoppingCartAggregate, CartError> for CartItemRemovedEvent {
-    fn validate(&self, cart: &ShoppingCartAggregate) -> Result<(), CartError> {
+impl ApplyEvent<ShoppingCart, CartError> for CartItemRemovedEvent {
+    fn validate(&self, cart: &ShoppingCart) -> Result<(), CartError> {
         if cart.checked_out {
             return Err(CartError::AlreadyCheckedOut);
         }
@@ -191,7 +191,7 @@ impl ApplyEvent<ShoppingCartAggregate, CartError> for CartItemRemovedEvent {
         Ok(())
     }
 
-    fn apply(&self, cart: &mut ShoppingCartAggregate) {
+    fn apply(&self, cart: &mut ShoppingCart) {
         if let Some(item) = cart.items.get_mut(&self.product_id) {
             if item.quantity <= self.quantity {
                 cart.items.remove(&self.product_id);
@@ -203,7 +203,7 @@ impl ApplyEvent<ShoppingCartAggregate, CartError> for CartItemRemovedEvent {
 
     // Post-validation: Ensure cart remains in consistent state
     // All items should have positive quantities
-    fn post_validate(&self, cart: &ShoppingCartAggregate) -> Result<(), CartError> {
+    fn post_validate(&self, cart: &ShoppingCart) -> Result<(), CartError> {
         for item in cart.items.values() {
             if item.quantity == 0 {
                 return Err(CartError::InvalidQuantity(item.quantity));
@@ -213,21 +213,21 @@ impl ApplyEvent<ShoppingCartAggregate, CartError> for CartItemRemovedEvent {
     }
 }
 
-impl ApplyEvent<ShoppingCartAggregate, CartError> for CartClearedEvent {
-    fn validate(&self, cart: &ShoppingCartAggregate) -> Result<(), CartError> {
+impl ApplyEvent<ShoppingCart, CartError> for CartClearedEvent {
+    fn validate(&self, cart: &ShoppingCart) -> Result<(), CartError> {
         if cart.checked_out {
             return Err(CartError::AlreadyCheckedOut);
         }
         Ok(())
     }
 
-    fn apply(&self, cart: &mut ShoppingCartAggregate) {
+    fn apply(&self, cart: &mut ShoppingCart) {
         cart.items.clear();
     }
 }
 
-impl ApplyEvent<ShoppingCartAggregate, CartError> for CartCheckedOutEvent {
-    fn validate(&self, cart: &ShoppingCartAggregate) -> Result<(), CartError> {
+impl ApplyEvent<ShoppingCart, CartError> for CartCheckedOutEvent {
+    fn validate(&self, cart: &ShoppingCart) -> Result<(), CartError> {
         if cart.checked_out {
             return Err(CartError::AlreadyCheckedOut);
         }
@@ -237,7 +237,7 @@ impl ApplyEvent<ShoppingCartAggregate, CartError> for CartCheckedOutEvent {
         Ok(())
     }
 
-    fn apply(&self, cart: &mut ShoppingCartAggregate) {
+    fn apply(&self, cart: &mut ShoppingCart) {
         cart.checked_out = true;
     }
 }
@@ -247,35 +247,23 @@ impl ApplyEvent<ShoppingCartAggregate, CartError> for CartCheckedOutEvent {
 // ============================================================================
 
 /// Shopping cart state - contains only business data
-#[derive(AggregateState, Debug, Clone, Serialize, Deserialize)]
 #[aggregate(id = "CartId", event = "CartEvent", error = "CartError")]
 #[derive(Default)]
-struct ShoppingCartState {
-    #[aggregate_id]
-    id: CartId,
+struct ShoppingCart {
     customer_id: String,
     items: HashMap<ProductId, CartItem>,
     checked_out: bool,
 }
 
-impl ShoppingCartState {
-    fn new(id: CartId) -> Self {
-        Self {
-            id,
-            customer_id: String::new(),
-            items: HashMap::new(),
-            checked_out: false,
-        }
-    }
-}
+// Removed manual `new` - use Aggregate::new or create() helper method instead
 
 // apply_event is auto-generated by the Event macro
 
 // ============================================================================
-// Command Methods - Implemented on generated ShoppingCartAggregate
+// Command Methods - Implemented on generated ShoppingCart
 // ============================================================================
 
-impl ShoppingCartAggregate {
+impl ShoppingCart {
     /// Create a new shopping cart using the Aggregate trait's new method
     fn create(id: CartId, customer_id: String) -> Self {
         let mut cart = <Self as Aggregate>::new(id);
@@ -368,12 +356,12 @@ impl ShoppingCartAggregate {
 
 fn main() -> Result<(), CartError> {
     println!("\n{}", "=".repeat(70));
-    println!("🛒 Shopping Cart - Complex Aggregate with AggregateState");
+    println!("🛒 Shopping Cart - Complex Aggregate with aggregate");
     println!("{}\n", "=".repeat(70));
 
     // Create cart
     let cart_id = CartId::new();
-    let mut cart = ShoppingCartAggregate::create(cart_id, "customer-123".to_string());
+    let mut cart = ShoppingCart::create(cart_id, "customer-123".to_string());
     println!("✓ Created cart: {cart_id}");
     println!("  Customer: {}", cart.customer_id);
 
@@ -419,7 +407,7 @@ fn main() -> Result<(), CartError> {
     println!("\n{}", "=".repeat(70));
     println!("✅ Example completed!");
     println!("\nKey Takeaways:");
-    println!("  • AggregateState works seamlessly with complex state (HashMap)");
+    println!("  • aggregate works seamlessly with complex state (HashMap)");
     println!("  • ~45% less boilerplate vs manual aggregate");
     println!("  • Clear separation: business logic vs infrastructure");
     println!("  • Validation rules enforced in ApplyEvent implementations");

@@ -25,144 +25,6 @@ struct AggregateAttrs {
     name: Option<String>,
 }
 
-/// OLD Aggregate derive macro - DEPRECATED
-///
-/// This macro is deprecated and will be removed. Use the `#[aggregate(...)]` attribute macro instead.
-///
-/// The attribute macro provides full transformation:
-/// - Generates State struct
-/// - Creates wrapper with infrastructure
-/// - Implements Deref/DerefMut
-/// - Implements Aggregate trait
-#[deprecated(
-    since = "0.2.0",
-    note = "Use #[aggregate(...)] attribute macro instead"
-)]
-#[proc_macro_derive(Aggregate, attributes(aggregate, aggregate_id))]
-pub fn derive_aggregate(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as DeriveInput);
-
-    // Extract the aggregate name and visibility
-    let aggregate_name = &input.ident;
-    let vis = &input.vis;
-
-    // Parse the #[aggregate(...)] attribute
-    let (_id_type, _event_type, _error_type_opt) = match extract_aggregate_attrs(&input.attrs) {
-        Ok(attrs) => attrs,
-        Err(err) => return err,
-    };
-
-    // Extract fields from the struct
-    let fields = match &input.data {
-        Data::Struct(data) => &data.fields,
-        _ => {
-            return syn::Error::new_spanned(
-                &input.ident,
-                "Aggregate can only be derived for structs",
-            )
-            .to_compile_error()
-            .into();
-        }
-    };
-
-    // Find the ID field
-    let id_field = match find_id_field(fields) {
-        Ok(field) => field,
-        Err(err) => return err,
-    };
-
-    // Generate the State struct name
-    let state_name = Ident::new(
-        &format!("{}State", aggregate_name),
-        proc_macro2::Span::call_site(),
-    );
-
-    // Extract all fields for the State struct
-    let state_fields = match fields {
-        Fields::Named(named) => {
-            let fields = &named.named;
-            quote! { #fields }
-        }
-        _ => {
-            return syn::Error::new_spanned(
-                aggregate_name,
-                "Aggregate only supports structs with named fields",
-            )
-            .to_compile_error()
-            .into();
-        }
-    };
-
-    // Check if the original struct has Default derive
-    let has_default = input.attrs.iter().any(|attr| {
-        if let Meta::List(list) = &attr.meta {
-            if list.path.is_ident("derive") {
-                return list.tokens.to_string().contains("Default");
-            }
-        }
-        false
-    });
-
-    // Generate Default impl for State if the aggregate has Default
-    let state_default_impl = if has_default {
-        quote! {
-            impl Default for #state_name {
-                fn default() -> Self {
-                    Self {
-                        #id_field: Default::default(),
-                        ..Default::default()
-                    }
-                }
-            }
-        }
-    } else {
-        quote! {}
-    };
-
-    // Generate the complete output
-    let gen = quote! {
-        // Generate the State struct
-        #[derive(::serde::Serialize, ::serde::Deserialize, Debug, Clone)]
-        #vis struct #state_name {
-            #state_fields
-        }
-
-        #state_default_impl
-
-        // The original struct becomes a wrapper (we can't modify it, but we document the pattern)
-        // Users should manually transform their struct to:
-        // pub struct Product {
-        //     state: ProductState,
-        //     version: Version,
-        //     pending_events: Vec<Event>,
-        // }
-        //
-        // For now, we generate helper methods assuming this structure exists
-
-        // impl #aggregate_name {
-        //     /// Creates a new aggregate from state
-        //     pub fn from_state(state: #state_name) -> Self {
-        //         Self {
-        //             state,
-        //             version: event_sauce_core::Version::initial(),
-        //             pending_events: Vec::new(),
-        //         }
-        //     }
-        //
-        //     /// Returns a reference to the internal state
-        //     pub fn state(&self) -> &#state_name {
-        //         &self.state
-        //     }
-        //
-        //     /// Returns a mutable reference to the internal state
-        //     pub fn state_mut(&mut self) -> &mut #state_name {
-        //         &mut self.state
-        //     }
-        // }
-    };
-
-    gen.into()
-}
 
 /// Extract aggregate attributes from the #[aggregate(...)] attribute
 fn extract_aggregate_attrs(
@@ -204,59 +66,6 @@ fn extract_aggregate_attrs(
 }
 
 /// Extract field names from the struct fields
-fn extract_field_names(fields: &Fields) -> Result<(Ident, Ident, Ident), TokenStream> {
-    let mut id_field = None;
-    let mut version_field = None;
-    let mut events_field = None;
-
-    if let Fields::Named(named) = fields {
-        for field in &named.named {
-            let field_name = field.ident.as_ref().expect("Named field should have ident");
-
-            for attr in &field.attrs {
-                if attr.path().is_ident("aggregate_id") {
-                    id_field = Some(field_name.clone());
-                } else if attr.path().is_ident("aggregate_version") {
-                    version_field = Some(field_name.clone());
-                } else if attr.path().is_ident("aggregate_events") {
-                    events_field = Some(field_name.clone());
-                }
-            }
-        }
-    }
-
-    let id_field = id_field.ok_or_else(|| {
-        TokenStream::from(
-            syn::Error::new(
-                proc_macro2::Span::call_site(),
-                "Missing #[aggregate_id] field attribute",
-            )
-            .to_compile_error(),
-        )
-    })?;
-
-    let version_field = version_field.ok_or_else(|| {
-        TokenStream::from(
-            syn::Error::new(
-                proc_macro2::Span::call_site(),
-                "Missing #[aggregate_version] field attribute",
-            )
-            .to_compile_error(),
-        )
-    })?;
-
-    let events_field = events_field.ok_or_else(|| {
-        TokenStream::from(
-            syn::Error::new(
-                proc_macro2::Span::call_site(),
-                "Missing #[aggregate_events] field attribute",
-            )
-            .to_compile_error(),
-        )
-    })?;
-
-    Ok((id_field, version_field, events_field))
-}
 
 /// Attributes for the #[event(...)] container attribute
 #[derive(Debug, FromMeta)]
@@ -527,241 +336,6 @@ fn extract_event_attrs(attrs: &[Attribute]) -> Result<EventAttrs, TokenStream> {
     .into())
 }
 
-/// OLD AggregateState derive macro - DEPRECATED
-///
-/// This macro is deprecated and will be removed. Use the `#[aggregate(...)]` attribute macro instead.
-///
-/// The new attribute macro provides the same functionality with cleaner syntax:
-/// - Write `Product` instead of `ProductState`
-/// - Generates `ProductState` automatically
-/// - Product becomes the wrapper (not ProductAggregate)
-///
-/// Migration example:
-/// ```ignore
-/// // Old way:
-/// #[derive(AggregateState)]
-/// struct ProductState { ... }
-/// // Generates: ProductAggregate
-///
-/// // New way:
-/// #[aggregate(...)]
-/// struct Product { ... }
-/// // Generates: ProductState, Product is the wrapper
-/// ```
-#[deprecated(
-    since = "0.2.0",
-    note = "Use #[aggregate(...)] attribute macro instead. See docs for migration guide."
-)]
-#[allow(clippy::too_many_lines)]
-#[proc_macro_derive(AggregateState, attributes(aggregate, aggregate_id))]
-pub fn derive_aggregate_state(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as DeriveInput);
-
-    // Extract the state struct name and visibility
-    let state_name = &input.ident;
-    let vis = &input.vis;
-
-    // Parse the #[aggregate(...)] attribute
-    let (id_type, event_type, error_type, wrapper_name) =
-        match extract_aggregate_state_attrs(&input.attrs, state_name) {
-            Ok(attrs) => attrs,
-            Err(err) => return err,
-        };
-
-    // Extract fields to find the ID field
-    let fields = match &input.data {
-        Data::Struct(data) => &data.fields,
-        _ => {
-            return syn::Error::new_spanned(
-                &input.ident,
-                "AggregateState can only be derived for structs",
-            )
-            .to_compile_error()
-            .into();
-        }
-    };
-
-    // Find the ID field
-    let id_field = match find_id_field(fields) {
-        Ok(field) => field,
-        Err(err) => return err,
-    };
-
-    // Generate the wrapper aggregate struct
-    let gen = quote! {
-        // Generate the wrapper aggregate
-        // Note: Derive Serialize/Deserialize to support snapshotting
-        #[derive(::serde::Serialize, ::serde::Deserialize)]
-        #vis struct #wrapper_name {
-            state: #state_name,
-            version: event_sauce_core::Version,
-            pending_events: Vec<#event_type>,
-        }
-
-        impl #wrapper_name {
-            /// Creates a new aggregate with default state
-            pub fn new() -> Self
-            where
-                #state_name: Default,
-            {
-                Self {
-                    state: #state_name::default(),
-                    version: event_sauce_core::Version::initial(),
-                    pending_events: Vec::new(),
-                }
-            }
-
-            /// Creates a new aggregate from an existing state
-            pub fn from_state(state: #state_name) -> Self {
-                Self {
-                    state,
-                    version: event_sauce_core::Version::initial(),
-                    pending_events: Vec::new(),
-                }
-            }
-
-            /// Returns a reference to the internal state
-            pub fn state(&self) -> &#state_name {
-                &self.state
-            }
-
-            /// Returns a mutable reference to the internal state
-            pub fn state_mut(&mut self) -> &mut #state_name {
-                &mut self.state
-            }
-
-            // NOTE: apply_event is auto-generated by the Event macro
-            // when you use #[event(aggregate = "YourAggregate")].
-            // The Event macro generates an implementation that includes
-            // validation, state application, and post-validation.
-        }
-
-        // Implement Default if the state implements Default
-        impl Default for #wrapper_name
-        where
-            #state_name: Default,
-        {
-            fn default() -> Self {
-                Self::new()
-            }
-        }
-
-        // Implement Deref for transparent field access
-        impl std::ops::Deref for #wrapper_name {
-            type Target = #state_name;
-
-            fn deref(&self) -> &Self::Target {
-                &self.state
-            }
-        }
-
-        // Implement DerefMut for transparent mutable field access
-        impl std::ops::DerefMut for #wrapper_name {
-            fn deref_mut(&mut self) -> &mut Self::Target {
-                &mut self.state
-            }
-        }
-
-        // Implement Aggregate trait
-        impl event_sauce_core::Aggregate for #wrapper_name {
-            type Event = #event_type;
-            type Id = #id_type;
-            type Error = #error_type;
-
-            fn new(id: Self::Id) -> Self {
-                let mut state = #state_name::default();
-                state.#id_field = id;
-                Self {
-                    state,
-                    version: event_sauce_core::Version::initial(),
-                    pending_events: Vec::new(),
-                }
-            }
-
-            fn aggregate_id(&self) -> &Self::Id {
-                &self.state.#id_field
-            }
-
-            fn version(&self) -> event_sauce_core::Version {
-                self.version
-            }
-
-            fn pending_events(&self) -> &[Self::Event] {
-                &self.pending_events
-            }
-
-            fn clear_pending_events(&mut self) {
-                self.pending_events.clear();
-            }
-
-            fn apply<E: Into<Self::Event>>(&mut self, event: E) -> std::result::Result<(), Self::Error> {
-                let event = event.into();
-                self.apply_internal(&event)?;
-                self.pending_events.push(event);
-                Ok(())
-            }
-
-            fn apply_internal(&mut self, event: &Self::Event) -> std::result::Result<(), Self::Error> {
-                self.apply_event(event)?;
-                self.version = self.version.next();
-                Ok(())
-            }
-        }
-    };
-
-    gen.into()
-}
-
-/// Extract aggregate state attributes and generate wrapper name
-fn extract_aggregate_state_attrs(
-    attrs: &[Attribute],
-    state_name: &Ident,
-) -> Result<(Ident, Ident, proc_macro2::TokenStream, Ident), TokenStream> {
-    // Extract aggregate attrs using existing function
-    let (id_type, event_type, error_type_opt) = extract_aggregate_attrs(attrs)?;
-
-    // Generate wrapper name from state name
-    let state_name_str = state_name.to_string();
-    let wrapper_name_str = if let Some(name_without_state) = state_name_str.strip_suffix("State") {
-        format!("{name_without_state}Aggregate")
-    } else {
-        format!("{state_name_str}Aggregate")
-    };
-
-    // Check if name override is provided
-    for attr in attrs {
-        if attr.path().is_ident("aggregate") {
-            let nested = match &attr.meta {
-                Meta::List(list) => &list.tokens,
-                _ => continue,
-            };
-
-            if let Ok(nested_meta) = darling::ast::NestedMeta::parse_meta_list(nested.clone()) {
-                if let Ok(aggregate_attrs) = AggregateAttrs::from_list(&nested_meta) {
-                    if let Some(custom_name) = aggregate_attrs.name {
-                        let wrapper_name = Ident::new(&custom_name, proc_macro2::Span::call_site());
-                        let error_type = if let Some(ident) = error_type_opt {
-                            quote! { #ident }
-                        } else {
-                            quote! { () }
-                        };
-                        return Ok((id_type, event_type, error_type, wrapper_name));
-                    }
-                }
-            }
-        }
-    }
-
-    let wrapper_name = Ident::new(&wrapper_name_str, proc_macro2::Span::call_site());
-    let error_type = if let Some(ident) = error_type_opt {
-        quote! { #ident }
-    } else {
-        quote! { () }
-    };
-
-    Ok((id_type, event_type, error_type, wrapper_name))
-}
-
 /// Find the ID field marked with `#[aggregate_id]`
 fn find_id_field(fields: &Fields) -> Result<Ident, TokenStream> {
     if let Fields::Named(named) = fields {
@@ -1014,20 +588,8 @@ pub fn aggregate(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     };
 
-    // Find ID field - either marked with #[aggregate_id] or named "id"
-    let id_field = match find_id_field_flexible(fields) {
-        Ok(field) => field,
-        Err(err) => return err,
-    };
-
-    // Generate State struct name
-    let state_name = Ident::new(
-        &format!("{}State", aggregate_name),
-        proc_macro2::Span::call_site(),
-    );
-
-    // Extract field definitions for State struct
-    let state_fields = match fields {
+    // Extract field definitions (all business fields - no ID filtering yet)
+    let all_fields = match fields {
         Fields::Named(named) => &named.named,
         _ => {
             return syn::Error::new_spanned(
@@ -1037,6 +599,25 @@ pub fn aggregate(attr: TokenStream, item: TokenStream) -> TokenStream {
             .to_compile_error()
             .into();
         }
+    };
+
+    // Find ID field (if user provided it) or we'll generate it
+    let user_provided_id = find_id_field_flexible(fields).ok();
+
+    // Generate State struct name
+    let state_name = Ident::new(
+        &format!("{}State", aggregate_name),
+        proc_macro2::Span::call_site(),
+    );
+
+    // Filter out ID field from state fields (state should have NO infrastructure)
+    let state_fields: Vec<_> = if let Some(ref id_field_name) = user_provided_id {
+        all_fields.iter().filter(|f| {
+            f.ident.as_ref() != Some(id_field_name)
+        }).collect()
+    } else {
+        // No ID field provided by user, use all fields for state
+        all_fields.iter().collect()
     };
 
     // Check for Default derive
@@ -1049,25 +630,19 @@ pub fn aggregate(attr: TokenStream, item: TokenStream) -> TokenStream {
         false
     });
 
-    // Generate State Default impl by calling Default on all fields
+    // Generate State Default impl by calling Default on all fields (excluding ID)
     let state_default_impl = if has_default {
-        // Extract field names and generate Default::default() for each
-        let field_defaults = match fields {
-            Fields::Named(named) => {
-                let defaults = named.named.iter().map(|f| {
-                    let name = &f.ident;
-                    quote! { #name: Default::default() }
-                });
-                quote! { #(#defaults),* }
-            }
-            _ => quote! {},
-        };
+        // Extract field names and generate Default::default() for each (excluding ID)
+        let field_defaults = state_fields.iter().map(|f| {
+            let name = &f.ident;
+            quote! { #name: Default::default() }
+        });
 
         quote! {
             impl Default for #state_name {
                 fn default() -> Self {
                     Self {
-                        #field_defaults
+                        #(#field_defaults),*
                     }
                 }
             }
@@ -1095,35 +670,27 @@ pub fn aggregate(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     // Generate the complete output
     let gen = quote! {
-        // Generate the State struct
+        // Generate the State struct (business logic only - NO ID)
         #[derive(::serde::Serialize, ::serde::Deserialize, Debug, Clone)]
         #(#preserved_derives)*
         #vis struct #state_name {
-            #state_fields
+            #(#state_fields),*
         }
 
         #state_default_impl
 
-        // Generate the wrapper aggregate struct
+        // Generate the wrapper aggregate struct (with ID as infrastructure)
         #[derive(::serde::Serialize, ::serde::Deserialize, Debug)]
         #vis struct #aggregate_name {
-            state: #state_name,
+            id: #id_type,                          // ID stored in wrapper (infrastructure)
+            state: #state_name,                    // State is pure business logic
             version: event_sauce_core::Version,
             pending_events: Vec<#event_type>,
         }
 
         impl #aggregate_name {
-            /// Creates a new aggregate from state
-            pub fn from_state(state: #state_name) -> Self {
-                Self {
-                    state,
-                    version: event_sauce_core::Version::initial(),
-                    pending_events: Vec::new(),
-                }
-            }
-
             /// Returns a reference to the internal state
-            pub fn state(&self) -> &#state_name {
+            pub fn state_ref(&self) -> &#state_name {
                 &self.state
             }
 
@@ -1133,13 +700,15 @@ pub fn aggregate(attr: TokenStream, item: TokenStream) -> TokenStream {
             }
         }
 
-        // Implement Default if state has Default
+        // Implement Default if both state and ID have Default
         impl Default for #aggregate_name
         where
             #state_name: Default,
+            #id_type: Default,
         {
             fn default() -> Self {
                 Self {
+                    id: #id_type::default(),
                     state: #state_name::default(),
                     version: event_sauce_core::Version::initial(),
                     pending_events: Vec::new(),
@@ -1168,19 +737,19 @@ pub fn aggregate(attr: TokenStream, item: TokenStream) -> TokenStream {
             type Event = #event_type;
             type Id = #id_type;
             type Error = #error_type;
+            type State = #state_name;
 
             fn new(id: Self::Id) -> Self {
-                let mut state = #state_name::default();
-                state.#id_field = id;
                 Self {
-                    state,
+                    id,                                         // ID stored in wrapper
+                    state: #state_name::default(),              // State is pure business logic
                     version: event_sauce_core::Version::initial(),
                     pending_events: Vec::new(),
                 }
             }
 
             fn aggregate_id(&self) -> &Self::Id {
-                &self.state.#id_field
+                &self.id                                        // ID accessed from wrapper
             }
 
             fn version(&self) -> event_sauce_core::Version {
@@ -1206,6 +775,19 @@ pub fn aggregate(attr: TokenStream, item: TokenStream) -> TokenStream {
                 self.apply_event(event)?;
                 self.version = self.version.next();
                 Ok(())
+            }
+
+            fn state(&self) -> &Self::State {
+                &self.state
+            }
+
+            fn from_snapshot(id: Self::Id, version: event_sauce_core::Version, state: Self::State) -> Self {
+                Self {
+                    id,
+                    state,
+                    version,
+                    pending_events: Vec::new(),
+                }
             }
         }
     };

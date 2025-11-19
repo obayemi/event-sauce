@@ -463,8 +463,8 @@ pub trait EventStore: Send + Sync {
         let current_version = aggregate.version();
 
         if strategy.should_snapshot(current_version) {
-            // Try to serialize and save snapshot, but don't fail commit on error
-            match serde_json::to_value(&*aggregate) {
+            // Try to serialize and save snapshot (only the state, not the entire aggregate)
+            match serde_json::to_value(aggregate.state()) {
                 Ok(snapshot_data) => {
                     let snapshot = Snapshot::new(
                         aggregate_id,
@@ -482,7 +482,7 @@ pub trait EventStore: Send + Sync {
                 }
                 Err(e) => {
                     eprintln!(
-                        "Warning: Failed to serialize aggregate {aggregate_type} {aggregate_id} for snapshot: {e}"
+                        "Warning: Failed to serialize state for {aggregate_type} {aggregate_id} snapshot: {e}"
                     );
                 }
             }
@@ -546,10 +546,13 @@ where
     let (mut aggregate, from_version) = if config.use_snapshots_on_load() {
         match store.load_snapshot(stream_id.clone()).await? {
             Some(snapshot) => {
-                // Deserialize aggregate from snapshot
-                let aggregate: A = serde_json::from_value(snapshot.snapshot_data).map_err(|e| {
-                    crate::Error::custom(format!("Failed to deserialize snapshot: {e}"))
+                // Deserialize state from snapshot (not the entire aggregate)
+                let state: A::State = serde_json::from_value(snapshot.snapshot_data).map_err(|e| {
+                    crate::Error::custom(format!("Failed to deserialize snapshot state: {e}"))
                 })?;
+
+                // Reconstruct aggregate from snapshot components
+                let aggregate = A::from_snapshot(aggregate_id, snapshot.snapshot_version, state);
 
                 // Start loading events from after the snapshot
                 (aggregate, snapshot.snapshot_version.next())
@@ -910,10 +913,14 @@ mod tests {
 
     impl AggregateError for TestAggErr {}
 
-    #[derive(serde::Serialize)]
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+    struct TestAggState {
+        value: i32,
+    }
+
     struct TestAgg {
         id: TestAggregateId,
-        value: i32,
+        state: TestAggState,
         version: Version,
         pending_events: Vec<TestAggregateEvent>,
     }
@@ -930,7 +937,7 @@ mod tests {
         fn apply_event(&mut self, event: &TestAggregateEvent) {
             match event {
                 TestAggregateEvent::Created { value } | TestAggregateEvent::Updated { value } => {
-                    self.value = *value;
+                    self.state.value = *value;
                 }
             }
         }
@@ -940,11 +947,12 @@ mod tests {
         type Event = TestAggregateEvent;
         type Id = TestAggregateId;
         type Error = TestAggErr;
+        type State = TestAggState;
 
         fn new(id: Self::Id) -> Self {
             Self {
                 id,
-                value: 0,
+                state: TestAggState { value: 0 },
                 version: Version::initial(),
                 pending_events: Vec::new(),
             }
@@ -980,6 +988,19 @@ mod tests {
             self.apply_event(event);
             self.version = self.version.next();
             Ok(())
+        }
+
+        fn state(&self) -> &Self::State {
+            &self.state
+        }
+
+        fn from_snapshot(id: Self::Id, version: Version, state: Self::State) -> Self {
+            Self {
+                id,
+                state,
+                version,
+                pending_events: Vec::new(),
+            }
         }
     }
 

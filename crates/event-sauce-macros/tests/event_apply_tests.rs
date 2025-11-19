@@ -5,7 +5,7 @@
 
 use chrono::{DateTime, Utc};
 use event_sauce_core::{Aggregate, AggregateId, ApplyEvent, DomainEvent, Version};
-use event_sauce_macros::{AggregateError, AggregateState, Event as DeriveEvent};
+use event_sauce_macros::{AggregateError, aggregate, Event as DeriveEvent};
 use serde::{Deserialize, Serialize};
 
 // ============================================================================
@@ -64,7 +64,7 @@ struct ValueResetEvent {
 
 /// Test event enum with aggregate attribute
 #[derive(DeriveEvent, Debug, Clone, Serialize, Deserialize)]
-#[event(version = 1, type_prefix = "Test", aggregate = "TestAggregate")]
+#[event(version = 1, type_prefix = "Test", aggregate = "TestAgg")]
 enum TestEvent {
     Set(ValueSetEvent),
     Incremented(ValueIncrementedEvent),
@@ -75,46 +75,45 @@ enum TestEvent {
 // ApplyEvent Implementations
 // ============================================================================
 
-impl ApplyEvent<TestAggregate, TestError> for ValueSetEvent {
-    fn validate(&self, _aggregate: &TestAggregate) -> Result<(), TestError> {
+impl ApplyEvent<TestAgg, TestError> for ValueSetEvent {
+    fn validate(&self, _aggregate: &TestAgg) -> Result<(), TestError> {
         if self.value < 0 {
             return Err(TestError::InvalidValue(self.value));
         }
         Ok(())
     }
 
-    fn apply(&self, aggregate: &mut TestAggregate) {
+    fn apply(&self, aggregate: &mut TestAgg) {
         aggregate.value = self.value;
     }
 }
 
-impl ApplyEvent<TestAggregate, TestError> for ValueIncrementedEvent {
-    fn validate(&self, _aggregate: &TestAggregate) -> Result<(), TestError> {
+impl ApplyEvent<TestAgg, TestError> for ValueIncrementedEvent {
+    fn validate(&self, _aggregate: &TestAgg) -> Result<(), TestError> {
         if self.amount <= 0 {
             return Err(TestError::InvalidValue(self.amount));
         }
         Ok(())
     }
 
-    fn apply(&self, aggregate: &mut TestAggregate) {
+    fn apply(&self, aggregate: &mut TestAgg) {
         aggregate.value += self.amount;
     }
 }
 
-impl ApplyEvent<TestAggregate, TestError> for ValueResetEvent {
-    fn apply(&self, aggregate: &mut TestAggregate) {
+impl ApplyEvent<TestAgg, TestError> for ValueResetEvent {
+    fn apply(&self, aggregate: &mut TestAgg) {
         aggregate.value = 0;
     }
 }
 
 // ============================================================================
-// Test Aggregate State
+// Test Aggregate
 // ============================================================================
 
-#[derive(AggregateState, Debug, Clone, Default, Serialize, Deserialize)]
 #[aggregate(id = "TestId", event = "TestEvent", error = "TestError")]
-struct TestState {
-    #[aggregate_id]
+#[derive(Default)]
+struct TestAgg {
     id: TestId,
     value: i32,
 }
@@ -126,7 +125,7 @@ struct TestState {
 #[test]
 fn test_aggregate_attribute_generates_apply_event() {
     // Test that the aggregate attribute causes apply_event to be generated
-    let mut aggregate = TestAggregate::from_state(TestState {
+    let mut aggregate = TestAgg::from_state(TestAggState {
         id: TestId(1),
         value: 0,
     });
@@ -144,7 +143,7 @@ fn test_aggregate_attribute_generates_apply_event() {
 
 #[test]
 fn test_apply_event_dispatches_to_apply_event_impl() {
-    let mut aggregate = TestAggregate::from_state(TestState {
+    let mut aggregate = TestAgg::from_state(TestAggState {
         id: TestId(1),
         value: 10,
     });
@@ -175,7 +174,7 @@ fn test_apply_event_dispatches_to_apply_event_impl() {
 
 #[test]
 fn test_apply_event_with_multiple_events() {
-    let mut aggregate = TestAggregate::from_state(TestState {
+    let mut aggregate = TestAgg::from_state(TestAggState {
         id: TestId(1),
         value: 0,
     });
@@ -204,7 +203,7 @@ fn test_apply_event_with_multiple_events() {
 
 #[test]
 fn test_apply_event_through_aggregate_trait() {
-    let mut aggregate = TestAggregate::from_state(TestState {
+    let mut aggregate = TestAgg::from_state(TestAggState {
         id: TestId(1),
         value: 0,
     });
@@ -224,7 +223,7 @@ fn test_apply_event_through_aggregate_trait() {
 
 #[test]
 fn test_apply_event_preserves_aggregate_state() {
-    let mut aggregate = TestAggregate::from_state(TestState {
+    let mut aggregate = TestAgg::from_state(TestAggState {
         id: TestId(42),
         value: 10,
     });
@@ -243,7 +242,7 @@ fn test_apply_event_preserves_aggregate_state() {
 
 #[test]
 fn test_apply_event_works_with_deref() {
-    let mut aggregate = TestAggregate::from_state(TestState {
+    let mut aggregate = TestAgg::from_state(TestAggState {
         id: TestId(1),
         value: 0,
     });
@@ -266,7 +265,7 @@ fn test_apply_event_works_with_deref() {
 fn test_generated_apply_event_is_public() {
     // This test ensures the generated apply_event method is public
     // by calling it from outside the module
-    let mut aggregate = TestAggregate::from_state(TestState::default());
+    let mut aggregate = TestAgg::from_state(TestAggState::default());
 
     let event = TestEvent::Reset(ValueResetEvent {
         timestamp: Utc::now(),
@@ -278,7 +277,7 @@ fn test_generated_apply_event_is_public() {
 
 #[test]
 fn test_apply_event_with_validation() {
-    let mut aggregate = TestAggregate::from_state(TestState {
+    let mut aggregate = TestAgg::from_state(TestAggState {
         id: TestId(1),
         value: 0,
     });
@@ -305,7 +304,7 @@ fn test_apply_event_with_validation() {
 #[test]
 fn test_apply_event_integration_with_aggregate_lifecycle() {
     // Create a new aggregate
-    let mut aggregate = TestAggregate::from_state(TestState {
+    let mut aggregate = TestAgg::from_state(TestAggState {
         id: TestId(1),
         value: 0,
     });
@@ -331,7 +330,7 @@ fn test_apply_event_integration_with_aggregate_lifecycle() {
 
     // Replay events using apply_event
     let events: Vec<_> = aggregate.pending_events().to_vec();
-    let mut replayed = TestAggregate::from_state(TestState {
+    let mut replayed = TestAgg::from_state(TestAggState {
         id: TestId(1),
         value: 0,
     });
@@ -425,7 +424,7 @@ fn test_without_aggregate_attribute_no_apply_event() {
 
 #[test]
 fn test_apply_event_with_reset_to_zero() {
-    let mut aggregate = TestAggregate::from_state(TestState {
+    let mut aggregate = TestAgg::from_state(TestAggState {
         id: TestId(1),
         value: 100,
     });
@@ -441,7 +440,7 @@ fn test_apply_event_with_reset_to_zero() {
 
 #[test]
 fn test_apply_event_multiple_times_same_event() {
-    let mut aggregate = TestAggregate::from_state(TestState {
+    let mut aggregate = TestAgg::from_state(TestAggState {
         id: TestId(1),
         value: 0,
     });
@@ -467,14 +466,14 @@ fn test_apply_event_is_deterministic() {
     });
 
     // Apply to first aggregate
-    let mut aggregate1 = TestAggregate::from_state(TestState {
+    let mut aggregate1 = TestAgg::from_state(TestAggState {
         id: TestId(1),
         value: 0,
     });
     aggregate1.apply_event(&event).unwrap();
 
     // Apply to second aggregate
-    let mut aggregate2 = TestAggregate::from_state(TestState {
+    let mut aggregate2 = TestAgg::from_state(TestAggState {
         id: TestId(1),
         value: 0,
     });

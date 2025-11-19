@@ -22,7 +22,7 @@ use event_sauce::{
     ApplyEvent, CheckpointStore, DomainEvent, EventEnvelope, EventFilter, EventStore, Result,
     StreamId, Version,
 };
-use event_sauce_macros::{AggregateError, AggregateId, AggregateState, Event};
+use event_sauce_macros::{AggregateError, AggregateId, aggregate, Event};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -81,11 +81,9 @@ enum TaskError {
 }
 
 /// Task state
-#[derive(AggregateState, Debug, Clone, Default, Serialize, Deserialize)]
 #[aggregate(id = "TaskId", event = "TaskEvent", error = "TaskError")]
-struct TaskState {
-    #[aggregate_id]
-    id: TaskId,
+#[derive(Default)]
+struct Task {
     title: String,
     assignee: String,
     status: TaskStatus,
@@ -93,7 +91,7 @@ struct TaskState {
 
 /// Task events
 #[derive(Event, Debug, Clone, Serialize, Deserialize)]
-#[event(version = 1, type_prefix = "Task", aggregate = "TaskAggregate")]
+#[event(version = 1, type_prefix = "Task", aggregate = "Task")]
 enum TaskEvent {
     Created(Created),
     StatusChanged(StatusChanged),
@@ -102,28 +100,28 @@ enum TaskEvent {
 }
 
 // ApplyEvent implementations
-impl ApplyEvent<TaskAggregate, TaskError> for Created {
-    fn apply(&self, task: &mut TaskAggregate) {
+impl ApplyEvent<Task, TaskError> for Created {
+    fn apply(&self, task: &mut Task) {
         task.title = self.title.clone();
         task.assignee = self.assignee.clone();
         task.status = TaskStatus::Todo;
     }
 }
 
-impl ApplyEvent<TaskAggregate, TaskError> for StatusChanged {
-    fn apply(&self, task: &mut TaskAggregate) {
+impl ApplyEvent<Task, TaskError> for StatusChanged {
+    fn apply(&self, task: &mut Task) {
         task.status = self.new_status.clone();
     }
 }
 
-impl ApplyEvent<TaskAggregate, TaskError> for Assigned {
-    fn apply(&self, task: &mut TaskAggregate) {
+impl ApplyEvent<Task, TaskError> for Assigned {
+    fn apply(&self, task: &mut Task) {
         task.assignee = self.to_assignee.clone();
     }
 }
 
-impl ApplyEvent<TaskAggregate, TaskError> for Completed {
-    fn apply(&self, task: &mut TaskAggregate) {
+impl ApplyEvent<Task, TaskError> for Completed {
+    fn apply(&self, task: &mut Task) {
         task.status = TaskStatus::Completed;
     }
 }
