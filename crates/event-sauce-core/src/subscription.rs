@@ -464,6 +464,137 @@ where
             CheckpointStrategy::Manual => false,
         }
     }
+
+    /// Converts the subscription into a tokio stream of events.
+    ///
+    /// This provides an alternative API to [`run`](Self::run) that returns a stream
+    /// which can be consumed using standard tokio stream combinators. The stream:
+    ///
+    /// 1. Loads the checkpoint to determine starting position
+    /// 2. Streams events from the event store
+    /// 3. Filters events according to the configured filter
+    /// 4. Saves checkpoints according to the configured strategy
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use futures::StreamExt;
+    ///
+    /// let subscription = Subscription::builder("my-subscription", store)
+    ///     .checkpoint_store(checkpoint_store)
+    ///     .build()?;
+    ///
+    /// let mut stream = subscription.into_stream().await?;
+    ///
+    /// while let Some(event_result) = stream.next().await {
+    ///     let event = event_result?;
+    ///     // Process event
+    ///     println!("Event: {}", event.event_type);
+    /// }
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Checkpoint loading fails
+    /// - Event streaming fails
+    pub async fn into_stream(
+        self,
+    ) -> Result<impl futures::Stream<Item = Result<EventEnvelope>>> {
+        use async_stream::stream;
+        use futures::StreamExt;
+
+        // Extract values from self before moving into stream
+        let name = self.name;
+        let checkpoint_store = self.checkpoint_store;
+        let filter = self.config.filter;
+        let checkpoint_strategy = self.config.checkpoint_strategy;
+        let store = self.store;
+
+        // Load checkpoint to determine starting position
+        let start_position = if let Some(ref checkpoint_store) = checkpoint_store {
+            checkpoint_store
+                .load_checkpoint(&name)
+                .await?
+                .unwrap_or(Position::start())
+        } else {
+            Position::start()
+        };
+
+        // Create the subscription stream
+        let result_stream = stream! {
+            // Get event stream from store inside the stream
+            let event_stream = match store.stream_all(start_position).await {
+                Ok(s) => s,
+                Err(e) => {
+                    yield Err(e);
+                    return;
+                }
+            };
+            futures::pin_mut!(event_stream);
+
+            let mut events_processed = 0usize;
+            let mut current_position = start_position;
+            let mut last_position = start_position;
+
+            while let Some(event_result) = event_stream.next().await {
+                match event_result {
+                    Ok(event) => {
+                        current_position = Position::new(current_position.as_i64() + 1);
+
+                        // Apply filter
+                        if !filter.matches(&event) {
+                            continue;
+                        }
+
+                        // Update counters
+                        events_processed += 1;
+                        last_position = current_position;
+
+                        // Save checkpoint according to strategy
+                        let should_save = match checkpoint_strategy {
+                            CheckpointStrategy::EveryEvent => true,
+                            CheckpointStrategy::EveryN(n) => events_processed % n == 0,
+                            CheckpointStrategy::Manual => false,
+                        };
+
+                        if should_save {
+                            if let Some(ref checkpoint_store) = checkpoint_store {
+                                if let Err(e) = checkpoint_store
+                                    .save_checkpoint(&name, current_position)
+                                    .await
+                                {
+                                    yield Err(e);
+                                    return;
+                                }
+                            }
+                        }
+
+                        // Yield the event after checkpoint is saved
+                        yield Ok(event);
+                    }
+                    Err(e) => {
+                        yield Err(e);
+                        return;
+                    }
+                }
+            }
+
+            // Save final checkpoint if any events were processed (respecting strategy)
+            if events_processed > 0 && !matches!(checkpoint_strategy, CheckpointStrategy::Manual) {
+                if let Some(ref checkpoint_store) = checkpoint_store {
+                    if let Err(e) = checkpoint_store
+                        .save_checkpoint(&name, last_position)
+                        .await
+                    {
+                        yield Err(e);
+                    }
+                }
+            }
+        };
+
+        Ok(result_stream)
+    }
 }
 
 #[cfg(test)]
@@ -869,5 +1000,204 @@ mod tests {
         assert_eq!(processed.lock().unwrap().len(), 2);
         assert_eq!(processed.lock().unwrap()[0], "UserCreated");
         assert_eq!(processed.lock().unwrap()[1], "UserUpdated");
+    }
+
+    // SubscriptionStream tests - these will FAIL until we implement the stream API
+    #[tokio::test]
+    async fn test_subscription_into_stream_basic() {
+        use futures::StreamExt;
+
+        let store = Arc::new(MockEventStore::new());
+        let checkpoint_store = Arc::new(MockCheckpointStore::new());
+
+        // Add some events
+        store.add_event(create_test_envelope("Event1", "TestAggregate"));
+        store.add_event(create_test_envelope("Event2", "TestAggregate"));
+        store.add_event(create_test_envelope("Event3", "TestAggregate"));
+
+        let subscription = Subscription::builder("test-stream", store)
+            .checkpoint_store(checkpoint_store.clone())
+            .build()
+            .unwrap();
+
+        let stream = subscription.into_stream().await.unwrap();
+        tokio::pin!(stream);
+
+        let mut count = 0;
+        while let Some(result) = stream.next().await {
+            result.unwrap();
+            count += 1;
+        }
+
+        assert_eq!(count, 3);
+
+        // Checkpoint should be saved
+        let checkpoint = checkpoint_store.get("test-stream").await;
+        assert!(checkpoint.is_some());
+        assert_eq!(checkpoint.unwrap().as_i64(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_subscription_stream_with_filter() {
+        use futures::StreamExt;
+
+        let store = Arc::new(MockEventStore::new());
+        let checkpoint_store = Arc::new(MockCheckpointStore::new());
+
+        store.add_event(create_test_envelope("UserCreated", "User"));
+        store.add_event(create_test_envelope("OrderCreated", "Order"));
+        store.add_event(create_test_envelope("UserUpdated", "User"));
+
+        let subscription = Subscription::builder("filtered-stream", store)
+            .checkpoint_store(checkpoint_store)
+            .filter(EventFilter::by_aggregate_type("User"))
+            .build()
+            .unwrap();
+
+        let stream = subscription.into_stream().await.unwrap();
+        tokio::pin!(stream);
+
+        let mut events = Vec::new();
+        while let Some(result) = stream.next().await {
+            let event = result.unwrap();
+            events.push(event.event_type.clone());
+        }
+
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0], "UserCreated");
+        assert_eq!(events[1], "UserUpdated");
+    }
+
+    #[tokio::test]
+    async fn test_subscription_stream_resumes_from_checkpoint() {
+        use futures::StreamExt;
+
+        let store = Arc::new(MockEventStore::new());
+        let checkpoint_store = Arc::new(MockCheckpointStore::new());
+
+        // Add events
+        for i in 0..5 {
+            store.add_event(create_test_envelope(&format!("Event{i}"), "TestAggregate"));
+        }
+
+        // Save checkpoint at position 2
+        checkpoint_store
+            .save_checkpoint("resume-stream", Position::new(2))
+            .await
+            .unwrap();
+
+        let subscription = Subscription::builder("resume-stream", store)
+            .checkpoint_store(checkpoint_store)
+            .build()
+            .unwrap();
+
+        let stream = subscription.into_stream().await.unwrap();
+        tokio::pin!(stream);
+
+        let mut count = 0;
+        while let Some(result) = stream.next().await {
+            result.unwrap();
+            count += 1;
+        }
+
+        // Should only process events from position 2 onwards (3 events)
+        assert_eq!(count, 3);
+    }
+
+    #[tokio::test]
+    async fn test_subscription_stream_checkpoint_strategy_every_n() {
+        use futures::StreamExt;
+
+        let store = Arc::new(MockEventStore::new());
+        let checkpoint_store = Arc::new(MockCheckpointStore::new());
+
+        // Add 10 events
+        for i in 0..10 {
+            store.add_event(create_test_envelope(&format!("Event{i}"), "TestAggregate"));
+        }
+
+        let subscription = Subscription::builder("every-n-stream", store)
+            .checkpoint_store(checkpoint_store.clone())
+            .checkpoint_strategy(CheckpointStrategy::EveryN(3))
+            .build()
+            .unwrap();
+
+        let stream = subscription.into_stream().await.unwrap();
+        tokio::pin!(stream);
+
+        let mut count = 0;
+        while let Some(result) = stream.next().await {
+            result.unwrap();
+            count += 1;
+
+            // Check checkpoint after every 3 events
+            if count == 3 {
+                let checkpoint = checkpoint_store.get("every-n-stream").await;
+                assert!(checkpoint.is_some());
+                assert_eq!(checkpoint.unwrap().as_i64(), 3);
+            }
+        }
+
+        assert_eq!(count, 10);
+
+        // Final checkpoint should be saved
+        let checkpoint = checkpoint_store.get("every-n-stream").await;
+        assert_eq!(checkpoint.unwrap().as_i64(), 10);
+    }
+
+    #[tokio::test]
+    async fn test_subscription_stream_manual_checkpoint() {
+        use futures::StreamExt;
+
+        let store = Arc::new(MockEventStore::new());
+        let checkpoint_store = Arc::new(MockCheckpointStore::new());
+
+        store.add_event(create_test_envelope("Event1", "TestAggregate"));
+        store.add_event(create_test_envelope("Event2", "TestAggregate"));
+
+        let subscription = Subscription::builder("manual-stream", store)
+            .checkpoint_store(checkpoint_store.clone())
+            .checkpoint_strategy(CheckpointStrategy::Manual)
+            .build()
+            .unwrap();
+
+        let stream = subscription.into_stream().await.unwrap();
+        tokio::pin!(stream);
+
+        let mut count = 0;
+        while let Some(result) = stream.next().await {
+            result.unwrap();
+            count += 1;
+        }
+
+        assert_eq!(count, 2);
+
+        // No checkpoint should be saved automatically with Manual strategy
+        let checkpoint = checkpoint_store.get("manual-stream").await;
+        assert!(checkpoint.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_subscription_stream_empty() {
+        use futures::StreamExt;
+
+        let store = Arc::new(MockEventStore::new());
+        let checkpoint_store = Arc::new(MockCheckpointStore::new());
+
+        let subscription = Subscription::builder("empty-stream", store)
+            .checkpoint_store(checkpoint_store)
+            .build()
+            .unwrap();
+
+        let stream = subscription.into_stream().await.unwrap();
+        tokio::pin!(stream);
+
+        let mut count = 0;
+        while let Some(result) = stream.next().await {
+            result.unwrap();
+            count += 1;
+        }
+
+        assert_eq!(count, 0);
     }
 }

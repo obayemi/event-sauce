@@ -12,8 +12,8 @@
 use chrono::{DateTime, Utc};
 use event_sauce::event_sauce_memory::{InMemoryCheckpointStore, InMemoryEventStore};
 use event_sauce::{
-    ApplyEvent, CheckpointStore, CheckpointStrategy, DomainEvent, EventEnvelope, EventFilter,
-    EventStore, Result, StreamId, Subscription, Version,
+    ApplyEvent, CheckpointStore, DomainEvent, EventEnvelope, EventFilter, EventStore, Result,
+    StreamId, Subscription, Version,
 };
 use event_sauce_macros::{AggregateError, AggregateId, AggregateState, Event};
 use serde::{Deserialize, Serialize};
@@ -307,8 +307,6 @@ async fn main() -> Result<()> {
         let state = status_state.clone();
         let mut subscription = Subscription::builder("task_count_by_status", store.clone())
             .checkpoint_store(checkpoint_store.clone())
-            .filter(EventFilter::all())
-            .checkpoint_strategy(CheckpointStrategy::EveryEvent)
             .build()?;
 
         subscription
@@ -324,8 +322,6 @@ async fn main() -> Result<()> {
         let state = assignee_state.clone();
         let mut subscription = Subscription::builder("tasks_by_assignee", store.clone())
             .checkpoint_store(checkpoint_store.clone())
-            .filter(EventFilter::all())
-            .checkpoint_strategy(CheckpointStrategy::EveryEvent)
             .build()?;
 
         subscription
@@ -342,7 +338,6 @@ async fn main() -> Result<()> {
         let mut subscription = Subscription::builder("completed_tasks_counter", store.clone())
             .checkpoint_store(checkpoint_store.clone())
             .filter(EventFilter::by_event_type("Task.Completed"))
-            .checkpoint_strategy(CheckpointStrategy::EveryEvent)
             .build()?;
 
         subscription
@@ -428,6 +423,42 @@ async fn main() -> Result<()> {
     }
 
     println!("\n{}", "=".repeat(70));
+    println!("🔄 Demonstrating Stream API");
+    println!("{}\n", "=".repeat(70));
+
+    // Create new projection state for stream example
+    let stream_state = Arc::new(Mutex::new(CompletedTasksState::default()));
+
+    // Using the new stream API - more flexible than the callback-based run() method
+    println!("--- Processing Events with Stream API ---");
+
+    {
+        let state = stream_state.clone();
+        let subscription = Subscription::builder("stream_completed_tasks", store.clone())
+            .checkpoint_store(checkpoint_store.clone())
+            .filter(EventFilter::by_event_type("Task.Completed"))
+            .build()?;
+
+        let stream = subscription.into_stream().await?;
+        tokio::pin!(stream);
+
+        use futures::StreamExt;
+        while let Some(result) = stream.next().await {
+            let event = result?;
+            let mut s = state.lock().unwrap();
+            s.handle_event(&event)?;
+        }
+    }
+
+    println!("✓ Stream-based subscription processed events\n");
+
+    // Display stream results
+    {
+        let state = stream_state.lock().unwrap();
+        println!("✅ Completed Tasks (Stream API): {}\n", state.count);
+    }
+
+    println!("{}", "=".repeat(70));
     println!("✅ Example completed!");
     println!("\nKey Takeaways:");
     println!("1. Subscriptions provide guaranteed delivery from event store");
@@ -435,6 +466,8 @@ async fn main() -> Result<()> {
     println!("3. Each subscription builds its own optimized read model");
     println!("4. Checkpoints enable resuming subscriptions after restart");
     println!("5. Event filtering reduces processing for specialized subscriptions");
+    println!("6. NEW: Stream API (into_stream) provides a composable alternative to run()");
+    println!("7. NEW: Streams work seamlessly with futures combinators and tokio ecosystem");
     println!("{}", "=".repeat(70));
     println!();
 
