@@ -1,7 +1,7 @@
 //! Bank Account Example with Validation
 //!
-//! This example demonstrates the new event sourcing pattern with:
-//! - AggregateState derive macro for cleaner code structure
+//! This example demonstrates the event sourcing pattern with:
+//! - Aggregate attribute macro for automatic State struct generation
 //! - Aggregate-specific error types using `AggregateError` trait
 //! - Event validation with business rules
 //! - Self-contained event application logic using `ApplyEvent` trait

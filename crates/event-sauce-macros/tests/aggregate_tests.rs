@@ -1,7 +1,7 @@
-//! Integration tests for #[derive(Aggregate)] macro.
+//! Integration tests for #[aggregate(...)] attribute macro.
 //!
-//! These tests verify that the Aggregate derive macro correctly generates
-//! the Aggregate trait implementation.
+//! These tests verify that the aggregate attribute macro correctly generates
+//! the State struct and Aggregate trait implementation.
 
 use chrono::{DateTime, Utc};
 use event_sauce_core::{Aggregate, AggregateError, AggregateId, DomainEvent, Version};
@@ -17,7 +17,7 @@ struct TestCounterError;
 impl AggregateError for TestCounterError {}
 
 // Define a simple aggregate ID for testing
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 struct TestCounterId(String);
 
 impl TestCounterId {
@@ -84,45 +84,21 @@ impl DomainEvent for TestCounterEvent {
     }
 }
 
-// This is the aggregate struct that uses the derive macro
-// The macro should generate the Aggregate trait implementation
-#[derive(event_sauce_macros::Aggregate, Debug, Clone)]
-#[aggregate(
+// This is the aggregate struct using the new attribute macro
+// The macro will generate TestCounterState and transform TestCounter into a wrapper
+#[event_sauce_macros::aggregate(
     id = "TestCounterId",
     event = "TestCounterEvent",
     error = "TestCounterError"
 )]
+#[derive(Default)]
 struct TestCounter {
-    #[aggregate_id]
     id: TestCounterId,
     value: i32,
-    #[aggregate_version]
-    version: Version,
-    #[aggregate_events]
-    pending_events: Vec<TestCounterEvent>,
 }
 
-impl Default for TestCounter {
-    fn default() -> Self {
-        Self {
-            id: TestCounterId::default(),
-            value: 0,
-            version: Version::initial(),
-            pending_events: Vec::new(),
-        }
-    }
-}
-
+// Business methods on the aggregate
 impl TestCounter {
-    fn new(id: TestCounterId) -> Self {
-        Self {
-            id,
-            value: 0,
-            version: Version::initial(),
-            pending_events: Vec::new(),
-        }
-    }
-
     fn increment(&mut self, amount: i32) {
         self.apply(TestCounterEvent::Incremented {
             amount,
@@ -210,7 +186,7 @@ fn test_aggregate_derive_apply() {
 
     // Version should be incremented
     assert_eq!(counter.version(), initial_version.next());
-    // Value should be updated (via apply_event)
+    // Value should be updated (via apply_event) - accessible via Deref
     assert_eq!(counter.value, 10);
 }
 
@@ -240,4 +216,39 @@ fn test_aggregate_derive_is_send_sync() {
 fn test_aggregate_derive_aggregate_type() {
     let type_name = TestCounter::aggregate_type();
     assert_eq!(type_name, "TestCounter");
+}
+
+#[test]
+fn test_state_struct_generated() {
+    // The macro should generate TestCounterState
+    let state = TestCounterState {
+        id: TestCounterId::new("test-1".to_string()),
+        value: 42,
+    };
+
+    assert_eq!(state.value, 42);
+}
+
+#[test]
+fn test_from_state_constructor() {
+    let state = TestCounterState {
+        id: TestCounterId::new("test-1".to_string()),
+        value: 100,
+    };
+
+    let counter = TestCounter::from_state(state);
+
+    assert_eq!(counter.value, 100);
+    assert_eq!(counter.version(), Version::initial());
+}
+
+#[test]
+fn test_deref_transparent_access() {
+    let id = TestCounterId::new("test-1".to_string());
+    let mut counter = TestCounter::new(id);
+
+    // Can access and modify state fields directly via Deref/DerefMut
+    counter.value = 999;
+
+    assert_eq!(counter.value, 999);
 }

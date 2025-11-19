@@ -9,7 +9,8 @@
 
 use chrono::Utc;
 use event_sauce_core::{Aggregate, AggregateId, DomainEvent, Version};
-use event_sauce_macros::{Aggregate as DeriveAggregate, AggregateError};
+use event_sauce_macros::AggregateError;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 use thiserror::Error;
 use uuid::Uuid;
@@ -18,7 +19,7 @@ use uuid::Uuid;
 // Test Aggregate: Account
 // ============================================================================
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 struct TestAccountId(Uuid);
 
 impl Default for TestAccountId {
@@ -45,7 +46,7 @@ impl AggregateId for TestAccountId {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[allow(dead_code)]
 enum AccountStatus {
     #[default]
@@ -112,35 +113,17 @@ impl DomainEvent for TestAccountEvent {
     }
 }
 
-#[derive(DeriveAggregate, Debug, Clone)]
-#[aggregate(
+#[event_sauce_macros::aggregate(
     id = "TestAccountId",
     event = "TestAccountEvent",
     error = "TestAccountError"
 )]
+#[derive(Default)]
 struct TestAccount {
-    #[aggregate_id]
     id: TestAccountId,
     owner: String,
     balance: i64,
     status: AccountStatus,
-    #[aggregate_version]
-    version: Version,
-    #[aggregate_events]
-    pending_events: Vec<TestAccountEvent>,
-}
-
-impl Default for TestAccount {
-    fn default() -> Self {
-        Self {
-            id: TestAccountId::default(),
-            owner: String::new(),
-            balance: 0,
-            status: AccountStatus::Active,
-            version: Version::initial(),
-            pending_events: Vec::new(),
-        }
-    }
 }
 
 impl TestAccount {
@@ -153,14 +136,7 @@ impl TestAccount {
             return Err(TestAccountError::InvalidAmount(initial_balance));
         }
 
-        let mut account = Self {
-            id,
-            owner: String::new(),
-            balance: 0,
-            status: AccountStatus::Active,
-            version: Version::initial(),
-            pending_events: Vec::new(),
-        };
+        let mut account = Self::new(id);
 
         account
             .apply(TestAccountEvent::Opened {
@@ -408,14 +384,7 @@ fn test_event_replay_with_apply_unchecked() {
     ];
 
     // Replay events using apply_unchecked (no validation)
-    let mut account = TestAccount {
-        id: id.clone(),
-        owner: String::new(),
-        balance: 0,
-        status: AccountStatus::Active,
-        version: Version::initial(),
-        pending_events: Vec::new(),
-    };
+    let mut account = TestAccount::new(id.clone());
 
     for event in &events {
         account.apply_unchecked(event);

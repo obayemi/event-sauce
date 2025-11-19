@@ -1,2 +1,2 @@
-do implement a "postgres quikcstart" examples showcasing postgres event store,
-subscriptions with postgres checkpoints, and an examples projection storing data in a postges table
+- [x] do implement a "postgres quikcstart" examples showcasing postgres event store, subscriptions with postgres checkpoints, and an examples projection storing data in a postges table
+- [x] review the implementaiton of the EventStore base trait and its specific implementations, and make sure that all reasonable code is shared in the Eventstore trait and that the only required code in the implementations is the code required for actualy storing an retrieving data

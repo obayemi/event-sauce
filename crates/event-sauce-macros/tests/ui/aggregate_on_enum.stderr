@@ -4,6 +4,26 @@ error: Aggregate can only be derived for structs
 48 | enum TestAggregate {
    |      ^^^^^^^^^^^^^
 
+error: cannot find attribute `aggregate_version` in this scope
+  --> tests/ui/aggregate_on_enum.rs:52:11
+   |
+52 |         #[aggregate_version]
+   |           ^^^^^^^^^^^^^^^^^
+
+error: cannot find attribute `aggregate_events` in this scope
+  --> tests/ui/aggregate_on_enum.rs:54:11
+   |
+54 |         #[aggregate_events]
+   |           ^^^^^^^^^^^^^^^^
+
+warning: use of deprecated macro `event_sauce_macros::Aggregate`: Use #[aggregate(...)] attribute macro instead
+  --> tests/ui/aggregate_on_enum.rs:46:10
+   |
+46 | #[derive(event_sauce_macros::Aggregate)]
+   |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(deprecated)]` on by default
+
 error[E0277]: the trait bound `TestEvent: serde::Deserialize<'de>` is not satisfied
   --> tests/ui/aggregate_on_enum.rs:33:22
    |
