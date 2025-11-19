@@ -255,9 +255,9 @@ enum ProductEvent {
 // 4. Business rules are in ONE place (not scattered across commands)
 // 5. Commands stay simple - just create events
 
-impl ApplyEvent<Product, ProductError> for ProductCreated {
+impl ApplyEvent<Product> for ProductCreated {
     /// Validate product creation business rules
-    fn validate(&self, _product: &Product) -> Result<(), ProductError> {
+    fn validate(&self, _product: &Product) -> Result<(), <Product as Aggregate>::Error> {
         // Validate product name
         if self.name.is_empty() {
             return Err(ProductError::InvalidName);
@@ -286,9 +286,9 @@ impl ApplyEvent<Product, ProductError> for ProductCreated {
     }
 }
 
-impl ApplyEvent<Product, ProductError> for StockAdded {
+impl ApplyEvent<Product> for StockAdded {
     /// Validate stock addition
-    fn validate(&self, _product: &Product) -> Result<(), ProductError> {
+    fn validate(&self, _product: &Product) -> Result<(), <Product as Aggregate>::Error> {
         // Validate quantity is positive
         if self.quantity <= 0 {
             return Err(ProductError::InvalidQuantity);
@@ -304,9 +304,9 @@ impl ApplyEvent<Product, ProductError> for StockAdded {
     }
 }
 
-impl ApplyEvent<Product, ProductError> for StockRemoved {
+impl ApplyEvent<Product> for StockRemoved {
     /// Validate stock removal pre-conditions
-    fn validate(&self, product: &Product) -> Result<(), ProductError> {
+    fn validate(&self, product: &Product) -> Result<(), <Product as Aggregate>::Error> {
         // Validate quantity is positive
         if self.quantity <= 0 {
             return Err(ProductError::InvalidQuantity);
@@ -331,7 +331,7 @@ impl ApplyEvent<Product, ProductError> for StockRemoved {
     }
 
     /// Validate stock is not negative after removal (invariant check)
-    fn post_validate(&self, product: &Product) -> Result<(), ProductError> {
+    fn post_validate(&self, product: &Product) -> Result<(), <Product as Aggregate>::Error> {
         // Ensure the resulting stock is not negative (business invariant)
         // This is a defensive check - should never happen if validate() worked correctly
         if product.stock < 0 {
@@ -342,9 +342,9 @@ impl ApplyEvent<Product, ProductError> for StockRemoved {
     }
 }
 
-impl ApplyEvent<Product, ProductError> for PriceChanged {
+impl ApplyEvent<Product> for PriceChanged {
     /// Validate price change
-    fn validate(&self, _product: &Product) -> Result<(), ProductError> {
+    fn validate(&self, _product: &Product) -> Result<(), <Product as Aggregate>::Error> {
         // Validate new price is non-negative
         if self.new_price_cents < 0 {
             return Err(ProductError::NegativePrice);

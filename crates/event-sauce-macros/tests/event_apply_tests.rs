@@ -75,8 +75,8 @@ enum TestEvent {
 // ApplyEvent Implementations
 // ============================================================================
 
-impl ApplyEvent<TestAgg, TestError> for ValueSetEvent {
-    fn validate(&self, _aggregate: &TestAgg) -> Result<(), TestError> {
+impl ApplyEvent<TestAgg> for ValueSetEvent {
+    fn validate(&self, _aggregate: &TestAgg) -> Result<(), <TestAgg as Aggregate>::Error> {
         if self.value < 0 {
             return Err(TestError::InvalidValue(self.value));
         }
@@ -88,8 +88,8 @@ impl ApplyEvent<TestAgg, TestError> for ValueSetEvent {
     }
 }
 
-impl ApplyEvent<TestAgg, TestError> for ValueIncrementedEvent {
-    fn validate(&self, _aggregate: &TestAgg) -> Result<(), TestError> {
+impl ApplyEvent<TestAgg> for ValueIncrementedEvent {
+    fn validate(&self, _aggregate: &TestAgg) -> Result<(), <TestAgg as Aggregate>::Error> {
         if self.amount <= 0 {
             return Err(TestError::InvalidValue(self.amount));
         }
@@ -101,7 +101,7 @@ impl ApplyEvent<TestAgg, TestError> for ValueIncrementedEvent {
     }
 }
 
-impl ApplyEvent<TestAgg, TestError> for ValueResetEvent {
+impl ApplyEvent<TestAgg> for ValueResetEvent {
     fn apply(&self, aggregate: &mut TestAgg) {
         aggregate.value = 0;
     }

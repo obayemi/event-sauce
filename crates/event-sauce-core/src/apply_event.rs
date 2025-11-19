@@ -3,6 +3,9 @@
 //! Provides the `ApplyEvent` trait that allows events to define their own
 //! application logic, making events self-contained and reducing boilerplate.
 
+use crate::Aggregate;
+
+#[cfg(test)]
 use crate::AggregateError;
 
 /// Trait for applying events to aggregates.
@@ -13,8 +16,9 @@ use crate::AggregateError;
 ///
 /// # Type Parameters
 ///
-/// - `A`: The aggregate type this event applies to
-/// - `E`: The error type (must implement `AggregateError`)
+/// - `A`: The aggregate type this event applies to (must implement `Aggregate`)
+///
+/// The error type is automatically derived from `A::Error`.
 ///
 /// # Pattern
 ///
@@ -31,25 +35,92 @@ use crate::AggregateError;
 /// ## Simple Event Without Validation
 ///
 /// ```
-/// use event_sauce_core::{ApplyEvent, AggregateError};
+/// use event_sauce_core::{Aggregate, ApplyEvent, AggregateError, AggregateId, DomainEvent, Version};
 /// use thiserror::Error;
+/// use chrono::Utc;
+/// use std::fmt;
+/// use uuid::Uuid;
+///
+/// #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// struct CounterId(Uuid);
+/// impl CounterId {
+///     fn new() -> Self { Self(Uuid::new_v4()) }
+/// }
+/// impl fmt::Display for CounterId {
+///     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+///         write!(f, "Counter-{}", self.0)
+///     }
+/// }
+/// impl AggregateId for CounterId {
+///     fn to_uuid(&self) -> Uuid { self.0 }
+/// }
 ///
 /// #[derive(Debug, Error)]
 /// #[error("Counter error")]
 /// enum CounterError {}
 /// impl AggregateError for CounterError {}
 ///
+/// #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+/// struct CounterState { value: i32 }
+///
+/// #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+/// enum CounterEvent {
+///     Incremented { amount: i32 },
+/// }
+///
+/// impl DomainEvent for CounterEvent {
+///     type Aggregate = Counter;
+///     fn event_type(&self) -> &'static str { "Incremented" }
+///     fn event_version(&self) -> i32 { 1 }
+///     fn occurred_at(&self) -> chrono::DateTime<Utc> { Utc::now() }
+/// }
+///
 /// struct Counter {
-///     value: i32,
+///     id: CounterId,
+///     state: CounterState,
+///     version: Version,
+///     pending_events: Vec<CounterEvent>,
+/// }
+///
+/// impl Aggregate for Counter {
+///     type Event = CounterEvent;
+///     type Id = CounterId;
+///     type Error = CounterError;
+///     type State = CounterState;
+///
+///     fn new(id: Self::Id) -> Self {
+///         Self { id, state: CounterState { value: 0 }, version: Version::initial(), pending_events: Vec::new() }
+///     }
+///     fn aggregate_id(&self) -> &Self::Id { &self.id }
+///     fn version(&self) -> Version { self.version }
+///     fn pending_events(&self) -> &[Self::Event] { &self.pending_events }
+///     fn clear_pending_events(&mut self) { self.pending_events.clear(); }
+///     fn apply<E: Into<Self::Event>>(&mut self, event: E) -> Result<(), Self::Error> {
+///         let event = event.into();
+///         self.apply_internal(&event)?;
+///         self.pending_events.push(event);
+///         Ok(())
+///     }
+///     fn apply_internal(&mut self, event: &Self::Event) -> Result<(), Self::Error> {
+///         match event {
+///             CounterEvent::Incremented { amount } => self.state.value += amount,
+///         }
+///         self.version = self.version.next();
+///         Ok(())
+///     }
+///     fn state(&self) -> &Self::State { &self.state }
+///     fn from_snapshot(id: Self::Id, version: Version, state: Self::State) -> Self {
+///         Self { id, state, version, pending_events: Vec::new() }
+///     }
 /// }
 ///
 /// struct Incremented {
 ///     amount: i32,
 /// }
 ///
-/// impl ApplyEvent<Counter, CounterError> for Incremented {
+/// impl ApplyEvent<Counter> for Incremented {
 ///     fn apply(&self, counter: &mut Counter) {
-///         counter.value += self.amount;
+///         counter.state.value += self.amount;
 ///     }
 /// }
 /// ```
@@ -57,8 +128,25 @@ use crate::AggregateError;
 /// ## Event With Validation
 ///
 /// ```
-/// use event_sauce_core::{ApplyEvent, AggregateError};
+/// use event_sauce_core::{Aggregate, ApplyEvent, AggregateError, AggregateId, DomainEvent, Version};
 /// use thiserror::Error;
+/// use chrono::Utc;
+/// use std::fmt;
+/// use uuid::Uuid;
+///
+/// #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// struct AccountId(Uuid);
+/// impl AccountId {
+///     fn new() -> Self { Self(Uuid::new_v4()) }
+/// }
+/// impl fmt::Display for AccountId {
+///     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+///         write!(f, "Account-{}", self.0)
+///     }
+/// }
+/// impl AggregateId for AccountId {
+///     fn to_uuid(&self) -> Uuid { self.0 }
+/// }
 ///
 /// #[derive(Debug, Error)]
 /// enum BankAccountError {
@@ -69,34 +157,91 @@ use crate::AggregateError;
 /// }
 /// impl AggregateError for BankAccountError {}
 ///
-/// #[derive(Debug, PartialEq)]
+/// #[derive(Debug, PartialEq, Clone, serde::Serialize, serde::Deserialize)]
 /// enum AccountStatus {
 ///     Active,
 ///     Closed,
 /// }
 ///
-/// struct BankAccount {
+/// #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+/// struct BankAccountState {
 ///     balance: i64,
 ///     status: AccountStatus,
+/// }
+///
+/// #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+/// enum BankAccountEvent {
+///     Withdrawn { amount: i64 },
+/// }
+///
+/// impl DomainEvent for BankAccountEvent {
+///     type Aggregate = BankAccount;
+///     fn event_type(&self) -> &'static str { "MoneyWithdrawn" }
+///     fn event_version(&self) -> i32 { 1 }
+///     fn occurred_at(&self) -> chrono::DateTime<Utc> { Utc::now() }
+/// }
+///
+/// struct BankAccount {
+///     id: AccountId,
+///     state: BankAccountState,
+///     version: Version,
+///     pending_events: Vec<BankAccountEvent>,
+/// }
+///
+/// impl Aggregate for BankAccount {
+///     type Event = BankAccountEvent;
+///     type Id = AccountId;
+///     type Error = BankAccountError;
+///     type State = BankAccountState;
+///
+///     fn new(id: Self::Id) -> Self {
+///         Self {
+///             id,
+///             state: BankAccountState { balance: 0, status: AccountStatus::Active },
+///             version: Version::initial(),
+///             pending_events: Vec::new(),
+///         }
+///     }
+///     fn aggregate_id(&self) -> &Self::Id { &self.id }
+///     fn version(&self) -> Version { self.version }
+///     fn pending_events(&self) -> &[Self::Event] { &self.pending_events }
+///     fn clear_pending_events(&mut self) { self.pending_events.clear(); }
+///     fn apply<E: Into<Self::Event>>(&mut self, event: E) -> Result<(), Self::Error> {
+///         let event = event.into();
+///         self.apply_internal(&event)?;
+///         self.pending_events.push(event);
+///         Ok(())
+///     }
+///     fn apply_internal(&mut self, event: &Self::Event) -> Result<(), Self::Error> {
+///         match event {
+///             BankAccountEvent::Withdrawn { amount } => self.state.balance -= amount,
+///         }
+///         self.version = self.version.next();
+///         Ok(())
+///     }
+///     fn state(&self) -> &Self::State { &self.state }
+///     fn from_snapshot(id: Self::Id, version: Version, state: Self::State) -> Self {
+///         Self { id, state, version, pending_events: Vec::new() }
+///     }
 /// }
 ///
 /// struct MoneyWithdrawn {
 ///     amount: i64,
 /// }
 ///
-/// impl ApplyEvent<BankAccount, BankAccountError> for MoneyWithdrawn {
-///     fn validate(&self, account: &BankAccount) -> Result<(), BankAccountError> {
-///         if account.status == AccountStatus::Closed {
+/// impl ApplyEvent<BankAccount> for MoneyWithdrawn {
+///     fn validate(&self, account: &BankAccount) -> Result<(), <BankAccount as Aggregate>::Error> {
+///         if account.state.status == AccountStatus::Closed {
 ///             return Err(BankAccountError::AccountClosed);
 ///         }
-///         if account.balance < self.amount {
+///         if account.state.balance < self.amount {
 ///             return Err(BankAccountError::InsufficientFunds);
 ///         }
 ///         Ok(())
 ///     }
 ///
 ///     fn apply(&self, account: &mut BankAccount) {
-///         account.balance -= self.amount;
+///         account.state.balance -= self.amount;
 ///     }
 /// }
 /// ```
@@ -104,25 +249,92 @@ use crate::AggregateError;
 /// ## Usage in Aggregates
 ///
 /// ```
-/// use event_sauce_core::{ApplyEvent, AggregateError};
+/// use event_sauce_core::{Aggregate, ApplyEvent, AggregateError, AggregateId, DomainEvent, Version};
 /// use thiserror::Error;
+/// use chrono::Utc;
+/// use std::fmt;
+/// use uuid::Uuid;
+///
+/// #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// struct CounterId(Uuid);
+/// impl CounterId {
+///     fn new() -> Self { Self(Uuid::new_v4()) }
+/// }
+/// impl fmt::Display for CounterId {
+///     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+///         write!(f, "Counter-{}", self.0)
+///     }
+/// }
+/// impl AggregateId for CounterId {
+///     fn to_uuid(&self) -> Uuid { self.0 }
+/// }
 ///
 /// #[derive(Debug, Error)]
 /// #[error("Counter error")]
 /// enum CounterError {}
 /// impl AggregateError for CounterError {}
 ///
+/// #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+/// struct CounterState { value: i32 }
+///
+/// #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+/// enum CounterEvent {
+///     Incremented { amount: i32 },
+/// }
+///
+/// impl DomainEvent for CounterEvent {
+///     type Aggregate = Counter;
+///     fn event_type(&self) -> &'static str { "Incremented" }
+///     fn event_version(&self) -> i32 { 1 }
+///     fn occurred_at(&self) -> chrono::DateTime<Utc> { Utc::now() }
+/// }
+///
 /// struct Counter {
-///     value: i32,
+///     id: CounterId,
+///     state: CounterState,
+///     version: Version,
+///     pending_events: Vec<CounterEvent>,
+/// }
+///
+/// impl Aggregate for Counter {
+///     type Event = CounterEvent;
+///     type Id = CounterId;
+///     type Error = CounterError;
+///     type State = CounterState;
+///
+///     fn new(id: Self::Id) -> Self {
+///         Self { id, state: CounterState { value: 0 }, version: Version::initial(), pending_events: Vec::new() }
+///     }
+///     fn aggregate_id(&self) -> &Self::Id { &self.id }
+///     fn version(&self) -> Version { self.version }
+///     fn pending_events(&self) -> &[Self::Event] { &self.pending_events }
+///     fn clear_pending_events(&mut self) { self.pending_events.clear(); }
+///     fn apply<E: Into<Self::Event>>(&mut self, event: E) -> Result<(), Self::Error> {
+///         let event = event.into();
+///         self.apply_internal(&event)?;
+///         self.pending_events.push(event);
+///         Ok(())
+///     }
+///     fn apply_internal(&mut self, event: &Self::Event) -> Result<(), Self::Error> {
+///         match event {
+///             CounterEvent::Incremented { amount } => self.state.value += amount,
+///         }
+///         self.version = self.version.next();
+///         Ok(())
+///     }
+///     fn state(&self) -> &Self::State { &self.state }
+///     fn from_snapshot(id: Self::Id, version: Version, state: Self::State) -> Self {
+///         Self { id, state, version, pending_events: Vec::new() }
+///     }
 /// }
 ///
 /// struct Incremented {
 ///     amount: i32,
 /// }
 ///
-/// impl ApplyEvent<Counter, CounterError> for Incremented {
+/// impl ApplyEvent<Counter> for Incremented {
 ///     fn apply(&self, counter: &mut Counter) {
-///         counter.value += self.amount;
+///         counter.state.value += self.amount;
 ///     }
 /// }
 ///
@@ -140,7 +352,7 @@ use crate::AggregateError;
 ///     }
 /// }
 /// ```
-pub trait ApplyEvent<A, E: AggregateError> {
+pub trait ApplyEvent<A: Aggregate> {
     /// Validates that the event can be applied to the aggregate.
     ///
     /// This method checks business rules and invariants without modifying
@@ -160,14 +372,31 @@ pub trait ApplyEvent<A, E: AggregateError> {
     ///
     /// # Errors
     ///
-    /// Returns an error of type `E` if the event fails validation based on
+    /// Returns an error of type `A::Error` if the event fails validation based on
     /// the aggregate's current state or business rules.
     ///
     /// # Examples
     ///
     /// ```
-    /// use event_sauce_core::{ApplyEvent, AggregateError};
+    /// use event_sauce_core::{Aggregate, ApplyEvent, AggregateError, AggregateId, DomainEvent, Version};
     /// use thiserror::Error;
+    /// use chrono::Utc;
+    /// use std::fmt;
+    /// use uuid::Uuid;
+    ///
+    /// #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    /// struct CounterId(Uuid);
+    /// impl CounterId {
+    ///     fn new() -> Self { Self(Uuid::new_v4()) }
+    /// }
+    /// impl fmt::Display for CounterId {
+    ///     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    ///         write!(f, "Counter-{}", self.0)
+    ///     }
+    /// }
+    /// impl AggregateId for CounterId {
+    ///     fn to_uuid(&self) -> Uuid { self.0 }
+    /// }
     ///
     /// #[derive(Debug, Error)]
     /// enum CounterError {
@@ -176,16 +405,66 @@ pub trait ApplyEvent<A, E: AggregateError> {
     /// }
     /// impl AggregateError for CounterError {}
     ///
+    /// #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+    /// struct CounterState { value: i32 }
+    ///
+    /// #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+    /// enum CounterEvent {
+    ///     Incremented { amount: i32 },
+    /// }
+    ///
+    /// impl DomainEvent for CounterEvent {
+    ///     type Aggregate = Counter;
+    ///     fn event_type(&self) -> &'static str { "Incremented" }
+    ///     fn event_version(&self) -> i32 { 1 }
+    ///     fn occurred_at(&self) -> chrono::DateTime<Utc> { Utc::now() }
+    /// }
+    ///
     /// struct Counter {
-    ///     value: i32,
+    ///     id: CounterId,
+    ///     state: CounterState,
+    ///     version: Version,
+    ///     pending_events: Vec<CounterEvent>,
+    /// }
+    ///
+    /// impl Aggregate for Counter {
+    ///     type Event = CounterEvent;
+    ///     type Id = CounterId;
+    ///     type Error = CounterError;
+    ///     type State = CounterState;
+    ///
+    ///     fn new(id: Self::Id) -> Self {
+    ///         Self { id, state: CounterState { value: 0 }, version: Version::initial(), pending_events: Vec::new() }
+    ///     }
+    ///     fn aggregate_id(&self) -> &Self::Id { &self.id }
+    ///     fn version(&self) -> Version { self.version }
+    ///     fn pending_events(&self) -> &[Self::Event] { &self.pending_events }
+    ///     fn clear_pending_events(&mut self) { self.pending_events.clear(); }
+    ///     fn apply<E: Into<Self::Event>>(&mut self, event: E) -> Result<(), Self::Error> {
+    ///         let event = event.into();
+    ///         self.apply_internal(&event)?;
+    ///         self.pending_events.push(event);
+    ///         Ok(())
+    ///     }
+    ///     fn apply_internal(&mut self, event: &Self::Event) -> Result<(), Self::Error> {
+    ///         match event {
+    ///             CounterEvent::Incremented { amount } => self.state.value += amount,
+    ///         }
+    ///         self.version = self.version.next();
+    ///         Ok(())
+    ///     }
+    ///     fn state(&self) -> &Self::State { &self.state }
+    ///     fn from_snapshot(id: Self::Id, version: Version, state: Self::State) -> Self {
+    ///         Self { id, state, version, pending_events: Vec::new() }
+    ///     }
     /// }
     ///
     /// struct Incremented {
     ///     amount: i32,
     /// }
     ///
-    /// impl ApplyEvent<Counter, CounterError> for Incremented {
-    ///     fn validate(&self, _counter: &Counter) -> Result<(), CounterError> {
+    /// impl ApplyEvent<Counter> for Incremented {
+    ///     fn validate(&self, _counter: &Counter) -> Result<(), <Counter as Aggregate>::Error> {
     ///         if self.amount <= 0 {
     ///             return Err(CounterError::InvalidAmount(self.amount));
     ///         }
@@ -193,11 +472,11 @@ pub trait ApplyEvent<A, E: AggregateError> {
     ///     }
     ///
     ///     fn apply(&self, counter: &mut Counter) {
-    ///         counter.value += self.amount;
+    ///         counter.state.value += self.amount;
     ///     }
     /// }
     /// ```
-    fn validate(&self, _aggregate: &A) -> Result<(), E> {
+    fn validate(&self, _aggregate: &A) -> Result<(), A::Error> {
         Ok(())
     }
 
@@ -216,32 +495,99 @@ pub trait ApplyEvent<A, E: AggregateError> {
     /// # Examples
     ///
     /// ```
-    /// use event_sauce_core::{ApplyEvent, AggregateError};
+    /// use event_sauce_core::{Aggregate, ApplyEvent, AggregateError, AggregateId, DomainEvent, Version};
     /// use thiserror::Error;
+    /// use chrono::Utc;
+    /// use std::fmt;
+    /// use uuid::Uuid;
+    ///
+    /// #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    /// struct CounterId(Uuid);
+    /// impl CounterId {
+    ///     fn new() -> Self { Self(Uuid::new_v4()) }
+    /// }
+    /// impl fmt::Display for CounterId {
+    ///     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    ///         write!(f, "Counter-{}", self.0)
+    ///     }
+    /// }
+    /// impl AggregateId for CounterId {
+    ///     fn to_uuid(&self) -> Uuid { self.0 }
+    /// }
     ///
     /// #[derive(Debug, Error)]
     /// #[error("Counter error")]
     /// enum CounterError {}
     /// impl AggregateError for CounterError {}
     ///
+    /// #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+    /// struct CounterState { value: i32 }
+    ///
+    /// #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+    /// enum CounterEvent {
+    ///     Incremented { amount: i32 },
+    /// }
+    ///
+    /// impl DomainEvent for CounterEvent {
+    ///     type Aggregate = Counter;
+    ///     fn event_type(&self) -> &'static str { "Incremented" }
+    ///     fn event_version(&self) -> i32 { 1 }
+    ///     fn occurred_at(&self) -> chrono::DateTime<Utc> { Utc::now() }
+    /// }
+    ///
     /// struct Counter {
-    ///     value: i32,
+    ///     id: CounterId,
+    ///     state: CounterState,
+    ///     version: Version,
+    ///     pending_events: Vec<CounterEvent>,
+    /// }
+    ///
+    /// impl Aggregate for Counter {
+    ///     type Event = CounterEvent;
+    ///     type Id = CounterId;
+    ///     type Error = CounterError;
+    ///     type State = CounterState;
+    ///
+    ///     fn new(id: Self::Id) -> Self {
+    ///         Self { id, state: CounterState { value: 0 }, version: Version::initial(), pending_events: Vec::new() }
+    ///     }
+    ///     fn aggregate_id(&self) -> &Self::Id { &self.id }
+    ///     fn version(&self) -> Version { self.version }
+    ///     fn pending_events(&self) -> &[Self::Event] { &self.pending_events }
+    ///     fn clear_pending_events(&mut self) { self.pending_events.clear(); }
+    ///     fn apply<E: Into<Self::Event>>(&mut self, event: E) -> Result<(), Self::Error> {
+    ///         let event = event.into();
+    ///         self.apply_internal(&event)?;
+    ///         self.pending_events.push(event);
+    ///         Ok(())
+    ///     }
+    ///     fn apply_internal(&mut self, event: &Self::Event) -> Result<(), Self::Error> {
+    ///         match event {
+    ///             CounterEvent::Incremented { amount } => self.state.value += amount,
+    ///         }
+    ///         self.version = self.version.next();
+    ///         Ok(())
+    ///     }
+    ///     fn state(&self) -> &Self::State { &self.state }
+    ///     fn from_snapshot(id: Self::Id, version: Version, state: Self::State) -> Self {
+    ///         Self { id, state, version, pending_events: Vec::new() }
+    ///     }
     /// }
     ///
     /// struct Incremented {
     ///     amount: i32,
     /// }
     ///
-    /// impl ApplyEvent<Counter, CounterError> for Incremented {
+    /// impl ApplyEvent<Counter> for Incremented {
     ///     fn apply(&self, counter: &mut Counter) {
-    ///         counter.value += self.amount;
+    ///         counter.state.value += self.amount;
     ///     }
     /// }
     ///
-    /// let mut counter = Counter { value: 0 };
+    /// let mut counter = Counter::new(CounterId::new());
     /// let event = Incremented { amount: 5 };
     /// event.apply(&mut counter);
-    /// assert_eq!(counter.value, 5);
+    /// assert_eq!(counter.state.value, 5);
     /// ```
     fn apply(&self, aggregate: &mut A);
 
@@ -265,14 +611,31 @@ pub trait ApplyEvent<A, E: AggregateError> {
     ///
     /// # Errors
     ///
-    /// Returns an error of type `E` if the aggregate state violates
+    /// Returns an error of type `A::Error` if the aggregate state violates
     /// business invariants after applying the event.
     ///
     /// # Examples
     ///
     /// ```
-    /// use event_sauce_core::{ApplyEvent, AggregateError};
+    /// use event_sauce_core::{Aggregate, ApplyEvent, AggregateError, AggregateId, DomainEvent, Version};
     /// use thiserror::Error;
+    /// use chrono::Utc;
+    /// use std::fmt;
+    /// use uuid::Uuid;
+    ///
+    /// #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    /// struct AccountId(Uuid);
+    /// impl AccountId {
+    ///     fn new() -> Self { Self(Uuid::new_v4()) }
+    /// }
+    /// impl fmt::Display for AccountId {
+    ///     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    ///         write!(f, "Account-{}", self.0)
+    ///     }
+    /// }
+    /// impl AggregateId for AccountId {
+    ///     fn to_uuid(&self) -> Uuid { self.0 }
+    /// }
     ///
     /// #[derive(Debug, Error)]
     /// enum BankAccountError {
@@ -281,28 +644,85 @@ pub trait ApplyEvent<A, E: AggregateError> {
     /// }
     /// impl AggregateError for BankAccountError {}
     ///
-    /// struct BankAccount {
+    /// #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+    /// struct BankAccountState {
     ///     balance: i64,
+    /// }
+    ///
+    /// #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+    /// enum BankAccountEvent {
+    ///     Withdrawn { amount: i64 },
+    /// }
+    ///
+    /// impl DomainEvent for BankAccountEvent {
+    ///     type Aggregate = BankAccount;
+    ///     fn event_type(&self) -> &'static str { "MoneyWithdrawn" }
+    ///     fn event_version(&self) -> i32 { 1 }
+    ///     fn occurred_at(&self) -> chrono::DateTime<Utc> { Utc::now() }
+    /// }
+    ///
+    /// struct BankAccount {
+    ///     id: AccountId,
+    ///     state: BankAccountState,
+    ///     version: Version,
+    ///     pending_events: Vec<BankAccountEvent>,
+    /// }
+    ///
+    /// impl Aggregate for BankAccount {
+    ///     type Event = BankAccountEvent;
+    ///     type Id = AccountId;
+    ///     type Error = BankAccountError;
+    ///     type State = BankAccountState;
+    ///
+    ///     fn new(id: Self::Id) -> Self {
+    ///         Self {
+    ///             id,
+    ///             state: BankAccountState { balance: 0 },
+    ///             version: Version::initial(),
+    ///             pending_events: Vec::new(),
+    ///         }
+    ///     }
+    ///     fn aggregate_id(&self) -> &Self::Id { &self.id }
+    ///     fn version(&self) -> Version { self.version }
+    ///     fn pending_events(&self) -> &[Self::Event] { &self.pending_events }
+    ///     fn clear_pending_events(&mut self) { self.pending_events.clear(); }
+    ///     fn apply<E: Into<Self::Event>>(&mut self, event: E) -> Result<(), Self::Error> {
+    ///         let event = event.into();
+    ///         self.apply_internal(&event)?;
+    ///         self.pending_events.push(event);
+    ///         Ok(())
+    ///     }
+    ///     fn apply_internal(&mut self, event: &Self::Event) -> Result<(), Self::Error> {
+    ///         match event {
+    ///             BankAccountEvent::Withdrawn { amount } => self.state.balance -= amount,
+    ///         }
+    ///         self.version = self.version.next();
+    ///         Ok(())
+    ///     }
+    ///     fn state(&self) -> &Self::State { &self.state }
+    ///     fn from_snapshot(id: Self::Id, version: Version, state: Self::State) -> Self {
+    ///         Self { id, state, version, pending_events: Vec::new() }
+    ///     }
     /// }
     ///
     /// struct MoneyWithdrawn {
     ///     amount: i64,
     /// }
     ///
-    /// impl ApplyEvent<BankAccount, BankAccountError> for MoneyWithdrawn {
+    /// impl ApplyEvent<BankAccount> for MoneyWithdrawn {
     ///     fn apply(&self, account: &mut BankAccount) {
-    ///         account.balance -= self.amount;
+    ///         account.state.balance -= self.amount;
     ///     }
     ///
-    ///     fn post_validate(&self, account: &BankAccount) -> Result<(), BankAccountError> {
-    ///         if account.balance < 0 {
-    ///             return Err(BankAccountError::NegativeBalance(account.balance));
+    ///     fn post_validate(&self, account: &BankAccount) -> Result<(), <BankAccount as Aggregate>::Error> {
+    ///         if account.state.balance < 0 {
+    ///             return Err(BankAccountError::NegativeBalance(account.state.balance));
     ///         }
     ///         Ok(())
     ///     }
     /// }
     /// ```
-    fn post_validate(&self, _aggregate: &A) -> Result<(), E> {
+    fn post_validate(&self, _aggregate: &A) -> Result<(), A::Error> {
         Ok(())
     }
 }
@@ -310,7 +730,11 @@ pub trait ApplyEvent<A, E: AggregateError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{AggregateId, DomainEvent, Version};
+    use chrono::Utc;
+    use std::fmt;
     use thiserror::Error;
+    use uuid::Uuid;
 
     #[derive(Debug, Error)]
     #[error("Test error: {0}")]
@@ -318,24 +742,147 @@ mod tests {
 
     impl AggregateError for TestError {}
 
-    struct TestAggregate {
+    #[derive(Debug, PartialEq, Clone, serde::Serialize, serde::Deserialize)]
+    enum Status {
+        Active,
+        Inactive,
+    }
+
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+    struct TestState {
         value: i32,
         status: Status,
     }
 
-    #[derive(Debug, PartialEq)]
-    enum Status {
-        Active,
-        Inactive,
+    #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    struct TestId(Uuid);
+
+    impl TestId {
+        fn new() -> Self {
+            Self(Uuid::new_v4())
+        }
+    }
+
+    impl fmt::Display for TestId {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "Test-{}", self.0)
+        }
+    }
+
+    impl AggregateId for TestId {
+        fn to_uuid(&self) -> Uuid {
+            self.0
+        }
+    }
+
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+    enum TestEvent {
+        Simple { amount: i32 },
+        Validated { amount: i32 },
+        PostValidated { amount: i32, max_value: i32 },
+    }
+
+    impl DomainEvent for TestEvent {
+        type Aggregate = TestAggregate;
+
+        fn event_type(&self) -> &'static str {
+            match self {
+                TestEvent::Simple { .. } => "Simple",
+                TestEvent::Validated { .. } => "Validated",
+                TestEvent::PostValidated { .. } => "PostValidated",
+            }
+        }
+
+        fn event_version(&self) -> i32 {
+            1
+        }
+
+        fn occurred_at(&self) -> chrono::DateTime<Utc> {
+            Utc::now()
+        }
+    }
+
+    struct TestAggregate {
+        id: TestId,
+        state: TestState,
+        version: Version,
+        pending_events: Vec<TestEvent>,
+    }
+
+    impl crate::Aggregate for TestAggregate {
+        type Event = TestEvent;
+        type Id = TestId;
+        type Error = TestError;
+        type State = TestState;
+
+        fn new(id: Self::Id) -> Self {
+            Self {
+                id,
+                state: TestState {
+                    value: 0,
+                    status: Status::Active,
+                },
+                version: Version::initial(),
+                pending_events: Vec::new(),
+            }
+        }
+
+        fn aggregate_id(&self) -> &Self::Id {
+            &self.id
+        }
+
+        fn version(&self) -> Version {
+            self.version
+        }
+
+        fn pending_events(&self) -> &[Self::Event] {
+            &self.pending_events
+        }
+
+        fn clear_pending_events(&mut self) {
+            self.pending_events.clear();
+        }
+
+        fn apply<E: Into<Self::Event>>(&mut self, event: E) -> Result<(), Self::Error> {
+            let event = event.into();
+            self.apply_internal(&event)?;
+            self.pending_events.push(event);
+            Ok(())
+        }
+
+        fn apply_internal(&mut self, event: &Self::Event) -> Result<(), Self::Error> {
+            match event {
+                TestEvent::Simple { amount }
+                | TestEvent::Validated { amount }
+                | TestEvent::PostValidated { amount, .. } => {
+                    self.state.value += amount;
+                }
+            }
+            self.version = self.version.next();
+            Ok(())
+        }
+
+        fn state(&self) -> &Self::State {
+            &self.state
+        }
+
+        fn from_snapshot(id: Self::Id, version: Version, state: Self::State) -> Self {
+            Self {
+                id,
+                state,
+                version,
+                pending_events: Vec::new(),
+            }
+        }
     }
 
     struct SimpleEvent {
         amount: i32,
     }
 
-    impl ApplyEvent<TestAggregate, TestError> for SimpleEvent {
+    impl ApplyEvent<TestAggregate> for SimpleEvent {
         fn apply(&self, aggregate: &mut TestAggregate) {
-            aggregate.value += self.amount;
+            aggregate.state.value += self.amount;
         }
     }
 
@@ -343,9 +890,9 @@ mod tests {
         amount: i32,
     }
 
-    impl ApplyEvent<TestAggregate, TestError> for ValidatedEvent {
-        fn validate(&self, aggregate: &TestAggregate) -> Result<(), TestError> {
-            if aggregate.status == Status::Inactive {
+    impl ApplyEvent<TestAggregate> for ValidatedEvent {
+        fn validate(&self, aggregate: &TestAggregate) -> Result<(), <TestAggregate as crate::Aggregate>::Error> {
+            if aggregate.state.status == Status::Inactive {
                 return Err(TestError("Aggregate is inactive".to_string()));
             }
             if self.amount < 0 {
@@ -355,29 +902,29 @@ mod tests {
         }
 
         fn apply(&self, aggregate: &mut TestAggregate) {
-            aggregate.value += self.amount;
+            aggregate.state.value += self.amount;
         }
     }
 
     #[test]
     fn test_apply_event_without_validation() {
-        let mut aggregate = TestAggregate {
-            value: 10,
-            status: Status::Active,
-        };
+        let mut aggregate = TestAggregate::new(TestId::new());
+        aggregate.state.value = 10;
+        aggregate.state.status = Status::Active;
+
         let event = SimpleEvent { amount: 5 };
 
         event.apply(&mut aggregate);
 
-        assert_eq!(aggregate.value, 15);
+        assert_eq!(aggregate.state.value, 15);
     }
 
     #[test]
     fn test_apply_event_default_validation_succeeds() {
-        let aggregate = TestAggregate {
-            value: 10,
-            status: Status::Active,
-        };
+        let mut aggregate = TestAggregate::new(TestId::new());
+        aggregate.state.value = 10;
+        aggregate.state.status = Status::Active;
+
         let event = SimpleEvent { amount: 5 };
 
         let result = event.validate(&aggregate);
@@ -387,25 +934,25 @@ mod tests {
 
     #[test]
     fn test_apply_event_with_successful_validation() {
-        let mut aggregate = TestAggregate {
-            value: 10,
-            status: Status::Active,
-        };
+        let mut aggregate = TestAggregate::new(TestId::new());
+        aggregate.state.value = 10;
+        aggregate.state.status = Status::Active;
+
         let event = ValidatedEvent { amount: 5 };
 
         assert!(event.validate(&aggregate).is_ok());
 
         event.apply(&mut aggregate);
 
-        assert_eq!(aggregate.value, 15);
+        assert_eq!(aggregate.state.value, 15);
     }
 
     #[test]
     fn test_apply_event_validation_fails_on_inactive_status() {
-        let aggregate = TestAggregate {
-            value: 10,
-            status: Status::Inactive,
-        };
+        let mut aggregate = TestAggregate::new(TestId::new());
+        aggregate.state.value = 10;
+        aggregate.state.status = Status::Inactive;
+
         let event = ValidatedEvent { amount: 5 };
 
         let result = event.validate(&aggregate);
@@ -419,10 +966,10 @@ mod tests {
 
     #[test]
     fn test_apply_event_validation_fails_on_negative_amount() {
-        let aggregate = TestAggregate {
-            value: 10,
-            status: Status::Active,
-        };
+        let mut aggregate = TestAggregate::new(TestId::new());
+        aggregate.state.value = 10;
+        aggregate.state.status = Status::Active;
+
         let event = ValidatedEvent { amount: -5 };
 
         let result = event.validate(&aggregate);
@@ -438,10 +985,10 @@ mod tests {
     fn test_apply_event_apply_without_validation() {
         // Apply should work even if validation would fail
         // (for event replay scenarios)
-        let mut aggregate = TestAggregate {
-            value: 10,
-            status: Status::Inactive,
-        };
+        let mut aggregate = TestAggregate::new(TestId::new());
+        aggregate.state.value = 10;
+        aggregate.state.status = Status::Inactive;
+
         let event = ValidatedEvent { amount: 5 };
 
         // Validation would fail
@@ -450,15 +997,14 @@ mod tests {
         // But apply still works (for replay)
         event.apply(&mut aggregate);
 
-        assert_eq!(aggregate.value, 15);
+        assert_eq!(aggregate.state.value, 15);
     }
 
     #[test]
     fn test_apply_event_multiple_applications() {
-        let mut aggregate = TestAggregate {
-            value: 0,
-            status: Status::Active,
-        };
+        let mut aggregate = TestAggregate::new(TestId::new());
+        aggregate.state.value = 0;
+        aggregate.state.status = Status::Active;
 
         let event1 = SimpleEvent { amount: 5 };
         let event2 = SimpleEvent { amount: 10 };
@@ -468,26 +1014,24 @@ mod tests {
         event2.apply(&mut aggregate);
         event3.apply(&mut aggregate);
 
-        assert_eq!(aggregate.value, 18);
+        assert_eq!(aggregate.state.value, 18);
     }
 
     #[test]
     fn test_apply_event_is_deterministic() {
         let event = SimpleEvent { amount: 5 };
 
-        let mut aggregate1 = TestAggregate {
-            value: 10,
-            status: Status::Active,
-        };
+        let mut aggregate1 = TestAggregate::new(TestId::new());
+        aggregate1.state.value = 10;
+        aggregate1.state.status = Status::Active;
         event.apply(&mut aggregate1);
 
-        let mut aggregate2 = TestAggregate {
-            value: 10,
-            status: Status::Active,
-        };
+        let mut aggregate2 = TestAggregate::new(TestId::new());
+        aggregate2.state.value = 10;
+        aggregate2.state.status = Status::Active;
         event.apply(&mut aggregate2);
 
-        assert_eq!(aggregate1.value, aggregate2.value);
+        assert_eq!(aggregate1.state.value, aggregate2.state.value);
     }
 
     // Tests for post_validate
@@ -496,16 +1040,16 @@ mod tests {
         max_value: i32,
     }
 
-    impl ApplyEvent<TestAggregate, TestError> for PostValidatedEvent {
+    impl ApplyEvent<TestAggregate> for PostValidatedEvent {
         fn apply(&self, aggregate: &mut TestAggregate) {
-            aggregate.value += self.amount;
+            aggregate.state.value += self.amount;
         }
 
-        fn post_validate(&self, aggregate: &TestAggregate) -> Result<(), TestError> {
-            if aggregate.value > self.max_value {
+        fn post_validate(&self, aggregate: &TestAggregate) -> Result<(), <TestAggregate as crate::Aggregate>::Error> {
+            if aggregate.state.value > self.max_value {
                 return Err(TestError(format!(
                     "Value {} exceeds maximum {}",
-                    aggregate.value, self.max_value
+                    aggregate.state.value, self.max_value
                 )));
             }
             Ok(())
@@ -514,10 +1058,10 @@ mod tests {
 
     #[test]
     fn test_post_validate_default_succeeds() {
-        let aggregate = TestAggregate {
-            value: 10,
-            status: Status::Active,
-        };
+        let mut aggregate = TestAggregate::new(TestId::new());
+        aggregate.state.value = 10;
+        aggregate.state.status = Status::Active;
+
         let event = SimpleEvent { amount: 5 };
 
         let result = event.post_validate(&aggregate);
@@ -527,10 +1071,10 @@ mod tests {
 
     #[test]
     fn test_post_validate_succeeds() {
-        let mut aggregate = TestAggregate {
-            value: 10,
-            status: Status::Active,
-        };
+        let mut aggregate = TestAggregate::new(TestId::new());
+        aggregate.state.value = 10;
+        aggregate.state.status = Status::Active;
+
         let event = PostValidatedEvent {
             amount: 5,
             max_value: 20,
@@ -540,15 +1084,15 @@ mod tests {
         let result = event.post_validate(&aggregate);
 
         assert!(result.is_ok());
-        assert_eq!(aggregate.value, 15);
+        assert_eq!(aggregate.state.value, 15);
     }
 
     #[test]
     fn test_post_validate_fails() {
-        let mut aggregate = TestAggregate {
-            value: 10,
-            status: Status::Active,
-        };
+        let mut aggregate = TestAggregate::new(TestId::new());
+        aggregate.state.value = 10;
+        aggregate.state.status = Status::Active;
+
         let event = PostValidatedEvent {
             amount: 15,
             max_value: 20,
@@ -558,7 +1102,7 @@ mod tests {
         let result = event.post_validate(&aggregate);
 
         assert!(result.is_err());
-        assert_eq!(aggregate.value, 25); // State was modified
+        assert_eq!(aggregate.state.value, 25); // State was modified
         assert_eq!(
             result.unwrap_err().to_string(),
             "Test error: Value 25 exceeds maximum 20"
@@ -567,10 +1111,10 @@ mod tests {
 
     #[test]
     fn test_post_validate_checks_invariants() {
-        let mut aggregate = TestAggregate {
-            value: 18,
-            status: Status::Active,
-        };
+        let mut aggregate = TestAggregate::new(TestId::new());
+        aggregate.state.value = 18;
+        aggregate.state.status = Status::Active;
+
         let event = PostValidatedEvent {
             amount: 1,
             max_value: 20,
