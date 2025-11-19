@@ -44,6 +44,7 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct InMemoryEventStore {
     inner: Arc<InMemoryEventStoreInner>,
+    checkpoint_store: Option<Arc<dyn event_sauce_core::CheckpointStore>>,
 }
 
 struct InMemoryEventStoreInner {
@@ -105,6 +106,43 @@ impl InMemoryEventStore {
                 global_events: RwLock::new(Vec::new()),
                 snapshot_config,
             }),
+            checkpoint_store: None,
+        }
+    }
+
+    /// Creates a new empty in-memory event store with checkpoint store.
+    ///
+    /// This is a convenience method that configures both snapshot and checkpoint storage.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use event_sauce_memory::{InMemoryEventStore, InMemoryCheckpointStore};
+    /// use event_sauce_core::{EventStore, SnapshotConfig};
+    /// use std::sync::Arc;
+    ///
+    /// let checkpoint_store = Arc::new(InMemoryCheckpointStore::new());
+    /// let store = Arc::new(InMemoryEventStore::with_checkpoint_store(
+    ///     SnapshotConfig::builder().build(),
+    ///     checkpoint_store,
+    /// ));
+    ///
+    /// // subscription_builder is now available via the EventStore trait
+    /// // let subscription = store.subscription_builder("my-sub").build()?;
+    /// ```
+    #[must_use]
+    pub fn with_checkpoint_store(
+        snapshot_config: SnapshotConfig,
+        checkpoint_store: Arc<dyn event_sauce_core::CheckpointStore>,
+    ) -> Self {
+        Self {
+            inner: Arc::new(InMemoryEventStoreInner {
+                streams: RwLock::new(HashMap::new()),
+                snapshots: RwLock::new(HashMap::new()),
+                global_events: RwLock::new(Vec::new()),
+                snapshot_config,
+            }),
+            checkpoint_store: Some(checkpoint_store),
         }
     }
 }
@@ -224,6 +262,10 @@ impl EventStore for InMemoryEventStore {
     fn snapshot_config(&self) -> &SnapshotConfig {
         &self.inner.snapshot_config
     }
+
+    fn checkpoint_store(&self) -> Option<std::sync::Arc<dyn event_sauce_core::CheckpointStore>> {
+        self.checkpoint_store.clone()
+    }
 }
 
 #[cfg(test)]
@@ -231,6 +273,7 @@ mod tests {
     use event_sauce_core::{EventEnvelope, EventStore, Position, Snapshot, StreamId, Version};
     use futures::StreamExt;
     use serde_json::json;
+    use std::sync::Arc;
     use uuid::Uuid;
 
     fn create_test_envelope(event_type: &str, aggregate_id: Uuid) -> EventEnvelope {
@@ -575,5 +618,152 @@ mod tests {
         // Events should still be stored
         let version = store.get_version(stream_id).await.unwrap();
         assert_eq!(version, Version::new(1));
+    }
+
+    // === Checkpoint Store Integration Tests ===
+
+    use event_sauce_core::{CheckpointStore, SnapshotConfig};
+    use super::super::checkpoint_store::InMemoryCheckpointStore;
+
+    #[tokio::test]
+    async fn test_checkpoint_store_returns_none_by_default() {
+        let store = InMemoryEventStore::new();
+        assert!(store.checkpoint_store().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_checkpoint_store_returns_configured_store() {
+        let checkpoint_store = Arc::new(InMemoryCheckpointStore::new());
+        let store = InMemoryEventStore::with_checkpoint_store(
+            SnapshotConfig::builder().build(),
+            checkpoint_store.clone(),
+        );
+
+        let retrieved = store.checkpoint_store();
+        assert!(retrieved.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_checkpoint_store_can_save_and_load() {
+        let checkpoint_store = Arc::new(InMemoryCheckpointStore::new());
+        let store = InMemoryEventStore::with_checkpoint_store(
+            SnapshotConfig::builder().build(),
+            checkpoint_store.clone(),
+        );
+
+        // Save checkpoint through the store's checkpoint store
+        if let Some(cs) = store.checkpoint_store() {
+            cs.save_checkpoint("test-sub", Position::new(42))
+                .await
+                .unwrap();
+
+            let loaded = cs.load_checkpoint("test-sub").await.unwrap();
+            assert_eq!(loaded, Some(Position::new(42)));
+        } else {
+            panic!("Checkpoint store should be configured");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_subscription_builder_without_checkpoint_store() {
+        use event_sauce_core::EventFilter;
+
+        let store = Arc::new(InMemoryEventStore::new());
+
+        // Create subscription builder via trait method - should work without checkpoint store
+        let subscription = store
+            .subscription_builder("test-sub")
+            .filter(EventFilter::all())
+            .build()
+            .unwrap();
+
+        // Subscription should be created successfully
+        // (We can't easily test the subscription behavior without running it,
+        // but we can verify it builds correctly)
+        drop(subscription);
+    }
+
+    #[tokio::test]
+    async fn test_subscription_builder_with_checkpoint_store() {
+        use event_sauce_core::EventFilter;
+
+        let checkpoint_store = Arc::new(InMemoryCheckpointStore::new());
+        let store = Arc::new(InMemoryEventStore::with_checkpoint_store(
+            SnapshotConfig::builder().build(),
+            checkpoint_store.clone(),
+        ));
+
+        // Add some test events
+        let aggregate_id = Uuid::new_v4();
+        let stream_id = StreamId::new("User", aggregate_id);
+        store
+            .append(
+                stream_id,
+                vec![create_test_envelope("UserCreated", aggregate_id)],
+                Version::initial(),
+            )
+            .await
+            .unwrap();
+
+        // Create subscription with automatic checkpoint store integration via trait method
+        let subscription = store
+            .subscription_builder("test-sub")
+            .filter(EventFilter::all())
+            .build()
+            .unwrap();
+
+        // Verify subscription was created
+        drop(subscription);
+    }
+
+    #[tokio::test]
+    async fn test_subscription_with_checkpoint_store_integration() {
+        use event_sauce_core::EventFilter;
+        use futures::StreamExt;
+
+        let checkpoint_store = Arc::new(InMemoryCheckpointStore::new());
+        let store = Arc::new(InMemoryEventStore::with_checkpoint_store(
+            SnapshotConfig::builder().build(),
+            checkpoint_store.clone(),
+        ));
+
+        // Add events
+        for i in 0..5 {
+            let aggregate_id = Uuid::new_v4();
+            let stream_id = StreamId::new("User", aggregate_id);
+            store
+                .append(
+                    stream_id,
+                    vec![create_test_envelope(&format!("Event{i}"), aggregate_id)],
+                    Version::initial(),
+                )
+                .await
+                .unwrap();
+        }
+
+        // Create and run subscription via trait method
+        let subscription = store
+            .subscription_builder("integration-test")
+            .filter(EventFilter::all())
+            .build()
+            .unwrap();
+
+        let stream = subscription.into_stream().await.unwrap();
+        futures::pin_mut!(stream);  // Pin the stream for iteration
+        let mut count = 0;
+
+        while let Some(result) = stream.next().await {
+            result.unwrap();
+            count += 1;
+        }
+
+        assert_eq!(count, 5);
+
+        // Verify checkpoint was saved
+        let checkpoint = checkpoint_store
+            .load_checkpoint("integration-test")
+            .await
+            .unwrap();
+        assert!(checkpoint.is_some());
     }
 }

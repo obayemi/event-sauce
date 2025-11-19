@@ -260,6 +260,24 @@ jj git push
 └──────────────────────────────────────────────────────────────┘
 ```
 
+### Design Principle: Generic Implementation First
+
+**Key architectural principle**: New features for EventStore and other core traits should be implemented **generically in the trait** using default methods, not in individual backend implementations.
+
+**Benefits:**
+- ✅ **Single source of truth** - Write once, works everywhere
+- ✅ **Consistent behavior** - All backends work identically
+- ✅ **Easier testing** - Test once at trait level
+- ✅ **Less maintenance** - Fixes apply to all backends
+- ✅ **Faster development** - New backends get features for free
+
+**When to implement in backends:**
+- Only when feature **requires** backend-specific behavior (e.g., transactions, performance optimizations)
+- Backend can optionally override generic implementation for performance
+- Must maintain semantic equivalence with generic version
+
+See [CLAUDE.md](CLAUDE.md#trait-design) for detailed guidelines and examples.
+
 ## Examples
 
 ### Available Examples

@@ -315,6 +315,63 @@ pub trait EventStore: Send + Sync {
         DISABLED_CONFIG.get_or_init(SnapshotConfig::disabled)
     }
 
+    /// Returns the checkpoint store associated with this event store, if any.
+    ///
+    /// Checkpoint stores track the progress of subscriptions, enabling
+    /// resumption after restarts or failures.
+    ///
+    /// # Default Implementation
+    ///
+    /// The default implementation returns `None`, indicating no checkpoint store
+    /// is configured. Implementations can override this to provide checkpoint storage.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// if let Some(checkpoint_store) = store.checkpoint_store() {
+    ///     checkpoint_store.save_checkpoint("my-sub", Position::new(42)).await?;
+    /// }
+    /// ```
+    fn checkpoint_store(&self) -> Option<std::sync::Arc<dyn crate::CheckpointStore>> {
+        None
+    }
+
+    /// Creates a subscription builder pre-configured with this event store.
+    ///
+    /// If the event store has an associated checkpoint store, it will be
+    /// automatically included in the subscription builder.
+    ///
+    /// This method requires the store to be wrapped in an Arc.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use event_sauce_core::EventFilter;
+    /// use std::sync::Arc;
+    ///
+    /// let store = Arc::new(event_store);
+    ///
+    /// let subscription = store
+    ///     .subscription_builder("my-subscription")
+    ///     .filter(EventFilter::by_event_type("UserCreated"))
+    ///     .build()?;
+    /// ```
+    fn subscription_builder(
+        self: &std::sync::Arc<Self>,
+        name: impl Into<String>,
+    ) -> crate::SubscriptionBuilder<Self>
+    where
+        Self: Sized + 'static,
+    {
+        let mut builder = crate::SubscriptionBuilder::new(name, std::sync::Arc::clone(self));
+
+        if let Some(checkpoint_store) = self.checkpoint_store() {
+            builder = builder.checkpoint_store(checkpoint_store);
+        }
+
+        builder
+    }
+
     /// Commits pending events from an aggregate to the event store.
     ///
     /// This method:

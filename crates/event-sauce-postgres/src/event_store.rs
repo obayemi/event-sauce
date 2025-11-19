@@ -48,6 +48,7 @@ pub struct PostgresEventStore {
     pool: PgPool,
     snapshot_config: SnapshotConfig,
     schema: String,
+    checkpoint_store: Option<std::sync::Arc<dyn event_sauce_core::CheckpointStore>>,
 }
 
 /// Builder for configuring `PostgresEventStore`.
@@ -77,6 +78,7 @@ pub struct PostgresEventStoreBuilder {
     pool: Option<PgPool>,
     snapshot_config: Option<SnapshotConfig>,
     schema: Option<String>,
+    checkpoint_store: Option<std::sync::Arc<dyn event_sauce_core::CheckpointStore>>,
 }
 
 impl PostgresEventStore {
@@ -343,6 +345,7 @@ impl PostgresEventStoreBuilder {
             pool: None,
             snapshot_config: None,
             schema: None,
+            checkpoint_store: None,
         }
     }
 
@@ -406,6 +409,31 @@ impl PostgresEventStoreBuilder {
         self
     }
 
+    /// Sets the checkpoint store for subscription tracking.
+    ///
+    /// When a checkpoint store is configured, the event store can create
+    /// subscriptions with automatic checkpoint management.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use event_sauce_postgres::{PostgresEventStore, PostgresCheckpointStore};
+    /// use std::sync::Arc;
+    ///
+    /// let checkpoint_store = Arc::new(PostgresCheckpointStore::new(pool.clone()));
+    /// let builder = PostgresEventStore::builder()
+    ///     .pool(pool)
+    ///     .checkpoint_store(checkpoint_store);
+    /// ```
+    #[must_use]
+    pub fn checkpoint_store(
+        mut self,
+        store: std::sync::Arc<dyn event_sauce_core::CheckpointStore>,
+    ) -> Self {
+        self.checkpoint_store = Some(store);
+        self
+    }
+
     /// Builds the `PostgresEventStore` with the configured settings.
     ///
     /// # Defaults
@@ -438,6 +466,7 @@ impl PostgresEventStoreBuilder {
                 .snapshot_config
                 .unwrap_or_else(|| SnapshotConfig::builder().build()),
             schema: self.schema.unwrap_or_else(|| "event_sauce".to_string()),
+            checkpoint_store: self.checkpoint_store,
         }
     }
 }
@@ -636,6 +665,10 @@ impl EventStore for PostgresEventStore {
 
     fn snapshot_config(&self) -> &SnapshotConfig {
         &self.snapshot_config
+    }
+
+    fn checkpoint_store(&self) -> Option<std::sync::Arc<dyn event_sauce_core::CheckpointStore>> {
+        self.checkpoint_store.clone()
     }
 }
 

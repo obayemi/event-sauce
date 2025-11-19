@@ -352,20 +352,106 @@ event-sauce/
 
 ### Trait Design
 
+**CRITICAL PRINCIPLE: Generic Implementation First**
+
+When adding new features to EventStore or other core traits:
+
+1. **ALWAYS implement new functionality in the generic trait** using existing trait methods
+2. **ONLY add new trait methods** when absolutely necessary (when the feature cannot be built with existing primitives)
+3. **Keep backend implementations minimal** - they should only provide the primitive operations
+
+**Why?**
+- ✅ Single implementation - write once, works for all backends
+- ✅ Consistency - all backends behave identically
+- ✅ Maintainability - fewer places to fix bugs
+- ✅ Testability - test once at the trait level
+- ✅ DRY - don't repeat implementation logic across backends
+
+**Example: Adding a feature (CORRECT approach)**
+
 ```rust
-// Core trait in event-sauce-core
+// Core trait in event-sauce-core - Generic implementation using default methods
 #[async_trait]
 pub trait EventStore: Send + Sync {
+    // Primitive operations (must be implemented)
     async fn append(&self, ...) -> Result<()>;
     async fn load_stream(&self, ...) -> Result<impl Stream<Item = Result<Event>> + Send>;
+
+    // Generic feature implementation (works for ALL backends automatically)
+    async fn count_events(&self, stream_id: &str) -> Result<usize> {
+        let mut count = 0;
+        let mut stream = self.load_stream(stream_id, None).await?;
+        while let Some(_) = stream.next().await {
+            count += 1;
+        }
+        Ok(count)
+    }
+
+    // Another generic feature
+    async fn stream_exists(&self, stream_id: &str) -> Result<bool> {
+        let mut stream = self.load_stream(stream_id, None).await?;
+        Ok(stream.next().await.is_some())
+    }
 }
 
-// Implementation in event-sauce-postgres
+// Backend implementation - ONLY implements primitives
 #[async_trait]
 impl EventStore for PostgresEventStore {
-    async fn append(&self, ...) -> Result<()> { ... }
-    async fn load_stream(&self, ...) -> Result<impl Stream<Item = Result<Event>> + Send> { ... }
+    async fn append(&self, ...) -> Result<()> {
+        // PostgreSQL-specific implementation
+    }
+
+    async fn load_stream(&self, ...) -> Result<impl Stream<Item = Result<Event>> + Send> {
+        // PostgreSQL-specific implementation
+    }
+
+    // count_events() and stream_exists() work automatically via trait!
 }
+```
+
+**Example: When to add a new trait method (RARE)**
+
+Only add new trait methods when the feature **requires backend-specific implementation**:
+
+```rust
+#[async_trait]
+pub trait EventStore: Send + Sync {
+    // This MUST be backend-specific (e.g., database transaction semantics)
+    async fn append_transactional(&self, events: Vec<Event>) -> Result<()>;
+
+    // This could be optimized per-backend but has a generic fallback
+    async fn count_events_fast(&self, stream_id: &str) -> Result<usize> {
+        // Default: use the generic implementation
+        self.count_events(stream_id).await
+    }
+}
+
+// Postgres can override for performance using COUNT(*)
+#[async_trait]
+impl EventStore for PostgresEventStore {
+    async fn count_events_fast(&self, stream_id: &str) -> Result<usize> {
+        sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE stream_id = $1")
+            .bind(stream_id)
+            .fetch_one(&self.pool)
+            .await
+    }
+}
+```
+
+**Decision Tree:**
+
+```
+Need new EventStore feature?
+│
+├─ Can it be built using load_stream/append?
+│  └─ YES → Implement as default trait method (generic)
+│
+└─ NO → Requires backend-specific behavior?
+   ├─ YES → Add new trait method
+   │        Provide default implementation if possible
+   │        Document why backends might override
+   │
+   └─ NO → Reconsider design
 ```
 
 ### Error Handling

@@ -230,7 +230,10 @@ where
     S: crate::EventStore + 'static,
 {
     /// Creates a new subscription builder.
-    fn new(name: impl Into<String>, store: std::sync::Arc<S>) -> Self {
+    ///
+    /// This method is public to allow event stores to create subscription builders.
+    /// Users should prefer using `Subscription::builder()` or `EventStore::subscription_builder()`.
+    pub fn new(name: impl Into<String>, store: std::sync::Arc<S>) -> Self {
         Self {
             name: name.into(),
             store,
