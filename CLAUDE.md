@@ -336,9 +336,7 @@ event-sauce/
 ├── event-sauce-core/          # Core traits (no implementations) + Subscription system
 ├── event-sauce-memory/        # In-memory implementation
 ├── event-sauce-postgres/      # PostgreSQL implementation
-├── event-sauce-sqlite/        # SQLite implementation
 ├── event-sauce-macros/        # Derive macros
-├── event-sauce-sagas/         # Saga patterns
 ├── event-sauce-cli/           # CLI tool
 └── event-sauce/               # Facade crate
 ```

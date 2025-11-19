@@ -42,9 +42,9 @@ Event sourcing is a pattern where state changes are stored as a sequence of even
              │                │                   │
 ┌────────────┴────────────────┴───────────────────┴────────────┐
 │                    Backend Implementations                    │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐                   │
-│  │PostgreSQL│  │  SQLite  │  │ In-Memory│                   │
-│  └──────────┘  └──────────┘  └──────────┘                   │
+│           ┌──────────┐            ┌──────────┐               │
+│           │PostgreSQL│            │ In-Memory│               │
+│           └──────────┘            └──────────┘               │
 └───────────────────────────────────────────────────────────────┘
 ```
 

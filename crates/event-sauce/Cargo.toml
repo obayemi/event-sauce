@@ -15,8 +15,6 @@ readme = "../../README.md"
 event-sauce-core = { path = "../event-sauce-core", version = "0.1.0" }
 event-sauce-memory = { path = "../event-sauce-memory", version = "0.1.0", optional = true }
 event-sauce-postgres = { path = "../event-sauce-postgres", version = "0.1.0", optional = true }
-event-sauce-sqlite = { path = "../event-sauce-sqlite", version = "0.1.0", optional = true }
-# event-sauce-sagas = { path = "../event-sauce-sagas", version = "0.1.0", optional = true }  # TODO: Refactor to use Subscription
 event-sauce-macros = { path = "../event-sauce-macros", version = "0.1.0", optional = true }
 
 [features]
@@ -24,9 +22,7 @@ default = ["macros", "memory"]
 macros = ["dep:event-sauce-macros"]
 memory = ["dep:event-sauce-memory"]
 postgres = ["dep:event-sauce-postgres"]
-sqlite = ["dep:event-sauce-sqlite"]
-# sagas = ["dep:event-sauce-sagas"]  # TODO: Refactor to use Subscription
-full = ["macros", "memory", "postgres", "sqlite"]
+full = ["macros", "memory", "postgres"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
@@ -42,15 +38,6 @@ criterion = { workspace = true, features = ["html_reports"] }
 sqlx = { workspace = true, features = ["postgres"] }
 testcontainers = "0.23"
 testcontainers-modules = { version = "0.11", features = ["postgres"] }
-
-# TODO: Re-enable after refactoring sagas to use Subscription system
-# [[example]]
-# name = "saga-payment"
-# required-features = ["memory", "sagas"]
-
-# [[example]]
-# name = "process-manager-order"
-# required-features = ["memory", "sagas"]
 
 [[example]]
 name = "task-projections"

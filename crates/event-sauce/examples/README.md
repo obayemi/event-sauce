@@ -197,7 +197,6 @@ match event_data {
 ### Next Steps:
 3. `task-projections.rs` - Learn to build read models with projections
 4. `snapshotting-postgres.rs` - Optimize performance with snapshots
-5. Coming soon: More examples with sagas and complex workflows
 
 ## Tips
 

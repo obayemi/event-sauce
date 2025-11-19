@@ -21,7 +21,7 @@
 //!
 //! - **Streaming first**: Memory-efficient event processing
 //! - **Type-safe**: Compile-time guarantees with derive macros
-//! - **Multiple backends**: `PostgreSQL`, `SQLite`, in-memory
+//! - **Multiple backends**: `PostgreSQL`, in-memory
 //! - **100% test coverage**: Built with strict TDD
 //!
 //! ## TDD Philosophy
@@ -44,12 +44,6 @@ pub use event_sauce_memory;
 
 #[cfg(feature = "postgres")]
 pub use event_sauce_postgres;
-
-#[cfg(feature = "sqlite")]
-pub use event_sauce_sqlite;
-
-// #[cfg(feature = "sagas")]
-// pub use event_sauce_sagas;  // TODO: Re-enable after refactoring sagas
 
 /// Prelude module for convenient imports
 ///

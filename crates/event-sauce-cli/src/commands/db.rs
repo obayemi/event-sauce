@@ -48,7 +48,7 @@ pub fn init(backend: &str, _url: Option<&str>) -> Result<()> {
 fn print_postgres_schema() {
     let schema = r"
 -- event-sauce PostgreSQL Schema
--- This schema supports event sourcing with event streams, projections, and sagas
+-- This schema supports event sourcing with event streams and projections
 
 -- Events table - stores all domain events
 CREATE TABLE IF NOT EXISTS events (
@@ -100,19 +100,6 @@ CREATE TABLE IF NOT EXISTS projection_checkpoints (
     metadata JSONB NOT NULL DEFAULT '{}'
 );
 
--- Sagas state - tracks saga execution state (optional)
-CREATE TABLE IF NOT EXISTS saga_state (
-    saga_id UUID PRIMARY KEY,
-    saga_type VARCHAR(100) NOT NULL,
-    state VARCHAR(50) NOT NULL,
-    data JSONB NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_saga_state_type
-    ON saga_state(saga_type, state);
-
 -- Event notifications for pub/sub (PostgreSQL specific)
 CREATE OR REPLACE FUNCTION notify_event() RETURNS TRIGGER AS $$
 BEGIN
@@ -138,7 +125,6 @@ CREATE TRIGGER event_notification
 -- GRANT ALL ON events TO your_app_user;
 -- GRANT ALL ON snapshots TO your_app_user;
 -- GRANT ALL ON projection_checkpoints TO your_app_user;
--- GRANT ALL ON saga_state TO your_app_user;
 ";
 
     println!("{schema}");

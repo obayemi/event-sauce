@@ -4,9 +4,7 @@ members = [
     "crates/event-sauce-core",
     "crates/event-sauce-macros",
     "crates/event-sauce-postgres",
-    "crates/event-sauce-sqlite",
     "crates/event-sauce-memory",
-    # "crates/event-sauce-sagas",  # TODO: Refactor to use new Subscription system
     "crates/event-sauce-cli",
 ]
 resolver = "2"

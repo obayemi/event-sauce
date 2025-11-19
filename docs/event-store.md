@@ -21,7 +21,7 @@ Event stores in event-sauce provide:
 - **Aggregate reconstruction** - Rebuild aggregate state from events
 - **Optimistic concurrency control** - Version-based conflict detection
 - **Stream processing** - Subscribe to and process event streams
-- **Backend flexibility** - In-memory, PostgreSQL, SQLite, and more
+- **Backend flexibility** - In-memory, PostgreSQL, and extensible
 
 ### Key Design Principles
 
@@ -260,30 +260,6 @@ let store = PostgresEventStore::new(pool);
 - Strong consistency requirements
 - Complex querying needs
 
-### SQLite Store
-
-Embedded database for single-instance deployments:
-
-```rust
-use event_sauce_sqlite::SqliteEventStore;
-use sqlx::SqlitePool;
-
-let pool = SqlitePool::connect("sqlite:events.db").await?;
-let store = SqliteEventStore::new(pool);
-```
-
-**Features:**
-- Zero-configuration
-- Single file database
-- ACID transactions
-- Good for embedded use cases
-
-**When to use:**
-- Desktop applications
-- Single-server deployments
-- Embedded systems
-- Development and testing
-
 ## Usage Patterns
 
 ### Basic Save/Load Cycle
@@ -429,7 +405,7 @@ order.add_item(item)?;
 store.commit(&mut order).await?;
 
 // ❌ Bad: Don't try to coordinate multiple aggregates in one commit
-// Use sagas or process managers instead
+// Use subscriptions and event-driven workflows instead
 ```
 
 ### 2. Always Handle Conflicts

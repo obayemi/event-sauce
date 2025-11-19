@@ -12,7 +12,7 @@
 - 🚀 **Modern Rust**: Built with latest stable dependencies (Tokio 1.48, SQLx 0.8, Clap 4.5)
 - ✅ **100% Test Coverage**: Strict TDD with property-based testing
 - 🔄 **Async Streaming**: Memory-efficient event processing with backpressure
-- 🗄️ **Multiple Backends**: PostgreSQL, SQLite, in-memory
+- 🗄️ **Multiple Backends**: PostgreSQL, in-memory
 - 🎯 **Type-Safe**: Compile-time guarantees with derive macros
 - 📦 **Production Ready**: Optimistic concurrency, snapshots, distributed locking
 - 🧪 **Testing First-Class**: Built-in test helpers and fixtures
@@ -175,7 +175,7 @@ Add to your `Cargo.toml`:
 event-sauce = "0.1"
 
 # With specific features
-event-sauce = { version = "0.1", features = ["postgres", "projections", "sagas"] }
+event-sauce = { version = "0.1", features = ["postgres"] }
 ```
 
 ### Feature Flags
@@ -183,9 +183,6 @@ event-sauce = { version = "0.1", features = ["postgres", "projections", "sagas"]
 - `macros` (default) - Derive macros for aggregates and events
 - `memory` (default) - In-memory backend for testing
 - `postgres` - PostgreSQL backend
-- `sqlite` - SQLite backend
-- `projections` - Projection building helpers
-- `sagas` - Saga and process manager patterns
 - `full` - All features enabled
 
 ## Development Philosophy
@@ -198,7 +195,7 @@ This library is built following **strict TDD principles**:
 - ✅ **Tests written first** - Every feature starts with a failing test
 - ✅ **Living documentation** - Tests demonstrate API usage
 - ✅ **Property-based testing** - Invariants proven with proptest 1.9
-- ✅ **Integration tests** - Real database testing with PostgreSQL/SQLite
+- ✅ **Integration tests** - Real database testing with PostgreSQL
 
 #### TDD Workflow
 
@@ -294,9 +291,9 @@ jj git push
              │                │                   │
 ┌────────────┴────────────────┴───────────────────┴───────────┐
 │                      Backends                                │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐                  │
-│  │PostgreSQL│  │  SQLite  │  │ In-Memory│                  │
-│  └──────────┘  └──────────┘  └──────────┘                  │
+│           ┌──────────┐            ┌──────────┐              │
+│           │PostgreSQL│            │ In-Memory│              │
+│           └──────────┘            └──────────┘              │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -365,28 +362,7 @@ Projection building demonstration:
 - Real-time updates
 
 ```bash
-cargo run -p event-sauce --example task-projections --features "memory,projections"
-```
-
-#### 5. Saga Payment - Choreography Pattern
-Demonstrates saga pattern for distributed workflows:
-- Reacting to events across aggregates
-- Compensation logic for failures
-- Decentralized coordination
-
-```bash
-cargo run -p event-sauce --example saga-payment --features "memory,sagas"
-```
-
-#### 6. Process Manager - Orchestration Pattern
-Demonstrates process manager pattern for complex workflows:
-- Centralized workflow orchestration
-- Explicit state machine
-- Command generation and execution
-- Multi-step business processes
-
-```bash
-cargo run -p event-sauce --example process-manager-order --features "memory,sagas"
+cargo run -p event-sauce --example task-projections --features "memory"
 ```
 
 ### Complete Minimal Example
@@ -492,7 +468,6 @@ fn main() -> Result<(), CounterError> {
 - Rust 1.75+ (latest stable recommended)
 - Jujutsu (`cargo install jj-cli` or `brew install jj`)
 - Docker (for PostgreSQL testcontainers)
-- SQLite 3.40+ (for integration tests - Phase 6)
 
 ### Setup
 
@@ -550,13 +525,11 @@ open target/llvm-cov/html/index.html
 cargo llvm-cov -p event-sauce-core --summary-only
 ```
 
-**Current Test Status: 269 tests across 7 crates**
-- Core: 103 tests, 97.78% coverage ([details](crates/event-sauce-core/COVERAGE.md))
-- Memory: 26 tests, 99.54% coverage
-- PostgreSQL: 27 tests (uses testcontainers - requires Docker)
-- Macros: 19 tests (9 Aggregate, 9 Event, 1 compile-fail suite with 5 UI tests)
-- Projections: 33 tests (26 unit + 7 integration), 98%+ coverage
-- Sagas: 38 tests (28 unit + 4 integration + 6 doctests), ~94% coverage
+**Current Test Status: across 5 crates**
+- Core: 180 tests, 100% coverage
+- Memory: 33 tests, 100% coverage
+- PostgreSQL: 39 tests (uses testcontainers - requires Docker)
+- Macros: 78 tests (Aggregate, Event, AggregateState, UI tests)
 - CLI: 23 tests (init, generate, db commands)
 
 The PostgreSQL tests use [testcontainers](https://github.com/testcontainers/testcontainers-rs) to automatically spin up isolated PostgreSQL instances. Tests run automatically in CI and locally with Docker installed.
@@ -710,16 +683,14 @@ store.migrate().await?;
 
 - [x] Phase 0: Repository setup with Jujutsu
 - [x] Phase 0.5: Workspace and crate structure
-- [x] **Phase 1: Core traits and types (event-sauce-core)** - ✅ 103 tests, 97.78% coverage ([details](crates/event-sauce-core/COVERAGE.md))
-- [x] **Phase 2: In-memory implementation (event-sauce-memory)** - ✅ 26 tests, 99.54% coverage
-- [x] **Phase 3: PostgreSQL backend (event-sauce-postgres)** - ✅ 27 tests (EventStore with LISTEN/NOTIFY)
-- [x] **Phase 4: Derive macros (event-sauce-macros)** - ✅ 19 tests (#[derive(Aggregate)] and #[derive(Event)])
+- [x] **Phase 1: Core traits and types (event-sauce-core)** - ✅ 180 tests, 100% coverage
+- [x] **Phase 2: In-memory implementation (event-sauce-memory)** - ✅ 33 tests, 100% coverage
+- [x] **Phase 3: PostgreSQL backend (event-sauce-postgres)** - ✅ 39 tests
+- [x] **Phase 4: Derive macros (event-sauce-macros)** - ✅ 78 tests
 - [x] **Phase 5: Subscription system (event-sauce-core)** - ✅ Integrated into core (Subscription, CheckpointStore, EventFilter)
-- [ ] Phase 6: SQLite backend (deferred)
-- [x] **Phase 7: Saga and Process Manager patterns (event-sauce-sagas)** - ✅ 38 tests (Saga trait, ProcessManager trait, Runners, Integration tests)
-- [x] **Phase 8: CLI tooling (event-sauce-cli)** - ✅ 23 tests (init, generate, db commands)
-- [x] **Phase 9: Examples and documentation** - ✅ 6 examples, 3 comprehensive guides
-- [ ] Phase 10: v0.1.0 release
+- [x] **Phase 6: CLI tooling (event-sauce-cli)** - ✅ 23 tests (init, generate, db commands)
+- [x] **Phase 7: Examples and documentation** - ✅ 5 examples, comprehensive guides
+- [ ] Phase 8: v0.1.0 release
 
 ## License
 
@@ -746,6 +717,6 @@ Built with inspiration from:
 
 ---
 
-**Status**: 🚀 Phase 9 Complete - Production-ready with comprehensive documentation and examples!
+**Status**: 🚀 Phase 7 Complete - Production-ready with comprehensive documentation and examples!
 
 Built with ❤️ and strict TDD in Rust
