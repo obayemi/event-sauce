@@ -19,22 +19,23 @@ use uuid::Uuid;
 /// # use event_sauce_core::AggregateId;
 /// # use uuid::Uuid;
 /// # use std::fmt;
-/// # #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// # use serde::{Serialize, Deserialize};
+/// # #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 /// # struct CounterId(Uuid);
 /// # impl AggregateId for CounterId {
 /// #     fn to_uuid(&self) -> Uuid { self.0 }
 /// #     fn from_uuid(uuid: Uuid) -> Self { Self(uuid) }
 /// # }
-/// # impl Display for CounterId {
+/// # impl fmt::Display for CounterId {
 /// #     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { write!(f, "{}", self.0) }
 /// # }
-/// # #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// # #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 /// # struct UserId(Uuid);
 /// # impl AggregateId for UserId {
 /// #     fn to_uuid(&self) -> Uuid { self.0 }
 /// #     fn from_uuid(uuid: Uuid) -> Self { Self(uuid) }
 /// # }
-/// # impl Display for UserId {
+/// # impl fmt::Display for UserId {
 /// #     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { write!(f, "{}", self.0) }
 /// # }
 /// fn process_counter(id: CounterId) { /* ... */ }
@@ -49,7 +50,7 @@ use uuid::Uuid;
 ///
 /// # Examples
 ///
-/// ## Using DefaultAggregateId
+/// ## Using `DefaultAggregateId`
 ///
 /// ```
 /// use event_sauce_core::{AggregateId, DefaultAggregateId};
@@ -112,6 +113,7 @@ pub trait AggregateId:
     /// let id2 = DefaultAggregateId::new();
     /// assert_ne!(id1, id2);
     /// ```
+    #[must_use]
     fn new() -> Self
     where
         Self: Sized,
@@ -131,6 +133,7 @@ pub trait AggregateId:
     /// let id = DefaultAggregateId::nil();
     /// assert_eq!(id.to_string(), "00000000-0000-0000-0000-000000000000");
     /// ```
+    #[must_use]
     fn nil() -> Self
     where
         Self: Sized,

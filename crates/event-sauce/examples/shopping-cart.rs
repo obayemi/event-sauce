@@ -9,7 +9,7 @@
 //! Run with: cargo run -p event-sauce --example shopping-cart --features "memory,macros"
 
 use chrono::Utc;
-use event_sauce_core::{Aggregate, ApplyEvent, DomainEvent};
+use event_sauce_core::{Aggregate, AggregateId as _, ApplyEvent, DomainEvent};
 use event_sauce_macros::{aggregate, AggregateError, AggregateId, Event as DeriveEvent};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -19,14 +19,14 @@ use std::collections::HashMap;
 // ============================================================================
 
 /// Unique identifier for a shopping cart
-#[derive(Default, AggregateId, Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(AggregateId, Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[repr(transparent)]
-struct CartId(event_sauce_core::AggregateId);
+struct CartId(uuid::Uuid);
 
 /// Unique identifier for a product
-#[derive(Default, AggregateId, Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(AggregateId, Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[repr(transparent)]
-struct ProductId(event_sauce_core::AggregateId);
+struct ProductId(uuid::Uuid);
 
 /// Shopping cart item
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -249,7 +249,7 @@ struct ShoppingCart {
 impl ShoppingCart {
     /// Create a new shopping cart using the Aggregate trait's new method
     fn create(id: CartId, customer_id: String) -> Self {
-        let mut cart = <Self as Aggregate>::new(*id);
+        let mut cart = <Self as Aggregate>::new(id);
 
         // apply() automatically runs: validate() → apply() → post_validate()
         cart.apply(CartCreatedEvent {

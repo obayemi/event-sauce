@@ -95,8 +95,8 @@
 
 use chrono::{DateTime, Utc};
 use event_sauce_core::{
-    load, Aggregate, ApplyEvent, CheckpointStore, CheckpointStrategy, DomainEvent, ErrorPolicy,
-    EventEnvelope, EventStore,
+    load, Aggregate, AggregateId as _, ApplyEvent, CheckpointStore, CheckpointStrategy,
+    DomainEvent, ErrorPolicy, EventEnvelope, EventStore,
 };
 use event_sauce_macros::{aggregate, AggregateError, AggregateId, Event as DeriveEvent};
 use event_sauce_postgres::{PostgresCheckpointStore, PostgresEventStore};
@@ -107,15 +107,16 @@ use std::sync::Arc;
 use testcontainers::ImageExt;
 use testcontainers_modules::{postgres::Postgres, testcontainers::runners::AsyncRunner};
 use thiserror::Error;
+use uuid::Uuid;
 
 // ============================================================================
 // Domain Types
 // ============================================================================
 
 /// Product ID type
-#[derive(Default, AggregateId, Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(AggregateId, Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[repr(transparent)]
-struct ProductId(event_sauce_core::AggregateId);
+struct ProductId(Uuid);
 
 // ============================================================================
 // Errors
@@ -374,18 +375,6 @@ struct Product {
     updated_at: DateTime<Utc>,
 }
 
-impl Default for Product {
-    fn default() -> Self {
-        Self {
-            name: String::new(),
-            stock: 0,
-            price_cents: 0,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-        }
-    }
-}
-
 // ============================================================================
 // Commands (business logic that generates events)
 // ============================================================================
@@ -399,12 +388,7 @@ impl Product {
     ///
     /// Note: product_id is not in the event - it's stored in the event envelope
     /// Validation happens when the event is applied via ApplyEvent::validate()
-    pub fn create_product(
-        _id: ProductId, // Not used - aggregate_id comes from envelope
-        name: String,
-        initial_stock: i32,
-        price_cents: i64,
-    ) -> ProductEvent {
+    pub fn create_product(name: String, initial_stock: i32, price_cents: i64) -> ProductEvent {
         ProductEvent::Created(ProductCreated {
             name,
             initial_stock,
@@ -593,7 +577,7 @@ impl ProductSummaryProjection {
             WHERE product_id = $1
             "#,
         )
-        .bind(product_id.0)
+        .bind(product_id.to_uuid())
         .fetch_optional(&self.pool)
         .await?;
 
@@ -697,7 +681,6 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     println!("Creating product: Laptop");
     // Command creates event (no validation yet)
     let event = Product::create_product(
-        laptop_id,
         "MacBook Pro 16\"".to_string(),
         10,
         299_900, // $2,999.00
@@ -712,7 +695,6 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let mouse_id = ProductId::new();
     println!("Creating product: Mouse");
     let event = Product::create_product(
-        mouse_id,
         "Magic Mouse".to_string(),
         50,
         9_900, // $99.00

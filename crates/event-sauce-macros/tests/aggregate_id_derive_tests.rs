@@ -1,14 +1,16 @@
-use event_sauce_core::AggregateId;
+use event_sauce_core::AggregateId as _;
 use event_sauce_macros::AggregateId as DeriveAggregateId;
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, DeriveAggregateId)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, DeriveAggregateId)]
 #[repr(transparent)]
-struct UserId(AggregateId);
+struct UserId(Uuid);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, DeriveAggregateId)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, DeriveAggregateId)]
 #[repr(transparent)]
 #[display("Account-{}")]
-struct AccountId(AggregateId);
+struct AccountId(Uuid);
 
 #[test]
 fn test_derive_generates_new() {
@@ -17,46 +19,33 @@ fn test_derive_generates_new() {
 }
 
 #[test]
-fn test_derive_deref() {
+fn test_derive_to_uuid() {
     let id = UserId::new();
-    // Via Deref, can call AggregateId methods directly
+    // Can call to_uuid() to get the inner Uuid
     let uuid = id.to_uuid();
     assert_eq!(uuid, id.to_uuid());
 }
 
 #[test]
-fn test_derive_as_ref() {
-    let id = UserId::new();
-    let aggregate_id: &AggregateId = id.as_ref();
-    assert_eq!(aggregate_id.to_uuid(), id.to_uuid());
-}
-
-#[test]
-fn test_derive_from_aggregate_id() {
-    let aggregate_id = AggregateId::new();
-    let user_id = UserId::from(aggregate_id);
-    assert_eq!(user_id.to_uuid(), aggregate_id.to_uuid());
-}
-
-#[test]
-fn test_derive_into_aggregate_id() {
-    let user_id = UserId::new();
-    let aggregate_id: AggregateId = user_id.into();
-    assert_eq!(aggregate_id.to_uuid(), user_id.to_uuid());
+fn test_derive_construction() {
+    // Can construct from Uuid
+    let uuid = Uuid::new_v4();
+    let user_id = UserId(uuid);
+    assert_eq!(user_id.to_uuid(), uuid);
 }
 
 #[test]
 fn test_derive_default_display() {
-    let aggregate_id = AggregateId::nil();
-    let user_id = UserId::from(aggregate_id);
+    let uuid = Uuid::nil();
+    let user_id = UserId(uuid);
     let display = format!("{}", user_id);
     assert_eq!(display, "00000000-0000-0000-0000-000000000000");
 }
 
 #[test]
 fn test_derive_custom_display() {
-    let aggregate_id = AggregateId::nil();
-    let account_id = AccountId::from(aggregate_id);
+    let uuid = Uuid::nil();
+    let account_id = AccountId(uuid);
     let display = format!("{}", account_id);
     assert!(display.starts_with("Account-"));
     assert!(display.contains("00000000-0000-0000-0000-000000000000"));
@@ -74,9 +63,9 @@ fn test_derive_clone_and_copy() {
 
 #[test]
 fn test_derive_equality() {
-    let aggregate_id = AggregateId::new();
-    let id1 = UserId::from(aggregate_id);
-    let id2 = UserId::from(aggregate_id);
+    let uuid = Uuid::new_v4();
+    let id1 = UserId(uuid);
+    let id2 = UserId(uuid);
     let id3 = UserId::new();
 
     assert_eq!(id1, id2);
@@ -87,9 +76,9 @@ fn test_derive_equality() {
 fn test_derive_hash() {
     use std::collections::HashSet;
 
-    let aggregate_id = AggregateId::new();
-    let id1 = UserId::from(aggregate_id);
-    let id2 = UserId::from(aggregate_id);
+    let uuid = Uuid::new_v4();
+    let id1 = UserId(uuid);
+    let id2 = UserId(uuid);
 
     let mut set = HashSet::new();
     set.insert(id1);
@@ -109,11 +98,13 @@ fn test_derive_debug() {
 #[test]
 fn test_two_line_usage() {
     // This demonstrates the actual usage - just 2 lines!
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, DeriveAggregateId)]
+    #[derive(
+        Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, DeriveAggregateId,
+    )]
     #[repr(transparent)]
-    struct OrderId(AggregateId);
+    struct OrderId(Uuid);
 
     let order_id = OrderId::new();
     let uuid = order_id.to_uuid();
-    assert_ne!(uuid, uuid::Uuid::nil());
+    assert_ne!(uuid, Uuid::nil());
 }

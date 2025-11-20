@@ -26,6 +26,7 @@ use event_sauce_macros::{aggregate, AggregateError, AggregateId, Event};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use uuid::Uuid;
 
 /// Task status enum
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
@@ -68,9 +69,9 @@ struct Completed {
 }
 
 /// Task aggregate ID
-#[derive(Default, AggregateId, Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(AggregateId, Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[repr(transparent)]
-struct TaskId(event_sauce_core::AggregateId);
+struct TaskId(Uuid);
 
 /// Error type for task operations
 #[derive(AggregateError, Debug, Clone, thiserror::Error)]

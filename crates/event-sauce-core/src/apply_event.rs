@@ -41,7 +41,7 @@ use crate::AggregateError;
 /// use std::fmt;
 /// use uuid::Uuid;
 ///
-/// #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 /// struct CounterId(Uuid);
 /// impl CounterId {
 ///     fn new() -> Self { Self(Uuid::new_v4()) }
@@ -53,6 +53,7 @@ use crate::AggregateError;
 /// }
 /// impl AggregateId for CounterId {
 ///     fn to_uuid(&self) -> Uuid { self.0 }
+///     fn from_uuid(uuid: Uuid) -> Self { Self(uuid) }
 /// }
 ///
 /// #[derive(Debug, Error)]
@@ -134,7 +135,7 @@ use crate::AggregateError;
 /// use std::fmt;
 /// use uuid::Uuid;
 ///
-/// #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 /// struct AccountId(Uuid);
 /// impl AccountId {
 ///     fn new() -> Self { Self(Uuid::new_v4()) }
@@ -146,6 +147,7 @@ use crate::AggregateError;
 /// }
 /// impl AggregateId for AccountId {
 ///     fn to_uuid(&self) -> Uuid { self.0 }
+///     fn from_uuid(uuid: Uuid) -> Self { Self(uuid) }
 /// }
 ///
 /// #[derive(Debug, Error)]
@@ -255,7 +257,7 @@ use crate::AggregateError;
 /// use std::fmt;
 /// use uuid::Uuid;
 ///
-/// #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 /// struct CounterId(Uuid);
 /// impl CounterId {
 ///     fn new() -> Self { Self(Uuid::new_v4()) }
@@ -267,6 +269,7 @@ use crate::AggregateError;
 /// }
 /// impl AggregateId for CounterId {
 ///     fn to_uuid(&self) -> Uuid { self.0 }
+///     fn from_uuid(uuid: Uuid) -> Self { Self(uuid) }
 /// }
 ///
 /// #[derive(Debug, Error)]
@@ -384,7 +387,7 @@ pub trait ApplyEvent<A: Aggregate> {
     /// use std::fmt;
     /// use uuid::Uuid;
     ///
-    /// #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    /// #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
     /// struct CounterId(Uuid);
     /// impl CounterId {
     ///     fn new() -> Self { Self(Uuid::new_v4()) }
@@ -396,6 +399,7 @@ pub trait ApplyEvent<A: Aggregate> {
     /// }
     /// impl AggregateId for CounterId {
     ///     fn to_uuid(&self) -> Uuid { self.0 }
+    ///     fn from_uuid(uuid: Uuid) -> Self { Self(uuid) }
     /// }
     ///
     /// #[derive(Debug, Error)]
@@ -501,7 +505,7 @@ pub trait ApplyEvent<A: Aggregate> {
     /// use std::fmt;
     /// use uuid::Uuid;
     ///
-    /// #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    /// #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
     /// struct CounterId(Uuid);
     /// impl CounterId {
     ///     fn new() -> Self { Self(Uuid::new_v4()) }
@@ -513,6 +517,7 @@ pub trait ApplyEvent<A: Aggregate> {
     /// }
     /// impl AggregateId for CounterId {
     ///     fn to_uuid(&self) -> Uuid { self.0 }
+    ///     fn from_uuid(uuid: Uuid) -> Self { Self(uuid) }
     /// }
     ///
     /// #[derive(Debug, Error)]
@@ -623,7 +628,7 @@ pub trait ApplyEvent<A: Aggregate> {
     /// use std::fmt;
     /// use uuid::Uuid;
     ///
-    /// #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    /// #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
     /// struct AccountId(Uuid);
     /// impl AccountId {
     ///     fn new() -> Self { Self(Uuid::new_v4()) }
@@ -635,6 +640,7 @@ pub trait ApplyEvent<A: Aggregate> {
     /// }
     /// impl AggregateId for AccountId {
     ///     fn to_uuid(&self) -> Uuid { self.0 }
+    ///     fn from_uuid(uuid: Uuid) -> Self { Self(uuid) }
     /// }
     ///
     /// #[derive(Debug, Error)]

@@ -4,10 +4,11 @@
 //! the State struct and Aggregate trait implementation.
 
 use chrono::{DateTime, Utc};
-use event_sauce_core::{Aggregate, AggregateError, AggregateId, DomainEvent, Version};
+use event_sauce_core::{Aggregate, AggregateError, AggregateId as _, DomainEvent, Version};
 use event_sauce_macros::AggregateId as DeriveAggregateId;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use uuid::Uuid;
 
 // Define error type for testing
 #[derive(Debug, Error)]
@@ -21,7 +22,7 @@ impl AggregateError for TestCounterError {}
     Default, DeriveAggregateId, Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize,
 )]
 #[repr(transparent)]
-struct TestCounterId(AggregateId);
+struct TestCounterId(Uuid);
 
 // Define a simple event for testing
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -97,35 +98,35 @@ impl TestCounter {
 
 #[test]
 fn test_aggregate_derive_implements_aggregate_trait() {
-    let aggregate_id = AggregateId::new();
-    let counter = TestCounter::new(aggregate_id);
+    let id = TestCounterId::new();
+    let counter = TestCounter::new(id);
 
     // The Aggregate trait should be implemented
-    assert_eq!(counter.aggregate_id(), &aggregate_id);
+    assert_eq!(counter.aggregate_id(), &id);
     assert_eq!(counter.version(), Version::initial());
     assert_eq!(counter.pending_events().len(), 0);
 }
 
 #[test]
 fn test_aggregate_derive_aggregate_id() {
-    let aggregate_id = AggregateId::new();
-    let counter = TestCounter::new(aggregate_id);
+    let id = TestCounterId::new();
+    let counter = TestCounter::new(id);
 
-    assert_eq!(counter.aggregate_id(), &aggregate_id);
+    assert_eq!(counter.aggregate_id(), &id);
 }
 
 #[test]
 fn test_aggregate_derive_version() {
-    let aggregate_id = AggregateId::new();
-    let counter = TestCounter::new(aggregate_id);
+    let id = TestCounterId::new();
+    let counter = TestCounter::new(id);
 
     assert_eq!(counter.version(), Version::initial());
 }
 
 #[test]
 fn test_aggregate_derive_pending_events() {
-    let aggregate_id = AggregateId::new();
-    let mut counter = TestCounter::new(aggregate_id);
+    let id = TestCounterId::new();
+    let mut counter = TestCounter::new(id);
 
     assert_eq!(counter.pending_events().len(), 0);
 
@@ -136,8 +137,8 @@ fn test_aggregate_derive_pending_events() {
 
 #[test]
 fn test_aggregate_derive_clear_pending_events() {
-    let aggregate_id = AggregateId::new();
-    let mut counter = TestCounter::new(aggregate_id);
+    let id = TestCounterId::new();
+    let mut counter = TestCounter::new(id);
 
     counter.increment(5);
     assert_eq!(counter.pending_events().len(), 1);
@@ -148,8 +149,8 @@ fn test_aggregate_derive_clear_pending_events() {
 
 #[test]
 fn test_aggregate_derive_apply() {
-    let aggregate_id = AggregateId::new();
-    let mut counter = TestCounter::new(aggregate_id);
+    let id = TestCounterId::new();
+    let mut counter = TestCounter::new(id);
 
     let event = TestCounterEvent::Incremented {
         amount: 10,
@@ -167,8 +168,8 @@ fn test_aggregate_derive_apply() {
 
 #[test]
 fn test_aggregate_derive_multiple_events() {
-    let aggregate_id = AggregateId::new();
-    let mut counter = TestCounter::new(aggregate_id);
+    let id = TestCounterId::new();
+    let mut counter = TestCounter::new(id);
 
     counter.increment(5);
     counter.increment(3);
@@ -203,10 +204,10 @@ fn test_state_struct_generated() {
 
 #[test]
 fn test_from_snapshot_constructor() {
-    let aggregate_id = AggregateId::new();
+    let id = TestCounterId::new();
     let state = TestCounterState { value: 100 };
 
-    let counter = TestCounter::from_snapshot(aggregate_id, Version::new(5), state);
+    let counter = TestCounter::from_snapshot(id, Version::new(5), state);
 
     assert_eq!(counter.value, 100);
     assert_eq!(counter.version(), Version::new(5));
@@ -214,8 +215,8 @@ fn test_from_snapshot_constructor() {
 
 #[test]
 fn test_deref_transparent_access() {
-    let aggregate_id = AggregateId::new();
-    let mut counter = TestCounter::new(aggregate_id);
+    let id = TestCounterId::new();
+    let mut counter = TestCounter::new(id);
 
     // Can access and modify state fields directly via Deref/DerefMut
     counter.value = 999;
@@ -225,8 +226,8 @@ fn test_deref_transparent_access() {
 
 #[test]
 fn test_state_ref_and_mut() {
-    let aggregate_id = AggregateId::new();
-    let mut counter = TestCounter::new(aggregate_id);
+    let id = TestCounterId::new();
+    let mut counter = TestCounter::new(id);
 
     counter.increment(5);
 
@@ -243,8 +244,8 @@ fn test_state_ref_and_mut() {
 
 #[test]
 fn test_aggregate_state_method() {
-    let aggregate_id = AggregateId::new();
-    let mut counter = TestCounter::new(aggregate_id);
+    let id = TestCounterId::new();
+    let mut counter = TestCounter::new(id);
 
     counter.increment(42);
 

@@ -1,10 +1,11 @@
-// This test verifies that the Aggregate derive macro fails
+// This test verifies that the aggregate attribute macro fails
 // when used on an enum instead of a struct
 
-use event_sauce_core::{Aggregate, AggregateId, DomainEvent, Version};
+use event_sauce_core::{AggregateId, DomainEvent};
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct TestId(String);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+struct TestId(uuid::Uuid);
 
 impl std::fmt::Display for TestId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -14,23 +15,20 @@ impl std::fmt::Display for TestId {
 
 impl AggregateId for TestId {
     fn to_uuid(&self) -> uuid::Uuid {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        self.0.hash(&mut hasher);
-        let hash = hasher.finish();
-        let mut bytes = [0u8; 16];
-        bytes[0..8].copy_from_slice(&hash.to_le_bytes());
-        uuid::Uuid::from_bytes(bytes)
+        self.0
+    }
+    fn from_uuid(uuid: uuid::Uuid) -> Self {
+        Self(uuid)
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 enum TestEvent {
     Created,
 }
 
 impl DomainEvent for TestEvent {
+    type Aggregate = TestAggregate;
     fn event_type(&self) -> &'static str {
         "Created"
     }
@@ -42,17 +40,19 @@ impl DomainEvent for TestEvent {
     }
 }
 
-// Using Aggregate on enum - should fail
-#[derive(event_sauce_macros::Aggregate)]
-#[aggregate(id = "TestId", event = "TestEvent")]
+#[derive(Debug, thiserror::Error)]
+enum TestError {
+    #[error("Test error")]
+    Test,
+}
+
+impl event_sauce_core::AggregateError for TestError {}
+
+// Using aggregate on enum - should fail
+#[event_sauce_macros::aggregate(id = "TestId", event = "TestEvent", error = "TestError")]
 enum TestAggregate {
     Variant {
-        #[aggregate_id]
-        id: TestId,
-        #[aggregate_version]
-        version: Version,
-        #[aggregate_events]
-        events: Vec<TestEvent>,
+        value: i32,
     }
 }
 

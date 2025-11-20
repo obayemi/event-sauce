@@ -44,6 +44,10 @@ impl AggregateId for TestAccountId {
     fn to_uuid(&self) -> Uuid {
         self.0
     }
+
+    fn from_uuid(uuid: Uuid) -> Self {
+        Self(uuid)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]

@@ -559,7 +559,8 @@ where
                     })?;
 
                 // Reconstruct aggregate from snapshot components
-                let aggregate = A::from_snapshot(aggregate_id.clone(), snapshot.snapshot_version, state);
+                let aggregate =
+                    A::from_snapshot(aggregate_id.clone(), snapshot.snapshot_version, state);
 
                 // Start loading events from after the snapshot
                 (aggregate, snapshot.snapshot_version.next())
@@ -862,7 +863,7 @@ mod tests {
 
     // Test utilities
 
-    use crate::{Aggregate, AggregateError, AggregateId, DefaultAggregateId, DomainEvent};
+    use crate::{Aggregate, AggregateError, DefaultAggregateId, DomainEvent};
     use chrono::Utc;
     use thiserror::Error;
 

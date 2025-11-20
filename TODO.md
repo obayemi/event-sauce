@@ -8,3 +8,13 @@
   - [x] Removed manual ID fields from all examples
   - [x] Updated backend implementations (InMemoryEventStore, PostgresEventStore)
   - [ ] MINOR: Update macro test files to use new API (16 test instances need updating from `from_state` to `new()` or `from_snapshot()`)
+
+IMprovements review:
+
+🚀 Opportunities for Abstraction:
+
+4. Event Definition Macro 🔵 NICE TO HAVE
+   -> could it be made to allow pre/post validation ?
+
+5. Aggregate Root Helper 🔵 NICE TO HAVE
+   -> the aggregate derive macro is a better implementation

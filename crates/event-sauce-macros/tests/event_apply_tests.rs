@@ -4,11 +4,12 @@
 //! the apply_event method when the aggregate attribute is specified.
 
 use chrono::{DateTime, Utc};
-use event_sauce_core::{Aggregate, AggregateId, ApplyEvent, DomainEvent, Version};
+use event_sauce_core::{Aggregate, AggregateId as _, ApplyEvent, DomainEvent, Version};
 use event_sauce_macros::{
     aggregate, AggregateError, AggregateId as DeriveAggregateId, Event as DeriveEvent,
 };
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 // ============================================================================
 // Test Domain Model
@@ -19,7 +20,7 @@ use serde::{Deserialize, Serialize};
     DeriveAggregateId, Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default,
 )]
 #[repr(transparent)]
-struct TestId(AggregateId);
+struct TestId(Uuid);
 
 /// Test error type
 #[derive(AggregateError, Debug, thiserror::Error)]
@@ -116,8 +117,8 @@ struct TestAgg {
 #[test]
 fn test_aggregate_attribute_generates_apply_event() {
     // Test that the aggregate attribute causes apply_event to be generated
-    let aggregate_id = AggregateId::new();
-    let mut aggregate = TestAgg::new(aggregate_id);
+    let id = TestId::new();
+    let mut aggregate = TestAgg::new(id);
 
     let event = TestEvent::Set(ValueSetEvent {
         value: 42,
@@ -132,8 +133,8 @@ fn test_aggregate_attribute_generates_apply_event() {
 
 #[test]
 fn test_apply_event_dispatches_to_apply_event_impl() {
-    let aggregate_id = AggregateId::new();
-    let mut aggregate = TestAgg::new(aggregate_id);
+    let id = TestId::new();
+    let mut aggregate = TestAgg::new(id);
     // Initialize value to 10
     aggregate
         .apply(ValueSetEvent {
@@ -168,8 +169,8 @@ fn test_apply_event_dispatches_to_apply_event_impl() {
 
 #[test]
 fn test_apply_event_with_multiple_events() {
-    let aggregate_id = AggregateId::new();
-    let mut aggregate = TestAgg::new(aggregate_id);
+    let id = TestId::new();
+    let mut aggregate = TestAgg::new(id);
 
     let events = vec![
         TestEvent::Set(ValueSetEvent {
@@ -195,8 +196,8 @@ fn test_apply_event_with_multiple_events() {
 
 #[test]
 fn test_apply_event_through_aggregate_trait() {
-    let aggregate_id = AggregateId::new();
-    let mut aggregate = TestAgg::new(aggregate_id);
+    let id = TestId::new();
+    let mut aggregate = TestAgg::new(id);
 
     // Use the Aggregate trait's apply method
     aggregate
@@ -213,8 +214,8 @@ fn test_apply_event_through_aggregate_trait() {
 
 #[test]
 fn test_apply_event_preserves_aggregate_state() {
-    let aggregate_id = AggregateId::new();
-    let mut aggregate = TestAgg::new(aggregate_id);
+    let id = TestId::new();
+    let mut aggregate = TestAgg::new(id);
     // Initialize value to 10
     aggregate
         .apply(ValueSetEvent {
@@ -231,14 +232,14 @@ fn test_apply_event_preserves_aggregate_state() {
     aggregate.apply_event(&event).unwrap();
 
     // Check that the aggregate state is preserved
-    assert_eq!(aggregate.aggregate_id(), &aggregate_id);
+    assert_eq!(aggregate.aggregate_id(), &id);
     assert_eq!(aggregate.value, 15);
 }
 
 #[test]
 fn test_apply_event_works_with_deref() {
-    let aggregate_id = AggregateId::new();
-    let mut aggregate = TestAgg::new(aggregate_id);
+    let id = TestId::new();
+    let mut aggregate = TestAgg::new(id);
 
     // The aggregate derefs to state, so we can access state fields directly
     assert_eq!(aggregate.value, 0);
@@ -258,7 +259,7 @@ fn test_apply_event_works_with_deref() {
 fn test_generated_apply_event_is_public() {
     // This test ensures the generated apply_event method is public
     // by calling it from outside the module
-    let mut aggregate = TestAgg::new(AggregateId::new());
+    let mut aggregate = TestAgg::new(TestId::new());
 
     let event = TestEvent::Reset(ValueResetEvent {
         timestamp: Utc::now(),
@@ -270,8 +271,8 @@ fn test_generated_apply_event_is_public() {
 
 #[test]
 fn test_apply_event_with_validation() {
-    let aggregate_id = AggregateId::new();
-    let mut aggregate = TestAgg::new(aggregate_id);
+    let id = TestId::new();
+    let mut aggregate = TestAgg::new(id);
 
     // Valid event through apply (which validates)
     aggregate
@@ -295,8 +296,8 @@ fn test_apply_event_with_validation() {
 #[test]
 fn test_apply_event_integration_with_aggregate_lifecycle() {
     // Create a new aggregate
-    let aggregate_id = AggregateId::new();
-    let mut aggregate = TestAgg::new(aggregate_id);
+    let id = TestId::new();
+    let mut aggregate = TestAgg::new(id);
 
     // Apply events through the Aggregate trait
     aggregate
@@ -319,7 +320,7 @@ fn test_apply_event_integration_with_aggregate_lifecycle() {
 
     // Replay events using apply_event
     let events: Vec<_> = aggregate.pending_events().to_vec();
-    let mut replayed = TestAgg::new(aggregate_id);
+    let mut replayed = TestAgg::new(id);
 
     for event in events {
         replayed.apply_unchecked(&event);
@@ -332,6 +333,10 @@ fn test_apply_event_integration_with_aggregate_lifecycle() {
 // ============================================================================
 // Test Without Aggregate Attribute
 // ============================================================================
+
+#[derive(DeriveAggregateId, Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[repr(transparent)]
+struct BasicAggregateId(Uuid);
 
 /// Event enum without aggregate attribute - should NOT generate apply_event
 #[derive(DeriveEvent, Debug, Clone, Serialize, Deserialize)]
@@ -346,18 +351,19 @@ struct BasicAggregateState;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct BasicAggregate {
-    id: AggregateId,
+    id: BasicAggregateId,
     state: BasicAggregateState,
     version: event_sauce_core::Version,
     pending_events: Vec<BasicEvent>,
 }
 
 impl Aggregate for BasicAggregate {
+    type Id = BasicAggregateId;
     type Event = BasicEvent;
     type Error = TestError;
     type State = BasicAggregateState;
 
-    fn new(id: AggregateId) -> Self {
+    fn new(id: BasicAggregateId) -> Self {
         Self {
             id,
             state: BasicAggregateState,
@@ -366,7 +372,7 @@ impl Aggregate for BasicAggregate {
         }
     }
 
-    fn aggregate_id(&self) -> &AggregateId {
+    fn aggregate_id(&self) -> &BasicAggregateId {
         &self.id
     }
 
@@ -399,7 +405,7 @@ impl Aggregate for BasicAggregate {
     }
 
     fn from_snapshot(
-        id: AggregateId,
+        id: BasicAggregateId,
         version: event_sauce_core::Version,
         state: Self::State,
     ) -> Self {
@@ -432,8 +438,8 @@ fn test_without_aggregate_attribute_no_apply_event() {
 
 #[test]
 fn test_apply_event_with_reset_to_zero() {
-    let aggregate_id = AggregateId::new();
-    let mut aggregate = TestAgg::new(aggregate_id);
+    let id = TestId::new();
+    let mut aggregate = TestAgg::new(id);
     // Initialize value to 100
     aggregate
         .apply(ValueSetEvent {
@@ -453,8 +459,8 @@ fn test_apply_event_with_reset_to_zero() {
 
 #[test]
 fn test_apply_event_multiple_times_same_event() {
-    let aggregate_id = AggregateId::new();
-    let mut aggregate = TestAgg::new(aggregate_id);
+    let id = TestId::new();
+    let mut aggregate = TestAgg::new(id);
 
     let event = TestEvent::Incremented(ValueIncrementedEvent {
         amount: 1,
@@ -471,18 +477,18 @@ fn test_apply_event_multiple_times_same_event() {
 
 #[test]
 fn test_apply_event_is_deterministic() {
-    let aggregate_id = AggregateId::new();
+    let id = TestId::new();
     let event = TestEvent::Set(ValueSetEvent {
         value: 42,
         timestamp: Utc::now(),
     });
 
     // Apply to first aggregate
-    let mut aggregate1 = TestAgg::new(aggregate_id);
+    let mut aggregate1 = TestAgg::new(id);
     aggregate1.apply_event(&event).unwrap();
 
     // Apply to second aggregate
-    let mut aggregate2 = TestAgg::new(aggregate_id);
+    let mut aggregate2 = TestAgg::new(id);
     aggregate2.apply_event(&event).unwrap();
 
     // Results should be identical

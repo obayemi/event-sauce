@@ -11,7 +11,7 @@
 //! Run with: cargo run -p event-sauce --example bank-account --features "memory,macros"
 
 use chrono::Utc;
-use event_sauce_core::{Aggregate, ApplyEvent, DomainEvent};
+use event_sauce_core::{Aggregate, AggregateId as _, ApplyEvent, DomainEvent};
 use event_sauce_macros::{aggregate, AggregateError, AggregateId, Event as DeriveEvent};
 use serde::{Deserialize, Serialize};
 
@@ -20,9 +20,9 @@ use serde::{Deserialize, Serialize};
 // ============================================================================
 
 /// Unique identifier for a bank account
-#[derive(Default, AggregateId, Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(AggregateId, Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[repr(transparent)]
-struct AccountId(event_sauce_core::AggregateId);
+struct AccountId(uuid::Uuid);
 
 /// Account status
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -205,7 +205,7 @@ impl BankAccount {
 impl BankAccount {
     /// Create a new bank account using the Aggregate trait's new method
     fn open(id: AccountId, owner: String, initial_balance: i64) -> Result<Self, AccountError> {
-        let mut account = <Self as Aggregate>::new(*id);
+        let mut account = <Self as Aggregate>::new(id);
 
         let event = AccountOpenedEvent {
             account_id: id.to_string(),
