@@ -35,20 +35,9 @@ use event_sauce_macros::{AggregateError, AggregateId};
 use uuid::Uuid;
 
 // Define the aggregate ID (auto-implements AggregateId trait + Display)
-#[derive(AggregateId, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+// Simply derive Default - Uuid::nil() is used as the default value
+#[derive(AggregateId, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 struct AccountId(Uuid);
-
-impl AccountId {
-    fn new() -> Self {
-        Self(Uuid::new_v4())
-    }
-}
-
-impl Default for AccountId {
-    fn default() -> Self {
-        Self(Uuid::nil())
-    }
-}
 
 // Define aggregate error (auto-implements AggregateError)
 #[derive(AggregateError, Debug, Error)]

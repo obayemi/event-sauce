@@ -38,34 +38,7 @@ criterion = { workspace = true, features = ["html_reports"] }
 sqlx = { workspace = true, features = ["postgres"] }
 testcontainers = "0.23"
 testcontainers-modules = { version = "0.11", features = ["postgres"] }
-
-[[example]]
-name = "task-projections"
-required-features = ["memory", "macros"]
-
-[[example]]
-name = "bank-account"
-required-features = ["macros", "memory"]
-
-[[example]]
-name = "counter"
-required-features = ["macros", "memory"]
-
-[[example]]
-name = "snapshotting"
-required-features = ["macros", "memory"]
-
-[[example]]
-name = "shopping-cart"
-required-features = ["macros", "memory"]
-
-[[example]]
-name = "snapshotting-postgres"
-required-features = ["macros", "postgres"]
-
-[[example]]
-name = "postgres-quickstart"
-required-features = ["macros", "postgres"]
+paste.workspace = true
 
 [[bench]]
 name = "event_application"

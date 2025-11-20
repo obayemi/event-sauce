@@ -23,13 +23,14 @@
 
 event-sauce provides a powerful and ergonomic event sourcing experience with minimal boilerplate:
 
-- **📝 Auto-Generated Boilerplate**: Derive macros eliminate manual implementations
-  - `#[derive(AggregateId)]` - Auto-implement ID types with Display
-  - `#[derive(AggregateError)]` - Auto-implement error marker trait
-  - `#[aggregate(...)]` - Auto-manage ID, separate business logic from infrastructure
-  - `#[derive(Event)]` - Auto-generate apply_event dispatching
-  - `command_handler!` - **NEW!** Auto-generate command methods (70% less code)
-  - `projection!` - **NEW!** Declarative read model definitions
+- **📝 Declarative Macros**: Build event-sourced aggregates with minimal code
+  - `#[derive(AggregateId)]` - ID types with Display
+  - `#[derive(AggregateError)]` - Error marker trait
+  - `#[aggregate(...)]` - Aggregate infrastructure management
+  - `#[derive(Event)]` - Event dispatching
+  - `define_events!` - Event definitions with validation
+  - `command_handler!` - Command method generation
+  - `projection!` - Read model definitions
 - **🎯 Type-Safe Events**: `ApplyEvent` trait for self-contained event logic
 - **✅ Validation & Replay**: Separate validation from application for fast replay
 - **🛡️ Rich Errors**: Aggregate-specific error types with `AggregateError` trait
@@ -40,117 +41,82 @@ event-sauce provides a powerful and ergonomic event sourcing experience with min
 
 ```rust
 use event_sauce::prelude::*;
-use event_sauce_macros::{AggregateError, AggregateId, AggregateState, Event};
+use event_sauce_macros::{AggregateError, AggregateId};
 use thiserror::Error;
 use uuid::Uuid;
-use chrono::Utc;
 
-// 1. Define your aggregate ID (auto-implements AggregateId + Display)
-#[derive(AggregateId, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+// 1. Define your aggregate ID
+#[derive(AggregateId, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 struct CounterId(Uuid);
 
-impl CounterId {
-    fn new() -> Self { Self(Uuid::new_v4()) }
-}
-
-impl Default for CounterId {
-    fn default() -> Self { Self(Uuid::nil()) }
-}
-
-// 2. Define domain-specific errors (auto-implements AggregateError)
+// 2. Define domain errors
 #[derive(AggregateError, Debug, Error)]
 enum CounterError {
     #[error("Invalid amount: {0}")]
     InvalidAmount(i32),
 }
 
-// 3. Define individual events
-#[derive(Debug, Clone)]
-struct Incremented { amount: i32, timestamp: DateTime<Utc> }
-
-#[derive(Debug, Clone)]
-struct Decremented { amount: i32, timestamp: DateTime<Utc> }
-
-// 4. Define event enum (auto-generates apply_event method)
-#[derive(Event, Debug, Clone)]
-#[event(version = 1, type_prefix = "Counter", aggregate = "Counter")]
-enum CounterEvent {
-    Incremented(Incremented),
-    Decremented(Decremented),
-}
-
-// 5. Implement ApplyEvent for each event on the Aggregate
-impl ApplyEvent<Counter, CounterError> for Incremented {
-    fn validate(&self, _: &Counter) -> Result<(), CounterError> {
-        if self.amount <= 0 {
-            return Err(CounterError::InvalidAmount(self.amount));
-        }
-        Ok(())
-    }
-
-    fn apply(&self, counter: &mut Counter) {
-        counter.value += self.amount;  // Access via Deref to state
-    }
-}
-
-impl ApplyEvent<Counter, CounterError> for Decremented {
-    fn apply(&self, counter: &mut Counter) {
-        counter.value -= self.amount;
-    }
-}
-
-// 6. Define your aggregate (business data only - ID is auto-managed!)
+// 3. Define your aggregate with business state
 #[aggregate(id = "CounterId", event = "CounterEvent", error = "CounterError")]
 #[derive(Default)]
 struct Counter {
-    value: i32,  // Only business fields - no ID needed!
+    value: i32,
 }
 
-// 7. Implement business logic using command_handler! macro (recommended)
+// 4. Define events with validation and apply logic
+use event_sauce::define_events;
+
+define_events! {
+    pub enum CounterEvent for Counter {
+        Incremented {
+            amount: i32,
+        }
+        @validate {
+            if self.amount <= 0 {
+                return Err(CounterError::InvalidAmount(self.amount));
+            }
+            return Ok(());
+        }
+        => |counter, event| {
+            counter.state.value += event.amount;
+        },
+
+        Decremented {
+            amount: i32,
+        }
+        => |counter, event| {
+            counter.state.value -= event.amount;
+        },
+    }
+}
+
+// 5. Implement business logic
 use event_sauce::command_handler;
 
 impl Counter {
-    fn create(id: CounterId) -> Self {
-        Self::new(id)  // ID automatically stored in wrapper
+    fn create() -> Self {
+        Self::new(CounterId(Uuid::new_v4()))
     }
 }
 
-// Generate command methods automatically - reduces boilerplate by ~70%!
 command_handler! {
     impl Counter {
-        fn increment(amount: i32) -> Incremented { amount };
-        fn decrement(amount: i32) -> Decremented { amount };
+        fn increment(amount: i32) -> IncrementedEvent { amount };
+        fn decrement(amount: i32) -> DecrementedEvent { amount };
     }
 }
-
-// Without macro (manual approach):
-// impl Counter {
-//     fn increment(&mut self, amount: i32) -> Result<(), CounterError> {
-//         let event = Incremented { amount, timestamp: Utc::now() };
-//         self.apply(event)?;  // Validation happens in ApplyEvent
-//         Ok(())
-//     }
-// }
 ```
 
-**Key Points:**
-- ✅ No manual `apply_event` - auto-generated by `#[event(aggregate = "...")]`
-- ✅ No manual ID field - automatically managed by `#[aggregate(...)]` macro
-- ✅ No manual command methods - auto-generated by `command_handler!` macro
-- ✅ Separation of concerns: Business state vs Infrastructure (ID, version, events)
-- ✅ Type-safe event handling with `ApplyEvent` trait
-- ✅ Validation separate from application (fast replay)
-- ✅ **70% less boilerplate** with macro-driven development
+That's it! Your aggregate is ready to use with full event sourcing capabilities.
 
 ### Building Projections (Read Models)
 
-EventSauce provides the `projection!` macro for declarative read model creation:
+Build type-safe read models with the `projection!` macro:
 
 ```rust
 use event_sauce::projection;
 use std::collections::HashMap;
 
-// Define your read model state
 #[derive(Debug, Clone)]
 struct UserView {
     email: String,
@@ -158,7 +124,6 @@ struct UserView {
     status: UserStatus,
 }
 
-// Create a projection declaratively - type-safe and clean!
 projection! {
     pub struct UserListProjection {
         state: HashMap<UserId, UserView>,
@@ -183,7 +148,7 @@ projection! {
     }
 }
 
-// Use with subscriptions for automatic updates:
+// Use with subscriptions for automatic updates
 let mut projection = UserListProjection::new(HashMap::new());
 let subscription = event_store
     .subscription_builder("user-projection")
@@ -194,25 +159,9 @@ tokio::pin!(stream);
 
 while let Some(result) = stream.next().await {
     let envelope = result?;
-    projection.handle(&envelope).await?;  // Type-safe event handling
-    // Checkpoints saved automatically!
+    projection.handle(&envelope).await?;
 }
 ```
-
-**Benefits of `projection!` macro:**
-- ✅ **Declarative syntax**: Clear event-to-handler mapping
-- ✅ **Type-safe**: Automatic deserialization with compile-time checks
-- ✅ **Clean code**: No boilerplate event matching
-- ✅ **Automatic filtering**: Unknown events are safely ignored
-- ✅ **Composable**: Works seamlessly with subscriptions
-
-**Why subscriptions?**
-- ✅ **Integrated setup**: Checkpoint store configured once with event store
-- ✅ **Stream API**: Composable with futures, type-safe, familiar async patterns
-- ✅ **Builder pattern**: Fluent configuration with automatic checkpoint injection
-- ✅ **Guaranteed delivery**: Events never lost, resumable after failures
-
-See the [task-projections example](crates/event-sauce/examples/task-projections.rs) for a complete working example.
 
 ## Installation
 
@@ -233,118 +182,30 @@ event-sauce = { version = "0.1", features = ["postgres"] }
 - `postgres` - PostgreSQL backend
 - `full` - All features enabled
 
-## Development Philosophy
-
-### Test-Driven Development (TDD)
-
-This library is built following **strict TDD principles**:
-
-- ✅ **100% test coverage** - No exceptions, enforced by CI
-- ✅ **Tests written first** - Every feature starts with a failing test
-- ✅ **Living documentation** - Tests demonstrate API usage
-- ✅ **Property-based testing** - Invariants proven with proptest 1.9
-- ✅ **Integration tests** - Real database testing with PostgreSQL
-
-#### TDD Workflow
-
-```bash
-# 1. Write failing test (RED)
-cargo test test_new_feature --all-features -- --nocapture
-# Should FAIL
-
-# 2. Implement feature (GREEN)
-# ... edit src/ ...
-cargo test test_new_feature --all-features
-# Should PASS
-
-# 3. Check coverage (must be 100% - includes all features and targets)
-cargo llvm-cov --workspace --all-features --all-targets --lcov --output-path coverage.lcov
-
-# 4. Refactor while keeping tests green
-cargo test --workspace --all-features --all-targets
-cargo test --workspace --all-features --doc
-cargo build --workspace --all-features --examples --bins --benches
-cargo clippy --workspace --all-features --all-targets -- -D warnings
-```
-
-### Latest Dependencies
-
-We maintain up-to-date dependencies for security, performance, and features:
-
-| Dependency | Version | Purpose |
-|------------|---------|---------|
-| tokio | 1.48.0 | Async runtime |
-| sqlx | 0.8.6 | Database access |
-| clap | 4.5.51 | CLI framework |
-| serde | 1.0.228 | Serialization |
-| syn | 2.0.104 | Proc macros |
-| thiserror | 2.0.16 | Error handling |
-| uuid | 1.18.1 | Unique identifiers |
-| proptest | 1.9.0 | Property testing |
-
-Check for updates:
-```bash
-cargo update --workspace
-cargo outdated
-```
-
-### Version Control with Jujutsu
-
-This project uses [Jujutsu (jj)](https://github.com/martinvonz/jj) for version control:
-
-```bash
-# Clone with jj
-jj git clone https://github.com/yourusername/event-sauce
-cd event-sauce
-
-# Create a new change
-jj new -m "Add feature X"
-
-# View status
-jj status
-jj diff
-
-# Commit current change
-jj commit -m "Implement feature X with tests"
-
-# View history
-jj log
-
-# Push to remote
-jj git push
-```
-
-#### Why Jujutsu?
-
-- **Automatic tracking**: Changes are automatically tracked
-- **Flexible history**: Easy to rewrite and reorganize commits
-- **Git compatible**: Works with GitHub and other Git hosting
-- **Better UX**: More intuitive than git rebase/cherry-pick
-
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                        Application                          │
+┌───────────────────────────────────────────────────────────┐
+│                        Application                        │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐     │
 │  │   Services   │  │  Aggregates  │  │  Projections │     │
 │  └──────────────┘  └──────────────┘  └──────────────┘     │
-└────────────┬────────────────┬──────────────────┬───────────┘
+└────────────┬────────────────┬───────────────────┬─────────┘
              │                │                   │
-┌────────────┴────────────────┴───────────────────┴───────────┐
-│                     event-sauce Core                         │
+┌────────────┴────────────────┴───────────────────┴─────────┐
+│                     event-sauce Core                      │
 │  ┌─────────┐  ┌──────────┐  ┌──────────┐  ┌────────────┐  │
 │  │Aggregate│  │  Event   │  │EventStore│  │Subscription│  │
 │  │  Trait  │  │  Trait   │  │  Trait   │  │   System   │  │
 │  └─────────┘  └──────────┘  └──────────┘  └────────────┘  │
-└────────────┬────────────────┬──────────────────┬───────────┘
+└────────────┬────────────────┬───────────────────┬─────────┘
              │                │                   │
-┌────────────┴────────────────┴───────────────────┴───────────┐
-│                      Backends                                │
-│           ┌──────────┐            ┌──────────┐              │
-│           │PostgreSQL│            │ In-Memory│              │
-│           └──────────┘            └──────────┘              │
-└──────────────────────────────────────────────────────────────┘
+┌────────────┴────────────────┴───────────────────┴──────────┐
+│                      Backends                              │
+│           ┌──────────┐            ┌──────────┐             │
+│           │PostgreSQL│            │ In-Memory│             │
+│           └──────────┘            └──────────┘             │
+└────────────────────────────────────────────────────────────┘
 ```
 
 ### Design Principle: Generic Implementation First
@@ -352,6 +213,7 @@ jj git push
 **Key architectural principle**: New features for EventStore and other core traits should be implemented **generically in the trait** using default methods, not in individual backend implementations.
 
 **Benefits:**
+
 - ✅ **Single source of truth** - Write once, works everywhere
 - ✅ **Consistent behavior** - All backends work identically
 - ✅ **Easier testing** - Test once at trait level
@@ -359,156 +221,12 @@ jj git push
 - ✅ **Faster development** - New backends get features for free
 
 **When to implement in backends:**
+
 - Only when feature **requires** backend-specific behavior (e.g., transactions, performance optimizations)
 - Backend can optionally override generic implementation for performance
 - Must maintain semantic equivalence with generic version
 
 See [CLAUDE.md](CLAUDE.md#trait-design) for detailed guidelines and examples.
-
-## Examples
-
-### Available Examples
-
-The [`crates/event-sauce/examples/`](crates/event-sauce/examples/) directory contains complete, runnable examples:
-
-#### 1. Counter - Basic Event Sourcing
-Simple counter demonstrating fundamental concepts:
-- Aggregate with state
-- Events and commands
-- Event replay
-- Business rules and validation
-
-```bash
-cargo run -p event-sauce --example counter --features "memory,macros"
-```
-
-#### 2. Shopping Cart - Complex Aggregate
-E-commerce cart with multiple operations:
-- Multiple item management
-- Price calculations
-- Business rules (checkout, inventory)
-- Complex state (HashMap)
-
-```bash
-cargo run -p event-sauce --example shopping-cart --features "memory,macros"
-```
-
-#### 3. Bank Account - Complete Flow
-Full event sourcing workflow:
-- Using derive macros
-- In-memory event store
-- Deposits, withdrawals, transfers
-- Overdraft protection
-
-```bash
-cargo run -p event-sauce --example bank-account --features "memory,macros"
-```
-
-#### 4. Task Projections - Read Models
-Projection building demonstration:
-- Multiple projections from same events
-- Checkpointing for resumability
-- Event filtering
-- Real-time updates
-
-```bash
-cargo run -p event-sauce --example task-projections --features "memory"
-```
-
-### Complete Minimal Example
-
-Here's a complete, working example showing modern best practices:
-
-```rust
-use event_sauce_macros::{AggregateError, AggregateId, AggregateState, Event};
-use event_sauce_core::{Aggregate, ApplyEvent};
-use chrono::{DateTime, Utc};
-use uuid::Uuid;
-
-// 1. Aggregate ID (auto-implements AggregateId + Display)
-#[derive(AggregateId, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct CounterId(Uuid);
-
-impl CounterId {
-    fn new() -> Self { Self(Uuid::new_v4()) }
-}
-
-impl Default for CounterId {
-    fn default() -> Self { Self(Uuid::nil()) }
-}
-
-// 2. Domain errors (auto-implements AggregateError)
-#[derive(AggregateError, Debug, thiserror::Error)]
-enum CounterError {
-    #[error("Invalid amount: {0}")]
-    InvalidAmount(i32),
-}
-
-// 3. Individual event types
-#[derive(Debug, Clone)]
-struct Incremented { amount: i32, timestamp: DateTime<Utc> }
-
-// 4. Event enum (auto-generates apply_event)
-#[derive(Event, Debug, Clone)]
-#[event(version = 1, type_prefix = "Counter", aggregate = "Counter")]
-enum CounterEvent {
-    Incremented(Incremented),
-}
-
-// 5. Event application logic
-impl ApplyEvent<Counter, CounterError> for Incremented {
-    fn validate(&self, _: &Counter) -> Result<(), CounterError> {
-        if self.amount <= 0 {
-            return Err(CounterError::InvalidAmount(self.amount));
-        }
-        Ok(())
-    }
-
-    fn apply(&self, counter: &mut Counter) {
-        counter.value += self.amount; // Access state via Deref
-    }
-}
-
-// 6. Aggregate (business data only - ID auto-managed!)
-#[aggregate(id = "CounterId", event = "CounterEvent", error = "CounterError")]
-#[derive(Default)]
-struct Counter {
-    value: i32,  // No ID field needed - macro handles it!
-}
-
-// 7. Business logic
-impl Counter {
-    fn create(id: CounterId) -> Self {
-        Self::new(id)  // ID stored in infrastructure layer
-    }
-
-    fn increment(&mut self, amount: i32) -> Result<(), CounterError> {
-        let event = Incremented { amount, timestamp: Utc::now() };
-        event.validate(self)?;
-        self.apply(event); // Auto-records in pending_events
-        Ok(())
-    }
-}
-
-fn main() -> Result<(), CounterError> {
-    let mut counter = Counter::create(CounterId::new());
-    counter.increment(5)?;
-    counter.increment(3)?;
-
-    println!("Value: {}", counter.value);           // 8
-    println!("Version: {}", counter.version());     // v2
-    println!("Events: {}", counter.pending_events().len()); // 2
-
-    Ok(())
-}
-```
-
-**Why this pattern?**
-- 🎯 **No boilerplate**: Macros generate all infrastructure code
-- 🆔 **Auto-managed ID**: No manual ID field needed - macro handles it
-- 🔄 **Separation**: Business state separate from infrastructure (ID, version, events)
-- ✅ **Type-safe**: ApplyEvent ensures each event targets correct aggregate
-- ⚡ **Fast replay**: Validation skipped during `apply_unchecked()`
 
 ## Development
 
@@ -597,6 +315,7 @@ cargo llvm-cov -p event-sauce-core --all-features --all-targets --summary-only
 ```
 
 **Current Test Status: across 5 crates**
+
 - Core: 180 tests, 100% coverage
 - Memory: 33 tests, 100% coverage
 - PostgreSQL: 39 tests (uses testcontainers - requires Docker)
@@ -612,6 +331,7 @@ CI enforces minimum 95% coverage - all PRs must maintain this standard.
 See [CLAUDE.md](CLAUDE.md) for detailed development guidelines.
 
 All contributions must:
+
 1. Follow TDD workflow (write tests first)
 2. Maintain 100% code coverage (on all features, examples, bins, benches)
 3. Pass all tests and clippy checks:
@@ -635,6 +355,7 @@ cargo install event-sauce-cli
 ### Commands
 
 **Initialize a new project:**
+
 ```bash
 # Create a new project with PostgreSQL backend
 event-sauce init my-project --backend postgres
@@ -644,6 +365,7 @@ event-sauce init my-project --backend memory
 ```
 
 **Generate code:**
+
 ```bash
 # Generate an aggregate
 event-sauce generate aggregate BankAccount
@@ -656,6 +378,7 @@ event-sauce generate projection AccountBalance --events AccountOpened,FundsDepos
 ```
 
 **Database management:**
+
 ```bash
 # Display PostgreSQL schema
 event-sauce db init --backend postgres
@@ -726,6 +449,7 @@ store.migrate().await?;
 ```
 
 **Why schema isolation?**
+
 - ✅ Your app's migrations stay in `public._sqlx_migrations`
 - ✅ Event-sauce migrations go to `event_sauce._event_sauce_migrations`
 - ✅ Zero conflicts, clean separation, easy cleanup
@@ -785,6 +509,7 @@ dual licensed as above, without any additional terms or conditions.
 ## Acknowledgments
 
 Built with inspiration from:
+
 - [Axum](https://github.com/tokio-rs/axum) - Ergonomic API design
 - [SQLx](https://github.com/launchbadge/sqlx) - Compile-time SQL verification
 - [Eventide](http://docs.eventide-project.org/) - Event sourcing patterns

@@ -483,6 +483,41 @@ macro_rules! define_events {
                 }
             }
         }
+
+        // Generate apply_event method for the aggregate
+        impl $aggregate {
+            /// Auto-generated method that applies events to the aggregate
+            /// by delegating to each event's ApplyEvent implementation.
+            ///
+            /// This method runs the full event application lifecycle:
+            /// 1. Validates pre-conditions using `validate()`
+            /// 2. Applies state changes using `apply()`
+            /// 3. Validates post-conditions using `post_validate()`
+            ///
+            /// # Errors
+            ///
+            /// Returns an error if validation (pre or post) fails.
+            #[allow(missing_docs)]
+            pub fn apply_event(&mut self, event: &$event_enum) -> ::std::result::Result<(), <Self as $crate::Aggregate>::Error> {
+                match event {
+                    $(
+                        $event_enum::$variant { $($field,)* timestamp } => {
+                            paste::paste! {
+                                use $crate::ApplyEvent;
+                                let evt = [<$variant Event>] {
+                                    $($field: $field.clone(),)*
+                                    timestamp: *timestamp,
+                                };
+                                evt.validate(self)?;
+                                evt.apply(self);
+                                evt.post_validate(self)?;
+                            }
+                        }
+                    ),*
+                }
+                ::std::result::Result::Ok(())
+            }
+        }
     };
 
     // Helper: Extract version number (default to 1)

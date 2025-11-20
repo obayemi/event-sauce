@@ -273,6 +273,84 @@ cargo clippy --workspace -- -D warnings
 cargo check --workspace --all-features
 ```
 
+### Event Definition Standards
+
+**RECOMMENDED**: Use the `define_events!` macro for declarative event definitions:
+
+```rust
+use event_sauce::define_events;
+
+define_events! {
+    pub enum OrderEvent for Order {
+        Created {
+            order_id: String,
+        } => |order, event| {
+            order.state.order_id = event.order_id.clone();
+        },
+
+        ItemAdded {
+            item_id: String,
+            quantity: u32,
+            price: i64,
+        }
+        @validate {
+            if aggregate.state.status == OrderStatus::Completed {
+                return Err(OrderError::OrderAlreadyCompleted);
+            }
+            return Ok(());
+        }
+        => |order, event| {
+            order.state.items.push(OrderItem { ... });
+        },
+    }
+}
+```
+
+**Benefits:**
+- ✅ **60% less boilerplate** - Automatic struct and trait generation
+- ✅ **Inline validation** - Business rules co-located with events using `@validate` and `@post_validate`
+- ✅ **Automatic versioning** - Schema evolution support with `@version(n)`
+- ✅ **Type-safe** - Compile-time validation and apply logic
+- ✅ **Self-documenting** - Clear event structure and behavior
+
+**Alternative**: For complex scenarios requiring fine-grained control, use manual event definition with separated structs and `ApplyEvent` trait (see `docs/events.md`).
+
+### Command Implementation Standards
+
+**RECOMMENDED**: Use the `command_handler!` macro for command methods:
+
+```rust
+use event_sauce::command_handler;
+
+impl Order {
+    fn create(id: OrderId, order_id: String) -> Self {
+        let mut order = Self::new(id);
+        let event = CreatedEvent { order_id, timestamp: Utc::now() };
+        order.apply(event).expect("Creation should never fail");
+        order
+    }
+}
+
+// Auto-generate command methods
+command_handler! {
+    impl Order {
+        fn add_item(item_id: String, quantity: u32, price: i64) -> ItemAddedEvent {
+            item_id, quantity, price
+        };
+        fn complete() -> CompletedEvent { };
+    }
+}
+```
+
+**Benefits:**
+- ✅ **70% less boilerplate** - No manual event creation or timestamp handling
+- ✅ **Consistent patterns** - All commands follow the same structure
+- ✅ **Automatic timestamp handling** - `Utc::now()` added automatically
+- ✅ **Type-safe** - Compile-time parameter validation
+- ✅ **Combined with `define_events!`** - Total 80%+ reduction in code
+
+**Alternative**: For commands requiring complex logic, conditional validation, or custom error handling, implement methods manually (see `docs/getting-started.md`).
+
 ### Code Quality Checklist
 
 Before committing, ensure:

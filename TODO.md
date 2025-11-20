@@ -1,20 +1,7 @@
-- [x] do implement a "postgres quikcstart" examples showcasing postgres event store, subscriptions with postgres checkpoints, and an examples projection storing data in a postges table
-- [x] review the implementaiton of the EventStore base trait and its specific implementations, and make sure that all reasonable code is shared in the Eventstore trait and that the only required code in the implementations is the code required for actualy storing an retrieving data
-- [x] implement structured snapshots to separate infrastructure (ID, version) from business state
-  - [x] Created `Snapshot` struct with id, version, and state fields
-  - [x] Updated `EventStore::commit()` to serialize only state (not entire aggregate)
-  - [x] Updated `load()` to reconstruct aggregate from snapshot components
-  - [x] Modified aggregate macro to store ID in wrapper, not state
-  - [x] Removed manual ID fields from all examples
-  - [x] Updated backend implementations (InMemoryEventStore, PostgresEventStore)
-  - [ ] MINOR: Update macro test files to use new API (16 test instances need updating from `from_state` to `new()` or `from_snapshot()`)
+- [ ] MINOR: Update macro test files to use new API (16 test instances need updating from `from_state` to `new()` or `from_snapshot()`)
 
-IMprovements review:
+- [ ] update the commands macro to also genreate a <command>\_event to allow easily constructing events for this aggregate
 
-🚀 Opportunities for Abstraction:
+- [ ] please reorganise the examples to include a single "postgres-quickstart" showcasing all the easy macro niceties for with two aggregats working together and all their events and some postgres backed event store and projections, then add Aggregates, then do add specific examples showcasing the different levels of manual implementation of the different features in the library (like manual event enum with ApplyEvent, or manual aggregate commands)
 
-4. Event Definition Macro 🔵 NICE TO HAVE
-   -> could it be made to allow pre/post validation ?
-
-5. Aggregate Root Helper 🔵 NICE TO HAVE
-   -> the aggregate derive macro is a better implementation
+- [ ] make repositories generate from the main store, using its checkpointstore
