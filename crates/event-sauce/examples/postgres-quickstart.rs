@@ -383,13 +383,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let database_url = format!("postgres://postgres:postgres@localhost:{port}/postgres");
     let pool = sqlx::postgres::PgPool::connect(&database_url).await?;
 
-    // Setup stores
+    // Setup stores using builder pattern
     println!("🗄️  Initializing event store...");
-    let event_store = PostgresEventStore::new(pool.clone());
+    let event_store = PostgresEventStore::builder()
+        .pool(pool.clone())
+        .schema("event_sauce")  // Use custom schema for isolation
+        .build();
     event_store.migrate().await?;
 
     println!("📊 Initializing checkpoint store...");
-    let checkpoint_store = PostgresCheckpointStore::new(pool.clone());
+    let checkpoint_store = PostgresCheckpointStore::builder()
+        .pool(pool.clone())
+        .schema("event_sauce")  // Use same schema as event store
+        .build();
     checkpoint_store.migrate().await?;
 
     let store = Arc::new(event_store);

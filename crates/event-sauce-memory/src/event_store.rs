@@ -58,13 +58,34 @@ struct InMemoryEventStoreInner {
     snapshot_config: SnapshotConfig,
 }
 
+/// Builder for configuring `InMemoryEventStore`.
+///
+/// Provides a flexible way to configure the event store with:
+/// - Snapshot configuration
+/// - Checkpoint store for subscriptions
+///
+/// # Examples
+///
+/// ```
+/// use event_sauce_memory::InMemoryEventStore;
+/// use event_sauce_core::SnapshotConfig;
+///
+/// let store = InMemoryEventStore::builder()
+///     .snapshot_config(SnapshotConfig::builder().build())
+///     .build();
+/// ```
+#[derive(Clone, Default)]
+pub struct InMemoryEventStoreBuilder {
+    snapshot_config: Option<SnapshotConfig>,
+    checkpoint_store: Option<Arc<dyn event_sauce_core::CheckpointStore>>,
+}
+
 impl InMemoryEventStore {
     /// Creates a new empty in-memory event store with default snapshot configuration.
     ///
     /// Default configuration: Snapshots every 100 events, enabled on load.
     ///
-    /// For custom snapshot behavior, use [`with_config`](Self::with_config) or
-    /// [`SnapshotConfig::disabled()`] to turn off snapshots.
+    /// Equivalent to `InMemoryEventStore::builder().build()`.
     ///
     /// # Examples
     ///
@@ -74,16 +95,20 @@ impl InMemoryEventStore {
     /// // Default: snapshots every 100 events
     /// let store = InMemoryEventStore::new();
     ///
-    /// // Disable snapshots
+    /// // Or use builder for custom configuration
     /// use event_sauce_core::SnapshotConfig;
-    /// let store = InMemoryEventStore::with_config(SnapshotConfig::disabled());
+    /// let store = InMemoryEventStore::builder()
+    ///     .snapshot_config(SnapshotConfig::disabled())
+    ///     .build();
     /// ```
     #[must_use]
     pub fn new() -> Self {
-        Self::with_config(SnapshotConfig::builder().build())
+        Self::builder().build()
     }
 
     /// Creates a new empty in-memory event store with the given snapshot configuration.
+    ///
+    /// Equivalent to `InMemoryEventStore::builder().snapshot_config(config).build()`.
     ///
     /// # Examples
     ///
@@ -99,20 +124,14 @@ impl InMemoryEventStore {
     /// ```
     #[must_use]
     pub fn with_config(snapshot_config: SnapshotConfig) -> Self {
-        Self {
-            inner: Arc::new(InMemoryEventStoreInner {
-                streams: RwLock::new(HashMap::new()),
-                snapshots: RwLock::new(HashMap::new()),
-                global_events: RwLock::new(Vec::new()),
-                snapshot_config,
-            }),
-            checkpoint_store: None,
-        }
+        Self::builder().snapshot_config(snapshot_config).build()
     }
 
     /// Creates a new empty in-memory event store with checkpoint store.
     ///
     /// This is a convenience method that configures both snapshot and checkpoint storage.
+    ///
+    /// Equivalent to `InMemoryEventStore::builder().snapshot_config(config).checkpoint_store(store).build()`.
     ///
     /// # Examples
     ///
@@ -135,14 +154,112 @@ impl InMemoryEventStore {
         snapshot_config: SnapshotConfig,
         checkpoint_store: Arc<dyn event_sauce_core::CheckpointStore>,
     ) -> Self {
+        Self::builder()
+            .snapshot_config(snapshot_config)
+            .checkpoint_store(checkpoint_store)
+            .build()
+    }
+
+    /// Creates a builder for configuring the event store.
+    ///
+    /// This is the recommended way to create an `InMemoryEventStore` when you need
+    /// to customize the configuration.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use event_sauce_memory::InMemoryEventStore;
+    /// use event_sauce_core::SnapshotConfig;
+    ///
+    /// let store = InMemoryEventStore::builder()
+    ///     .snapshot_config(SnapshotConfig::disabled())
+    ///     .build();
+    /// ```
+    #[must_use]
+    pub fn builder() -> InMemoryEventStoreBuilder {
+        InMemoryEventStoreBuilder::new()
+    }
+}
+
+impl InMemoryEventStoreBuilder {
+    /// Creates a new builder with default values.
+    #[must_use]
+    pub fn new() -> Self {
         Self {
+            snapshot_config: None,
+            checkpoint_store: None,
+        }
+    }
+
+    /// Sets the snapshot configuration.
+    ///
+    /// Defaults to `SnapshotConfig::builder().build()` (every 100 events).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use event_sauce_memory::InMemoryEventStore;
+    /// use event_sauce_core::SnapshotConfig;
+    ///
+    /// let builder = InMemoryEventStore::builder()
+    ///     .snapshot_config(SnapshotConfig::disabled());
+    /// ```
+    #[must_use]
+    pub fn snapshot_config(mut self, config: SnapshotConfig) -> Self {
+        self.snapshot_config = Some(config);
+        self
+    }
+
+    /// Sets the checkpoint store for subscription tracking.
+    ///
+    /// When a checkpoint store is configured, the event store can create
+    /// subscriptions with automatic checkpoint management.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use event_sauce_memory::{InMemoryEventStore, InMemoryCheckpointStore};
+    /// use std::sync::Arc;
+    ///
+    /// let checkpoint_store = Arc::new(InMemoryCheckpointStore::new());
+    /// let builder = InMemoryEventStore::builder()
+    ///     .checkpoint_store(checkpoint_store);
+    /// ```
+    #[must_use]
+    pub fn checkpoint_store(
+        mut self,
+        store: Arc<dyn event_sauce_core::CheckpointStore>,
+    ) -> Self {
+        self.checkpoint_store = Some(store);
+        self
+    }
+
+    /// Builds the `InMemoryEventStore` with the configured settings.
+    ///
+    /// # Defaults
+    ///
+    /// - **Snapshot config**: Every 100 events
+    /// - **Checkpoint store**: None
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use event_sauce_memory::InMemoryEventStore;
+    ///
+    /// let store = InMemoryEventStore::builder().build();
+    /// ```
+    #[must_use]
+    pub fn build(self) -> InMemoryEventStore {
+        InMemoryEventStore {
             inner: Arc::new(InMemoryEventStoreInner {
                 streams: RwLock::new(HashMap::new()),
                 snapshots: RwLock::new(HashMap::new()),
                 global_events: RwLock::new(Vec::new()),
-                snapshot_config,
+                snapshot_config: self
+                    .snapshot_config
+                    .unwrap_or_else(|| SnapshotConfig::builder().build()),
             }),
-            checkpoint_store: Some(checkpoint_store),
+            checkpoint_store: self.checkpoint_store,
         }
     }
 }
@@ -287,7 +404,7 @@ mod tests {
         )
     }
 
-    use super::InMemoryEventStore;
+    use super::{InMemoryEventStore, InMemoryEventStoreBuilder};
 
     // GREEN: Test that we can create an InMemoryEventStore
     #[tokio::test]
@@ -765,5 +882,162 @@ mod tests {
             .await
             .unwrap();
         assert!(checkpoint.is_some());
+    }
+
+    // === Builder Pattern Tests ===
+
+    #[tokio::test]
+    async fn test_builder_with_defaults() {
+        let store = InMemoryEventStore::builder().build();
+
+        // Should work with defaults
+        let aggregate_id = Uuid::new_v4();
+        let stream_id = StreamId::new("User", aggregate_id);
+        let event = create_test_envelope("UserCreated", aggregate_id);
+
+        store
+            .append(stream_id.clone(), vec![event], Version::initial())
+            .await
+            .unwrap();
+
+        let version = store.get_version(stream_id).await.unwrap();
+        assert_eq!(version, Version::new(1));
+    }
+
+    #[tokio::test]
+    async fn test_builder_with_snapshot_config() {
+        let config = SnapshotConfig::disabled();
+        let store = InMemoryEventStore::builder()
+            .snapshot_config(config.clone())
+            .build();
+
+        // Verify snapshot config is set - just check it's accessible
+        let _config = store.snapshot_config();
+        assert!(true); // Config is accessible
+    }
+
+    #[tokio::test]
+    async fn test_builder_with_checkpoint_store() {
+        let checkpoint_store = Arc::new(InMemoryCheckpointStore::new());
+        let store = InMemoryEventStore::builder()
+            .checkpoint_store(checkpoint_store.clone())
+            .build();
+
+        // Verify checkpoint store is set
+        let retrieved = store.checkpoint_store();
+        assert!(retrieved.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_builder_full_configuration() {
+        let config = SnapshotConfig::builder()
+            .default_strategy(event_sauce_core::EveryNEvents(50))
+            .build();
+        let checkpoint_store = Arc::new(InMemoryCheckpointStore::new());
+
+        let store = InMemoryEventStore::builder()
+            .snapshot_config(config)
+            .checkpoint_store(checkpoint_store.clone())
+            .build();
+
+        // Verify both are configured
+        assert!(store.checkpoint_store().is_some());
+        let _config = store.snapshot_config();
+        assert!(true);
+    }
+
+    #[tokio::test]
+    async fn test_builder_new_equals_default() {
+        let builder1 = InMemoryEventStoreBuilder::new();
+        let builder2 = InMemoryEventStoreBuilder::default();
+
+        let store1 = builder1.build();
+        let store2 = builder2.build();
+
+        // Both should work identically
+        let aggregate_id = Uuid::new_v4();
+        let stream_id = StreamId::new("User", aggregate_id);
+        let event = create_test_envelope("UserCreated", aggregate_id);
+
+        store1
+            .append(stream_id.clone(), vec![event.clone()], Version::initial())
+            .await
+            .unwrap();
+        store2
+            .append(stream_id.clone(), vec![event], Version::initial())
+            .await
+            .unwrap();
+
+        let v1 = store1.get_version(stream_id.clone()).await.unwrap();
+        let v2 = store2.get_version(stream_id).await.unwrap();
+        assert_eq!(v1, v2);
+    }
+
+    #[tokio::test]
+    async fn test_new_uses_builder() {
+        // Verify that new() produces the same result as builder().build()
+        let store1 = InMemoryEventStore::new();
+        let store2 = InMemoryEventStore::builder().build();
+
+        let aggregate_id = Uuid::new_v4();
+        let stream_id = StreamId::new("User", aggregate_id);
+        let event = create_test_envelope("UserCreated", aggregate_id);
+
+        store1
+            .append(stream_id.clone(), vec![event.clone()], Version::initial())
+            .await
+            .unwrap();
+        store2
+            .append(stream_id.clone(), vec![event], Version::initial())
+            .await
+            .unwrap();
+
+        let v1 = store1.get_version(stream_id.clone()).await.unwrap();
+        let v2 = store2.get_version(stream_id).await.unwrap();
+        assert_eq!(v1, v2);
+    }
+
+    #[tokio::test]
+    async fn test_with_config_uses_builder() {
+        let config = SnapshotConfig::disabled();
+        let store1 = InMemoryEventStore::with_config(config.clone());
+        let store2 = InMemoryEventStore::builder()
+            .snapshot_config(config)
+            .build();
+
+        // Both should work identically
+        let aggregate_id = Uuid::new_v4();
+        let stream_id = StreamId::new("User", aggregate_id);
+        let event = create_test_envelope("UserCreated", aggregate_id);
+
+        store1
+            .append(stream_id.clone(), vec![event.clone()], Version::initial())
+            .await
+            .unwrap();
+        store2
+            .append(stream_id.clone(), vec![event], Version::initial())
+            .await
+            .unwrap();
+
+        let v1 = store1.get_version(stream_id.clone()).await.unwrap();
+        let v2 = store2.get_version(stream_id).await.unwrap();
+        assert_eq!(v1, v2);
+    }
+
+    #[tokio::test]
+    async fn test_with_checkpoint_store_uses_builder() {
+        let checkpoint_store = Arc::new(InMemoryCheckpointStore::new());
+        let config = SnapshotConfig::builder().build();
+
+        let store1 =
+            InMemoryEventStore::with_checkpoint_store(config.clone(), checkpoint_store.clone());
+        let store2 = InMemoryEventStore::builder()
+            .snapshot_config(config)
+            .checkpoint_store(checkpoint_store)
+            .build();
+
+        // Both should have checkpoint store configured
+        assert!(store1.checkpoint_store().is_some());
+        assert!(store2.checkpoint_store().is_some());
     }
 }

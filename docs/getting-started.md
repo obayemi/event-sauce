@@ -225,10 +225,16 @@ Perfect for testing and development:
 
 ```rust
 use event_sauce::prelude::*;
+use event_sauce_memory::InMemoryEventStore;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let store = MemoryEventStore::new();
+    // Using builder pattern (recommended)
+    let store = InMemoryEventStore::builder()
+        .build();
+
+    // Or use the simple constructor
+    // let store = InMemoryEventStore::new();
 
     // Create and use the counter
     let mut counter = Counter::create();
@@ -246,6 +252,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
+```
+
+### Custom Configuration with Builder
+
+For more control over store behavior:
+
+```rust
+use event_sauce_memory::{InMemoryEventStore, InMemoryCheckpointStore};
+use event_sauce_core::SnapshotConfig;
+use std::sync::Arc;
+
+// Configure with custom snapshot settings
+let store = InMemoryEventStore::builder()
+    .snapshot_config(SnapshotConfig::builder()
+        .default_strategy(event_sauce_core::EveryNEvents(50))
+        .build())
+    .build();
+
+// Or with checkpoint store for subscriptions
+let checkpoint_store = Arc::new(InMemoryCheckpointStore::new());
+let store = InMemoryEventStore::builder()
+    .snapshot_config(SnapshotConfig::builder().build())
+    .checkpoint_store(checkpoint_store)
+    .build();
 ```
 
 ### Helper Functions

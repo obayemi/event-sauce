@@ -401,18 +401,37 @@ event-sauce init --help
 
 ## PostgreSQL Production Setup
 
-Event-sauce provides production-ready PostgreSQL support with **schema isolation** to avoid migration conflicts:
+Event-sauce provides production-ready PostgreSQL support with **schema isolation** to avoid migration conflicts.
+
+### Using Builder Pattern (Recommended)
+
+The builder pattern provides full control over configuration:
 
 ```rust
 use event_sauce_postgres::PostgresEventStore;
-use sqlx::PgPool;
+use event_sauce_core::{SnapshotConfig, EveryNEvents};
+use sqlx::postgres::PgPoolOptions;
+use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let pool = PgPool::connect(&std::env::var("DATABASE_URL")?).await?;
+    // Configure connection pool
+    let pool = PgPoolOptions::new()
+        .max_connections(50)
+        .acquire_timeout(Duration::from_secs(30))
+        .connect(&std::env::var("DATABASE_URL")?)
+        .await?;
 
-    // Simple setup with schema isolation (recommended)
-    let store = PostgresEventStore::new(pool);
+    // Build event store with custom configuration
+    let store = PostgresEventStore::builder()
+        .pool(pool)
+        .schema("event_sauce")                      // Custom schema name
+        .snapshot_config(SnapshotConfig::builder()
+            .default_strategy(EveryNEvents(100))    // Snapshot every 100 events
+            .build())
+        .build();
+
+    // Run migrations to create schema and tables
     store.migrate().await?;
 
     // Creates:
@@ -424,29 +443,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-### Builder Pattern for Custom Configuration
+### Simple Setup with Defaults
+
+For quick setup, use the convenience constructor:
 
 ```rust
 use event_sauce_postgres::PostgresEventStore;
-use event_sauce_core::{SnapshotConfig, EveryNEvents};
-use sqlx::postgres::PgPoolOptions;
-use std::time::Duration;
+use sqlx::PgPool;
 
-let pool = PgPoolOptions::new()
-    .max_connections(50)
-    .acquire_timeout(Duration::from_secs(30))
-    .connect(&database_url)
-    .await?;
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let pool = PgPool::connect(&std::env::var("DATABASE_URL")?).await?;
 
-let store = PostgresEventStore::builder()
-    .pool(pool)
-    .schema("event_sauce")                      // Custom schema name
-    .snapshot_config(SnapshotConfig::builder()
-        .default_strategy(EveryNEvents(100))    // Snapshot every 100 events
-        .build())
-    .build();
+    // Simple setup - uses "event_sauce" schema and default snapshot config
+    let store = PostgresEventStore::new(pool);
+    store.migrate().await?;
 
-store.migrate().await?;
+    Ok(())
+}
 ```
 
 **Why schema isolation?**

@@ -420,9 +420,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  ✓ Complex validation logic in ApplyEvent implementations");
     println!("  ✓ Pre-validation and state transformation separation\n");
 
-    // Setup in-memory event store
+    // Setup in-memory event store using builder pattern
     println!("🗄️  Initializing in-memory event store...\n");
-    let store = Arc::new(InMemoryEventStore::new());
+    let store = Arc::new(InMemoryEventStore::builder().build());
 
     println!("=== Opening Account ===\n");
 
