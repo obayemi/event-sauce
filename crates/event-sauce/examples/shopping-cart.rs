@@ -9,7 +9,7 @@
 //! Run with: cargo run -p event-sauce --example shopping-cart --features "memory,macros"
 
 use chrono::Utc;
-use event_sauce_core::{Aggregate, AggregateId as _, ApplyEvent, DomainEvent};
+use event_sauce_core::{command_handler, Aggregate, AggregateId as _, ApplyEvent, DomainEvent};
 use event_sauce_macros::{aggregate, AggregateError, AggregateId, Event as DeriveEvent};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -262,50 +262,7 @@ impl ShoppingCart {
         cart
     }
 
-    /// Add an item to the cart
-    fn add_item(
-        &mut self,
-        product_id: ProductId,
-        name: String,
-        price: i64,
-        quantity: u32,
-    ) -> Result<(), CartError> {
-        let event = CartItemAddedEvent {
-            product_id,
-            name,
-            price,
-            quantity,
-            timestamp: Utc::now(),
-        };
-        // apply() automatically runs: validate() → apply() → post_validate()
-        self.apply(event)?;
-        Ok(())
-    }
-
-    /// Remove a quantity of an item
-    fn remove_item(&mut self, product_id: ProductId, quantity: u32) -> Result<(), CartError> {
-        let event = CartItemRemovedEvent {
-            product_id,
-            quantity,
-            timestamp: Utc::now(),
-        };
-        // apply() automatically runs: validate() → apply() → post_validate()
-        self.apply(event)?;
-        Ok(())
-    }
-
-    /// Clear all items
-    #[allow(dead_code)]
-    fn clear(&mut self) -> Result<(), CartError> {
-        let event = CartClearedEvent {
-            timestamp: Utc::now(),
-        };
-        // apply() automatically runs: validate() → apply() → post_validate()
-        self.apply(event)?;
-        Ok(())
-    }
-
-    /// Checkout the cart
+    /// Checkout the cart (manual implementation needed for total calculation)
     fn checkout(&mut self) -> Result<(), CartError> {
         let total = self.total();
         let event = CartCheckedOutEvent {
@@ -330,6 +287,25 @@ impl ShoppingCart {
     /// Get total quantity
     fn total_quantity(&self) -> u32 {
         self.items.values().map(|item| item.quantity).sum()
+    }
+}
+
+// ============================================================================
+// Command Methods - Using command_handler! macro for reduced boilerplate
+// ============================================================================
+
+command_handler! {
+    impl ShoppingCart {
+        /// Add an item to the cart
+        fn add_item(product_id: ProductId, name: String, price: i64, quantity: u32)
+            -> CartItemAddedEvent { product_id, name, price, quantity };
+
+        /// Remove a quantity of an item
+        fn remove_item(product_id: ProductId, quantity: u32)
+            -> CartItemRemovedEvent { product_id, quantity };
+
+        /// Clear all items
+        fn clear() -> CartClearedEvent { };
     }
 }
 
@@ -391,9 +367,11 @@ fn main() -> Result<(), CartError> {
     println!("✅ Example completed!");
     println!("\nKey Takeaways:");
     println!("  • aggregate works seamlessly with complex state (HashMap)");
-    println!("  • ~45% less boilerplate vs manual aggregate");
+    println!("  • command_handler! macro reduces command boilerplate by ~70%");
+    println!("  • ~50-60% less boilerplate overall vs manual aggregate");
     println!("  • Clear separation: business logic vs infrastructure");
     println!("  • Validation rules enforced in ApplyEvent implementations");
+    println!("  • Manual commands still available for complex logic (checkout)");
     println!("{}", "=".repeat(70));
     println!();
 

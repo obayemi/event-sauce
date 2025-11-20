@@ -95,8 +95,8 @@
 
 use chrono::{DateTime, Utc};
 use event_sauce_core::{
-    load, Aggregate, AggregateId as _, ApplyEvent, CheckpointStore, CheckpointStrategy,
-    DomainEvent, ErrorPolicy, EventEnvelope, EventStore,
+    command_handler, load, Aggregate, AggregateId as _, ApplyEvent, CheckpointStore,
+    CheckpointStrategy, DomainEvent, ErrorPolicy, EventEnvelope, EventStore,
 };
 use event_sauce_macros::{aggregate, AggregateError, AggregateId, Event as DeriveEvent};
 use event_sauce_postgres::{PostgresCheckpointStore, PostgresEventStore};
@@ -429,6 +429,34 @@ impl Product {
             new_price_cents,
             timestamp: Utc::now(),
         })
+    }
+}
+
+// ============================================================================
+// Alternative: Command Handler Macro (creates + applies events automatically)
+// ============================================================================
+//
+// The cmd_* methods above demonstrate the "event factory" pattern where commands
+// return events to be applied externally. Below is an alternative using the
+// command_handler! macro which both creates AND applies events in one step.
+//
+// Both patterns are valid:
+// - Event factories: More flexible, caller controls when to apply
+// - Command handlers: Less boilerplate, automatic application
+//
+// This example primarily uses event factories to demonstrate validation patterns,
+// but the macro versions are available as well.
+
+command_handler! {
+    impl Product {
+        /// Add stock using command_handler! macro (alternative to cmd_add_stock)
+        fn add_stock(quantity: i32) -> StockAdded { quantity };
+
+        /// Remove stock using command_handler! macro (alternative to cmd_remove_stock)
+        fn remove_stock(quantity: i32) -> StockRemoved { quantity };
+
+        /// Change price using command_handler! macro (alternative to cmd_change_price)
+        fn change_price(new_price_cents: i64) -> PriceChanged { new_price_cents };
     }
 }
 

@@ -11,8 +11,8 @@
 
 use chrono::Utc;
 use event_sauce_core::{
-    load, Aggregate, AggregateId as _, ApplyEvent, DomainEvent, EventStore, EveryNEvents,
-    NeverSnapshot, SnapshotConfig,
+    command_handler, load, Aggregate, AggregateId as _, ApplyEvent, DomainEvent, EventStore,
+    EveryNEvents, NeverSnapshot, SnapshotConfig,
 };
 use event_sauce_macros::{aggregate, AggregateError, AggregateId, Event as DeriveEvent};
 use event_sauce_memory::InMemoryEventStore;
@@ -65,16 +65,15 @@ impl Counter {
         <Self as Aggregate>::new(id)
     }
 
-    fn increment(&mut self, amount: i32) -> Result<(), CounterError> {
-        let event = IncrementedEvent {
-            amount,
-            timestamp: Utc::now(),
-        };
-        self.apply(CounterEvent::Incremented(event))
-    }
-
     fn value(&self) -> i32 {
         self.value
+    }
+}
+
+// Command handler using macro
+command_handler! {
+    impl Counter {
+        fn increment(amount: i32) -> IncrementedEvent { amount };
     }
 }
 

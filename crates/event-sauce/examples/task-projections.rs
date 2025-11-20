@@ -19,7 +19,7 @@
 use chrono::{DateTime, Utc};
 use event_sauce::event_sauce_memory::{InMemoryCheckpointStore, InMemoryEventStore};
 use event_sauce::{
-    ApplyEvent, CheckpointStore, DomainEvent, EventEnvelope, EventFilter, EventStore, Result,
+    projection, ApplyEvent, CheckpointStore, DomainEvent, EventFilter, EventStore, Result,
     StreamId, Version,
 };
 use event_sauce_macros::{aggregate, AggregateError, AggregateId, Event};
@@ -127,86 +127,71 @@ impl ApplyEvent<Task> for Completed {
     }
 }
 
-/// Task count projection state
+/// Task count projection state type
 #[derive(Debug, Clone, Default)]
-struct TaskCountState {
+struct TaskCountStateData {
     counts: HashMap<TaskStatus, u64>,
 }
 
-impl TaskCountState {
-    fn handle_event(&mut self, event: &EventEnvelope) -> Result<()> {
-        let event_data: TaskEvent = event.try_into_event()?;
+// Task count projection using projection! macro
+projection! {
+    pub struct TaskCountState {
+        state: TaskCountStateData,
 
-        match event_data {
-            TaskEvent::Created(_) => {
-                *self.counts.entry(TaskStatus::Todo).or_insert(0) += 1;
-            }
-            TaskEvent::StatusChanged(StatusChanged {
-                old_status,
-                new_status,
-                ..
-            }) => {
-                if let Some(count) = self.counts.get_mut(&old_status) {
-                    *count = count.saturating_sub(1);
-                }
-                *self.counts.entry(new_status).or_insert(0) += 1;
-            }
-            _ => {}
-        }
+        on "Task.Created" => Created |proj, _event| {
+            *proj.state.counts.entry(TaskStatus::Todo).or_insert(0) += 1;
+        },
 
-        Ok(())
+        on "Task.StatusChanged" => StatusChanged |proj, event| {
+            if let Some(count) = proj.state.counts.get_mut(&event.old_status) {
+                *count = count.saturating_sub(1);
+            }
+            *proj.state.counts.entry(event.new_status.clone()).or_insert(0) += 1;
+        },
     }
 }
 
-/// Tasks by assignee projection state
+/// Tasks by assignee projection state type
 #[derive(Debug, Clone, Default)]
-struct TasksByAssigneeState {
+struct TasksByAssigneeStateData {
     assignments: HashMap<String, Vec<Uuid>>,
 }
 
-impl TasksByAssigneeState {
-    fn handle_event(&mut self, event: &EventEnvelope) -> Result<()> {
-        let event_data: TaskEvent = event.try_into_event()?;
+// Tasks by assignee projection using projection! macro
+projection! {
+    pub struct TasksByAssigneeState {
+        state: TasksByAssigneeStateData,
 
-        match event_data {
-            TaskEvent::Created(Created {
-                task_id, assignee, ..
-            }) => {
-                self.assignments.entry(assignee).or_default().push(task_id);
-            }
-            TaskEvent::Assigned(Assigned {
-                task_id,
-                from_assignee,
-                to_assignee,
-                ..
-            }) => {
-                if let Some(tasks) = self.assignments.get_mut(&from_assignee) {
-                    tasks.retain(|&id| id != task_id);
-                }
-                self.assignments
-                    .entry(to_assignee)
-                    .or_default()
-                    .push(task_id);
-            }
-            _ => {}
-        }
+        on "Task.Created" => Created |proj, event| {
+            proj.state.assignments.entry(event.assignee.clone()).or_default().push(event.task_id);
+        },
 
-        Ok(())
+        on "Task.Assigned" => Assigned |proj, event| {
+            if let Some(tasks) = proj.state.assignments.get_mut(&event.from_assignee) {
+                tasks.retain(|&id| id != event.task_id);
+            }
+            proj.state.assignments
+                .entry(event.to_assignee.clone())
+                .or_default()
+                .push(event.task_id);
+        },
     }
 }
 
-/// Completed tasks projection state
+/// Completed tasks projection state type
 #[derive(Debug, Clone, Default)]
-struct CompletedTasksState {
+struct CompletedTasksStateData {
     count: u64,
 }
 
-impl CompletedTasksState {
-    fn handle_event(&mut self, event: &EventEnvelope) -> Result<()> {
-        if event.event_type == "Task.Completed" {
-            self.count += 1;
-        }
-        Ok(())
+// Completed tasks projection using projection! macro
+projection! {
+    pub struct CompletedTasksState {
+        state: CompletedTasksStateData,
+
+        on "Task.Completed" => Completed |proj, _event| {
+            proj.state.count += 1;
+        },
     }
 }
 
@@ -305,10 +290,14 @@ async fn main() -> Result<()> {
 
     println!("--- Processing Events with Stream API (Recommended Pattern) ---");
 
-    // Create projection states
-    let status_state = Arc::new(Mutex::new(TaskCountState::default()));
-    let assignee_state = Arc::new(Mutex::new(TasksByAssigneeState::default()));
-    let completed_state = Arc::new(Mutex::new(CompletedTasksState::default()));
+    // Create projection states using the projection! macro's generated constructors
+    let status_state = Arc::new(Mutex::new(TaskCountState::new(TaskCountStateData::default())));
+    let assignee_state = Arc::new(Mutex::new(TasksByAssigneeState::new(
+        TasksByAssigneeStateData::default(),
+    )));
+    let completed_state = Arc::new(Mutex::new(CompletedTasksState::new(
+        CompletedTasksStateData::default(),
+    )));
 
     use futures::StreamExt;
 
@@ -324,7 +313,7 @@ async fn main() -> Result<()> {
         while let Some(result) = stream.next().await {
             let event = result?;
             let mut s = state.lock().unwrap();
-            s.handle_event(&event)?;
+            s.handle(&event).await?;
         }
     }
 
@@ -339,7 +328,7 @@ async fn main() -> Result<()> {
         while let Some(result) = stream.next().await {
             let event = result?;
             let mut s = state.lock().unwrap();
-            s.handle_event(&event)?;
+            s.handle(&event).await?;
         }
     }
 
@@ -357,7 +346,7 @@ async fn main() -> Result<()> {
         while let Some(result) = stream.next().await {
             let event = result?;
             let mut s = state.lock().unwrap();
-            s.handle_event(&event)?;
+            s.handle(&event).await?;
         }
     }
 
@@ -367,7 +356,8 @@ async fn main() -> Result<()> {
     println!("=== Projection Results ===\n");
 
     {
-        let state = status_state.lock().unwrap();
+        let proj = status_state.lock().unwrap();
+        let state = proj.state();
         println!("📊 Task Count by Status:");
         println!(
             "  - Todo: {}",
@@ -385,7 +375,8 @@ async fn main() -> Result<()> {
     }
 
     {
-        let state = assignee_state.lock().unwrap();
+        let proj = assignee_state.lock().unwrap();
+        let state = proj.state();
         println!("👥 Tasks by Assignee:");
         let alice_tasks = state.assignments.get("alice").map_or(0, |v| v.len());
         let bob_tasks = state.assignments.get("bob").map_or(0, |v| v.len());
@@ -398,7 +389,8 @@ async fn main() -> Result<()> {
     }
 
     {
-        let state = completed_state.lock().unwrap();
+        let proj = completed_state.lock().unwrap();
+        let state = proj.state();
         println!("✅ Completed Tasks: {}\n", state.count);
     }
 
@@ -439,26 +431,31 @@ async fn main() -> Result<()> {
     println!("✅ Example completed!");
     println!("\n📚 Key Patterns Demonstrated:");
     println!();
-    println!("1. **Integrated Setup**: Event store configured with checkpoint store");
+    println!("1. **projection! Macro**: Declarative projection definition");
+    println!("   - Eliminates boilerplate for event handling");
+    println!("   - Type-safe event deserialization");
+    println!("   - Clean, readable projection code (~60% less boilerplate)");
+    println!();
+    println!("2. **Integrated Setup**: Event store configured with checkpoint store");
     println!("   - Single configuration point eliminates boilerplate");
     println!("   - Checkpoint store automatically available to subscriptions");
     println!();
-    println!("2. **Stream API (Recommended)**: Using into_stream() for event processing");
+    println!("3. **Stream API (Recommended)**: Using into_stream() for event processing");
     println!("   - Composable with futures/tokio ecosystem");
     println!("   - Type-safe error handling with Result<T>");
     println!("   - Natural async/await patterns");
     println!();
-    println!("3. **Builder Pattern**: Fluent API for subscription configuration");
+    println!("4. **Builder Pattern**: Fluent API for subscription configuration");
     println!("   - subscription_builder() from EventStore trait");
     println!("   - Checkpoint store included automatically");
     println!("   - Filter, strategy, and error policy configuration");
     println!();
-    println!("4. **Event Filtering**: Targeted subscriptions for efficiency");
+    println!("5. **Event Filtering**: Targeted subscriptions for efficiency");
     println!("   - Filter by event type, aggregate type, or both");
     println!("   - Reduces processing overhead");
     println!("   - Enables specialized projections");
     println!();
-    println!("5. **Multiple Subscriptions**: Independent event processing");
+    println!("6. **Multiple Subscriptions**: Independent event processing");
     println!("   - Each builds its own read model");
     println!("   - Process same events differently");
     println!("   - Guaranteed delivery with checkpoints");

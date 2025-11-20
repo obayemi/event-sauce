@@ -2,6 +2,7 @@
 //!
 //! This module provides declarative macros that simplify common patterns in event sourcing:
 //! - `command_handler!` - Automatic command method generation
+//! - `projection!` - Declarative projection/read model definition
 
 /// Generate command handler methods for an aggregate.
 ///
@@ -115,6 +116,134 @@ macro_rules! command_handler {
                     ::std::result::Result::Ok(())
                 }
             )*
+        }
+    };
+}
+
+/// Generate a projection (read model) with declarative event handlers.
+///
+/// This macro simplifies creating projections by providing a declarative
+/// syntax for defining how events update a read model state.
+///
+/// # Syntax
+///
+/// ```ignore
+/// projection! {
+///     pub struct ProjectionName {
+///         state: StateType,
+///
+///         on "EventType1" => EventType1Struct |proj, event| {
+///             // Update projection state based on event
+///         },
+///
+///         on "EventType2" => EventType2Struct |proj, event| {
+///             // Handle another event type
+///         },
+///     }
+/// }
+/// ```
+///
+/// # Generated Methods
+///
+/// The macro generates:
+/// - `new(state: StateType) -> Self` - Constructor
+/// - `state(&self) -> &StateType` - Immutable state access
+/// - `state_mut(&mut self) -> &mut StateType` - Mutable state access
+/// - `handle(&mut self, envelope: &EventEnvelope) -> Result<()>` - Event handler
+///
+/// # Examples
+///
+/// ```ignore
+/// use event_sauce_core::projection;
+/// use std::collections::HashMap;
+///
+/// projection! {
+///     pub struct UserListProjection {
+///         state: HashMap<UserId, UserView>,
+///
+///         on "UserRegistered" => UserRegisteredEvent |proj, event| {
+///             proj.state.insert(event.user_id, UserView {
+///                 email: event.email.clone(),
+///                 status: UserStatus::Active,
+///                 registered_at: event.timestamp,
+///             });
+///         },
+///
+///         on "UserEmailChanged" => UserEmailChangedEvent |proj, event| {
+///             if let Some(user) = proj.state.get_mut(&event.user_id) {
+///                 user.email = event.new_email.clone();
+///             }
+///         },
+///
+///         on "UserDeleted" => UserDeletedEvent |proj, event| {
+///             proj.state.remove(&event.user_id);
+///         },
+///     }
+/// }
+/// ```
+///
+/// # Benefits
+///
+/// - Declarative event handling
+/// - Type-safe event deserialization
+/// - Automatic pattern matching
+/// - Clean, readable projection definitions
+/// - Ignores unknown events automatically
+#[macro_export]
+macro_rules! projection {
+    (
+        $vis:vis struct $name:ident {
+            state: $state:ty,
+
+            $(
+                on $event_type:literal => $event:ty |$proj:ident, $evt:ident| $handler:block
+            ),* $(,)?
+        }
+    ) => {
+        $vis struct $name {
+            state: $state,
+        }
+
+        impl $name {
+            /// Creates a new projection with the given initial state.
+            #[allow(missing_docs)]
+            pub fn new(state: $state) -> Self {
+                Self { state }
+            }
+
+            /// Returns an immutable reference to the projection state.
+            #[allow(missing_docs)]
+            pub fn state(&self) -> &$state {
+                &self.state
+            }
+
+            /// Returns a mutable reference to the projection state.
+            #[allow(missing_docs)]
+            pub fn state_mut(&mut self) -> &mut $state {
+                &mut self.state
+            }
+
+            /// Handles an event envelope by deserializing and applying it.
+            ///
+            /// Returns `Ok(())` if the event was handled or ignored (unknown event type).
+            /// Returns `Err` only if deserialization or handler logic fails.
+            #[allow(missing_docs)]
+            pub async fn handle(&mut self, envelope: &$crate::EventEnvelope)
+                -> $crate::Result<()>
+            {
+                $(
+                    // Check event type first, then deserialize
+                    if envelope.event_type == $event_type {
+                        if let Ok($evt) = ::serde_json::from_value::<$event>(envelope.event_data.clone()) {
+                            let $proj = self;
+                            $handler
+                            return Ok(());
+                        }
+                    }
+                )*
+                // Ignore unknown events
+                Ok(())
+            }
         }
     };
 }
@@ -440,5 +569,298 @@ mod tests {
         let result: Result<(), TestError> = aggregate.increment(5);
 
         assert!(result.is_ok());
+    }
+
+    // ===== Projection Macro Tests =====
+
+    use std::collections::HashMap;
+
+    // Test projection state
+    #[derive(Debug, Clone, Default)]
+    struct CounterView {
+        value: i32,
+        increment_count: usize,
+        decrement_count: usize,
+    }
+
+    // Define a projection using the macro
+    projection! {
+        pub struct CounterProjection {
+            state: CounterView,
+
+            on "Test.Incremented" => IncrementedEvent |proj, event| {
+                proj.state.value += event.amount;
+                proj.state.increment_count += 1;
+            },
+
+            on "Test.Decremented" => DecrementedEvent |proj, event| {
+                proj.state.value -= event.amount;
+                proj.state.decrement_count += 1;
+            },
+
+            on "Test.Reset" => ResetEvent |_proj, _event| {
+                _proj.state.value = 0;
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn test_projection_new() {
+        let state = CounterView::default();
+        let _projection = CounterProjection::new(state);
+    }
+
+    #[tokio::test]
+    async fn test_projection_state_access() {
+        let state = CounterView {
+            value: 42,
+            increment_count: 0,
+            decrement_count: 0,
+        };
+        let projection = CounterProjection::new(state);
+
+        assert_eq!(projection.state().value, 42);
+    }
+
+    #[tokio::test]
+    async fn test_projection_state_mut_access() {
+        let state = CounterView::default();
+        let mut projection = CounterProjection::new(state);
+
+        projection.state_mut().value = 100;
+        assert_eq!(projection.state().value, 100);
+    }
+
+    #[tokio::test]
+    async fn test_projection_handle_increment() {
+        let state = CounterView::default();
+        let mut projection = CounterProjection::new(state);
+
+        // Create an event envelope
+        let event = IncrementedEvent {
+            amount: 5,
+            timestamp: Utc::now(),
+        };
+        let envelope = crate::EventEnvelope::new(
+            uuid::Uuid::new_v4(),
+            uuid::Uuid::new_v4(),
+            "Test".to_string(),
+            "Test.Incremented".to_string(),
+            crate::Version::from(1),
+            serde_json::to_value(&event).unwrap(),
+        );
+
+        // Handle the event
+        projection.handle(&envelope).await.unwrap();
+
+        // Check state was updated
+        assert_eq!(projection.state().value, 5);
+        assert_eq!(projection.state().increment_count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_projection_handle_decrement() {
+        let state = CounterView {
+            value: 10,
+            increment_count: 0,
+            decrement_count: 0,
+        };
+        let mut projection = CounterProjection::new(state);
+
+        // Create an event envelope
+        let event = DecrementedEvent {
+            amount: 3,
+            timestamp: Utc::now(),
+        };
+        let envelope = crate::EventEnvelope::new(
+            uuid::Uuid::new_v4(),
+            uuid::Uuid::new_v4(),
+            "Test".to_string(),
+            "Test.Decremented".to_string(),
+            crate::Version::from(1),
+            serde_json::to_value(&event).unwrap(),
+        );
+
+        // Handle the event
+        projection.handle(&envelope).await.unwrap();
+
+        // Check state was updated
+        assert_eq!(projection.state().value, 7);
+        assert_eq!(projection.state().decrement_count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_projection_handle_reset() {
+        let state = CounterView {
+            value: 42,
+            increment_count: 0,
+            decrement_count: 0,
+        };
+        let mut projection = CounterProjection::new(state);
+
+        // Create an event envelope
+        let event = ResetEvent {
+            timestamp: Utc::now(),
+        };
+        let envelope = crate::EventEnvelope::new(
+            uuid::Uuid::new_v4(),
+            uuid::Uuid::new_v4(),
+            "Test".to_string(),
+            "Test.Reset".to_string(),
+            crate::Version::from(1),
+            serde_json::to_value(&event).unwrap(),
+        );
+
+        // Handle the event
+        projection.handle(&envelope).await.unwrap();
+
+        // Check state was reset
+        assert_eq!(projection.state().value, 0);
+    }
+
+    #[tokio::test]
+    async fn test_projection_ignores_unknown_events() {
+        let state = CounterView::default();
+        let mut projection = CounterProjection::new(state);
+
+        // Create an envelope with unknown event type
+        let envelope = crate::EventEnvelope::new(
+            uuid::Uuid::new_v4(),
+            uuid::Uuid::new_v4(),
+            "Test".to_string(),
+            "UnknownEvent".to_string(),
+            crate::Version::from(1),
+            serde_json::json!({"unknown": "data"}),
+        );
+
+        // Should not fail, just ignore
+        let result = projection.handle(&envelope).await;
+        assert!(result.is_ok());
+
+        // State should be unchanged
+        assert_eq!(projection.state().value, 0);
+    }
+
+    #[tokio::test]
+    async fn test_projection_multiple_events() {
+        let state = CounterView::default();
+        let mut projection = CounterProjection::new(state);
+
+        // Handle multiple events
+        for i in 1..=5 {
+            let event = IncrementedEvent {
+                amount: i,
+                timestamp: Utc::now(),
+            };
+            let envelope = crate::EventEnvelope::new(
+                uuid::Uuid::new_v4(),
+                uuid::Uuid::new_v4(),
+                "Test".to_string(),
+                "Test.Incremented".to_string(),
+                crate::Version::from(i),
+                serde_json::to_value(&event).unwrap(),
+            );
+            projection.handle(&envelope).await.unwrap();
+        }
+
+        // 1 + 2 + 3 + 4 + 5 = 15
+        assert_eq!(projection.state().value, 15);
+        assert_eq!(projection.state().increment_count, 5);
+    }
+
+    // Test with HashMap state (more realistic projection)
+    #[derive(Debug, Clone)]
+    struct UserView {
+        name: String,
+        email: String,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    struct UserCreatedEvent {
+        user_id: String,
+        name: String,
+        email: String,
+        timestamp: DateTime<Utc>,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    struct UserUpdatedEvent {
+        user_id: String,
+        name: String,
+        timestamp: DateTime<Utc>,
+    }
+
+    projection! {
+        pub struct UserListProjection {
+            state: HashMap<String, UserView>,
+
+            on "UserCreated" => UserCreatedEvent |proj, event| {
+                proj.state.insert(event.user_id.clone(), UserView {
+                    name: event.name.clone(),
+                    email: event.email.clone(),
+                });
+            },
+
+            on "UserUpdated" => UserUpdatedEvent |proj, event| {
+                if let Some(user) = proj.state.get_mut(&event.user_id) {
+                    user.name = event.name.clone();
+                }
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn test_projection_with_hashmap() {
+        let state = HashMap::new();
+        let mut projection = UserListProjection::new(state);
+
+        // Create user
+        let user_id = "user-123".to_string();
+        let event = UserCreatedEvent {
+            user_id: user_id.clone(),
+            name: "Alice".to_string(),
+            email: "alice@example.com".to_string(),
+            timestamp: Utc::now(),
+        };
+        let envelope = crate::EventEnvelope::new(
+            uuid::Uuid::new_v4(),
+            uuid::Uuid::new_v4(),
+            "User".to_string(),
+            "UserCreated".to_string(),
+            crate::Version::from(1),
+            serde_json::to_value(&event).unwrap(),
+        );
+        projection.handle(&envelope).await.unwrap();
+
+        // Verify user was added
+        assert_eq!(projection.state().len(), 1);
+        assert_eq!(projection.state().get(&user_id).unwrap().name, "Alice");
+        assert_eq!(
+            projection.state().get(&user_id).unwrap().email,
+            "alice@example.com"
+        );
+
+        // Update user
+        let event = UserUpdatedEvent {
+            user_id: user_id.clone(),
+            name: "Alice Smith".to_string(),
+            timestamp: Utc::now(),
+        };
+        let envelope = crate::EventEnvelope::new(
+            uuid::Uuid::new_v4(),
+            uuid::Uuid::new_v4(),
+            "User".to_string(),
+            "UserUpdated".to_string(),
+            crate::Version::from(2),
+            serde_json::to_value(&event).unwrap(),
+        );
+        projection.handle(&envelope).await.unwrap();
+
+        // Verify user was updated
+        assert_eq!(projection.state().len(), 1);
+        assert_eq!(
+            projection.state().get(&user_id).unwrap().name,
+            "Alice Smith"
+        );
     }
 }
