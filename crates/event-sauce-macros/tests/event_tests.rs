@@ -32,7 +32,7 @@ enum TestEvent {
 }
 
 // Mock aggregate for TestEvent
-use event_sauce_core::{Aggregate, AggregateError, AggregateId as _};
+use event_sauce_core::{Aggregate, AggregateError};
 use event_sauce_macros::AggregateId as DeriveAggregateId;
 use uuid::Uuid;
 

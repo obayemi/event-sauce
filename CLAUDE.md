@@ -100,15 +100,15 @@ pub fn increment(&mut self, amount: i32) -> Result<()> { ... }
 #### Coverage Checks
 
 ```bash
-# Generate coverage report
-cargo llvm-cov --workspace --lcov --output-path coverage.lcov
+# Generate coverage report (includes all features, examples, binaries, and benches)
+cargo llvm-cov --workspace --all-features --all-targets --lcov --output-path coverage.lcov
 
 # View HTML report
-cargo llvm-cov --workspace --html
+cargo llvm-cov --workspace --all-features --all-targets --html
 open target/llvm-cov/html/index.html
 
 # Check coverage percentage
-cargo llvm-cov --workspace --summary-only
+cargo llvm-cov --workspace --all-features --all-targets --summary-only
 ```
 
 **CI enforces 100% coverage** - PRs failing this check will be rejected.
@@ -276,11 +276,15 @@ cargo check --workspace --all-features
 ### Code Quality Checklist
 
 Before committing, ensure:
-- [ ] All tests pass: `cargo test --workspace`
-- [ ] 100% coverage: `cargo llvm-cov --workspace`
-- [ ] Zero clippy warnings: `cargo clippy -- -D warnings`
+- [ ] All tests pass: `cargo test --workspace --all-features --all-targets`
+- [ ] Doc tests pass: `cargo test --workspace --all-features --doc`
+- [ ] Examples build: `cargo build --workspace --all-features --examples`
+- [ ] Binaries build: `cargo build --workspace --all-features --bins`
+- [ ] Benches build: `cargo build --workspace --all-features --benches`
+- [ ] 100% coverage: `cargo llvm-cov --workspace --all-features --all-targets`
+- [ ] Zero clippy warnings: `cargo clippy --workspace --all-features --all-targets -- -D warnings`
 - [ ] Code formatted: `cargo fmt --all -- --check`
-- [ ] Documentation complete: `cargo doc --no-deps`
+- [ ] Documentation complete: `cargo doc --no-deps --workspace --all-features`
 - [ ] Security audit passes: `cargo audit`
 
 ### Documentation Standards
@@ -574,13 +578,17 @@ The CI pipeline runs:
 # Run full CI locally
 ./scripts/ci-check.sh
 
-# Or manually:
-cargo test --workspace
-cargo llvm-cov --workspace
-cargo clippy --workspace -- -D warnings
-cargo fmt --all -- --check
-cargo doc --no-deps --workspace
-cargo audit
+# Or manually (COMPREHENSIVE - includes all features, examples, bins, benches):
+cargo test --workspace --all-features --all-targets    # All tests
+cargo test --workspace --all-features --doc            # Doc tests
+cargo build --workspace --all-features --examples      # Examples
+cargo build --workspace --all-features --bins          # Binaries
+cargo build --workspace --all-features --benches       # Benchmarks
+cargo llvm-cov --workspace --all-features --all-targets  # Coverage
+cargo clippy --workspace --all-features --all-targets -- -D warnings  # Lint
+cargo fmt --all -- --check                             # Format check
+cargo doc --no-deps --workspace --all-features         # Documentation
+cargo audit                                            # Security
 ```
 
 ---
@@ -588,25 +596,30 @@ cargo audit
 ## Common Commands Reference
 
 ```bash
-# === Testing ===
-cargo test --workspace                    # All tests
-cargo test -p event-sauce-core           # Single crate
-cargo test -- --nocapture                # With output
-cargo test --test '*'                    # Integration tests only
+# === Testing (COMPREHENSIVE - includes all features, examples, bins, benches) ===
+cargo test --workspace --all-features --all-targets           # All tests
+cargo test --workspace --all-features --doc                   # Doc tests
+cargo test -p event-sauce-core --all-features                # Single crate
+cargo test -- --nocapture                                     # With output
+cargo test --test '*' --all-features                         # Integration tests only
+cargo build --workspace --all-features --examples            # Build examples
+cargo build --workspace --all-features --bins                # Build binaries
+cargo build --workspace --all-features --benches             # Build benchmarks
+cargo run --example counter --all-features                   # Run an example
 
 # === Coverage ===
-cargo llvm-cov --workspace              # Generate coverage
-cargo llvm-cov --workspace --html       # HTML report
-cargo llvm-cov --workspace --summary-only  # Just the summary
+cargo llvm-cov --workspace --all-features --all-targets      # Generate coverage
+cargo llvm-cov --workspace --all-features --all-targets --html  # HTML report
+cargo llvm-cov --workspace --all-features --all-targets --summary-only  # Summary
 
 # === Linting ===
-cargo clippy --workspace -- -D warnings  # Clippy (zero warnings)
-cargo fmt --all                          # Format code
-cargo fmt --all -- --check              # Check formatting
+cargo clippy --workspace --all-features --all-targets -- -D warnings  # Clippy (zero warnings)
+cargo fmt --all                                              # Format code
+cargo fmt --all -- --check                                   # Check formatting
 
 # === Documentation ===
-cargo doc --no-deps --workspace         # Build docs
-cargo doc --no-deps --workspace --open  # Build and open
+cargo doc --no-deps --workspace --all-features              # Build docs
+cargo doc --no-deps --workspace --all-features --open       # Build and open
 
 # === Dependencies ===
 cargo update --workspace                # Update dependencies
@@ -643,12 +656,12 @@ RUST_BACKTRACE=1 cargo test
 ### Coverage Issues
 
 ```bash
-# Identify untested code
-cargo llvm-cov --workspace --html
+# Identify untested code (with all features and targets)
+cargo llvm-cov --workspace --all-features --all-targets --html
 open target/llvm-cov/html/index.html
 
 # Check specific crate
-cargo llvm-cov -p event-sauce-core
+cargo llvm-cov -p event-sauce-core --all-features --all-targets
 ```
 
 ### Dependency Issues

@@ -200,20 +200,22 @@ This library is built following **strict TDD principles**:
 
 ```bash
 # 1. Write failing test (RED)
-cargo test test_new_feature -- --nocapture
+cargo test test_new_feature --all-features -- --nocapture
 # Should FAIL
 
 # 2. Implement feature (GREEN)
 # ... edit src/ ...
-cargo test test_new_feature
+cargo test test_new_feature --all-features
 # Should PASS
 
-# 3. Check coverage (must be 100%)
-cargo llvm-cov --lcov --output-path coverage.lcov
+# 3. Check coverage (must be 100% - includes all features and targets)
+cargo llvm-cov --workspace --all-features --all-targets --lcov --output-path coverage.lcov
 
 # 4. Refactor while keeping tests green
-cargo test
-cargo clippy -- -D warnings
+cargo test --workspace --all-features --all-targets
+cargo test --workspace --all-features --doc
+cargo build --workspace --all-features --examples --bins --benches
+cargo clippy --workspace --all-features --all-targets -- -D warnings
 ```
 
 ### Latest Dependencies
@@ -474,15 +476,19 @@ fn main() -> Result<(), CounterError> {
 jj git clone https://github.com/yourusername/event-sauce
 cd event-sauce
 
-# Run tests
-cargo test --workspace
+# Run all tests (COMPREHENSIVE - includes all features, examples, bins, benches, doc tests)
+cargo test --workspace --all-features --all-targets
+cargo test --workspace --all-features --doc
+
+# Build all examples, binaries, and benchmarks
+cargo build --workspace --all-features --examples --bins --benches
 
 # Check coverage (requires cargo-llvm-cov)
 cargo install cargo-llvm-cov
-cargo llvm-cov --workspace
+cargo llvm-cov --workspace --all-features --all-targets
 
 # Run clippy
-cargo clippy --workspace -- -D warnings
+cargo clippy --workspace --all-features --all-targets -- -D warnings
 
 # Format code
 cargo fmt --all
@@ -491,20 +497,35 @@ cargo fmt --all
 ### Running Tests
 
 ```bash
-# All tests
-cargo test --workspace
+# COMPREHENSIVE - All tests with all features, examples, binaries, and benches
+cargo test --workspace --all-features --all-targets
 
-# Specific crate
-cargo test -p event-sauce-core
+# Doc tests (important - tests all documentation examples)
+cargo test --workspace --all-features --doc
+
+# Build examples (ensures all examples compile)
+cargo build --workspace --all-features --examples
+
+# Build binaries (ensures all binaries compile)
+cargo build --workspace --all-features --bins
+
+# Build benchmarks (ensures all benches compile)
+cargo build --workspace --all-features --benches
+
+# Specific crate with all features
+cargo test -p event-sauce-core --all-features --all-targets
 
 # With output
 cargo test -- --nocapture
 
 # Integration tests only
-cargo test --test '*'
+cargo test --test '*' --all-features
 
 # PostgreSQL tests (requires Docker for testcontainers)
-cargo test -p event-sauce-postgres
+cargo test -p event-sauce-postgres --all-features --all-targets
+
+# Run an example
+cargo run --example counter --all-features
 ```
 
 **Note**: PostgreSQL tests use testcontainers to automatically start PostgreSQL in Docker. Ensure Docker is running before executing these tests.
@@ -512,15 +533,18 @@ cargo test -p event-sauce-postgres
 ### Coverage Reporting
 
 ```bash
-# Generate coverage report
-cargo llvm-cov --workspace --lcov --output-path coverage.lcov
+# Generate coverage report (COMPREHENSIVE - includes all features, examples, bins, benches)
+cargo llvm-cov --workspace --all-features --all-targets --lcov --output-path coverage.lcov
 
 # View HTML report
-cargo llvm-cov --workspace --html
+cargo llvm-cov --workspace --all-features --all-targets --html
 open target/llvm-cov/html/index.html
 
 # Summary only
-cargo llvm-cov -p event-sauce-core --summary-only
+cargo llvm-cov --workspace --all-features --all-targets --summary-only
+
+# Specific crate
+cargo llvm-cov -p event-sauce-core --all-features --all-targets --summary-only
 ```
 
 **Current Test Status: across 5 crates**
@@ -540,8 +564,12 @@ See [CLAUDE.md](CLAUDE.md) for detailed development guidelines.
 
 All contributions must:
 1. Follow TDD workflow (write tests first)
-2. Maintain 100% code coverage
-3. Pass all tests and clippy checks
+2. Maintain 100% code coverage (on all features, examples, bins, benches)
+3. Pass all tests and clippy checks:
+   - `cargo test --workspace --all-features --all-targets`
+   - `cargo test --workspace --all-features --doc`
+   - `cargo build --workspace --all-features --examples --bins --benches`
+   - `cargo clippy --workspace --all-features --all-targets -- -D warnings`
 4. Include documentation
 5. Use Jujutsu for commits
 

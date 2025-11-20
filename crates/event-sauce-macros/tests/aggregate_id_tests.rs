@@ -224,13 +224,13 @@ fn test_realistic_usage() {
     // Simulate a realistic scenario
     struct User {
         id: UserId,
-        name: String,
+        _name: String,
     }
 
     let user_id = UserId::new();
     let user = User {
         id: user_id,
-        name: "Alice".to_string(),
+        _name: "Alice".to_string(),
     };
 
     // Can display the ID
@@ -281,7 +281,7 @@ fn test_to_uuid_method() {
     let user_id = UserId::new();
 
     // Can call to_uuid() to get the inner Uuid
-    let uuid = user_id.to_uuid();
+    let _uuid = user_id.to_uuid();
     let nil_id = UserId(Uuid::nil());
 
     assert_ne!(user_id.to_uuid(), nil_id.to_uuid());

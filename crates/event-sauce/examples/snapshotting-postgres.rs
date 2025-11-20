@@ -55,6 +55,7 @@ enum CounterEvent {
 #[derive(AggregateError, Debug, thiserror::Error)]
 enum CounterError {
     #[error("Invalid amount: {0}")]
+    #[allow(dead_code)]
     InvalidAmount(i32),
 }
 
