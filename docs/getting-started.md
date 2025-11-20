@@ -67,6 +67,20 @@ command_handler! {
 
 That's it! You now have a fully functional event-sourced aggregate with validation, event replay, and type safety.
 
+## Complete Examples
+
+Want to see full working examples? Check out:
+
+- **[postgres-quickstart.rs](../crates/event-sauce/examples/postgres-quickstart.rs)** - Demonstrates User and Order aggregates with projections, PostgreSQL backend, and the subscription system. Uses `define_events!` macro (recommended for most use cases).
+  ```bash
+  cargo run --example postgres-quickstart --all-features
+  ```
+
+- **[apply-event.rs](../crates/event-sauce/examples/apply-event.rs)** - Shows manual event implementation using the `ApplyEvent` trait for fine-grained control. Includes complex validation logic with a bank account example.
+  ```bash
+  cargo run --example apply-event --all-features
+  ```
+
 ## Table of Contents
 
 1. [Installation](#installation)
@@ -396,7 +410,9 @@ Now that you understand the basics, explore:
 2. **[TDD Workflow](tdd-workflow.md)** - Follow test-driven development
 3. **[PostgreSQL Backend](postgres.md)** - Use a production-ready store
 4. **[Projections Guide](projections.md)** - Build read models
-5. **[Examples](../examples/)** - See complete applications
+5. **Complete Examples** - See real-world applications:
+   - **[postgres-quickstart.rs](../crates/event-sauce/examples/postgres-quickstart.rs)** - User and Order aggregates with projections using `define_events!` macro (recommended approach)
+   - **[apply-event.rs](../crates/event-sauce/examples/apply-event.rs)** - Bank account with manual `ApplyEvent` trait implementation (for complex validation scenarios)
 
 ## Common Patterns
 
@@ -442,7 +458,12 @@ let loaded = repo.load::<Counter>(counter.id()).await?;
 
 ## Need Help?
 
-- Check the [examples](../examples/) directory
+- **Run the examples** to see complete working applications:
+  ```bash
+  cargo run --example postgres-quickstart --all-features  # Full-featured example
+  cargo run --example apply-event --all-features          # Manual approach
+  ```
+- Check the [examples directory](../crates/event-sauce/examples/) for more
 - Read the [architecture docs](architecture.md)
 - See the [API documentation](https://docs.rs/event-sauce)
 - Open an issue on GitHub

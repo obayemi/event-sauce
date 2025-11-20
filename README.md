@@ -291,8 +291,9 @@ cargo test --test '*' --all-features
 # PostgreSQL tests (requires Docker for testcontainers)
 cargo test -p event-sauce-postgres --all-features --all-targets
 
-# Run an example
-cargo run --example counter --all-features
+# Run examples
+cargo run --example postgres-quickstart --all-features  # Full-featured with PostgreSQL
+cargo run --example apply-event --all-features          # Manual ApplyEvent implementation
 ```
 
 **Note**: PostgreSQL tests use testcontainers to automatically start PostgreSQL in Docker. Ensure Docker is running before executing these tests.
@@ -474,7 +475,9 @@ store.migrate().await?;
 
 ### Learn More
 
-- **Examples** - See `crates/event-sauce/examples/` for complete applications
+- **Examples** - See `crates/event-sauce/examples/` for complete applications:
+  - **[postgres-quickstart.rs](crates/event-sauce/examples/postgres-quickstart.rs)** - Full-featured example with User and Order aggregates, projections, and PostgreSQL backend using `define_events!` macro
+  - **[apply-event.rs](crates/event-sauce/examples/apply-event.rs)** - Bank account example demonstrating manual event implementation with `ApplyEvent` trait and `#[derive(Event)]`
 - **Tests** - 231 tests show how to use every feature
 - **CLAUDE.md** - Development guidelines and principles
 
