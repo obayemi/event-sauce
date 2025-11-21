@@ -2,6 +2,12 @@
 
 - [ ] update the commands macro to also genreate a <command>\_event to allow easily constructing events for this aggregate
 
-- [ ] please reorganise the examples to include a single "postgres-quickstart" showcasing all the easy macro niceties for with two aggregats working together and all their events and some postgres backed event store and projections, then add Aggregates, then do add specific examples showcasing the different levels of manual implementation of the different features in the library (like manual event enum with ApplyEvent, or manual aggregate commands)
-
 - [ ] make repositories generate from the main store, using its checkpointstore
+
+- [ ] add a second example to showcase the implementation of a aggregate with the derive(Event) and ApplyEvent trait
+
+- [ ] add the snapshot store as optional attribute to the event store to allow not requiring it when building subscription
+
+- [ ] update examples to use projection! macro
+
+- [ ] investigate if it would be possible to implement a version of the projection macro that would not require to write the event twice

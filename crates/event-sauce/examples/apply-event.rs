@@ -4,6 +4,7 @@
 //! - Individual event structs that implement `ApplyEvent` trait
 //! - `#[derive(Event)]` on an event enum to auto-generate boilerplate
 //! - Manual validation logic in each event's `ApplyEvent` implementation
+//! - Repository pattern for type-safe aggregate persistence
 //!
 //! **Compare this with the `postgres-quickstart.rs` example** which uses the
 //! `define_events!` macro for a more declarative, concise approach.
@@ -30,7 +31,7 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use event_sauce_core::{load, Aggregate, ApplyEvent, DomainEvent, EventStore};
+use event_sauce_core::{Aggregate, ApplyEvent, DomainEvent, Repository};
 use event_sauce_macros::{AggregateError, AggregateId};
 use event_sauce_memory::InMemoryEventStore;
 use serde::{Deserialize, Serialize};
@@ -61,6 +62,7 @@ impl AccountId {
 #[derive(AggregateError, Debug, thiserror::Error)]
 enum BankAccountError {
     #[error("Insufficient funds: balance={balance}, withdrawal={amount}")]
+    #[allow(dead_code)]
     InsufficientFunds { balance: i64, amount: i64 },
 
     #[error("Invalid amount: {0}")]
@@ -418,11 +420,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  ✓ Manual event structs implementing ApplyEvent trait");
     println!("  ✓ Event enum with #[derive(Event)]");
     println!("  ✓ Complex validation logic in ApplyEvent implementations");
-    println!("  ✓ Pre-validation and state transformation separation\n");
+    println!("  ✓ Pre-validation and state transformation separation");
+    println!("  ✓ Repository pattern for type-safe persistence\n");
 
     // Setup in-memory event store using builder pattern
     println!("🗄️  Initializing in-memory event store...\n");
     let store = Arc::new(InMemoryEventStore::builder().build());
+
+    // Create repository for type-safe aggregate persistence
+    println!("🔧 Creating repository...\n");
+    let repo = Repository::<InMemoryEventStore, BankAccount>::new(Arc::clone(&store));
 
     println!("=== Opening Account ===\n");
 
@@ -435,29 +442,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("👤 Account opened for: {}", account.holder_name);
     println!("   Balance: ${:.2}", account.balance as f64 / 100.0);
     println!("   Overdraft limit: ${:.2}", account.overdraft_limit as f64 / 100.0);
-    store.commit(&mut account).await?;
+    repo.save(&mut account).await?;
 
     println!("\n=== Deposits and Withdrawals ===\n");
 
     // Make some deposits
     account.deposit(25_000, "Salary deposit".to_string())?;
     println!("💰 Deposited $250.00 (Salary)");
-    store.commit(&mut account).await?;
+    repo.save(&mut account).await?;
 
     account.deposit(5_000, "Freelance payment".to_string())?;
     println!("💰 Deposited $50.00 (Freelance)");
-    store.commit(&mut account).await?;
+    repo.save(&mut account).await?;
 
     println!("   Current balance: ${:.2}", account.balance as f64 / 100.0);
 
     // Make some withdrawals
     account.withdraw(15_000, "Rent payment".to_string())?;
     println!("\n💸 Withdrew $150.00 (Rent)");
-    store.commit(&mut account).await?;
+    repo.save(&mut account).await?;
 
     account.withdraw(8_000, "Groceries".to_string())?;
     println!("💸 Withdrew $80.00 (Groceries)");
-    store.commit(&mut account).await?;
+    repo.save(&mut account).await?;
 
     println!("   Current balance: ${:.2}", account.balance as f64 / 100.0);
     println!("   Daily withdrawal total: ${:.2}", account.daily_withdrawal_total as f64 / 100.0);
@@ -468,7 +475,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     account.withdraw(30_000, "Emergency expense".to_string())?;
     println!("💸 Withdrew $300.00 (Emergency - using overdraft)");
     println!("   Current balance: ${:.2} (overdraft)", account.balance as f64 / 100.0);
-    store.commit(&mut account).await?;
+    repo.save(&mut account).await?;
 
     println!("\n=== Testing Validation ===\n");
 
@@ -476,14 +483,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("❌ Attempting to withdraw $1000.00 (exceeds overdraft)...");
     match account.withdraw(100_000, "Large expense".to_string()) {
         Ok(_) => println!("   ERROR: Should have failed!"),
-        Err(e) => println!("   ✓ Validation prevented: {}", e),
+        Err(e) => println!("   ✓ Validation prevented: {e}"),
     }
 
     // Try to exceed daily withdrawal limit
     println!("\n❌ Attempting to withdraw $800.00 (exceeds daily limit)...");
     match account.withdraw(80_000, "Another large expense".to_string()) {
         Ok(_) => println!("   ERROR: Should have failed!"),
-        Err(e) => println!("   ✓ Validation prevented: {}", e),
+        Err(e) => println!("   ✓ Validation prevented: {e}"),
     }
 
     println!("\n=== Testing Account Closure ===\n");
@@ -492,40 +499,57 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("❌ Attempting to close account with negative balance...");
     match account.close("Moving banks".to_string()) {
         Ok(_) => println!("   ERROR: Should have failed!"),
-        Err(e) => println!("   ✓ Validation prevented: {}", e),
+        Err(e) => println!("   ✓ Validation prevented: {e}"),
     }
 
     // Deposit to bring balance positive
     account.deposit(50_000, "Final deposit before closure".to_string())?;
     println!("\n💰 Deposited $500.00 to clear balance");
     println!("   Current balance: ${:.2}", account.balance as f64 / 100.0);
-    store.commit(&mut account).await?;
+    repo.save(&mut account).await?;
 
     // Now close the account
     account.close("Moving banks".to_string())?;
     println!("\n🔒 Account closed successfully");
     println!("   Status: {:?}", account.status);
-    store.commit(&mut account).await?;
+    repo.save(&mut account).await?;
 
     // Try to deposit after closure
     println!("\n❌ Attempting to deposit after closure...");
     match account.deposit(10_000, "Late deposit".to_string()) {
         Ok(_) => println!("   ERROR: Should have failed!"),
-        Err(e) => println!("   ✓ Validation prevented: {}", e),
+        Err(e) => println!("   ✓ Validation prevented: {e}"),
     }
 
     println!("\n=== Event Replay ===\n");
 
-    // Load account from event store to verify event sourcing
+    // Load account from repository to verify event sourcing
     let account_id = *account.aggregate_id();
-    let replayed_account: BankAccount = load(&*store, account_id).await?;
+    let replayed_account = repo.load(account_id).await?;
 
-    println!("📼 Replayed account from event store:");
+    println!("📼 Replayed account from repository:");
     println!("   Holder: {}", replayed_account.holder_name);
     println!("   Balance: ${:.2}", replayed_account.balance as f64 / 100.0);
     println!("   Status: {:?}", replayed_account.status);
     println!("   Version: {}", replayed_account.version);
     println!("   Pending events: {}", replayed_account.pending_events().len());
+
+    println!("\n=== Repository Features ===\n");
+
+    // Demonstrate repository features
+    println!("Repository API examples:");
+
+    // Check existence
+    let account_exists = repo.exists(account_id).await?;
+    println!("  • Account exists: {account_exists}");
+
+    // Get version
+    let account_version = repo.get_version(account_id).await?;
+    println!("  • Account version: {}", account_version.as_i32());
+
+    // Count events
+    let event_count = repo.count_events(account_id).await?;
+    println!("  • Total events: {event_count}");
 
     println!("\n✨ Demo complete!");
     println!("\n💡 Key Takeaways:");
@@ -533,6 +557,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("   • validate() method contains business logic");
     println!("   • apply() method performs state transformation");
     println!("   • #[derive(Event)] generates boilerplate for the enum");
+    println!("   • Repository provides type-safe aggregate persistence");
     println!("   • Provides maximum control and flexibility");
 
     Ok(())

@@ -2,6 +2,7 @@
 //!
 //! This example demonstrates:
 //! - Two aggregates (User and Order) with events
+//! - Repository pattern for type-safe aggregate persistence
 //! - A projection that combines data from both aggregates
 //! - PostgreSQL backend for events, snapshots, and projections
 //! - Subscription system for real-time projection updates
@@ -16,7 +17,7 @@ use std::sync::Arc;
 
 use event_sauce_core::{
     command_handler, define_events, Aggregate, CheckpointStrategy, ErrorPolicy, EventEnvelope,
-    EventFilter, EventStore,
+    EventFilter, EventStore, Repository,
 };
 use event_sauce_macros::{aggregate, AggregateError, AggregateId};
 use event_sauce_postgres::{PostgresCheckpointStore, PostgresEventStore};
@@ -372,6 +373,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("This example demonstrates:");
     println!("  ✓ Two aggregates: User and Order");
     println!("  ✓ Events for both aggregates");
+    println!("  ✓ Repository pattern for type-safe persistence");
     println!("  ✓ Projection combining data from both");
     println!("  ✓ PostgreSQL backend with testcontainers\n");
 
@@ -401,16 +403,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let store = Arc::new(event_store);
     let checkpoint_ref = Arc::new(checkpoint_store);
 
+    // Create repositories for type-safe aggregate persistence
+    println!("🔧 Creating repositories...");
+    let user_repo = Repository::<PostgresEventStore, User>::new(Arc::clone(&store));
+    let order_repo = Repository::<PostgresEventStore, Order>::new(Arc::clone(&store));
+
     println!("\n=== Creating Users ===\n");
 
     // Create users
     let mut alice = User::create("alice@example.com".to_string(), "Alice Smith".to_string())?;
     println!("👤 Created user: {} ({})", alice.name, alice.email);
-    store.commit(&mut alice).await?;
+    user_repo.save(&mut alice).await?;
 
     let mut bob = User::create("bob@example.com".to_string(), "Bob Jones".to_string())?;
     println!("👤 Created user: {} ({})", bob.name, bob.email);
-    store.commit(&mut bob).await?;
+    user_repo.save(&mut bob).await?;
 
     println!("\n=== Creating Orders ===\n");
 
@@ -419,23 +426,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     order1.add_item("laptop".to_string(), 1, 120000)?;
     order1.add_item("mouse".to_string(), 2, 2500)?;
     println!("🛒 Order {} created for Alice (${:.2})", order1.id, order1.total as f64 / 100.0);
-    store.commit(&mut order1).await?;
+    order_repo.save(&mut order1).await?;
 
     let mut order2 = Order::create(bob.id)?;
     order2.add_item("keyboard".to_string(), 1, 8500)?;
     println!("🛒 Order {} created for Bob (${:.2})", order2.id, order2.total as f64 / 100.0);
-    store.commit(&mut order2).await?;
+    order_repo.save(&mut order2).await?;
 
     println!("\n=== Completing Orders ===\n");
 
     order1.complete()?;
-    store.commit(&mut order1).await?;
+    order_repo.save(&mut order1).await?;
     println!("✅ Order {} completed", order1.id);
 
     println!("\n=== Updating User ===\n");
 
     alice.change_email("alice.smith@newdomain.com".to_string())?;
-    store.commit(&mut alice).await?;
+    user_repo.save(&mut alice).await?;
     println!("📧 Alice's email changed to {}", alice.email);
 
     println!("\n=== Building Projection ===\n");
@@ -474,6 +481,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             order_view.status
         );
     }
+
+    println!("\n=== Repository Features ===\n");
+
+    // Demonstrate repository features
+    println!("Repository API examples:");
+
+    // Check existence
+    let alice_exists = user_repo.exists(alice.id).await?;
+    println!("  • Alice exists: {alice_exists}");
+
+    // Get version
+    let alice_version = user_repo.get_version(alice.id).await?;
+    println!("  • Alice version: {}", alice_version.as_i32());
+
+    // Count events
+    let alice_event_count = user_repo.count_events(alice.id).await?;
+    println!("  • Alice event count: {alice_event_count}");
+
+    // Load aggregate from repository
+    let loaded_alice = user_repo.load(alice.id).await?;
+    println!("  • Loaded Alice: {} ({})", loaded_alice.name, loaded_alice.email);
 
     println!("\n✨ Demo complete!");
 
