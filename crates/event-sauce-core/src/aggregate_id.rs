@@ -208,6 +208,7 @@ impl From<DefaultAggregateId> for Uuid {
 }
 
 #[cfg(test)]
+#[allow(clippy::default_trait_access)]
 mod tests {
     use super::*;
 

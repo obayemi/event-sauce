@@ -1338,7 +1338,7 @@ mod tests {
         // Verify snapshot config is set - just check it's accessible
         // (testing the actual strategy behavior is done in core crate tests)
         let _config = store.snapshot_config();
-        assert!(true); // Config is accessible
+        // Config is accessible - no assertion needed
     }
 
     #[tokio::test]
@@ -1478,7 +1478,7 @@ mod tests {
                 .append(
                     stream_id.clone(),
                     vec![event],
-                    Version::new(i32::try_from(i).unwrap()),
+                    Version::new(i),
                 )
                 .await
                 .unwrap();
@@ -1513,7 +1513,7 @@ mod tests {
                 .append(
                     stream_id.clone(),
                     vec![event],
-                    Version::new(i32::try_from(i).unwrap()),
+                    Version::new(i),
                 )
                 .await
                 .unwrap();

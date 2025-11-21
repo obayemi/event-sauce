@@ -195,16 +195,36 @@ macro_rules! command_handler {
 ///
 /// # Syntax
 ///
+/// The macro supports two syntax styles:
+///
+/// **1. Enum variant syntax (recommended):**
 /// ```ignore
 /// projection! {
 ///     pub struct ProjectionName {
 ///         state: StateType,
 ///
-///         on EventType1Struct |proj, event| {
+///         on EventEnum::Variant1 |proj, event| {
 ///             // Update projection state based on event
 ///         },
 ///
-///         on EventType2Struct |proj, event| {
+///         on EventEnum::Variant2 |proj, event| {
+///             // Handle another event type
+///         },
+///     }
+/// }
+/// ```
+///
+/// **2. Struct name syntax:**
+/// ```ignore
+/// projection! {
+///     pub struct ProjectionName {
+///         state: StateType,
+///
+///         on Variant1Event |proj, event| {
+///             // Update projection state based on event
+///         },
+///
+///         on Variant2Event |proj, event| {
 ///             // Handle another event type
 ///         },
 ///     }
@@ -229,7 +249,8 @@ macro_rules! command_handler {
 ///     pub struct UserListProjection {
 ///         state: HashMap<UserId, UserView>,
 ///
-///         on UserRegisteredEvent |proj, event| {
+///         // Using enum variant syntax (recommended)
+///         on UserEvent::Registered |proj, event| {
 ///             proj.state.insert(event.user_id, UserView {
 ///                 email: event.email.clone(),
 ///                 status: UserStatus::Active,
@@ -237,13 +258,13 @@ macro_rules! command_handler {
 ///             });
 ///         },
 ///
-///         on UserEmailChangedEvent |proj, event| {
+///         on UserEvent::EmailChanged |proj, event| {
 ///             if let Some(user) = proj.state.get_mut(&event.user_id) {
 ///                 user.email = event.new_email.clone();
 ///             }
 ///         },
 ///
-///         on UserDeletedEvent |proj, event| {
+///         on UserEvent::Deleted |proj, event| {
 ///             proj.state.remove(&event.user_id);
 ///         },
 ///     }
@@ -258,8 +279,197 @@ macro_rules! command_handler {
 /// - Clean, readable projection definitions
 /// - Ignores unknown events automatically
 /// - No string literals needed (uses `EventType` trait)
+/// - Supports both struct names (`RegisteredEvent`) and enum paths (`UserEvent::Registered`)
+/// - Optionally exposes `aggregate_id` from envelope in handler
 #[macro_export]
 macro_rules! projection {
+    // Support for enum variant syntax with aggregate_id: on EnumName::Variant |proj, evt, agg_id| { ... }
+    (
+        $vis:vis struct $name:ident {
+            state: $state:ty,
+
+            $(
+                on $event_enum:ident::$variant:ident |$proj:ident, $evt:ident, $agg_id:ident| $handler:block
+            ),* $(,)?
+        }
+    ) => {
+        paste::paste! {
+            $vis struct $name {
+                state: $state,
+            }
+
+            #[allow(private_interfaces)]
+            impl $name {
+                /// Creates a new projection with the given initial state.
+                #[allow(missing_docs)]
+                pub fn new(state: $state) -> Self {
+                    Self { state }
+                }
+
+                /// Returns an immutable reference to the projection state.
+                #[allow(missing_docs)]
+                pub fn state(&self) -> &$state {
+                    &self.state
+                }
+
+                /// Returns a mutable reference to the projection state.
+                #[allow(missing_docs)]
+                pub fn state_mut(&mut self) -> &mut $state {
+                    &mut self.state
+                }
+
+                /// Handles an event envelope by deserializing and applying it.
+                ///
+                /// Returns `Ok(())` if the event was handled or ignored (unknown event type).
+                /// Returns `Err` only if deserialization or handler logic fails.
+                #[allow(missing_docs)]
+                pub async fn handle(&mut self, envelope: &$crate::EventEnvelope)
+                    -> $crate::Result<()>
+                {
+                    $(
+                        // Construct event struct name from variant (e.g., Registered -> RegisteredEvent)
+                        type [<$variant EventType>] = [<$variant Event>];
+
+                        // Check event type using EventType trait, then deserialize
+                        if envelope.event_type == <[<$variant EventType>] as $crate::EventType>::EVENT_TYPE {
+                            if let Ok($evt) = ::serde_json::from_value::<[<$variant EventType>]>(envelope.event_data.clone()) {
+                                let $proj = self;
+                                let $agg_id = envelope.aggregate_id;
+                                $handler
+                                return Ok(());
+                            }
+                        }
+                    )*
+                    // Ignore unknown events
+                    Ok(())
+                }
+            }
+        }
+    };
+
+    // Support for enum variant syntax: on EnumName::Variant |proj, evt| { ... }
+    (
+        $vis:vis struct $name:ident {
+            state: $state:ty,
+
+            $(
+                on $event_enum:ident::$variant:ident |$proj:ident, $evt:ident| $handler:block
+            ),* $(,)?
+        }
+    ) => {
+        paste::paste! {
+            $vis struct $name {
+                state: $state,
+            }
+
+            #[allow(private_interfaces)]
+            impl $name {
+                /// Creates a new projection with the given initial state.
+                #[allow(missing_docs)]
+                pub fn new(state: $state) -> Self {
+                    Self { state }
+                }
+
+                /// Returns an immutable reference to the projection state.
+                #[allow(missing_docs)]
+                pub fn state(&self) -> &$state {
+                    &self.state
+                }
+
+                /// Returns a mutable reference to the projection state.
+                #[allow(missing_docs)]
+                pub fn state_mut(&mut self) -> &mut $state {
+                    &mut self.state
+                }
+
+                /// Handles an event envelope by deserializing and applying it.
+                ///
+                /// Returns `Ok(())` if the event was handled or ignored (unknown event type).
+                /// Returns `Err` only if deserialization or handler logic fails.
+                #[allow(missing_docs)]
+                pub async fn handle(&mut self, envelope: &$crate::EventEnvelope)
+                    -> $crate::Result<()>
+                {
+                    $(
+                        // Construct event struct name from variant (e.g., Registered -> RegisteredEvent)
+                        type [<$variant EventType>] = [<$variant Event>];
+
+                        // Check event type using EventType trait, then deserialize
+                        if envelope.event_type == <[<$variant EventType>] as $crate::EventType>::EVENT_TYPE {
+                            if let Ok($evt) = ::serde_json::from_value::<[<$variant EventType>]>(envelope.event_data.clone()) {
+                                let $proj = self;
+                                $handler
+                                return Ok(());
+                            }
+                        }
+                    )*
+                    // Ignore unknown events
+                    Ok(())
+                }
+            }
+        }
+    };
+
+    // Support for direct struct name syntax with aggregate_id: on EventStruct |proj, evt, agg_id| { ... }
+    (
+        $vis:vis struct $name:ident {
+            state: $state:ty,
+
+            $(
+                on $event:ty |$proj:ident, $evt:ident, $agg_id:ident| $handler:block
+            ),* $(,)?
+        }
+    ) => {
+        $vis struct $name {
+            state: $state,
+        }
+
+        #[allow(private_interfaces)]
+        impl $name {
+            /// Creates a new projection with the given initial state.
+            #[allow(missing_docs)]
+            pub fn new(state: $state) -> Self {
+                Self { state }
+            }
+
+            /// Returns an immutable reference to the projection state.
+            #[allow(missing_docs)]
+            pub fn state(&self) -> &$state {
+                &self.state
+            }
+
+            /// Returns a mutable reference to the projection state.
+            #[allow(missing_docs)]
+            pub fn state_mut(&mut self) -> &mut $state {
+                &mut self.state
+            }
+
+            /// Handles an event envelope by deserializing and applying it.
+            ///
+            /// Returns `Ok(())` if the event was handled or ignored (unknown event type).
+            /// Returns `Err` only if deserialization or handler logic fails.
+            #[allow(missing_docs)]
+            pub async fn handle(&mut self, envelope: &$crate::EventEnvelope)
+                -> $crate::Result<()>
+            {
+                $(
+                    // Check event type using EventType trait, then deserialize
+                    if envelope.event_type == <$event as $crate::EventType>::EVENT_TYPE {
+                        if let Ok($evt) = ::serde_json::from_value::<$event>(envelope.event_data.clone()) {
+                            let $proj = self;
+                            let $agg_id = envelope.aggregate_id;
+                            $handler
+                            return Ok(());
+                        }
+                    }
+                )*
+                // Ignore unknown events
+                Ok(())
+            }
+        }
+    };
+
+    // Support for direct struct name syntax: on EventStruct |proj, evt| { ... }
     (
         $vis:vis struct $name:ident {
             state: $state:ty,
@@ -273,6 +483,7 @@ macro_rules! projection {
             state: $state,
         }
 
+        #[allow(private_interfaces)]
         impl $name {
             /// Creates a new projection with the given initial state.
             #[allow(missing_docs)]
@@ -565,7 +776,7 @@ macro_rules! define_events {
         // Generate apply_event method for the aggregate
         impl $aggregate {
             /// Auto-generated method that applies events to the aggregate
-            /// by delegating to each event's ApplyEvent implementation.
+            /// by delegating to each event's `ApplyEvent` implementation.
             ///
             /// This method runs the full event application lifecycle:
             /// 1. Validates pre-conditions using `validate()`
@@ -604,6 +815,14 @@ macro_rules! define_events {
 }
 
 #[cfg(test)]
+#[allow(dead_code)]
+#[allow(clippy::enum_variant_names)]
+#[allow(clippy::struct_field_names)]
+#[allow(clippy::items_after_statements)]
+#[allow(clippy::derivable_impls)]
+#[allow(clippy::match_same_arms)]
+#[allow(clippy::unnecessary_wraps)]
+#[allow(clippy::default_trait_access)]
 mod tests {
     use crate::{
         Aggregate, AggregateError, AggregateId, ApplyEvent, DefaultAggregateId, DomainEvent,
@@ -944,6 +1163,7 @@ mod tests {
 
     // Test projection state
     #[derive(Debug, Clone, Default)]
+    #[allow(private_interfaces)]
     struct CounterView {
         value: i32,
         increment_count: usize,
@@ -1137,6 +1357,7 @@ mod tests {
 
     // Test with HashMap state (more realistic projection)
     #[derive(Debug, Clone)]
+    #[allow(private_interfaces)]
     struct UserView {
         name: String,
         email: String,
@@ -1237,6 +1458,394 @@ mod tests {
             projection.state().get(&user_id).unwrap().name,
             "Alice Smith"
         );
+    }
+
+    // ===== Projection with Enum Variant Syntax Tests =====
+
+    // Define events using define_events! for enum variant syntax tests
+    #[derive(Debug, thiserror::Error)]
+    #[error("Product aggregate error")]
+    pub(crate) struct ProductError;
+
+    impl AggregateError for ProductError {}
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub(crate) struct ProductState {
+        name: String,
+        price: i64,
+        stock: i32,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub(crate) struct Product {
+        id: DefaultAggregateId,
+        state: ProductState,
+        version: crate::Version,
+        pending_events: Vec<ProductEvent>,
+    }
+
+    impl Aggregate for Product {
+        type Id = DefaultAggregateId;
+        type Event = ProductEvent;
+        type Error = ProductError;
+        type State = ProductState;
+
+        fn new(id: Self::Id) -> Self {
+            Self {
+                id,
+                state: ProductState {
+                    name: String::new(),
+                    price: 0,
+                    stock: 0,
+                },
+                version: crate::Version::initial(),
+                pending_events: Vec::new(),
+            }
+        }
+
+        fn aggregate_id(&self) -> &Self::Id {
+            &self.id
+        }
+
+        fn version(&self) -> crate::Version {
+            self.version
+        }
+
+        fn pending_events(&self) -> &[Self::Event] {
+            &self.pending_events
+        }
+
+        fn clear_pending_events(&mut self) {
+            self.pending_events.clear();
+        }
+
+        fn apply<E: Into<Self::Event>>(
+            &mut self,
+            event: E,
+        ) -> std::result::Result<(), Self::Error> {
+            let event = event.into();
+            self.apply_internal(&event)?;
+            self.pending_events.push(event);
+            Ok(())
+        }
+
+        fn apply_internal(&mut self, event: &Self::Event) -> std::result::Result<(), Self::Error> {
+            match event {
+                ProductEvent::ProductCreated { name, price, .. } => {
+                    self.state.name = name.clone();
+                    self.state.price = *price;
+                }
+                ProductEvent::ProductStockAdded { quantity, .. } => {
+                    self.state.stock += quantity;
+                }
+                ProductEvent::ProductPriceChanged { new_price, .. } => {
+                    self.state.price = *new_price;
+                }
+            }
+            self.version = self.version.next();
+            Ok(())
+        }
+
+        fn state(&self) -> &Self::State {
+            &self.state
+        }
+
+        fn from_snapshot(id: Self::Id, version: crate::Version, state: Self::State) -> Self {
+            Self {
+                id,
+                state,
+                version,
+                pending_events: Vec::new(),
+            }
+        }
+    }
+
+    // Define events using define_events! which auto-implements EventType
+    define_events! {
+        pub(crate) enum ProductEvent for Product {
+            ProductCreated {
+                name: String,
+                price: i64,
+            } => |product, event| {
+                product.state.name = event.name.clone();
+                product.state.price = event.price;
+            },
+            ProductStockAdded {
+                quantity: i32,
+            } => |product, event| {
+                product.state.stock += event.quantity;
+            },
+            ProductPriceChanged {
+                new_price: i64,
+            } => |product, event| {
+                product.state.price = event.new_price;
+            },
+        }
+    }
+
+    // Projection state
+    #[derive(Debug, Clone, Default)]
+    #[allow(private_interfaces)]
+    struct ProductInventoryState {
+        total_products: usize,
+        total_stock: i32,
+        total_value: i64,
+    }
+
+    // Test projection using enum variant syntax
+    projection! {
+        pub struct ProductInventoryProjection {
+            state: ProductInventoryState,
+
+            on ProductEvent::ProductCreated |proj, event| {
+                proj.state.total_products += 1;
+                proj.state.total_value += event.price;
+            },
+
+            on ProductEvent::ProductStockAdded |proj, event| {
+                proj.state.total_stock += event.quantity;
+            },
+
+            on ProductEvent::ProductPriceChanged |proj, event| {
+                proj.state.total_value += event.new_price;
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn test_projection_with_enum_variant_syntax() {
+        let mut projection = ProductInventoryProjection::new(ProductInventoryState::default());
+
+        // ProductCreated event
+        let event = ProductCreatedEvent {
+            name: "Widget".to_string(),
+            price: 100,
+            timestamp: Utc::now(),
+        };
+        let envelope = crate::EventEnvelope::new(
+            uuid::Uuid::new_v4(),
+            uuid::Uuid::new_v4(),
+            "Product".to_string(),
+            "Product.ProductCreated".to_string(),
+            crate::Version::from(1),
+            serde_json::to_value(&event).unwrap(),
+        );
+        projection.handle(&envelope).await.unwrap();
+
+        assert_eq!(projection.state().total_products, 1);
+        assert_eq!(projection.state().total_value, 100);
+    }
+
+    #[tokio::test]
+    async fn test_projection_enum_variant_stock_added() {
+        let mut projection = ProductInventoryProjection::new(ProductInventoryState::default());
+
+        // ProductStockAdded event
+        let event = ProductStockAddedEvent {
+            quantity: 50,
+            timestamp: Utc::now(),
+        };
+        let envelope = crate::EventEnvelope::new(
+            uuid::Uuid::new_v4(),
+            uuid::Uuid::new_v4(),
+            "Product".to_string(),
+            "Product.ProductStockAdded".to_string(),
+            crate::Version::from(1),
+            serde_json::to_value(&event).unwrap(),
+        );
+        projection.handle(&envelope).await.unwrap();
+
+        assert_eq!(projection.state().total_stock, 50);
+    }
+
+    #[tokio::test]
+    async fn test_projection_enum_variant_multiple_events() {
+        let mut projection = ProductInventoryProjection::new(ProductInventoryState::default());
+
+        // ProductCreated event
+        let event = ProductCreatedEvent {
+            name: "Widget".to_string(),
+            price: 100,
+            timestamp: Utc::now(),
+        };
+        let envelope = crate::EventEnvelope::new(
+            uuid::Uuid::new_v4(),
+            uuid::Uuid::new_v4(),
+            "Product".to_string(),
+            "Product.ProductCreated".to_string(),
+            crate::Version::from(1),
+            serde_json::to_value(&event).unwrap(),
+        );
+        projection.handle(&envelope).await.unwrap();
+
+        // ProductStockAdded event
+        let event = ProductStockAddedEvent {
+            quantity: 25,
+            timestamp: Utc::now(),
+        };
+        let envelope = crate::EventEnvelope::new(
+            uuid::Uuid::new_v4(),
+            uuid::Uuid::new_v4(),
+            "Product".to_string(),
+            "Product.ProductStockAdded".to_string(),
+            crate::Version::from(2),
+            serde_json::to_value(&event).unwrap(),
+        );
+        projection.handle(&envelope).await.unwrap();
+
+        // ProductPriceChanged event
+        let event = ProductPriceChangedEvent {
+            new_price: 150,
+            timestamp: Utc::now(),
+        };
+        let envelope = crate::EventEnvelope::new(
+            uuid::Uuid::new_v4(),
+            uuid::Uuid::new_v4(),
+            "Product".to_string(),
+            "Product.ProductPriceChanged".to_string(),
+            crate::Version::from(3),
+            serde_json::to_value(&event).unwrap(),
+        );
+        projection.handle(&envelope).await.unwrap();
+
+        assert_eq!(projection.state().total_products, 1);
+        assert_eq!(projection.state().total_stock, 25);
+        assert_eq!(projection.state().total_value, 250); // 100 + 150
+    }
+
+    #[tokio::test]
+    async fn test_projection_enum_variant_ignores_unknown() {
+        let mut projection = ProductInventoryProjection::new(ProductInventoryState::default());
+
+        // Unknown event
+        let envelope = crate::EventEnvelope::new(
+            uuid::Uuid::new_v4(),
+            uuid::Uuid::new_v4(),
+            "Product".to_string(),
+            "Product.Unknown".to_string(),
+            crate::Version::from(1),
+            serde_json::json!({"foo": "bar"}),
+        );
+
+        // Should not error - just ignore
+        projection.handle(&envelope).await.unwrap();
+
+        assert_eq!(projection.state().total_products, 0);
+    }
+
+    // Test projection with aggregate_id parameter
+    #[derive(Debug, Clone, Default)]
+    #[allow(private_interfaces)]
+    struct CounterIdState {
+        counter_ids: Vec<uuid::Uuid>,
+    }
+
+    projection! {
+        pub struct CounterIdProjection {
+            state: CounterIdState,
+
+            on IncrementedEvent |proj, _event, aggregate_id| {
+                if !proj.state.counter_ids.contains(&aggregate_id) {
+                    proj.state.counter_ids.push(aggregate_id);
+                }
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn test_projection_with_aggregate_id() {
+        let mut projection = CounterIdProjection::new(CounterIdState::default());
+
+        let counter_id1 = uuid::Uuid::new_v4();
+        let counter_id2 = uuid::Uuid::new_v4();
+
+        // First increment
+        let envelope1 = crate::EventEnvelope::new(
+            uuid::Uuid::new_v4(),
+            counter_id1,
+            "Test".to_string(),
+            "Test.Incremented".to_string(),
+            crate::Version::from(1),
+            serde_json::json!({
+                "amount": 5,
+                "timestamp": "2025-01-01T00:00:00Z"
+            }),
+        );
+
+        projection.handle(&envelope1).await.unwrap();
+        assert_eq!(projection.state().counter_ids.len(), 1);
+        assert_eq!(projection.state().counter_ids[0], counter_id1);
+
+        // Second increment (different counter)
+        let envelope2 = crate::EventEnvelope::new(
+            uuid::Uuid::new_v4(),
+            counter_id2,
+            "Test".to_string(),
+            "Test.Incremented".to_string(),
+            crate::Version::from(1),
+            serde_json::json!({
+                "amount": 10,
+                "timestamp": "2025-01-01T00:00:00Z"
+            }),
+        );
+
+        projection.handle(&envelope2).await.unwrap();
+        assert_eq!(projection.state().counter_ids.len(), 2);
+        assert_eq!(projection.state().counter_ids[1], counter_id2);
+
+        // Third increment (same counter as first) - should not add duplicate
+        let envelope3 = crate::EventEnvelope::new(
+            uuid::Uuid::new_v4(),
+            counter_id1,
+            "Test".to_string(),
+            "Test.Incremented".to_string(),
+            crate::Version::from(2),
+            serde_json::json!({
+                "amount": 3,
+                "timestamp": "2025-01-01T00:00:00Z"
+            }),
+        );
+
+        projection.handle(&envelope3).await.unwrap();
+        assert_eq!(projection.state().counter_ids.len(), 2); // Still 2, not 3
+    }
+
+    #[tokio::test]
+    async fn test_projection_enum_variant_with_aggregate_id() {
+        #[derive(Debug, Clone, Default)]
+        struct ProductIdMapState {
+            products: std::collections::HashMap<uuid::Uuid, i32>,
+        }
+
+        projection! {
+            pub struct ProductIdMapProjection {
+                state: ProductIdMapState,
+
+                on ProductEvent::ProductCreated |proj, event, aggregate_id| {
+                    proj.state.products.insert(aggregate_id, i32::try_from(event.price).unwrap_or(i32::MAX));
+                },
+            }
+        }
+
+        let mut projection = ProductIdMapProjection::new(ProductIdMapState::default());
+
+        let product_id = uuid::Uuid::new_v4();
+        let envelope = crate::EventEnvelope::new(
+            uuid::Uuid::new_v4(),
+            product_id,
+            "Product".to_string(),
+            "Product.ProductCreated".to_string(),
+            crate::Version::from(1),
+            serde_json::json!({
+                "name": "Laptop",
+                "price": 1000,
+                "timestamp": "2025-01-01T00:00:00Z"
+            }),
+        );
+
+        projection.handle(&envelope).await.unwrap();
+        assert_eq!(projection.state().products.len(), 1);
+        assert_eq!(projection.state().products.get(&product_id), Some(&1000));
     }
 
     // ===== define_events! Macro Tests (RED PHASE) =====
@@ -1429,7 +2038,7 @@ mod tests {
                     quantity: event.quantity,
                     price: event.price,
                 });
-                order.state.total_amount += event.price * event.quantity as i64;
+                order.state.total_amount += event.price * i64::from(event.quantity);
             },
 
             Completed {}

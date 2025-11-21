@@ -639,6 +639,7 @@ where
 }
 
 #[cfg(test)]
+#[allow(clippy::map_unwrap_or)]
 mod tests {
     use super::*;
 

@@ -284,6 +284,7 @@ pub trait EventType {
 }
 
 #[cfg(test)]
+#[allow(clippy::match_same_arms)]
 mod tests {
     use super::*;
     use chrono::Utc;

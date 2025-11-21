@@ -1,3 +1,6 @@
+#![allow(clippy::uninlined_format_args)]
+#![allow(clippy::clone_on_copy)]
+
 use event_sauce_core::AggregateId as _;
 use event_sauce_macros::AggregateId as DeriveAggregateId;
 use serde::{Deserialize, Serialize};

@@ -419,9 +419,8 @@ mod tests {
             let streams = self.streams.lock().unwrap();
             let count = streams
                 .get(&stream_id)
-                .map(|events| events.len())
-                .unwrap_or(0);
-            Ok(Version::new(count as i32))
+                .map_or(0, std::vec::Vec::len);
+            Ok(Version::new(count.try_into().unwrap_or(i32::MAX)))
         }
 
         async fn load_snapshot(&self, _stream_id: StreamId) -> Result<Option<crate::Snapshot>> {

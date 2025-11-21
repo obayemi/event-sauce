@@ -16,8 +16,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use event_sauce_core::{
-    command_handler, define_events, Aggregate, CheckpointStrategy, ErrorPolicy, EventEnvelope,
-    EventFilter, EventStore, Repository,
+    command_handler, define_events, Aggregate, CheckpointStrategy, ErrorPolicy, EventFilter,
+    EventStore, Repository,
 };
 use event_sauce_macros::{aggregate, AggregateError, AggregateId};
 use event_sauce_postgres::{PostgresCheckpointStore, PostgresEventStore};
@@ -277,87 +277,66 @@ struct ProjectionState {
     orders: HashMap<OrderId, OrderSummaryView>,
 }
 
-/// Order summary projection
-struct OrderSummaryProjection {
-    state: ProjectionState,
+// Order summary projection using the projection! macro with aggregate_id
+event_sauce_core::projection! {
+    pub struct OrderSummaryProjection {
+        state: ProjectionState,
+
+        on UserEvent::Created |proj, event, aggregate_id| {
+            let user_id = UserId(aggregate_id);
+            proj.state.users.insert(user_id, (event.email.clone(), event.name.clone()));
+        },
+
+        on UserEvent::EmailChanged |proj, event, aggregate_id| {
+            let user_id = UserId(aggregate_id);
+            if let Some((email, _)) = proj.state.users.get_mut(&user_id) {
+                *email = event.new_email.clone();
+            }
+            // Update orders
+            for order in proj.state.orders.values_mut() {
+                if order.user_id == user_id {
+                    order.user_email = event.new_email.clone();
+                }
+            }
+        },
+
+        on OrderEvent::OrderCreated |proj, event, aggregate_id| {
+            let order_id = OrderId(aggregate_id);
+            let (email, name) = proj.state.users.get(&event.user_id).cloned().unwrap_or_else(|| {
+                ("unknown@example.com".to_string(), "Unknown".to_string())
+            });
+            proj.state.orders.insert(
+                order_id,
+                OrderSummaryView {
+                    order_id,
+                    user_id: event.user_id,
+                    user_email: email,
+                    user_name: name,
+                    item_count: 0,
+                    total_amount: 0,
+                    status: OrderStatus::Pending,
+                },
+            );
+        },
+
+        on OrderEvent::ItemAdded |proj, event, aggregate_id| {
+            let order_id = OrderId(aggregate_id);
+            if let Some(order) = proj.state.orders.get_mut(&order_id) {
+                order.item_count += 1;
+                order.total_amount += event.price * event.quantity as i64;
+            }
+        },
+
+        on OrderEvent::OrderCompleted |proj, _event, aggregate_id| {
+            let order_id = OrderId(aggregate_id);
+            if let Some(order) = proj.state.orders.get_mut(&order_id) {
+                order.status = OrderStatus::Completed;
+            }
+        },
+    }
 }
 
 impl OrderSummaryProjection {
-    fn new() -> Self {
-        Self {
-            state: ProjectionState::default(),
-        }
-    }
-
-    async fn handle(&mut self, envelope: &EventEnvelope) -> Result<(), Box<dyn std::error::Error>> {
-        match envelope.event_type.as_str() {
-            "User.Created" => {
-                let event: UserEvent = serde_json::from_value(envelope.event_data.clone())?;
-                if let UserEvent::Created { email, name, .. } = event {
-                    let user_id = UserId(envelope.aggregate_id);
-                    self.state.users.insert(user_id, (email, name));
-                }
-            }
-            "User.EmailChanged" => {
-                let event: UserEvent = serde_json::from_value(envelope.event_data.clone())?;
-                if let UserEvent::EmailChanged { new_email, .. } = event {
-                    let user_id = UserId(envelope.aggregate_id);
-                    if let Some((email, _)) = self.state.users.get_mut(&user_id) {
-                        *email = new_email.clone();
-                    }
-                    // Update orders
-                    for order in self.state.orders.values_mut() {
-                        if order.user_id == user_id {
-                            order.user_email = new_email.clone();
-                        }
-                    }
-                }
-            }
-            "Order.OrderCreated" => {
-                let event: OrderEvent = serde_json::from_value(envelope.event_data.clone())?;
-                if let OrderEvent::OrderCreated { user_id, .. } = event {
-                    let order_id = OrderId(envelope.aggregate_id);
-                    let (email, name) = self.state.users.get(&user_id).cloned().unwrap_or_else(|| {
-                        ("unknown@example.com".to_string(), "Unknown".to_string())
-                    });
-                    self.state.orders.insert(
-                        order_id,
-                        OrderSummaryView {
-                            order_id,
-                            user_id,
-                            user_email: email,
-                            user_name: name,
-                            item_count: 0,
-                            total_amount: 0,
-                            status: OrderStatus::Pending,
-                        },
-                    );
-                }
-            }
-            "Order.ItemAdded" => {
-                let event: OrderEvent = serde_json::from_value(envelope.event_data.clone())?;
-                if let OrderEvent::ItemAdded {
-                    quantity, price, ..
-                } = event
-                {
-                    let order_id = OrderId(envelope.aggregate_id);
-                    if let Some(order) = self.state.orders.get_mut(&order_id) {
-                        order.item_count += 1;
-                        order.total_amount += price * quantity as i64;
-                    }
-                }
-            }
-            "Order.OrderCompleted" => {
-                let order_id = OrderId(envelope.aggregate_id);
-                if let Some(order) = self.state.orders.get_mut(&order_id) {
-                    order.status = OrderStatus::Completed;
-                }
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-
     fn get_all_orders(&self) -> Vec<OrderSummaryView> {
         self.state.orders.values().cloned().collect()
     }
@@ -447,7 +426,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("\n=== Building Projection ===\n");
 
-    let mut projection = OrderSummaryProjection::new();
+    let mut projection = OrderSummaryProjection::new(ProjectionState::default());
 
     let subscription = store
         .subscription_builder("order-summary")

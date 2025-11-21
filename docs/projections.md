@@ -122,6 +122,7 @@ define_events! {
         },
     }
 }
+// ☝️ This generates: RegisteredEvent, ActivatedEvent, SuspendedEvent structs
 
 // Define projection state
 #[derive(Debug, Clone, Default)]
@@ -129,29 +130,63 @@ struct UserCountState {
     counts: HashMap<UserStatus, u64>,
 }
 
-// Create projection with declarative event handlers
+// Create projection with enum variant syntax (recommended)
 projection! {
     pub struct UserCountProjection {
         state: UserCountState,
 
-        // No string literals needed - event types inferred from EventType trait!
-        on RegisteredEvent |proj, _event| {
+        // Use enum variants - no imports needed!
+        on UserEvent::Registered |proj, _event| {
             *proj.state.counts.entry(UserStatus::Inactive).or_insert(0) += 1;
         },
 
-        on ActivatedEvent |proj, _event| {
+        on UserEvent::Activated |proj, _event| {
             if let Some(count) = proj.state.counts.get_mut(&UserStatus::Inactive) {
                 *count = count.saturating_sub(1);
             }
             *proj.state.counts.entry(UserStatus::Active).or_insert(0) += 1;
         },
 
-        on SuspendedEvent |proj, _event| {
+        on UserEvent::Suspended |proj, _event| {
             if let Some(count) = proj.state.counts.get_mut(&UserStatus::Active) {
                 *count = count.saturating_sub(1);
             }
             *proj.state.counts.entry(UserStatus::Suspended).or_insert(0) += 1;
         },
+    }
+}
+
+// With aggregate_id access (optional third parameter)
+projection! {
+    pub struct UserDetailsProjection {
+        state: HashMap<Uuid, UserDetails>,
+
+        on UserEvent::Registered |proj, event, aggregate_id| {
+            // aggregate_id is available as Uuid from the envelope
+            proj.state.insert(aggregate_id, UserDetails {
+                user_id: aggregate_id,
+                email: event.email.clone(),
+                status: UserStatus::Inactive,
+            });
+        },
+
+        on UserEvent::Activated |proj, _event, aggregate_id| {
+            if let Some(user) = proj.state.get_mut(&aggregate_id) {
+                user.status = UserStatus::Active;
+            }
+        },
+    }
+}
+
+// Alternative: Use struct names directly (if you prefer or need to)
+projection! {
+    pub struct UserCountProjection2 {
+        state: UserCountState,
+
+        on RegisteredEvent |proj, _event| {
+            *proj.state.counts.entry(UserStatus::Inactive).or_insert(0) += 1;
+        },
+        // ... etc
     }
 }
 
@@ -167,6 +202,11 @@ let active_users = projection.state().counts.get(&UserStatus::Active);
 - ✅ **Less boilerplate** - ~60% less code than manual implementation
 - ✅ **Declarative** - Clear per-event handlers
 - ✅ **Auto-generated methods** - `new()`, `state()`, `state_mut()`, `handle()`
+- ✅ **Optional aggregate_id access** - Add third parameter when needed
+
+**Handler Signatures:**
+- Two parameters: `|proj, event|` - Standard usage, no aggregate_id needed
+- Three parameters: `|proj, event, aggregate_id|` - When you need the aggregate_id from the envelope
 
 **When to use manual implementation instead:**
 - Complex conditional logic across multiple events

@@ -913,7 +913,7 @@ mod tests {
 
         // Verify snapshot config is set - just check it's accessible
         let _config = store.snapshot_config();
-        assert!(true); // Config is accessible
+        // Config is accessible - test passes if no panic occurs
     }
 
     #[tokio::test]
@@ -943,7 +943,7 @@ mod tests {
         // Verify both are configured
         assert!(store.checkpoint_store().is_some());
         let _config = store.snapshot_config();
-        assert!(true);
+        // Config is accessible - test passes if no panic occurs
     }
 
     #[tokio::test]

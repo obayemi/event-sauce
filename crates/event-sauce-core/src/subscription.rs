@@ -884,7 +884,7 @@ mod tests {
             from_position: Position,
         ) -> Result<impl Stream<Item = Result<EventEnvelope>> + Send> {
             let events = self.events.lock().unwrap().clone();
-            let from_idx = from_position.as_i64() as usize;
+            let from_idx = usize::try_from(from_position.as_i64()).unwrap_or(0);
             let filtered_events: Vec<_> = events.into_iter().skip(from_idx).map(Ok).collect();
             Ok(stream::iter(filtered_events))
         }
