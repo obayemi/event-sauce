@@ -8,6 +8,7 @@
 ///
 /// This macro reduces boilerplate by automatically generating command methods
 /// that create events, apply timestamps, and apply the events to the aggregate.
+/// It also generates event helper functions for creating events without applying them.
 ///
 /// # Syntax
 ///
@@ -25,11 +26,18 @@
 ///
 /// # Generated Code
 ///
-/// For each command, the macro generates a public method that:
-/// 1. Creates the event struct with provided parameters
-/// 2. Adds `timestamp: chrono::Utc::now()` automatically
-/// 3. Applies the event using `self.apply(event)?`
-/// 4. Returns `Result<(), <Self as Aggregate>::Error>`
+/// For each command, the macro generates:
+///
+/// 1. **Event helper function** `<command>_event(&self, params) -> EventStruct`:
+///    - Creates the event struct with provided parameters
+///    - Adds `timestamp: chrono::Utc::now()` automatically
+///    - Returns the event **without applying it**
+///    - Useful for batch operations, conditional application, or testing
+///
+/// 2. **Command method** `<command>(&mut self, params) -> Result<(), Error>`:
+///    - Uses the event helper function to create the event
+///    - Applies the event using `self.apply(event)?`
+///    - Returns `Result<(), <Self as Aggregate>::Error>`
 ///
 /// # Examples
 ///
@@ -49,38 +57,84 @@
 ///
 /// ```ignore
 /// impl Counter {
+///     // Event helper function - creates event without applying
+///     pub fn increment_event(&self, amount: i32) -> CounterIncrementedEvent {
+///         CounterIncrementedEvent {
+///             amount,
+///             timestamp: ::chrono::Utc::now(),
+///         }
+///     }
+///
+///     // Command method - uses helper and applies event
 ///     pub fn increment(&mut self, amount: i32)
 ///         -> Result<(), <Self as Aggregate>::Error>
 ///     {
-///         let event = CounterIncrementedEvent {
-///             amount,
-///             timestamp: ::chrono::Utc::now(),
-///         };
+///         let event = self.increment_event(amount);
 ///         self.apply(event)?;
 ///         Ok(())
+///     }
+///
+///     pub fn decrement_event(&self, amount: i32) -> CounterDecrementedEvent {
+///         CounterDecrementedEvent {
+///             amount,
+///             timestamp: ::chrono::Utc::now(),
+///         }
 ///     }
 ///
 ///     pub fn decrement(&mut self, amount: i32)
 ///         -> Result<(), <Self as Aggregate>::Error>
 ///     {
-///         let event = CounterDecrementedEvent {
-///             amount,
-///             timestamp: ::chrono::Utc::now(),
-///         };
+///         let event = self.decrement_event(amount);
 ///         self.apply(event)?;
 ///         Ok(())
+///     }
+///
+///     pub fn reset_event(&self) -> CounterResetEvent {
+///         CounterResetEvent {
+///             timestamp: ::chrono::Utc::now(),
+///         }
 ///     }
 ///
 ///     pub fn reset(&mut self)
 ///         -> Result<(), <Self as Aggregate>::Error>
 ///     {
-///         let event = CounterResetEvent {
-///             timestamp: ::chrono::Utc::now(),
-///         };
+///         let event = self.reset_event();
 ///         self.apply(event)?;
 ///         Ok(())
 ///     }
 /// }
+/// ```
+///
+/// # Using Event Helper Functions
+///
+/// The event helper functions are useful for:
+///
+/// - **Conditional application**: Create events and apply only if conditions are met
+/// - **Batch operations**: Create multiple events before applying them
+/// - **Testing**: Create events without modifying aggregate state
+/// - **Custom workflows**: Full control over when events are applied
+///
+/// ```ignore
+/// // Conditional application
+/// let event = counter.increment_event(5);
+/// if some_condition {
+///     counter.apply(event)?;
+/// }
+///
+/// // Batch operations
+/// let events = vec![
+///     counter.increment_event(5),
+///     counter.increment_event(10),
+///     counter.increment_event(15),
+/// ];
+/// for event in events {
+///     counter.apply(event)?;
+/// }
+///
+/// // Testing
+/// let event = counter.increment_event(5);
+/// assert_eq!(event.amount, 5);
+/// // Counter state unchanged
 /// ```
 ///
 /// # Benefits
@@ -90,6 +144,7 @@
 /// - Automatic timestamp handling
 /// - Type-safe command parameters
 /// - Clear, declarative syntax
+/// - Flexible event creation and application
 #[macro_export]
 macro_rules! command_handler {
     (
@@ -103,17 +158,27 @@ macro_rules! command_handler {
     ) => {
         impl $aggregate {
             $(
-                $(#[$attr])*
-                #[allow(missing_docs)]
-                pub fn $command(&mut self, $($param: $param_ty),*)
-                    -> ::std::result::Result<(), <Self as $crate::Aggregate>::Error>
-                {
-                    let event = $event_struct {
-                        $($field: $param,)*
-                        timestamp: ::chrono::Utc::now(),
-                    };
-                    self.apply(event)?;
-                    ::std::result::Result::Ok(())
+                paste::paste! {
+                    // Generate event helper function
+                    $(#[$attr])*
+                    #[allow(missing_docs)]
+                    pub fn [<$command _event>](&self, $($param: $param_ty),*) -> $event_struct {
+                        $event_struct {
+                            $($field: $param,)*
+                            timestamp: ::chrono::Utc::now(),
+                        }
+                    }
+
+                    // Generate command method that uses the helper
+                    $(#[$attr])*
+                    #[allow(missing_docs)]
+                    pub fn $command(&mut self, $($param: $param_ty),*)
+                        -> ::std::result::Result<(), <Self as $crate::Aggregate>::Error>
+                    {
+                        let event = self.[<$command _event>]($($param),*);
+                        self.apply(event)?;
+                        ::std::result::Result::Ok(())
+                    }
                 }
             )*
         }
@@ -1590,5 +1655,123 @@ mod tests {
 
         let result = completed.validate(&order);
         assert!(result.is_err());
+    }
+
+    // ===== command_handler! Event Helper Function Tests (RED PHASE) =====
+
+    #[test]
+    fn test_command_handler_generates_event_helper_functions() {
+        // Test that <command>_event helper functions are generated
+        let aggregate = TestAggregate::new(DefaultAggregateId::new());
+
+        // These should create events without applying them
+        let event = aggregate.increment_event(5);
+        assert_eq!(event.amount, 5);
+
+        let event = aggregate.decrement_event(3);
+        assert_eq!(event.amount, 3);
+
+        let event = aggregate.reset_event();
+        // Reset has no fields besides timestamp
+        let _ = event.timestamp;
+    }
+
+    #[test]
+    fn test_event_helper_creates_event_without_applying() {
+        let mut aggregate = TestAggregate::new(DefaultAggregateId::new());
+
+        // Create event using helper - should NOT apply it
+        let event = aggregate.increment_event(10);
+
+        // Aggregate state should be unchanged
+        assert_eq!(aggregate.value(), 0);
+        assert_eq!(aggregate.pending_events().len(), 0);
+
+        // Now manually apply the event
+        aggregate.apply(event).unwrap();
+
+        // Now state should be updated
+        assert_eq!(aggregate.value(), 10);
+        assert_eq!(aggregate.pending_events().len(), 1);
+    }
+
+    #[test]
+    fn test_event_helper_adds_timestamp() {
+        let aggregate = TestAggregate::new(DefaultAggregateId::new());
+        let before = Utc::now();
+
+        let event = aggregate.increment_event(5);
+
+        let after = Utc::now();
+
+        // Check that the event has a timestamp
+        assert!(event.timestamp >= before);
+        assert!(event.timestamp <= after);
+    }
+
+    #[test]
+    fn test_event_helper_with_multiple_parameters() {
+        // Define a more complex event structure for testing
+        #[derive(Debug, Clone, Serialize, Deserialize)]
+        struct MultiParamEvent {
+            field1: String,
+            field2: i32,
+            field3: bool,
+            timestamp: DateTime<Utc>,
+        }
+
+        impl ApplyEvent<TestAggregate> for MultiParamEvent {
+            fn apply(&self, _aggregate: &mut TestAggregate) {
+                // No-op for test
+            }
+        }
+
+        impl From<MultiParamEvent> for TestEvent {
+            fn from(e: MultiParamEvent) -> Self {
+                // Mock conversion
+                TestEvent::Reset(ResetEvent {
+                    timestamp: e.timestamp,
+                })
+            }
+        }
+
+        // We can't actually test this with TestAggregate since we'd need to modify
+        // the command_handler! invocation, but this documents expected behavior
+    }
+
+    #[test]
+    fn test_command_method_uses_event_helper() {
+        let mut aggregate = TestAggregate::new(DefaultAggregateId::new());
+
+        // The command method should internally use the event helper
+        // We verify this by checking that the behavior is consistent
+        let before = Utc::now();
+        aggregate.increment(7).unwrap();
+        let after = Utc::now();
+
+        assert_eq!(aggregate.value(), 7);
+        let event = &aggregate.pending_events()[0];
+        let event_time = event.occurred_at();
+        assert!(event_time >= before);
+        assert!(event_time <= after);
+    }
+
+    #[test]
+    fn test_event_helper_can_be_used_for_conditional_application() {
+        let mut aggregate = TestAggregate::new(DefaultAggregateId::new());
+
+        // Create multiple events using helpers
+        let event1 = aggregate.increment_event(5);
+        let _event2 = aggregate.increment_event(10);
+        let event3 = aggregate.increment_event(15);
+
+        // Conditionally apply only some events
+        aggregate.apply(event1).unwrap();
+        // Skip _event2
+        aggregate.apply(event3).unwrap();
+
+        // Should only have applied event1 and event3
+        assert_eq!(aggregate.value(), 20); // 5 + 15
+        assert_eq!(aggregate.pending_events().len(), 2);
     }
 }
