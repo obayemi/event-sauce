@@ -226,6 +226,63 @@ pub trait DomainEvent: Clone + Debug + Send + Sync + Serialize + DeserializeOwne
     }
 }
 
+/// Trait for providing compile-time event type strings.
+///
+/// This trait provides a const string that identifies the event type,
+/// eliminating the need to specify string literals when working with
+/// event handlers and projections.
+///
+/// # Implementation
+///
+/// This trait is typically implemented automatically by the `define_events!` macro.
+/// For manual event definitions, you can implement it like this:
+///
+/// ```
+/// use event_sauce_core::EventType;
+///
+/// #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+/// pub struct UserRegisteredEvent {
+///     pub email: String,
+///     pub timestamp: chrono::DateTime<chrono::Utc>,
+/// }
+///
+/// impl EventType for UserRegisteredEvent {
+///     const EVENT_TYPE: &'static str = "User.Registered";
+/// }
+/// ```
+///
+/// # Benefits
+///
+/// - **Type-safe**: Compile-time verification that event types exist
+/// - **DRY**: Single source of truth for event type strings
+/// - **Zero overhead**: Const evaluation, no runtime cost
+/// - **Refactor-friendly**: Compiler catches mismatches
+///
+/// # Usage with Projections
+///
+/// When using the `projection!` macro, the `EventType` trait allows you
+/// to omit the event type string:
+///
+/// ```ignore
+/// projection! {
+///     pub struct UserProjection {
+///         state: HashMap<UserId, UserView>,
+///
+///         // No string literal needed - inferred from EventType trait
+///         on UserRegisteredEvent |proj, event| {
+///             proj.state.insert(event.user_id, UserView::new(event));
+///         },
+///     }
+/// }
+/// ```
+pub trait EventType {
+    /// The event type identifier string.
+    ///
+    /// This should match the event type string used in event envelopes
+    /// (e.g., "User.Registered", "Order.Created").
+    const EVENT_TYPE: &'static str;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1040,5 +1097,83 @@ mod tests {
 
         let result = process_envelope(&envelope).unwrap();
         assert_eq!(result, "Created: test-123");
+    }
+
+    // Tests for EventType trait
+    use crate::EventType;
+
+    // Test struct that implements EventType
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    struct TestEventWithType {
+        timestamp: DateTime<Utc>,
+    }
+
+    impl EventType for TestEventWithType {
+        const EVENT_TYPE: &'static str = "Test.EventWithType";
+    }
+
+    #[test]
+    fn test_event_type_const() {
+        assert_eq!(TestEventWithType::EVENT_TYPE, "Test.EventWithType");
+    }
+
+    #[test]
+    fn test_event_type_is_static() {
+        // Verify the event type string can be used in const contexts
+        const EVENT_TYPE: &str = TestEventWithType::EVENT_TYPE;
+        assert_eq!(EVENT_TYPE, "Test.EventWithType");
+    }
+
+    #[test]
+    fn test_event_type_accessible_without_instance() {
+        // Can access EVENT_TYPE without creating an instance
+        let event_type = TestEventWithType::EVENT_TYPE;
+        assert!(!event_type.is_empty());
+    }
+
+    #[test]
+    fn test_event_type_is_send_sync() {
+        fn assert_send<T: Send>() {}
+        fn assert_sync<T: Sync>() {}
+
+        assert_send::<TestEventWithType>();
+        assert_sync::<TestEventWithType>();
+    }
+
+    // Test multiple event types with different names
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    struct FirstEvent {
+        value: i32,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    struct SecondEvent {
+        value: String,
+    }
+
+    impl EventType for FirstEvent {
+        const EVENT_TYPE: &'static str = "Domain.FirstEvent";
+    }
+
+    impl EventType for SecondEvent {
+        const EVENT_TYPE: &'static str = "Domain.SecondEvent";
+    }
+
+    #[test]
+    fn test_multiple_event_types_have_different_names() {
+        assert_ne!(FirstEvent::EVENT_TYPE, SecondEvent::EVENT_TYPE);
+        assert_eq!(FirstEvent::EVENT_TYPE, "Domain.FirstEvent");
+        assert_eq!(SecondEvent::EVENT_TYPE, "Domain.SecondEvent");
+    }
+
+    #[test]
+    fn test_event_type_follows_naming_convention() {
+        // Verify event types follow Aggregate.EventName convention
+        assert!(TestEventWithType::EVENT_TYPE.contains('.'));
+
+        let parts: Vec<&str> = TestEventWithType::EVENT_TYPE.split('.').collect();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0], "Test");
+        assert_eq!(parts[1], "EventWithType");
     }
 }

@@ -95,11 +95,90 @@ let filter = EventFilter::both("UserRegistered", "User");
 
 ## Building Projections
 
+event-sauce provides two approaches for building projections:
+
+1. **Using the `projection!` macro** (recommended) - Declarative, less boilerplate
+2. **Manual implementation** - Full control, useful for complex scenarios
+
+### Using the `projection!` Macro (Recommended)
+
+The `projection!` macro provides a declarative way to define projections with minimal boilerplate. Event types are automatically inferred from the `EventType` trait, eliminating string duplication.
+
+```rust
+use event_sauce_core::projection;
+use std::collections::HashMap;
+
+// Define your events (using define_events! or manually)
+define_events! {
+    pub enum UserEvent for User {
+        Registered { email: String } => |user, event| {
+            user.state.email = event.email.clone();
+        },
+        Activated { } => |user, _event| {
+            user.state.status = UserStatus::Active;
+        },
+        Suspended { } => |user, _event| {
+            user.state.status = UserStatus::Suspended;
+        },
+    }
+}
+
+// Define projection state
+#[derive(Debug, Clone, Default)]
+struct UserCountState {
+    counts: HashMap<UserStatus, u64>,
+}
+
+// Create projection with declarative event handlers
+projection! {
+    pub struct UserCountProjection {
+        state: UserCountState,
+
+        // No string literals needed - event types inferred from EventType trait!
+        on RegisteredEvent |proj, _event| {
+            *proj.state.counts.entry(UserStatus::Inactive).or_insert(0) += 1;
+        },
+
+        on ActivatedEvent |proj, _event| {
+            if let Some(count) = proj.state.counts.get_mut(&UserStatus::Inactive) {
+                *count = count.saturating_sub(1);
+            }
+            *proj.state.counts.entry(UserStatus::Active).or_insert(0) += 1;
+        },
+
+        on SuspendedEvent |proj, _event| {
+            if let Some(count) = proj.state.counts.get_mut(&UserStatus::Active) {
+                *count = count.saturating_sub(1);
+            }
+            *proj.state.counts.entry(UserStatus::Suspended).or_insert(0) += 1;
+        },
+    }
+}
+
+// Usage
+let mut projection = UserCountProjection::new(UserCountState::default());
+projection.handle(&event_envelope).await?;
+let active_users = projection.state().counts.get(&UserStatus::Active);
+```
+
+**Benefits:**
+- ✅ **No string duplication** - Event types inferred via `EventType` trait
+- ✅ **Type-safe** - Compile-time verification of event types
+- ✅ **Less boilerplate** - ~60% less code than manual implementation
+- ✅ **Declarative** - Clear per-event handlers
+- ✅ **Auto-generated methods** - `new()`, `state()`, `state_mut()`, `handle()`
+
+**When to use manual implementation instead:**
+- Complex conditional logic across multiple events
+- Need to maintain additional internal state
+- Custom error handling beyond the default
+- Performance-critical code paths requiring fine-grained control
+
 ### Projection Pattern
 
 Projections in event-sauce are simple structs with handler methods. No trait implementation required - just define your state and a method to process events.
 
-### Simple Example: User Count
+### Manual Implementation Example: User Count
 
 ```rust
 use std::collections::HashMap;

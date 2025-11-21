@@ -39,7 +39,7 @@ pub use aggregate::Aggregate;
 pub use aggregate_error::AggregateError;
 pub use aggregate_id::{AggregateId, DefaultAggregateId};
 pub use apply_event::ApplyEvent;
-pub use domain_event::DomainEvent;
+pub use domain_event::{DomainEvent, EventType};
 pub use error::{Error, Result};
 pub use event_envelope::{EventEnvelope, EventMetadata};
 pub use event_store::{count_events, load, EventStore, Position, Snapshot, StreamId};

@@ -190,6 +190,9 @@ macro_rules! command_handler {
 /// This macro simplifies creating projections by providing a declarative
 /// syntax for defining how events update a read model state.
 ///
+/// Event types are automatically inferred from the `EventType` trait,
+/// eliminating the need for string literals.
+///
 /// # Syntax
 ///
 /// ```ignore
@@ -197,11 +200,11 @@ macro_rules! command_handler {
 ///     pub struct ProjectionName {
 ///         state: StateType,
 ///
-///         on "EventType1" => EventType1Struct |proj, event| {
+///         on EventType1Struct |proj, event| {
 ///             // Update projection state based on event
 ///         },
 ///
-///         on "EventType2" => EventType2Struct |proj, event| {
+///         on EventType2Struct |proj, event| {
 ///             // Handle another event type
 ///         },
 ///     }
@@ -226,7 +229,7 @@ macro_rules! command_handler {
 ///     pub struct UserListProjection {
 ///         state: HashMap<UserId, UserView>,
 ///
-///         on "UserRegistered" => UserRegisteredEvent |proj, event| {
+///         on UserRegisteredEvent |proj, event| {
 ///             proj.state.insert(event.user_id, UserView {
 ///                 email: event.email.clone(),
 ///                 status: UserStatus::Active,
@@ -234,13 +237,13 @@ macro_rules! command_handler {
 ///             });
 ///         },
 ///
-///         on "UserEmailChanged" => UserEmailChangedEvent |proj, event| {
+///         on UserEmailChangedEvent |proj, event| {
 ///             if let Some(user) = proj.state.get_mut(&event.user_id) {
 ///                 user.email = event.new_email.clone();
 ///             }
 ///         },
 ///
-///         on "UserDeleted" => UserDeletedEvent |proj, event| {
+///         on UserDeletedEvent |proj, event| {
 ///             proj.state.remove(&event.user_id);
 ///         },
 ///     }
@@ -254,6 +257,7 @@ macro_rules! command_handler {
 /// - Automatic pattern matching
 /// - Clean, readable projection definitions
 /// - Ignores unknown events automatically
+/// - No string literals needed (uses `EventType` trait)
 #[macro_export]
 macro_rules! projection {
     (
@@ -261,7 +265,7 @@ macro_rules! projection {
             state: $state:ty,
 
             $(
-                on $event_type:literal => $event:ty |$proj:ident, $evt:ident| $handler:block
+                on $event:ty |$proj:ident, $evt:ident| $handler:block
             ),* $(,)?
         }
     ) => {
@@ -297,8 +301,8 @@ macro_rules! projection {
                 -> $crate::Result<()>
             {
                 $(
-                    // Check event type first, then deserialize
-                    if envelope.event_type == $event_type {
+                    // Check event type using EventType trait, then deserialize
+                    if envelope.event_type == <$event as $crate::EventType>::EVENT_TYPE {
                         if let Ok($evt) = ::serde_json::from_value::<$event>(envelope.event_data.clone()) {
                             let $proj = self;
                             $handler
@@ -500,6 +504,15 @@ macro_rules! define_events {
                         }
                     }
                 }
+
+                // Implement EventType for each event struct
+                impl $crate::EventType for [<$variant Event>] {
+                    const EVENT_TYPE: &'static str = concat!(
+                        stringify!($aggregate),
+                        ".",
+                        stringify!($variant)
+                    );
+                }
             }
         )*
 
@@ -606,15 +619,27 @@ mod tests {
         timestamp: DateTime<Utc>,
     }
 
+    impl crate::EventType for IncrementedEvent {
+        const EVENT_TYPE: &'static str = "Test.Incremented";
+    }
+
     #[derive(Debug, Clone, Serialize, Deserialize)]
     struct DecrementedEvent {
         amount: i32,
         timestamp: DateTime<Utc>,
     }
 
+    impl crate::EventType for DecrementedEvent {
+        const EVENT_TYPE: &'static str = "Test.Decremented";
+    }
+
     #[derive(Debug, Clone, Serialize, Deserialize)]
     struct ResetEvent {
         timestamp: DateTime<Utc>,
+    }
+
+    impl crate::EventType for ResetEvent {
+        const EVENT_TYPE: &'static str = "Test.Reset";
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -930,17 +955,17 @@ mod tests {
         pub struct CounterProjection {
             state: CounterView,
 
-            on "Test.Incremented" => IncrementedEvent |proj, event| {
+            on IncrementedEvent |proj, event| {
                 proj.state.value += event.amount;
                 proj.state.increment_count += 1;
             },
 
-            on "Test.Decremented" => DecrementedEvent |proj, event| {
+            on DecrementedEvent |proj, event| {
                 proj.state.value -= event.amount;
                 proj.state.decrement_count += 1;
             },
 
-            on "Test.Reset" => ResetEvent |_proj, _event| {
+            on ResetEvent |_proj, _event| {
                 _proj.state.value = 0;
             },
         }
@@ -1132,18 +1157,26 @@ mod tests {
         timestamp: DateTime<Utc>,
     }
 
+    impl crate::EventType for UserCreatedEvent {
+        const EVENT_TYPE: &'static str = "UserCreated";
+    }
+
+    impl crate::EventType for UserUpdatedEvent {
+        const EVENT_TYPE: &'static str = "UserUpdated";
+    }
+
     projection! {
         pub struct UserListProjection {
             state: HashMap<String, UserView>,
 
-            on "UserCreated" => UserCreatedEvent |proj, event| {
+            on UserCreatedEvent |proj, event| {
                 proj.state.insert(event.user_id.clone(), UserView {
                     name: event.name.clone(),
                     email: event.email.clone(),
                 });
             },
 
-            on "UserUpdated" => UserUpdatedEvent |proj, event| {
+            on UserUpdatedEvent |proj, event| {
                 if let Some(user) = proj.state.get_mut(&event.user_id) {
                     user.name = event.name.clone();
                 }
