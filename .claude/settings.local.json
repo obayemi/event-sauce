@@ -26,7 +26,9 @@
       "Bash(cargo clean:*)",
       "Bash(jj show:*)",
       "Bash(jj cat:*)",
-      "Bash(jj file show:*)"
+      "Bash(jj file show:*)",
+      "Bash(rustc:*)",
+      "Bash(cargo --version:*)"
     ],
     "deny": [],
     "ask": []
