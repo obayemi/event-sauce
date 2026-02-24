@@ -297,7 +297,10 @@ mod tests {
             self.pending_events.clear();
         }
 
-        fn apply<E: Into<Self::Event>>(&mut self, event: E) -> std::result::Result<(), Self::Error> {
+        fn apply<E: Into<Self::Event>>(
+            &mut self,
+            event: E,
+        ) -> std::result::Result<(), Self::Error> {
             let event = event.into();
             self.apply_internal(&event)?;
             self.pending_events.push(event);
@@ -417,9 +420,7 @@ mod tests {
 
         async fn get_version(&self, stream_id: StreamId) -> Result<Version> {
             let streams = self.streams.lock().unwrap();
-            let count = streams
-                .get(&stream_id)
-                .map_or(0, std::vec::Vec::len);
+            let count = streams.get(&stream_id).map_or(0, std::vec::Vec::len);
             Ok(Version::new(count.try_into().unwrap_or(i32::MAX)))
         }
 
@@ -433,8 +434,7 @@ mod tests {
 
         fn snapshot_config(&self) -> &crate::SnapshotConfig {
             // Use a static config instance
-            static CONFIG: std::sync::OnceLock<crate::SnapshotConfig> =
-                std::sync::OnceLock::new();
+            static CONFIG: std::sync::OnceLock<crate::SnapshotConfig> = std::sync::OnceLock::new();
             CONFIG.get_or_init(crate::SnapshotConfig::disabled)
         }
     }

@@ -31,6 +31,8 @@ mod macros;
 mod repository;
 mod snapshot_config;
 mod snapshot_strategy;
+/// Specification pattern for composable, reusable business rule validation.
+pub mod specification;
 mod subscription;
 mod types;
 mod version;
@@ -46,6 +48,7 @@ pub use event_store::{count_events, load, EventStore, Position, Snapshot, Stream
 pub use repository::Repository;
 pub use snapshot_config::{SnapshotConfig, SnapshotConfigBuilder};
 pub use snapshot_strategy::{AlwaysSnapshot, EveryNEvents, NeverSnapshot, SnapshotStrategy};
+pub use specification::{Specification, SpecificationError};
 pub use subscription::{
     CheckpointStore, CheckpointStrategy, ErrorPolicy, EventFilter, Subscription,
     SubscriptionBuilder, SubscriptionConfig,

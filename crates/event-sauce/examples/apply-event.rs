@@ -42,9 +42,7 @@ use uuid::Uuid;
 // ============================================================================
 
 /// Bank account aggregate ID - auto-implements AggregateId trait and Display
-#[derive(
-    AggregateId, Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize,
-)]
+#[derive(AggregateId, Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[display("Account-{}")]
 struct AccountId(Uuid);
 
@@ -248,8 +246,7 @@ impl ApplyEvent<BankAccount> for AccountClosedEvent {
 /// - occurred_at() extracting timestamp from each variant
 /// - Into implementations for each event struct
 /// - apply_event() method that delegates to ApplyEvent trait
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(event_sauce_macros::Event)]
+#[derive(Debug, Clone, Serialize, Deserialize, event_sauce_macros::Event)]
 #[event(version = 1, aggregate = "BankAccount")]
 enum BankAccountEvent {
     Opened(AccountOpenedEvent),
@@ -347,7 +344,11 @@ impl Aggregate for BankAccount {
         unimplemented!("State extraction not needed for this example")
     }
 
-    fn from_snapshot(id: Self::Id, version: event_sauce_core::Version, _state: Self::State) -> Self {
+    fn from_snapshot(
+        id: Self::Id,
+        version: event_sauce_core::Version,
+        _state: Self::State,
+    ) -> Self {
         // Simplified for this example
         let mut account = Self::new(id);
         account.version = version;
@@ -361,7 +362,11 @@ impl Aggregate for BankAccount {
 
 impl BankAccount {
     /// Opens a new bank account
-    fn open(holder_name: String, initial_balance: i64, overdraft_limit: i64) -> Result<Self, BankAccountError> {
+    fn open(
+        holder_name: String,
+        initial_balance: i64,
+        overdraft_limit: i64,
+    ) -> Result<Self, BankAccountError> {
         let id = AccountId::new();
         let mut account = Self::new(id);
 
@@ -441,7 +446,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     println!("👤 Account opened for: {}", account.holder_name);
     println!("   Balance: ${:.2}", account.balance as f64 / 100.0);
-    println!("   Overdraft limit: ${:.2}", account.overdraft_limit as f64 / 100.0);
+    println!(
+        "   Overdraft limit: ${:.2}",
+        account.overdraft_limit as f64 / 100.0
+    );
     repo.save(&mut account).await?;
 
     println!("\n=== Deposits and Withdrawals ===\n");
@@ -467,14 +475,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     repo.save(&mut account).await?;
 
     println!("   Current balance: ${:.2}", account.balance as f64 / 100.0);
-    println!("   Daily withdrawal total: ${:.2}", account.daily_withdrawal_total as f64 / 100.0);
+    println!(
+        "   Daily withdrawal total: ${:.2}",
+        account.daily_withdrawal_total as f64 / 100.0
+    );
 
     println!("\n=== Testing Overdraft ===\n");
 
     // Try to withdraw more than balance but within overdraft limit
     account.withdraw(30_000, "Emergency expense".to_string())?;
     println!("💸 Withdrew $300.00 (Emergency - using overdraft)");
-    println!("   Current balance: ${:.2} (overdraft)", account.balance as f64 / 100.0);
+    println!(
+        "   Current balance: ${:.2} (overdraft)",
+        account.balance as f64 / 100.0
+    );
     repo.save(&mut account).await?;
 
     println!("\n=== Testing Validation ===\n");
@@ -529,10 +543,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("📼 Replayed account from repository:");
     println!("   Holder: {}", replayed_account.holder_name);
-    println!("   Balance: ${:.2}", replayed_account.balance as f64 / 100.0);
+    println!(
+        "   Balance: ${:.2}",
+        replayed_account.balance as f64 / 100.0
+    );
     println!("   Status: {:?}", replayed_account.status);
     println!("   Version: {}", replayed_account.version);
-    println!("   Pending events: {}", replayed_account.pending_events().len());
+    println!(
+        "   Pending events: {}",
+        replayed_account.pending_events().len()
+    );
 
     println!("\n=== Repository Features ===\n");
 

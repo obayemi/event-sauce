@@ -2142,7 +2142,10 @@ mod tests {
 
         let result = event.validate(&order);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), OrderError::OrderAlreadyCompleted));
+        assert!(matches!(
+            result.unwrap_err(),
+            OrderError::OrderAlreadyCompleted
+        ));
     }
 
     #[test]
@@ -2158,7 +2161,10 @@ mod tests {
 
         let result = event.validate(&order);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), OrderError::InvalidQuantity(0)));
+        assert!(matches!(
+            result.unwrap_err(),
+            OrderError::InvalidQuantity(0)
+        ));
     }
 
     #[test]

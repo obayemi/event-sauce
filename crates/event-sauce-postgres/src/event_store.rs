@@ -1475,11 +1475,7 @@ mod tests {
         for i in 0..5 {
             let event = create_test_envelope(&format!("Event{i}"), aggregate_id);
             store
-                .append(
-                    stream_id.clone(),
-                    vec![event],
-                    Version::new(i),
-                )
+                .append(stream_id.clone(), vec![event], Version::new(i))
                 .await
                 .unwrap();
         }
@@ -1510,11 +1506,7 @@ mod tests {
         for i in 0..10 {
             let event = create_test_envelope(&format!("Event{i}"), aggregate_id);
             store
-                .append(
-                    stream_id.clone(),
-                    vec![event],
-                    Version::new(i),
-                )
+                .append(stream_id.clone(), vec![event], Version::new(i))
                 .await
                 .unwrap();
         }

@@ -23,8 +23,8 @@ use event_sauce_macros::{aggregate, AggregateError, AggregateId};
 use event_sauce_postgres::{PostgresCheckpointStore, PostgresEventStore};
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
-use testcontainers_modules::testcontainers::runners::AsyncRunner;
 use testcontainers_modules::postgres::Postgres;
+use testcontainers_modules::testcontainers::runners::AsyncRunner;
 use uuid::Uuid;
 
 // ============================================================================
@@ -368,14 +368,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("🗄️  Initializing event store...");
     let event_store = PostgresEventStore::builder()
         .pool(pool.clone())
-        .schema("event_sauce")  // Use custom schema for isolation
+        .schema("event_sauce") // Use custom schema for isolation
         .build();
     event_store.migrate().await?;
 
     println!("📊 Initializing checkpoint store...");
     let checkpoint_store = PostgresCheckpointStore::builder()
         .pool(pool.clone())
-        .schema("event_sauce")  // Use same schema as event store
+        .schema("event_sauce") // Use same schema as event store
         .build();
     checkpoint_store.migrate().await?;
 
@@ -404,12 +404,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut order1 = Order::create(alice.id)?;
     order1.add_item("laptop".to_string(), 1, 120000)?;
     order1.add_item("mouse".to_string(), 2, 2500)?;
-    println!("🛒 Order {} created for Alice (${:.2})", order1.id, order1.total as f64 / 100.0);
+    println!(
+        "🛒 Order {} created for Alice (${:.2})",
+        order1.id,
+        order1.total as f64 / 100.0
+    );
     order_repo.save(&mut order1).await?;
 
     let mut order2 = Order::create(bob.id)?;
     order2.add_item("keyboard".to_string(), 1, 8500)?;
-    println!("🛒 Order {} created for Bob (${:.2})", order2.id, order2.total as f64 / 100.0);
+    println!(
+        "🛒 Order {} created for Bob (${:.2})",
+        order2.id,
+        order2.total as f64 / 100.0
+    );
     order_repo.save(&mut order2).await?;
 
     println!("\n=== Completing Orders ===\n");
@@ -480,7 +488,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Load aggregate from repository
     let loaded_alice = user_repo.load(alice.id).await?;
-    println!("  • Loaded Alice: {} ({})", loaded_alice.name, loaded_alice.email);
+    println!(
+        "  • Loaded Alice: {} ({})",
+        loaded_alice.name, loaded_alice.email
+    );
 
     println!("\n✨ Demo complete!");
 

@@ -226,10 +226,7 @@ impl InMemoryEventStoreBuilder {
     ///     .checkpoint_store(checkpoint_store);
     /// ```
     #[must_use]
-    pub fn checkpoint_store(
-        mut self,
-        store: Arc<dyn event_sauce_core::CheckpointStore>,
-    ) -> Self {
+    pub fn checkpoint_store(mut self, store: Arc<dyn event_sauce_core::CheckpointStore>) -> Self {
         self.checkpoint_store = Some(store);
         self
     }
