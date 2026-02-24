@@ -781,22 +781,10 @@ macro_rules! define_events {
             }
         }
 
-        // Generate apply_event method for the aggregate
-        impl $aggregate {
-            /// Auto-generated method that applies events to the aggregate
-            /// by delegating to each event's `ApplyEvent` implementation.
-            ///
-            /// This method runs the full event application lifecycle:
-            /// 1. Validates pre-conditions using `validate()`
-            /// 2. Applies state changes using `apply()`
-            /// 3. Validates post-conditions using `post_validate()`
-            ///
-            /// # Errors
-            ///
-            /// Returns an error if validation (pre or post) fails.
-            #[allow(missing_docs)]
-            pub fn apply_event(&mut self, event: &$event_enum) -> ::std::result::Result<(), <Self as $crate::Aggregate>::Error> {
-                match event {
+        // Generate EventApplicator impl for the event enum
+        impl $crate::EventApplicator<$aggregate> for $event_enum {
+            fn dispatch(&self, aggregate: &mut $aggregate) -> ::std::result::Result<(), <$aggregate as $crate::Aggregate>::Error> {
+                match self {
                     $(
                         $event_enum::$variant { $($field,)* timestamp } => {
                             paste::paste! {
@@ -805,14 +793,31 @@ macro_rules! define_events {
                                     $($field: $field.clone(),)*
                                     timestamp: *timestamp,
                                 };
-                                evt.validate(self)?;
-                                evt.apply(self);
-                                evt.post_validate(self)?;
+                                evt.validate(aggregate)?;
+                                evt.apply(aggregate);
+                                evt.post_validate(aggregate)?;
                             }
                         }
                     ),*
                 }
                 ::std::result::Result::Ok(())
+            }
+
+            fn dispatch_unchecked(&self, aggregate: &mut $aggregate) {
+                match self {
+                    $(
+                        $event_enum::$variant { $($field,)* timestamp } => {
+                            paste::paste! {
+                                use $crate::ApplyEvent;
+                                let evt = [<$variant Event>] {
+                                    $($field: $field.clone(),)*
+                                    timestamp: *timestamp,
+                                };
+                                evt.apply(aggregate);
+                            }
+                        }
+                    ),*
+                }
             }
         }
     };
@@ -1035,6 +1040,43 @@ mod tests {
         pending_events: Vec<TestEvent>,
     }
 
+    impl crate::EventApplicator<TestAggregate> for TestEvent {
+        fn dispatch(&self, aggregate: &mut TestAggregate) -> Result<(), TestError> {
+            match self {
+                TestEvent::Incremented(e) => {
+                    e.validate(aggregate)?;
+                    e.apply(aggregate);
+                    e.post_validate(aggregate)?;
+                }
+                TestEvent::Decremented(e) => {
+                    e.validate(aggregate)?;
+                    e.apply(aggregate);
+                    e.post_validate(aggregate)?;
+                }
+                TestEvent::Reset(e) => {
+                    e.validate(aggregate)?;
+                    e.apply(aggregate);
+                    e.post_validate(aggregate)?;
+                }
+            }
+            Ok(())
+        }
+
+        fn dispatch_unchecked(&self, aggregate: &mut TestAggregate) {
+            match self {
+                TestEvent::Incremented(e) => {
+                    e.apply(aggregate);
+                }
+                TestEvent::Decremented(e) => {
+                    e.apply(aggregate);
+                }
+                TestEvent::Reset(e) => {
+                    e.apply(aggregate);
+                }
+            }
+        }
+    }
+
     impl Aggregate for TestAggregate {
         type Id = DefaultAggregateId;
         type Event = TestEvent;
@@ -1066,17 +1108,12 @@ mod tests {
             self.pending_events.clear();
         }
 
-        fn apply<E: Into<Self::Event>>(&mut self, event: E) -> Result<(), Self::Error> {
-            let event = event.into();
-            self.apply_internal(&event)?;
+        fn push_pending_event(&mut self, event: Self::Event) {
             self.pending_events.push(event);
-            Ok(())
         }
 
-        fn apply_internal(&mut self, event: &Self::Event) -> Result<(), Self::Error> {
-            self.apply_event(event)?;
+        fn increment_version(&mut self) {
             self.version = self.version.next();
-            Ok(())
         }
 
         fn state(&self) -> &Self::State {
@@ -1094,27 +1131,6 @@ mod tests {
     }
 
     impl TestAggregate {
-        fn apply_event(&mut self, event: &TestEvent) -> Result<(), TestError> {
-            match event {
-                TestEvent::Incremented(e) => {
-                    e.validate(self)?;
-                    e.apply(self);
-                    e.post_validate(self)?;
-                }
-                TestEvent::Decremented(e) => {
-                    e.validate(self)?;
-                    e.apply(self);
-                    e.post_validate(self)?;
-                }
-                TestEvent::Reset(e) => {
-                    e.validate(self)?;
-                    e.apply(self);
-                    e.post_validate(self)?;
-                }
-            }
-            Ok(())
-        }
-
         fn value(&self) -> i32 {
             self.state.value
         }
@@ -1619,31 +1635,12 @@ mod tests {
             self.pending_events.clear();
         }
 
-        fn apply<E: Into<Self::Event>>(
-            &mut self,
-            event: E,
-        ) -> std::result::Result<(), Self::Error> {
-            let event = event.into();
-            self.apply_internal(&event)?;
+        fn push_pending_event(&mut self, event: Self::Event) {
             self.pending_events.push(event);
-            Ok(())
         }
 
-        fn apply_internal(&mut self, event: &Self::Event) -> std::result::Result<(), Self::Error> {
-            match event {
-                ProductEvent::ProductCreated { name, price, .. } => {
-                    self.state.name = name.clone();
-                    self.state.price = *price;
-                }
-                ProductEvent::ProductStockAdded { quantity, .. } => {
-                    self.state.stock += quantity;
-                }
-                ProductEvent::ProductPriceChanged { new_price, .. } => {
-                    self.state.price = *new_price;
-                }
-            }
+        fn increment_version(&mut self) {
             self.version = self.version.next();
-            Ok(())
         }
 
         fn state(&self) -> &Self::State {
@@ -2034,59 +2031,12 @@ mod tests {
             self.pending_events.clear();
         }
 
-        fn apply<E: Into<Self::Event>>(&mut self, event: E) -> Result<(), Self::Error> {
-            let event = event.into();
-            self.apply_internal(&event)?;
+        fn push_pending_event(&mut self, event: Self::Event) {
             self.pending_events.push(event);
-            Ok(())
         }
 
-        fn apply_internal(&mut self, event: &Self::Event) -> Result<(), Self::Error> {
-            // Dispatch to individual ApplyEvent implementations
-            match event {
-                OrderEvent::Created { .. } => {
-                    if let OrderEvent::Created { order_id, .. } = event {
-                        let evt = CreatedEvent {
-                            order_id: order_id.clone(),
-                            timestamp: event.occurred_at(),
-                        };
-                        evt.validate(self)?;
-                        evt.apply(self);
-                        evt.post_validate(self)?;
-                    }
-                }
-                OrderEvent::ItemAdded { .. } => {
-                    if let OrderEvent::ItemAdded {
-                        item_id,
-                        quantity,
-                        price,
-                        ..
-                    } = event
-                    {
-                        let evt = ItemAddedEvent {
-                            item_id: item_id.clone(),
-                            quantity: *quantity,
-                            price: *price,
-                            timestamp: event.occurred_at(),
-                        };
-                        evt.validate(self)?;
-                        evt.apply(self);
-                        evt.post_validate(self)?;
-                    }
-                }
-                OrderEvent::Completed { .. } => {
-                    if let OrderEvent::Completed { .. } = event {
-                        let evt = CompletedEvent {
-                            timestamp: event.occurred_at(),
-                        };
-                        evt.validate(self)?;
-                        evt.apply(self);
-                        evt.post_validate(self)?;
-                    }
-                }
-            }
+        fn increment_version(&mut self) {
             self.version = self.version.next();
-            Ok(())
         }
 
         fn state(&self) -> &Self::State {
@@ -2824,20 +2774,12 @@ mod tests {
             self.pending_events.clear();
         }
 
-        fn apply<E: Into<Self::Event>>(
-            &mut self,
-            event: E,
-        ) -> std::result::Result<(), Self::Error> {
-            let event = event.into();
-            self.apply_internal(&event)?;
+        fn push_pending_event(&mut self, event: Self::Event) {
             self.pending_events.push(event);
-            Ok(())
         }
 
-        fn apply_internal(&mut self, event: &Self::Event) -> std::result::Result<(), Self::Error> {
-            self.apply_event(event)?;
+        fn increment_version(&mut self) {
             self.version = self.version.next();
-            Ok(())
         }
 
         fn state(&self) -> &Self::State {

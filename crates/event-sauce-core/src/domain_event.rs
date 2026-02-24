@@ -314,6 +314,38 @@ mod tests {
         pending_events: Vec<TestEvent>,
     }
 
+    impl crate::EventApplicator<TestAggregate> for TestEvent {
+        fn dispatch(
+            &self,
+            aggregate: &mut TestAggregate,
+        ) -> std::result::Result<(), TestAggregateError> {
+            match self {
+                TestEvent::Created { .. } => {
+                    // Created doesn't have a value field
+                }
+                TestEvent::Updated { value, .. } => {
+                    aggregate.state.value = *value;
+                }
+                TestEvent::Deleted { .. } => {
+                    aggregate.state.value = 0;
+                }
+            }
+            Ok(())
+        }
+
+        fn dispatch_unchecked(&self, aggregate: &mut TestAggregate) {
+            match self {
+                TestEvent::Created { .. } => {}
+                TestEvent::Updated { value, .. } => {
+                    aggregate.state.value = *value;
+                }
+                TestEvent::Deleted { .. } => {
+                    aggregate.state.value = 0;
+                }
+            }
+        }
+    }
+
     impl crate::Aggregate for TestAggregate {
         type Id = DefaultAggregateId;
         type Event = TestEvent;
@@ -345,31 +377,12 @@ mod tests {
             self.pending_events.clear();
         }
 
-        fn apply<E: Into<Self::Event>>(
-            &mut self,
-            event: E,
-        ) -> std::result::Result<(), Self::Error> {
-            let event = event.into();
-            self.apply_internal(&event)
-                .expect("apply should not fail in tests");
+        fn push_pending_event(&mut self, event: Self::Event) {
             self.pending_events.push(event);
-            Ok(())
         }
 
-        fn apply_internal(&mut self, event: &Self::Event) -> std::result::Result<(), Self::Error> {
-            match event {
-                TestEvent::Created { .. } => {
-                    // Created doesn't have a value field
-                }
-                TestEvent::Updated { value, .. } => {
-                    self.state.value = *value;
-                }
-                TestEvent::Deleted { .. } => {
-                    self.state.value = 0;
-                }
-            }
+        fn increment_version(&mut self) {
             self.version = self.version.next();
-            Ok(())
         }
 
         fn state(&self) -> &Self::State {
@@ -545,6 +558,17 @@ mod tests {
         pending_events: Vec<SimpleEvent>,
     }
 
+    impl crate::EventApplicator<SimpleAggregate> for SimpleEvent {
+        fn dispatch(
+            &self,
+            _aggregate: &mut SimpleAggregate,
+        ) -> std::result::Result<(), TestAggregateError> {
+            Ok(())
+        }
+
+        fn dispatch_unchecked(&self, _aggregate: &mut SimpleAggregate) {}
+    }
+
     impl crate::Aggregate for SimpleAggregate {
         type Id = DefaultAggregateId;
         type Event = SimpleEvent;
@@ -576,20 +600,12 @@ mod tests {
             self.pending_events.clear();
         }
 
-        fn apply<E: Into<Self::Event>>(
-            &mut self,
-            event: E,
-        ) -> std::result::Result<(), Self::Error> {
-            let event = event.into();
-            self.apply_internal(&event)
-                .expect("apply should not fail in tests");
+        fn push_pending_event(&mut self, event: Self::Event) {
             self.pending_events.push(event);
-            Ok(())
         }
 
-        fn apply_internal(&mut self, _event: &Self::Event) -> std::result::Result<(), Self::Error> {
+        fn increment_version(&mut self) {
             self.version = self.version.next();
-            Ok(())
         }
 
         fn state(&self) -> &Self::State {
@@ -649,6 +665,17 @@ mod tests {
         pending_events: Vec<VersionedEvent>,
     }
 
+    impl crate::EventApplicator<VersionedAggregate> for VersionedEvent {
+        fn dispatch(
+            &self,
+            _aggregate: &mut VersionedAggregate,
+        ) -> std::result::Result<(), TestAggregateError> {
+            Ok(())
+        }
+
+        fn dispatch_unchecked(&self, _aggregate: &mut VersionedAggregate) {}
+    }
+
     impl crate::Aggregate for VersionedAggregate {
         type Id = DefaultAggregateId;
         type Event = VersionedEvent;
@@ -680,20 +707,12 @@ mod tests {
             self.pending_events.clear();
         }
 
-        fn apply<E: Into<Self::Event>>(
-            &mut self,
-            event: E,
-        ) -> std::result::Result<(), Self::Error> {
-            let event = event.into();
-            self.apply_internal(&event)
-                .expect("apply should not fail in tests");
+        fn push_pending_event(&mut self, event: Self::Event) {
             self.pending_events.push(event);
-            Ok(())
         }
 
-        fn apply_internal(&mut self, _event: &Self::Event) -> std::result::Result<(), Self::Error> {
+        fn increment_version(&mut self) {
             self.version = self.version.next();
-            Ok(())
         }
 
         fn state(&self) -> &Self::State {

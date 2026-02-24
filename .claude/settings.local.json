@@ -30,7 +30,8 @@
       "Bash(rustc:*)",
       "Bash(cargo --version:*)",
       "Bash(wc:*)",
-      "Bash(jj new:*)"
+      "Bash(jj new:*)",
+      "Bash(jj describe:*)"
     ],
     "deny": [],
     "ask": []

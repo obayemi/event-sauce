@@ -931,6 +931,17 @@ mod tests {
         }
     }
 
+    impl crate::EventApplicator<TestAgg> for TestAggregateEvent {
+        fn dispatch(&self, aggregate: &mut TestAgg) -> std::result::Result<(), TestAggErr> {
+            aggregate.apply_event(self);
+            Ok(())
+        }
+
+        fn dispatch_unchecked(&self, aggregate: &mut TestAgg) {
+            aggregate.apply_event(self);
+        }
+    }
+
     impl Aggregate for TestAgg {
         type Id = DefaultAggregateId;
         type Event = TestAggregateEvent;
@@ -962,20 +973,12 @@ mod tests {
             self.pending_events.clear();
         }
 
-        fn apply<E: Into<Self::Event>>(
-            &mut self,
-            event: E,
-        ) -> std::result::Result<(), Self::Error> {
-            let event = event.into();
-            self.apply_internal(&event)?;
+        fn push_pending_event(&mut self, event: Self::Event) {
             self.pending_events.push(event);
-            Ok(())
         }
 
-        fn apply_internal(&mut self, event: &Self::Event) -> std::result::Result<(), Self::Error> {
-            self.apply_event(event);
+        fn increment_version(&mut self) {
             self.version = self.version.next();
-            Ok(())
         }
 
         fn state(&self) -> &Self::State {

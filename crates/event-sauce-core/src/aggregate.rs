@@ -2,7 +2,7 @@
 //!
 //! Defines the core `Aggregate` trait that all event-sourced aggregates must implement.
 
-use crate::{AggregateError, AggregateId, DomainEvent, Version};
+use crate::{AggregateError, AggregateId, DomainEvent, EventApplicator, Version};
 
 #[cfg(test)]
 use crate::DefaultAggregateId;
@@ -146,31 +146,17 @@ use crate::DefaultAggregateId;
 ///     }
 /// }
 /// ```
-pub trait Aggregate: Send + Sync {
+pub trait Aggregate: Send + Sync + Sized {
     /// The type of the aggregate's unique identifier.
-    ///
-    /// This can be any type that implements the `AggregateId` trait, allowing
-    /// for strongly-typed, domain-specific IDs.
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// struct Counter { /* ... */ }
-    ///
-    /// impl Aggregate for Counter {
-    ///     type Id = CounterId;  // Custom, type-safe ID
-    ///     // ...
-    /// }
-    /// ```
     type Id: AggregateId;
 
     /// The type of events this aggregate produces.
-    type Event: DomainEvent;
+    ///
+    /// Must implement `EventApplicator<Self>` so that the trait can provide
+    /// default implementations for `apply`, `apply_internal`, and `apply_unchecked`.
+    type Event: DomainEvent + EventApplicator<Self>;
 
     /// The type of errors that can occur when applying events.
-    ///
-    /// This is used by events that implement `ApplyEvent` trait
-    /// to return validation errors.
     type Error: AggregateError;
 
     /// The type of the aggregate's state (business logic only, no infrastructure).
@@ -181,29 +167,16 @@ pub trait Aggregate: Send + Sync {
 
     /// Creates a new aggregate with the given identifier.
     ///
-    /// This is the canonical way to create a new aggregate instance.
     /// The aggregate should be initialized with version 0 and no pending events.
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// let id = CounterId::new();
-    /// let counter = Counter::new(id);
-    /// ```
     fn new(id: Self::Id) -> Self;
 
     /// Returns the aggregate's unique identifier.
     fn aggregate_id(&self) -> &Self::Id;
 
     /// Returns the current version of the aggregate.
-    ///
-    /// Used for optimistic concurrency control.
     fn version(&self) -> Version;
 
     /// Returns uncommitted events.
-    ///
-    /// These are events that have been applied to the aggregate's state
-    /// but not yet persisted to the event store.
     fn pending_events(&self) -> &[Self::Event];
 
     /// Clears all pending events.
@@ -211,204 +184,61 @@ pub trait Aggregate: Send + Sync {
     /// Called after events have been successfully persisted.
     fn clear_pending_events(&mut self);
 
+    /// Pushes an event onto the pending events list.
+    ///
+    /// Called by the default `apply` implementation after successful validation.
+    fn push_pending_event(&mut self, event: Self::Event);
+
+    /// Increments the aggregate version by one.
+    ///
+    /// Called by the default `apply_internal` and `apply_unchecked` implementations
+    /// after applying state changes.
+    fn increment_version(&mut self);
+
     /// Applies an event to update the aggregate's state and records it.
     ///
     /// This method:
     /// 1. Converts the event into the aggregate's event type (via Into)
-    /// 2. Validates the event can be applied (pre-validation)
-    /// 3. Updates the aggregate's internal state based on the event
-    /// 4. Validates the aggregate state after applying (post-validation)
-    /// 5. Adds the event to pending events if all validations pass
-    /// 6. Increments the version
-    ///
-    /// This method is typically called by business logic methods to apply
-    /// and record new events.
+    /// 2. Dispatches through `EventApplicator` (validate + apply + `post_validate`)
+    /// 3. Increments the version
+    /// 4. Adds the event to pending events
     ///
     /// # Errors
     ///
-    /// Returns an error if:
-    /// - Pre-validation fails (event cannot be applied)
-    /// - Post-validation fails (aggregate state invalid after applying)
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// // Instead of:
-    /// let event = AccountEvent::Withdrawn(AccountWithdrawnEvent { amount: 100, timestamp: Utc::now() });
-    /// self.apply(&event)?;
-    /// self.pending_events.push(event);
-    ///
-    /// // You can now write:
-    /// self.apply(AccountWithdrawnEvent { amount: 100, timestamp: Utc::now() })?;
-    /// ```
-    fn apply<E: Into<Self::Event>>(&mut self, event: E) -> Result<(), Self::Error>;
+    /// Returns an error if validation (pre or post) fails.
+    fn apply<E: Into<Self::Event>>(&mut self, event: E) -> Result<(), Self::Error> {
+        let event = event.into();
+        self.apply_internal(&event)?;
+        self.push_pending_event(event);
+        Ok(())
+    }
 
     /// Applies an event to update the aggregate's state (internal use).
     ///
-    /// This method is used internally by `apply()` and for event replay.
-    /// It only updates state and increments version, without recording
-    /// the event in pending events.
+    /// Used by `apply()` and for event replay with validation.
+    /// Updates state via `EventApplicator::dispatch` and increments version.
     ///
     /// # Errors
     ///
     /// Returns an error if validation fails.
-    fn apply_internal(&mut self, event: &Self::Event) -> Result<(), Self::Error>;
+    fn apply_internal(&mut self, event: &Self::Event) -> Result<(), Self::Error> {
+        EventApplicator::dispatch(event, self)?;
+        self.increment_version();
+        Ok(())
+    }
 
     /// Applies an event without validation (for event replay).
     ///
-    /// This method is used when replaying events from the event store,
-    /// where events are historical facts that should not be re-validated.
-    ///
-    /// The default implementation simply calls `apply()`, which is
-    /// appropriate for aggregates that don't use the validation pattern.
-    ///
-    /// When using events that implement `ApplyEvent` with validation,
-    /// this method should skip validation and directly apply the state changes.
-    ///
-    /// # Arguments
-    ///
-    /// * `event` - The event to apply
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// use event_sauce_core::{Aggregate, AggregateId, AggregateError, DomainEvent, Version};
-    /// use chrono::{DateTime, Utc};
-    /// use std::fmt;
-    /// use uuid::Uuid;
-    /// # use thiserror::Error;
-    ///
-    /// #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-    /// struct CounterId(Uuid);
-    ///
-    /// impl CounterId {
-    ///     fn new() -> Self {
-    ///         Self(Uuid::new_v4())
-    ///     }
-    /// }
-    ///
-    /// impl fmt::Display for CounterId {
-    ///     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    ///         write!(f, "Counter-{}", self.0)
-    ///     }
-    /// }
-    ///
-    /// impl AggregateId for CounterId {
-    ///     fn to_uuid(&self) -> Uuid {
-    ///         self.0
-    ///     }
-    /// }
-    ///
-    /// #[derive(Debug, Clone)]
-    /// enum CounterEvent {
-    ///     Incremented { amount: i32, timestamp: DateTime<Utc> },
-    /// }
-    ///
-    /// impl DomainEvent for CounterEvent {
-    ///     fn event_type(&self) -> &'static str {
-    ///         "CounterIncremented"
-    ///     }
-    ///     fn event_version(&self) -> u64 {
-    ///         1
-    ///     }
-    ///     fn occurred_at(&self) -> DateTime<Utc> {
-    ///         match self {
-    ///             CounterEvent::Incremented { timestamp, .. } => *timestamp,
-    ///         }
-    ///     }
-    /// }
-    ///
-    /// # #[derive(Debug, Error)]
-    /// # #[error("Counter error")]
-    /// # struct CounterError;
-    /// # impl AggregateError for CounterError {}
-    ///
-    /// struct Counter {
-    ///     id: CounterId,
-    ///     value: i32,
-    ///     version: Version,
-    ///     pending_events: Vec<CounterEvent>,
-    /// }
-    ///
-    /// impl Aggregate for Counter {
-    ///     type Event = CounterEvent;
-    ///     type Id = CounterId;
-    ///     type Error = CounterError;
-    ///
-    ///     fn new(id: Self::Id) -> Self {
-    ///         Self {
-    ///             id,
-    ///             value: 0,
-    ///             version: Version::initial(),
-    ///             pending_events: Vec::new(),
-    ///         }
-    ///     }
-    ///
-    ///     fn aggregate_id(&self) -> &Self::Id {
-    ///         &self.id
-    ///     }
-    ///
-    ///     fn version(&self) -> Version {
-    ///         self.version
-    ///     }
-    ///
-    ///     fn pending_events(&self) -> &[Self::Event] {
-    ///         &self.pending_events
-    ///     }
-    ///
-    ///     fn clear_pending_events(&mut self) {
-    ///         self.pending_events.clear();
-    ///     }
-    ///
-    ///     fn apply<E: Into<Self::Event>>(&mut self, event: E) -> Result<(), Self::Error> {
-    ///         let event = event.into();
-    ///         self.apply_internal(&event)?;
-    ///         self.pending_events.push(event);
-    ///         Ok(())
-    ///     }
-    ///
-    ///     fn apply_internal(&mut self, event: &Self::Event) -> Result<(), Self::Error> {
-    ///         match event {
-    ///             CounterEvent::Incremented { amount, .. } => {
-    ///                 self.value += amount;
-    ///             }
-    ///         }
-    ///         self.version = self.version.next();
-    ///         Ok(())
-    ///     }
-    /// }
-    ///
-    /// // Replaying events from event store
-    /// let mut counter = Counter {
-    ///     id: CounterId::new(),
-    ///     value: 0,
-    ///     version: Version::initial(),
-    ///     pending_events: Vec::new(),
-    /// };
-    ///
-    /// let events = vec![
-    ///     CounterEvent::Incremented { amount: 5, timestamp: Utc::now() },
-    ///     CounterEvent::Incremented { amount: 3, timestamp: Utc::now() },
-    /// ];
-    ///
-    /// for event in &events {
-    ///     counter.apply_unchecked(event);
-    /// }
-    ///
-    /// assert_eq!(counter.value, 8);
-    /// ```
+    /// Uses `EventApplicator::dispatch_unchecked` which skips validation,
+    /// then increments the version. Used when replaying historical events.
     fn apply_unchecked(&mut self, event: &Self::Event) {
-        // For event replay, we don't expect validation to fail since
-        // events are historical facts. If validation fails, it indicates
-        // a bug in the event application logic.
-        self.apply_internal(event)
-            .expect("Event replay should not fail validation");
+        EventApplicator::dispatch_unchecked(event, self);
+        self.increment_version();
     }
 
     /// Returns the aggregate type name.
     ///
-    /// Used for event store organization and serialization.
-    /// Defaults to the type name.
+    /// Defaults to the short type name (last segment of the full path).
     ///
     /// # Coverage Note
     ///
@@ -416,10 +246,7 @@ pub trait Aggregate: Send + Sync {
     /// Rust's `type_name()` always returns a non-empty string, so `.last()`
     /// will always return `Some(_)`. The fallback cannot be reached in practice.
     #[must_use]
-    fn aggregate_type() -> &'static str
-    where
-        Self: Sized,
-    {
+    fn aggregate_type() -> &'static str {
         std::any::type_name::<Self>()
             .split("::")
             .last()
@@ -427,40 +254,10 @@ pub trait Aggregate: Send + Sync {
     }
 
     /// Returns a reference to the aggregate's state (business logic only).
-    ///
-    /// This is used for snapshotting - only the pure business state is serialized,
-    /// while infrastructure concerns (ID, version, pending events) are stored separately.
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// let counter = Counter::new(id);
-    /// let state = counter.state();
-    /// // state contains only business fields, no infrastructure
-    /// ```
     fn state(&self) -> &Self::State;
 
     /// Reconstructs an aggregate from a snapshot.
-    ///
-    /// This method creates an aggregate instance from its constituent parts:
-    /// - `id`: The aggregate's unique identifier
-    /// - `version`: The version at which the snapshot was taken
-    /// - `state`: The business state at that version
-    ///
-    /// The aggregate is initialized with no pending events, as snapshots represent
-    /// a consistent state after all events have been applied.
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// let state = CounterState { value: 42 };
-    /// let counter = Counter::from_snapshot(id, Version::new(10), state);
-    /// assert_eq!(counter.version(), Version::new(10));
-    /// assert_eq!(counter.state().value, 42);
-    /// ```
-    fn from_snapshot(id: Self::Id, version: Version, state: Self::State) -> Self
-    where
-        Self: Sized;
+    fn from_snapshot(id: Self::Id, version: Version, state: Self::State) -> Self;
 }
 
 #[cfg(test)]
@@ -514,15 +311,6 @@ mod tests {
     }
 
     impl TestAggregate {
-        fn new(id: DefaultAggregateId) -> Self {
-            Self {
-                id,
-                state: TestAggregateState { value: 0 },
-                version: Version::initial(),
-                pending_events: Vec::new(),
-            }
-        }
-
         fn create(id: DefaultAggregateId, value: i32) -> Self {
             let mut aggregate = Self::new(id);
             aggregate.apply(TestEvent::Created { value }).unwrap();
@@ -532,11 +320,22 @@ mod tests {
         fn update(&mut self, value: i32) {
             self.apply(TestEvent::Updated { value }).unwrap();
         }
+    }
 
-        fn apply_event(&mut self, event: &TestEvent) {
-            match event {
+    impl crate::EventApplicator<TestAggregate> for TestEvent {
+        fn dispatch(&self, aggregate: &mut TestAggregate) -> Result<(), TestAggregateError> {
+            match self {
                 TestEvent::Created { value } | TestEvent::Updated { value } => {
-                    self.state.value = *value;
+                    aggregate.state.value = *value;
+                }
+            }
+            Ok(())
+        }
+
+        fn dispatch_unchecked(&self, aggregate: &mut TestAggregate) {
+            match self {
+                TestEvent::Created { value } | TestEvent::Updated { value } => {
+                    aggregate.state.value = *value;
                 }
             }
         }
@@ -573,17 +372,12 @@ mod tests {
             self.pending_events.clear();
         }
 
-        fn apply<E: Into<Self::Event>>(&mut self, event: E) -> Result<(), Self::Error> {
-            let event = event.into();
-            self.apply_internal(&event)?;
+        fn push_pending_event(&mut self, event: Self::Event) {
             self.pending_events.push(event);
-            Ok(())
         }
 
-        fn apply_internal(&mut self, event: &Self::Event) -> Result<(), Self::Error> {
-            self.apply_event(event);
+        fn increment_version(&mut self) {
             self.version = self.version.next();
-            Ok(())
         }
 
         fn state(&self) -> &Self::State {

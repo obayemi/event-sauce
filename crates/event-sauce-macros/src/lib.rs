@@ -135,31 +135,51 @@ pub fn derive_event(input: TokenStream) -> TokenStream {
         }
     });
 
-    // Generate apply_event method if aggregate type is specified
-    let apply_event_impl = if let Some(aggregate_type_str) = &attrs.aggregate {
+    // Generate EventApplicator impl if aggregate type is specified AND there are tuple variants.
+    // Events with only named field variants need manual EventApplicator implementations.
+    let has_tuple_variants = variants
+        .iter()
+        .any(|v| matches!(&v.fields, Fields::Unnamed(_)));
+    let event_applicator_impl = if let (Some(aggregate_type_str), true) =
+        (&attrs.aggregate, has_tuple_variants)
+    {
         let aggregate_type = Ident::new(aggregate_type_str, proc_macro2::Span::call_site());
 
-        // Generate match arms for apply_event that implement full validation flow:
-        // 1. validate() - pre-conditions
-        // 2. apply() - state transformation
-        // 3. post_validate() - post-conditions/invariants
-        let apply_arms = variants.iter().map(|variant| {
+        // Generate match arms for dispatch (with validation)
+        let dispatch_arms = variants.iter().map(|variant| {
             let variant_name = &variant.ident;
-
-            // For tuple variants, extract the inner event and call validation -> apply -> post_validate
             match &variant.fields {
                 Fields::Unnamed(_) => {
                     quote! {
                         #name::#variant_name(e) => {
                             use event_sauce_core::ApplyEvent;
-                            e.validate(self)?;
-                            e.apply(self);
-                            e.post_validate(self)?;
+                            e.validate(aggregate)?;
+                            e.apply(aggregate);
+                            e.post_validate(aggregate)?;
                         },
                     }
                 }
                 _ => {
-                    // For named fields, generate empty arm (no validation)
+                    quote! {
+                        #name::#variant_name { .. } => {},
+                    }
+                }
+            }
+        });
+
+        // Generate match arms for dispatch_unchecked (apply only, no validation)
+        let dispatch_unchecked_arms = variants.iter().map(|variant| {
+            let variant_name = &variant.ident;
+            match &variant.fields {
+                Fields::Unnamed(_) => {
+                    quote! {
+                        #name::#variant_name(e) => {
+                            use event_sauce_core::ApplyEvent;
+                            e.apply(aggregate);
+                        },
+                    }
+                }
+                _ => {
                     quote! {
                         #name::#variant_name { .. } => {},
                     }
@@ -168,23 +188,18 @@ pub fn derive_event(input: TokenStream) -> TokenStream {
         });
 
         quote! {
-            impl #aggregate_type {
-                /// Auto-generated method that applies events to the aggregate
-                /// by delegating to each event's ApplyEvent implementation.
-                ///
-                /// This method runs the full event application lifecycle:
-                /// 1. Validates pre-conditions using `validate()`
-                /// 2. Applies state changes using `apply()`
-                /// 3. Validates post-conditions using `post_validate()`
-                ///
-                /// # Errors
-                ///
-                /// Returns an error if validation (pre or post) fails.
-                pub fn apply_event(&mut self, event: &#name) -> std::result::Result<(), <Self as event_sauce_core::Aggregate>::Error> {
-                    match event {
-                        #(#apply_arms)*
+            impl event_sauce_core::EventApplicator<#aggregate_type> for #name {
+                fn dispatch(&self, aggregate: &mut #aggregate_type) -> std::result::Result<(), <#aggregate_type as event_sauce_core::Aggregate>::Error> {
+                    match self {
+                        #(#dispatch_arms)*
                     }
                     Ok(())
+                }
+
+                fn dispatch_unchecked(&self, aggregate: &mut #aggregate_type) {
+                    match self {
+                        #(#dispatch_unchecked_arms)*
+                    }
                 }
             }
         }
@@ -248,8 +263,8 @@ pub fn derive_event(input: TokenStream) -> TokenStream {
             }
         }
 
-        // Generate apply_event impl if state type is specified
-        #apply_event_impl
+        // Generate EventApplicator impl if aggregate type is specified
+        #event_applicator_impl
 
         // Generate Into implementations for each variant
         #(#into_impls)*
@@ -1223,17 +1238,12 @@ pub fn aggregate(attr: TokenStream, item: TokenStream) -> TokenStream {
                 self.pending_events.clear();
             }
 
-            fn apply<E: Into<Self::Event>>(&mut self, event: E) -> std::result::Result<(), Self::Error> {
-                let event = event.into();
-                self.apply_internal(&event)?;
+            fn push_pending_event(&mut self, event: Self::Event) {
                 self.pending_events.push(event);
-                Ok(())
             }
 
-            fn apply_internal(&mut self, event: &Self::Event) -> std::result::Result<(), Self::Error> {
-                self.apply_event(event)?;
+            fn increment_version(&mut self) {
                 self.version = self.version.next();
-                Ok(())
             }
 
             fn state(&self) -> &Self::State {

@@ -8,7 +8,7 @@
 //! - Type safety throughout the system
 
 use chrono::Utc;
-use event_sauce_core::{Aggregate, AggregateId, DomainEvent, Version};
+use event_sauce_core::{Aggregate, AggregateId, DomainEvent, EventApplicator, Version};
 use event_sauce_macros::AggregateError;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -117,6 +117,55 @@ impl DomainEvent for TestAccountEvent {
     }
 }
 
+impl EventApplicator<TestAccount> for TestAccountEvent {
+    fn dispatch(&self, aggregate: &mut TestAccount) -> Result<(), TestAccountError> {
+        match self {
+            TestAccountEvent::Opened {
+                owner,
+                initial_balance,
+                ..
+            } => {
+                aggregate.owner = owner.clone();
+                aggregate.balance = *initial_balance;
+                aggregate.status = AccountStatus::Active;
+            }
+            TestAccountEvent::Deposited { amount, .. } => {
+                aggregate.balance += amount;
+            }
+            TestAccountEvent::Withdrawn { amount, .. } => {
+                aggregate.balance -= amount;
+            }
+            TestAccountEvent::Frozen { .. } => {
+                aggregate.status = AccountStatus::Frozen;
+            }
+        }
+        Ok(())
+    }
+
+    fn dispatch_unchecked(&self, aggregate: &mut TestAccount) {
+        match self {
+            TestAccountEvent::Opened {
+                owner,
+                initial_balance,
+                ..
+            } => {
+                aggregate.owner = owner.clone();
+                aggregate.balance = *initial_balance;
+                aggregate.status = AccountStatus::Active;
+            }
+            TestAccountEvent::Deposited { amount, .. } => {
+                aggregate.balance += amount;
+            }
+            TestAccountEvent::Withdrawn { amount, .. } => {
+                aggregate.balance -= amount;
+            }
+            TestAccountEvent::Frozen { .. } => {
+                aggregate.status = AccountStatus::Frozen;
+            }
+        }
+    }
+}
+
 #[event_sauce_macros::aggregate(
     id = "TestAccountId",
     event = "TestAccountEvent",
@@ -202,30 +251,6 @@ impl TestAccount {
         })
         .unwrap();
 
-        Ok(())
-    }
-
-    fn apply_event(&mut self, event: &TestAccountEvent) -> Result<(), TestAccountError> {
-        match event {
-            TestAccountEvent::Opened {
-                owner,
-                initial_balance,
-                ..
-            } => {
-                self.owner = owner.clone();
-                self.balance = *initial_balance;
-                self.status = AccountStatus::Active;
-            }
-            TestAccountEvent::Deposited { amount, .. } => {
-                self.balance += amount;
-            }
-            TestAccountEvent::Withdrawn { amount, .. } => {
-                self.balance -= amount;
-            }
-            TestAccountEvent::Frozen { .. } => {
-                self.status = AccountStatus::Frozen;
-            }
-        }
         Ok(())
     }
 }

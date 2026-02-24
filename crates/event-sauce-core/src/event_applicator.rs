@@ -173,17 +173,12 @@ mod tests {
             self.pending_events.clear();
         }
 
-        fn apply<E: Into<Self::Event>>(&mut self, event: E) -> Result<(), Self::Error> {
-            let event = event.into();
-            self.apply_internal(&event)?;
+        fn push_pending_event(&mut self, event: Self::Event) {
             self.pending_events.push(event);
-            Ok(())
         }
 
-        fn apply_internal(&mut self, event: &Self::Event) -> Result<(), Self::Error> {
-            EventApplicator::dispatch(event, self)?;
+        fn increment_version(&mut self) {
             self.version = self.version.next();
-            Ok(())
         }
 
         fn state(&self) -> &Self::State {

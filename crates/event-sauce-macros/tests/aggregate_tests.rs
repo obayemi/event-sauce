@@ -4,7 +4,9 @@
 //! the State struct and Aggregate trait implementation.
 
 use chrono::{DateTime, Utc};
-use event_sauce_core::{Aggregate, AggregateError, AggregateId as _, DomainEvent, Version};
+use event_sauce_core::{
+    Aggregate, AggregateError, AggregateId as _, DomainEvent, EventApplicator, Version,
+};
 use event_sauce_macros::AggregateId as DeriveAggregateId;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -59,6 +61,33 @@ impl DomainEvent for TestCounterEvent {
     }
 }
 
+// EventApplicator must be defined before the aggregate macro expands,
+// since the generated Aggregate impl requires it.
+impl EventApplicator<TestCounter> for TestCounterEvent {
+    fn dispatch(&self, aggregate: &mut TestCounter) -> Result<(), TestCounterError> {
+        match self {
+            TestCounterEvent::Incremented { amount, .. } => {
+                aggregate.value += amount;
+            }
+            TestCounterEvent::Decremented { amount, .. } => {
+                aggregate.value -= amount;
+            }
+        }
+        Ok(())
+    }
+
+    fn dispatch_unchecked(&self, aggregate: &mut TestCounter) {
+        match self {
+            TestCounterEvent::Incremented { amount, .. } => {
+                aggregate.value += amount;
+            }
+            TestCounterEvent::Decremented { amount, .. } => {
+                aggregate.value -= amount;
+            }
+        }
+    }
+}
+
 // This is the aggregate struct using the new attribute macro
 // The macro will generate TestCounterState and transform TestCounter into a wrapper
 #[event_sauce_macros::aggregate(
@@ -81,18 +110,6 @@ impl TestCounter {
             timestamp: Utc::now(),
         })
         .expect("increment should not fail");
-    }
-
-    fn apply_event(&mut self, event: &TestCounterEvent) -> Result<(), TestCounterError> {
-        match event {
-            TestCounterEvent::Incremented { amount, .. } => {
-                self.value += amount;
-            }
-            TestCounterEvent::Decremented { amount, .. } => {
-                self.value -= amount;
-            }
-        }
-        Ok(())
     }
 }
 

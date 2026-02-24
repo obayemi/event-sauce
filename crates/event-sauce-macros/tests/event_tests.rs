@@ -4,7 +4,7 @@
 //! the DomainEvent trait implementation.
 
 use chrono::{DateTime, Utc};
-use event_sauce_core::{DomainEvent, EventEnvelope, Version};
+use event_sauce_core::{DomainEvent, EventApplicator, EventEnvelope, Version};
 use serde::{Deserialize, Serialize};
 
 // Note: serde_json is only used in TryFrom tests
@@ -57,6 +57,14 @@ struct TestAggregate {
     pending_events: Vec<TestEvent>,
 }
 
+impl EventApplicator<TestAggregate> for TestEvent {
+    fn dispatch(&self, _aggregate: &mut TestAggregate) -> Result<(), TestAggregateError> {
+        Ok(())
+    }
+
+    fn dispatch_unchecked(&self, _aggregate: &mut TestAggregate) {}
+}
+
 impl Aggregate for TestAggregate {
     type Id = TestAggregateId;
     type Event = TestEvent;
@@ -88,16 +96,12 @@ impl Aggregate for TestAggregate {
         self.pending_events.clear();
     }
 
-    fn apply<E: Into<Self::Event>>(&mut self, event: E) -> Result<(), Self::Error> {
-        let event = event.into();
-        self.apply_internal(&event)?;
+    fn push_pending_event(&mut self, event: Self::Event) {
         self.pending_events.push(event);
-        Ok(())
     }
 
-    fn apply_internal(&mut self, _event: &Self::Event) -> Result<(), Self::Error> {
+    fn increment_version(&mut self) {
         self.version = self.version.next();
-        Ok(())
     }
 
     fn state(&self) -> &Self::State {
@@ -226,6 +230,14 @@ struct TestAggregateV2 {
     pending_events: Vec<TestEventV2>,
 }
 
+impl EventApplicator<TestAggregateV2> for TestEventV2 {
+    fn dispatch(&self, _aggregate: &mut TestAggregateV2) -> Result<(), TestAggregateError> {
+        Ok(())
+    }
+
+    fn dispatch_unchecked(&self, _aggregate: &mut TestAggregateV2) {}
+}
+
 impl Aggregate for TestAggregateV2 {
     type Id = TestAggregateId;
     type Event = TestEventV2;
@@ -257,16 +269,12 @@ impl Aggregate for TestAggregateV2 {
         self.pending_events.clear();
     }
 
-    fn apply<E: Into<Self::Event>>(&mut self, event: E) -> Result<(), Self::Error> {
-        let event = event.into();
-        self.apply_internal(&event)?;
+    fn push_pending_event(&mut self, event: Self::Event) {
         self.pending_events.push(event);
-        Ok(())
     }
 
-    fn apply_internal(&mut self, _event: &Self::Event) -> Result<(), Self::Error> {
+    fn increment_version(&mut self) {
         self.version = self.version.next();
-        Ok(())
     }
 
     fn state(&self) -> &Self::State {
@@ -322,6 +330,14 @@ struct OrderAggregate {
     pending_events: Vec<OrderEvent>,
 }
 
+impl EventApplicator<OrderAggregate> for OrderEvent {
+    fn dispatch(&self, _aggregate: &mut OrderAggregate) -> Result<(), TestAggregateError> {
+        Ok(())
+    }
+
+    fn dispatch_unchecked(&self, _aggregate: &mut OrderAggregate) {}
+}
+
 impl Aggregate for OrderAggregate {
     type Id = TestAggregateId;
     type Event = OrderEvent;
@@ -353,16 +369,12 @@ impl Aggregate for OrderAggregate {
         self.pending_events.clear();
     }
 
-    fn apply<E: Into<Self::Event>>(&mut self, event: E) -> Result<(), Self::Error> {
-        let event = event.into();
-        self.apply_internal(&event)?;
+    fn push_pending_event(&mut self, event: Self::Event) {
         self.pending_events.push(event);
-        Ok(())
     }
 
-    fn apply_internal(&mut self, _event: &Self::Event) -> Result<(), Self::Error> {
+    fn increment_version(&mut self) {
         self.version = self.version.next();
-        Ok(())
     }
 
     fn state(&self) -> &Self::State {
@@ -416,6 +428,14 @@ struct SimpleAggregate {
     pending_events: Vec<SimpleEvent>,
 }
 
+impl EventApplicator<SimpleAggregate> for SimpleEvent {
+    fn dispatch(&self, _aggregate: &mut SimpleAggregate) -> Result<(), TestAggregateError> {
+        Ok(())
+    }
+
+    fn dispatch_unchecked(&self, _aggregate: &mut SimpleAggregate) {}
+}
+
 impl Aggregate for SimpleAggregate {
     type Id = TestAggregateId;
     type Event = SimpleEvent;
@@ -447,16 +467,12 @@ impl Aggregate for SimpleAggregate {
         self.pending_events.clear();
     }
 
-    fn apply<E: Into<Self::Event>>(&mut self, event: E) -> Result<(), Self::Error> {
-        let event = event.into();
-        self.apply_internal(&event)?;
+    fn push_pending_event(&mut self, event: Self::Event) {
         self.pending_events.push(event);
-        Ok(())
     }
 
-    fn apply_internal(&mut self, _event: &Self::Event) -> Result<(), Self::Error> {
+    fn increment_version(&mut self) {
         self.version = self.version.next();
-        Ok(())
     }
 
     fn state(&self) -> &Self::State {

@@ -266,6 +266,17 @@ mod tests {
         pending_events: Vec<TestEvent>,
     }
 
+    impl crate::EventApplicator<TestAggregate> for TestEvent {
+        fn dispatch(&self, aggregate: &mut TestAggregate) -> std::result::Result<(), TestError> {
+            self.apply(aggregate);
+            Ok(())
+        }
+
+        fn dispatch_unchecked(&self, aggregate: &mut TestAggregate) {
+            self.apply(aggregate);
+        }
+    }
+
     impl Aggregate for TestAggregate {
         type Event = TestEvent;
         type Id = TestId;
@@ -297,24 +308,11 @@ mod tests {
             self.pending_events.clear();
         }
 
-        fn apply<E: Into<Self::Event>>(
-            &mut self,
-            event: E,
-        ) -> std::result::Result<(), Self::Error> {
-            let event = event.into();
-            self.apply_internal(&event)?;
+        fn push_pending_event(&mut self, event: Self::Event) {
             self.pending_events.push(event);
-            Ok(())
         }
 
-        fn apply_internal(&mut self, event: &Self::Event) -> std::result::Result<(), Self::Error> {
-            event.apply(self);
-            self.version = self.version.next();
-            Ok(())
-        }
-
-        fn apply_unchecked(&mut self, event: &Self::Event) {
-            event.apply(self);
+        fn increment_version(&mut self) {
             self.version = self.version.next();
         }
 

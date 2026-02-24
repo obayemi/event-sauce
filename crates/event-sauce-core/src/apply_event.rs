@@ -35,7 +35,7 @@ use crate::AggregateError;
 /// ## Simple Event Without Validation
 ///
 /// ```
-/// use event_sauce_core::{Aggregate, ApplyEvent, AggregateError, AggregateId, DomainEvent, Version};
+/// use event_sauce_core::{Aggregate, ApplyEvent, AggregateError, AggregateId, DomainEvent, EventApplicator, Version};
 /// use thiserror::Error;
 /// use chrono::Utc;
 /// use std::fmt;
@@ -76,6 +76,20 @@ use crate::AggregateError;
 ///     fn occurred_at(&self) -> chrono::DateTime<Utc> { Utc::now() }
 /// }
 ///
+/// impl EventApplicator<Counter> for CounterEvent {
+///     fn dispatch(&self, counter: &mut Counter) -> Result<(), CounterError> {
+///         match self {
+///             CounterEvent::Incremented { amount } => counter.state.value += amount,
+///         }
+///         Ok(())
+///     }
+///     fn dispatch_unchecked(&self, counter: &mut Counter) {
+///         match self {
+///             CounterEvent::Incremented { amount } => counter.state.value += amount,
+///         }
+///     }
+/// }
+///
 /// struct Counter {
 ///     id: CounterId,
 ///     state: CounterState,
@@ -96,19 +110,8 @@ use crate::AggregateError;
 ///     fn version(&self) -> Version { self.version }
 ///     fn pending_events(&self) -> &[Self::Event] { &self.pending_events }
 ///     fn clear_pending_events(&mut self) { self.pending_events.clear(); }
-///     fn apply<E: Into<Self::Event>>(&mut self, event: E) -> Result<(), Self::Error> {
-///         let event = event.into();
-///         self.apply_internal(&event)?;
-///         self.pending_events.push(event);
-///         Ok(())
-///     }
-///     fn apply_internal(&mut self, event: &Self::Event) -> Result<(), Self::Error> {
-///         match event {
-///             CounterEvent::Incremented { amount } => self.state.value += amount,
-///         }
-///         self.version = self.version.next();
-///         Ok(())
-///     }
+///     fn push_pending_event(&mut self, event: Self::Event) { self.pending_events.push(event); }
+///     fn increment_version(&mut self) { self.version = self.version.next(); }
 ///     fn state(&self) -> &Self::State { &self.state }
 ///     fn from_snapshot(id: Self::Id, version: Version, state: Self::State) -> Self {
 ///         Self { id, state, version, pending_events: Vec::new() }
@@ -129,7 +132,7 @@ use crate::AggregateError;
 /// ## Event With Validation
 ///
 /// ```
-/// use event_sauce_core::{Aggregate, ApplyEvent, AggregateError, AggregateId, DomainEvent, Version};
+/// use event_sauce_core::{Aggregate, ApplyEvent, AggregateError, AggregateId, DomainEvent, EventApplicator, Version};
 /// use thiserror::Error;
 /// use chrono::Utc;
 /// use std::fmt;
@@ -183,6 +186,20 @@ use crate::AggregateError;
 ///     fn occurred_at(&self) -> chrono::DateTime<Utc> { Utc::now() }
 /// }
 ///
+/// impl EventApplicator<BankAccount> for BankAccountEvent {
+///     fn dispatch(&self, account: &mut BankAccount) -> Result<(), BankAccountError> {
+///         match self {
+///             BankAccountEvent::Withdrawn { amount } => account.state.balance -= amount,
+///         }
+///         Ok(())
+///     }
+///     fn dispatch_unchecked(&self, account: &mut BankAccount) {
+///         match self {
+///             BankAccountEvent::Withdrawn { amount } => account.state.balance -= amount,
+///         }
+///     }
+/// }
+///
 /// struct BankAccount {
 ///     id: AccountId,
 ///     state: BankAccountState,
@@ -208,19 +225,8 @@ use crate::AggregateError;
 ///     fn version(&self) -> Version { self.version }
 ///     fn pending_events(&self) -> &[Self::Event] { &self.pending_events }
 ///     fn clear_pending_events(&mut self) { self.pending_events.clear(); }
-///     fn apply<E: Into<Self::Event>>(&mut self, event: E) -> Result<(), Self::Error> {
-///         let event = event.into();
-///         self.apply_internal(&event)?;
-///         self.pending_events.push(event);
-///         Ok(())
-///     }
-///     fn apply_internal(&mut self, event: &Self::Event) -> Result<(), Self::Error> {
-///         match event {
-///             BankAccountEvent::Withdrawn { amount } => self.state.balance -= amount,
-///         }
-///         self.version = self.version.next();
-///         Ok(())
-///     }
+///     fn push_pending_event(&mut self, event: Self::Event) { self.pending_events.push(event); }
+///     fn increment_version(&mut self) { self.version = self.version.next(); }
 ///     fn state(&self) -> &Self::State { &self.state }
 ///     fn from_snapshot(id: Self::Id, version: Version, state: Self::State) -> Self {
 ///         Self { id, state, version, pending_events: Vec::new() }
@@ -251,7 +257,7 @@ use crate::AggregateError;
 /// ## Usage in Aggregates
 ///
 /// ```
-/// use event_sauce_core::{Aggregate, ApplyEvent, AggregateError, AggregateId, DomainEvent, Version};
+/// use event_sauce_core::{Aggregate, ApplyEvent, AggregateError, AggregateId, DomainEvent, EventApplicator, Version};
 /// use thiserror::Error;
 /// use chrono::Utc;
 /// use std::fmt;
@@ -292,6 +298,20 @@ use crate::AggregateError;
 ///     fn occurred_at(&self) -> chrono::DateTime<Utc> { Utc::now() }
 /// }
 ///
+/// impl EventApplicator<Counter> for CounterEvent {
+///     fn dispatch(&self, counter: &mut Counter) -> Result<(), CounterError> {
+///         match self {
+///             CounterEvent::Incremented { amount } => counter.state.value += amount,
+///         }
+///         Ok(())
+///     }
+///     fn dispatch_unchecked(&self, counter: &mut Counter) {
+///         match self {
+///             CounterEvent::Incremented { amount } => counter.state.value += amount,
+///         }
+///     }
+/// }
+///
 /// struct Counter {
 ///     id: CounterId,
 ///     state: CounterState,
@@ -312,19 +332,8 @@ use crate::AggregateError;
 ///     fn version(&self) -> Version { self.version }
 ///     fn pending_events(&self) -> &[Self::Event] { &self.pending_events }
 ///     fn clear_pending_events(&mut self) { self.pending_events.clear(); }
-///     fn apply<E: Into<Self::Event>>(&mut self, event: E) -> Result<(), Self::Error> {
-///         let event = event.into();
-///         self.apply_internal(&event)?;
-///         self.pending_events.push(event);
-///         Ok(())
-///     }
-///     fn apply_internal(&mut self, event: &Self::Event) -> Result<(), Self::Error> {
-///         match event {
-///             CounterEvent::Incremented { amount } => self.state.value += amount,
-///         }
-///         self.version = self.version.next();
-///         Ok(())
-///     }
+///     fn push_pending_event(&mut self, event: Self::Event) { self.pending_events.push(event); }
+///     fn increment_version(&mut self) { self.version = self.version.next(); }
 ///     fn state(&self) -> &Self::State { &self.state }
 ///     fn from_snapshot(id: Self::Id, version: Version, state: Self::State) -> Self {
 ///         Self { id, state, version, pending_events: Vec::new() }
@@ -381,7 +390,7 @@ pub trait ApplyEvent<A: Aggregate> {
     /// # Examples
     ///
     /// ```
-    /// use event_sauce_core::{Aggregate, ApplyEvent, AggregateError, AggregateId, DomainEvent, Version};
+    /// use event_sauce_core::{Aggregate, ApplyEvent, AggregateError, AggregateId, DomainEvent, EventApplicator, Version};
     /// use thiserror::Error;
     /// use chrono::Utc;
     /// use std::fmt;
@@ -424,6 +433,20 @@ pub trait ApplyEvent<A: Aggregate> {
     ///     fn occurred_at(&self) -> chrono::DateTime<Utc> { Utc::now() }
     /// }
     ///
+    /// impl EventApplicator<Counter> for CounterEvent {
+    ///     fn dispatch(&self, counter: &mut Counter) -> Result<(), CounterError> {
+    ///         match self {
+    ///             CounterEvent::Incremented { amount } => counter.state.value += amount,
+    ///         }
+    ///         Ok(())
+    ///     }
+    ///     fn dispatch_unchecked(&self, counter: &mut Counter) {
+    ///         match self {
+    ///             CounterEvent::Incremented { amount } => counter.state.value += amount,
+    ///         }
+    ///     }
+    /// }
+    ///
     /// struct Counter {
     ///     id: CounterId,
     ///     state: CounterState,
@@ -444,19 +467,8 @@ pub trait ApplyEvent<A: Aggregate> {
     ///     fn version(&self) -> Version { self.version }
     ///     fn pending_events(&self) -> &[Self::Event] { &self.pending_events }
     ///     fn clear_pending_events(&mut self) { self.pending_events.clear(); }
-    ///     fn apply<E: Into<Self::Event>>(&mut self, event: E) -> Result<(), Self::Error> {
-    ///         let event = event.into();
-    ///         self.apply_internal(&event)?;
-    ///         self.pending_events.push(event);
-    ///         Ok(())
-    ///     }
-    ///     fn apply_internal(&mut self, event: &Self::Event) -> Result<(), Self::Error> {
-    ///         match event {
-    ///             CounterEvent::Incremented { amount } => self.state.value += amount,
-    ///         }
-    ///         self.version = self.version.next();
-    ///         Ok(())
-    ///     }
+    ///     fn push_pending_event(&mut self, event: Self::Event) { self.pending_events.push(event); }
+    ///     fn increment_version(&mut self) { self.version = self.version.next(); }
     ///     fn state(&self) -> &Self::State { &self.state }
     ///     fn from_snapshot(id: Self::Id, version: Version, state: Self::State) -> Self {
     ///         Self { id, state, version, pending_events: Vec::new() }
@@ -499,7 +511,7 @@ pub trait ApplyEvent<A: Aggregate> {
     /// # Examples
     ///
     /// ```
-    /// use event_sauce_core::{Aggregate, ApplyEvent, AggregateError, AggregateId, DomainEvent, Version};
+    /// use event_sauce_core::{Aggregate, ApplyEvent, AggregateError, AggregateId, DomainEvent, EventApplicator, Version};
     /// use thiserror::Error;
     /// use chrono::Utc;
     /// use std::fmt;
@@ -540,6 +552,20 @@ pub trait ApplyEvent<A: Aggregate> {
     ///     fn occurred_at(&self) -> chrono::DateTime<Utc> { Utc::now() }
     /// }
     ///
+    /// impl EventApplicator<Counter> for CounterEvent {
+    ///     fn dispatch(&self, counter: &mut Counter) -> Result<(), CounterError> {
+    ///         match self {
+    ///             CounterEvent::Incremented { amount } => counter.state.value += amount,
+    ///         }
+    ///         Ok(())
+    ///     }
+    ///     fn dispatch_unchecked(&self, counter: &mut Counter) {
+    ///         match self {
+    ///             CounterEvent::Incremented { amount } => counter.state.value += amount,
+    ///         }
+    ///     }
+    /// }
+    ///
     /// struct Counter {
     ///     id: CounterId,
     ///     state: CounterState,
@@ -560,19 +586,8 @@ pub trait ApplyEvent<A: Aggregate> {
     ///     fn version(&self) -> Version { self.version }
     ///     fn pending_events(&self) -> &[Self::Event] { &self.pending_events }
     ///     fn clear_pending_events(&mut self) { self.pending_events.clear(); }
-    ///     fn apply<E: Into<Self::Event>>(&mut self, event: E) -> Result<(), Self::Error> {
-    ///         let event = event.into();
-    ///         self.apply_internal(&event)?;
-    ///         self.pending_events.push(event);
-    ///         Ok(())
-    ///     }
-    ///     fn apply_internal(&mut self, event: &Self::Event) -> Result<(), Self::Error> {
-    ///         match event {
-    ///             CounterEvent::Incremented { amount } => self.state.value += amount,
-    ///         }
-    ///         self.version = self.version.next();
-    ///         Ok(())
-    ///     }
+    ///     fn push_pending_event(&mut self, event: Self::Event) { self.pending_events.push(event); }
+    ///     fn increment_version(&mut self) { self.version = self.version.next(); }
     ///     fn state(&self) -> &Self::State { &self.state }
     ///     fn from_snapshot(id: Self::Id, version: Version, state: Self::State) -> Self {
     ///         Self { id, state, version, pending_events: Vec::new() }
@@ -622,7 +637,7 @@ pub trait ApplyEvent<A: Aggregate> {
     /// # Examples
     ///
     /// ```
-    /// use event_sauce_core::{Aggregate, ApplyEvent, AggregateError, AggregateId, DomainEvent, Version};
+    /// use event_sauce_core::{Aggregate, ApplyEvent, AggregateError, AggregateId, DomainEvent, EventApplicator, Version};
     /// use thiserror::Error;
     /// use chrono::Utc;
     /// use std::fmt;
@@ -667,6 +682,20 @@ pub trait ApplyEvent<A: Aggregate> {
     ///     fn occurred_at(&self) -> chrono::DateTime<Utc> { Utc::now() }
     /// }
     ///
+    /// impl EventApplicator<BankAccount> for BankAccountEvent {
+    ///     fn dispatch(&self, account: &mut BankAccount) -> Result<(), BankAccountError> {
+    ///         match self {
+    ///             BankAccountEvent::Withdrawn { amount } => account.state.balance -= amount,
+    ///         }
+    ///         Ok(())
+    ///     }
+    ///     fn dispatch_unchecked(&self, account: &mut BankAccount) {
+    ///         match self {
+    ///             BankAccountEvent::Withdrawn { amount } => account.state.balance -= amount,
+    ///         }
+    ///     }
+    /// }
+    ///
     /// struct BankAccount {
     ///     id: AccountId,
     ///     state: BankAccountState,
@@ -692,19 +721,8 @@ pub trait ApplyEvent<A: Aggregate> {
     ///     fn version(&self) -> Version { self.version }
     ///     fn pending_events(&self) -> &[Self::Event] { &self.pending_events }
     ///     fn clear_pending_events(&mut self) { self.pending_events.clear(); }
-    ///     fn apply<E: Into<Self::Event>>(&mut self, event: E) -> Result<(), Self::Error> {
-    ///         let event = event.into();
-    ///         self.apply_internal(&event)?;
-    ///         self.pending_events.push(event);
-    ///         Ok(())
-    ///     }
-    ///     fn apply_internal(&mut self, event: &Self::Event) -> Result<(), Self::Error> {
-    ///         match event {
-    ///             BankAccountEvent::Withdrawn { amount } => self.state.balance -= amount,
-    ///         }
-    ///         self.version = self.version.next();
-    ///         Ok(())
-    ///     }
+    ///     fn push_pending_event(&mut self, event: Self::Event) { self.pending_events.push(event); }
+    ///     fn increment_version(&mut self) { self.version = self.version.next(); }
     ///     fn state(&self) -> &Self::State { &self.state }
     ///     fn from_snapshot(id: Self::Id, version: Version, state: Self::State) -> Self {
     ///         Self { id, state, version, pending_events: Vec::new() }
@@ -792,6 +810,29 @@ mod tests {
         pending_events: Vec<TestEvent>,
     }
 
+    impl crate::EventApplicator<TestAggregate> for TestEvent {
+        fn dispatch(&self, aggregate: &mut TestAggregate) -> Result<(), TestError> {
+            match self {
+                TestEvent::Simple { amount }
+                | TestEvent::Validated { amount }
+                | TestEvent::PostValidated { amount, .. } => {
+                    aggregate.state.value += amount;
+                }
+            }
+            Ok(())
+        }
+
+        fn dispatch_unchecked(&self, aggregate: &mut TestAggregate) {
+            match self {
+                TestEvent::Simple { amount }
+                | TestEvent::Validated { amount }
+                | TestEvent::PostValidated { amount, .. } => {
+                    aggregate.state.value += amount;
+                }
+            }
+        }
+    }
+
     impl crate::Aggregate for TestAggregate {
         type Id = crate::DefaultAggregateId;
         type Event = TestEvent;
@@ -826,23 +867,12 @@ mod tests {
             self.pending_events.clear();
         }
 
-        fn apply<E: Into<Self::Event>>(&mut self, event: E) -> Result<(), Self::Error> {
-            let event = event.into();
-            self.apply_internal(&event)?;
+        fn push_pending_event(&mut self, event: Self::Event) {
             self.pending_events.push(event);
-            Ok(())
         }
 
-        fn apply_internal(&mut self, event: &Self::Event) -> Result<(), Self::Error> {
-            match event {
-                TestEvent::Simple { amount }
-                | TestEvent::Validated { amount }
-                | TestEvent::PostValidated { amount, .. } => {
-                    self.state.value += amount;
-                }
-            }
+        fn increment_version(&mut self) {
             self.version = self.version.next();
-            Ok(())
         }
 
         fn state(&self) -> &Self::State {

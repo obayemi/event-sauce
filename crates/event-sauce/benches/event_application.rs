@@ -193,6 +193,49 @@ impl BenchAccount {
     }
 }
 
+impl event_sauce_core::EventApplicator<BenchAccount> for BenchAccountEvent {
+    fn dispatch(&self, aggregate: &mut BenchAccount) -> Result<(), BenchAccountError> {
+        match self {
+            BenchAccountEvent::Opened {
+                owner,
+                initial_balance,
+                ..
+            } => {
+                aggregate.state.owner = owner.clone();
+                aggregate.state.balance = *initial_balance;
+                aggregate.state.status = AccountStatus::Active;
+            }
+            BenchAccountEvent::Deposited { amount, .. } => {
+                aggregate.state.balance += amount;
+            }
+            BenchAccountEvent::Withdrawn { amount, .. } => {
+                aggregate.state.balance -= amount;
+            }
+        }
+        Ok(())
+    }
+
+    fn dispatch_unchecked(&self, aggregate: &mut BenchAccount) {
+        match self {
+            BenchAccountEvent::Opened {
+                owner,
+                initial_balance,
+                ..
+            } => {
+                aggregate.state.owner = owner.clone();
+                aggregate.state.balance = *initial_balance;
+                aggregate.state.status = AccountStatus::Active;
+            }
+            BenchAccountEvent::Deposited { amount, .. } => {
+                aggregate.state.balance += amount;
+            }
+            BenchAccountEvent::Withdrawn { amount, .. } => {
+                aggregate.state.balance -= amount;
+            }
+        }
+    }
+}
+
 impl Aggregate for BenchAccount {
     type Id = BenchAccountId;
     type Event = BenchAccountEvent;
@@ -228,33 +271,12 @@ impl Aggregate for BenchAccount {
         self.pending_events.clear();
     }
 
-    fn apply<E: Into<Self::Event>>(&mut self, event: E) -> Result<(), Self::Error> {
-        let event = event.into();
-        self.apply_internal(&event)?;
+    fn push_pending_event(&mut self, event: Self::Event) {
         self.pending_events.push(event);
-        Ok(())
     }
 
-    fn apply_internal(&mut self, event: &Self::Event) -> Result<(), Self::Error> {
-        match event {
-            BenchAccountEvent::Opened {
-                owner,
-                initial_balance,
-                ..
-            } => {
-                self.state.owner = owner.clone();
-                self.state.balance = *initial_balance;
-                self.state.status = AccountStatus::Active;
-            }
-            BenchAccountEvent::Deposited { amount, .. } => {
-                self.state.balance += amount;
-            }
-            BenchAccountEvent::Withdrawn { amount, .. } => {
-                self.state.balance -= amount;
-            }
-        }
+    fn increment_version(&mut self) {
         self.version = self.version.next();
-        Ok(())
     }
 
     fn state(&self) -> &Self::State {
