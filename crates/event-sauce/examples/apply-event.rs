@@ -560,7 +560,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Get version
     let account_version = repo.get_version(account_id).await?;
-    println!("  • Account version: {}", account_version.as_i32());
+    println!("  • Account version: {}", account_version.as_u64());
 
     // Count events
     let event_count = repo.count_events(account_id).await?;

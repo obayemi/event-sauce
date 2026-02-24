@@ -434,12 +434,11 @@ pub trait EventStore: Send + Sync {
 
         let aggregate_id = aggregate.aggregate_id().to_uuid();
         let aggregate_type = A::aggregate_type();
-        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
         let expected_version = Version::new(
             aggregate
                 .version()
-                .as_i32()
-                .saturating_sub(pending.len() as i32),
+                .as_u64()
+                .saturating_sub(pending.len() as u64),
         );
 
         // Convert events to envelopes using the new to_envelope() method
@@ -886,7 +885,7 @@ mod tests {
             }
         }
 
-        fn event_version(&self) -> i32 {
+        fn event_version(&self) -> u64 {
             1
         }
 
@@ -1010,13 +1009,12 @@ mod tests {
         fn with_stream(mut self, stream_id: StreamId, count: usize) -> Self {
             let mut events = Vec::new();
             for i in 0..count {
-                #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
                 let envelope = EventEnvelope::new(
                     Uuid::new_v4(),
                     stream_id.aggregate_id(),
                     stream_id.aggregate_type().to_string(),
                     "TestEvent".to_string(),
-                    Version::new(i as i32 + 1),
+                    Version::new(i as u64 + 1),
                     serde_json::json!({"index": i}),
                 );
                 events.push(envelope);

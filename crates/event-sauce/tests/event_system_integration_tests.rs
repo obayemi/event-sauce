@@ -103,7 +103,7 @@ impl DomainEvent for TestAccountEvent {
         }
     }
 
-    fn event_version(&self) -> i32 {
+    fn event_version(&self) -> u64 {
         1
     }
 

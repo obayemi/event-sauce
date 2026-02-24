@@ -26,7 +26,7 @@ struct AggregateAttrs {
 /// Attributes for the #[event(...)] container attribute
 #[derive(Debug, FromMeta)]
 struct EventAttrs {
-    version: i32,
+    version: u64,
     #[darling(default)]
     type_prefix: Option<String>,
     #[darling(default)]
@@ -237,7 +237,7 @@ pub fn derive_event(input: TokenStream) -> TokenStream {
                 }
             }
 
-            fn event_version(&self) -> i32 {
+            fn event_version(&self) -> u64 {
                 #version
             }
 

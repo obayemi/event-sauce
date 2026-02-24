@@ -145,7 +145,7 @@ where
     ///
     /// ```ignore
     /// let version = repo.get_version(user_id).await?;
-    /// println!("User is at version {}", version.as_i32());
+    /// println!("User is at version {}", version.as_u64());
     /// ```
     pub async fn get_version(&self, id: A::Id) -> Result<Version> {
         let stream_id = StreamId::new(A::aggregate_type(), id.to_uuid());
@@ -233,7 +233,7 @@ mod tests {
             }
         }
 
-        fn event_version(&self) -> i32 {
+        fn event_version(&self) -> u64 {
             1
         }
 
@@ -421,7 +421,7 @@ mod tests {
         async fn get_version(&self, stream_id: StreamId) -> Result<Version> {
             let streams = self.streams.lock().unwrap();
             let count = streams.get(&stream_id).map_or(0, std::vec::Vec::len);
-            Ok(Version::new(count.try_into().unwrap_or(i32::MAX)))
+            Ok(Version::new(count as u64))
         }
 
         async fn load_snapshot(&self, _stream_id: StreamId) -> Result<Option<crate::Snapshot>> {
@@ -494,7 +494,7 @@ mod tests {
         repo.save(&mut aggregate).await.unwrap();
 
         let version = repo.get_version(test_id).await.unwrap();
-        assert_eq!(version.as_i32(), 2);
+        assert_eq!(version.as_u64(), 2);
     }
 
     #[tokio::test]

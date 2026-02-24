@@ -212,12 +212,10 @@ impl EveryNEvents {
 
 impl SnapshotStrategy for EveryNEvents {
     fn should_snapshot(&self, current_version: Version) -> bool {
-        if current_version.as_i32() <= 0 {
+        if current_version.as_u64() == 0 {
             return false;
         }
-        #[allow(clippy::cast_sign_loss)] // Safe because we've checked version > 0
-        let version_u32 = current_version.as_i32() as u32;
-        version_u32 % self.0 == 0
+        current_version.as_u64() % u64::from(self.0) == 0
     }
 }
 
@@ -234,7 +232,7 @@ mod tests {
         assert!(strategy.should_snapshot(Version::new(10)));
         assert!(strategy.should_snapshot(Version::new(100)));
         assert!(strategy.should_snapshot(Version::new(1000)));
-        assert!(strategy.should_snapshot(Version::new(i32::MAX)));
+        assert!(strategy.should_snapshot(Version::new(u64::MAX)));
     }
 
     #[test]
@@ -246,7 +244,7 @@ mod tests {
         assert!(!strategy.should_snapshot(Version::new(10)));
         assert!(!strategy.should_snapshot(Version::new(100)));
         assert!(!strategy.should_snapshot(Version::new(1000)));
-        assert!(!strategy.should_snapshot(Version::new(i32::MAX)));
+        assert!(!strategy.should_snapshot(Version::new(u64::MAX)));
     }
 
     #[test]

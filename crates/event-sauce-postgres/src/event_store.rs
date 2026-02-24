@@ -265,7 +265,7 @@ impl PostgresEventStore {
                 aggregate_id UUID NOT NULL,
                 aggregate_type VARCHAR(255) NOT NULL,
                 event_type VARCHAR(255) NOT NULL,
-                event_version INTEGER NOT NULL,
+                event_version BIGINT NOT NULL,
                 event_data JSONB NOT NULL,
                 stream_version BIGINT NOT NULL,
                 created_by UUID,
@@ -507,8 +507,8 @@ impl EventStore for PostgresEventStore {
             .await
             .map_err(|e| Error::custom(format!("Failed to check version: {e}")))?;
 
-        #[allow(clippy::cast_possible_truncation)]
-        let current_version = Version::new((current_version.unwrap_or(-1) + 1) as i32);
+        #[allow(clippy::cast_sign_loss)]
+        let current_version = Version::new((current_version.unwrap_or(-1) + 1) as u64);
 
         if current_version != expected_version {
             return Err(Error::concurrency_conflict(
@@ -520,7 +520,9 @@ impl EventStore for PostgresEventStore {
         // Insert events
         for (idx, event) in events.iter().enumerate() {
             #[allow(clippy::cast_possible_wrap)]
-            let stream_version = i64::from(expected_version.as_i32()) + idx as i64;
+            let stream_version = expected_version.as_u64() as i64 + idx as i64;
+            #[allow(clippy::cast_possible_wrap)]
+            let event_version_i64 = event.event_version.as_u64() as i64;
 
             let insert_query = format!(
                 "INSERT INTO {events_table} (
@@ -534,7 +536,7 @@ impl EventStore for PostgresEventStore {
                 .bind(event.aggregate_id)
                 .bind(&event.aggregate_type)
                 .bind(&event.event_type)
-                .bind(event.event_version.as_i32())
+                .bind(event_version_i64)
                 .bind(&event.event_data)
                 .bind(stream_version)
                 .bind(event.created_by)
@@ -567,10 +569,12 @@ impl EventStore for PostgresEventStore {
              ORDER BY stream_version ASC"
         );
 
+        #[allow(clippy::cast_possible_wrap)]
+        let from_version_i64 = from_version.as_u64() as i64;
         let events: Vec<EventEnvelope> = sqlx::query_as::<_, EventRow>(&query)
             .bind(stream_id.aggregate_id())
             .bind(stream_id.aggregate_type())
-            .bind(i64::from(from_version.as_i32()))
+            .bind(from_version_i64)
             .fetch_all(&self.pool)
             .await
             .map_err(|e| Error::custom(format!("Failed to load stream: {e}")))?
@@ -619,8 +623,8 @@ impl EventStore for PostgresEventStore {
             .await
             .map_err(|e| Error::custom(format!("Failed to get version: {e}")))?;
 
-        #[allow(clippy::cast_possible_truncation)]
-        let next_version = version.map_or(0, |v| v + 1) as i32;
+        #[allow(clippy::cast_sign_loss)]
+        let next_version = version.map_or(0, |v| v + 1) as u64;
         Ok(Version::new(next_version))
     }
 
@@ -633,10 +637,12 @@ impl EventStore for PostgresEventStore {
              DO UPDATE SET snapshot_version = $3, snapshot_data = $4, created_at = NOW()"
         );
 
+        #[allow(clippy::cast_possible_wrap)]
+        let snapshot_version_i64 = snapshot.snapshot_version.as_u64() as i64;
         sqlx::query(&query)
             .bind(snapshot.aggregate_id)
             .bind(&snapshot.aggregate_type)
-            .bind(i64::from(snapshot.snapshot_version.as_i32()))
+            .bind(snapshot_version_i64)
             .bind(&snapshot.snapshot_data)
             .execute(&self.pool)
             .await
@@ -717,7 +723,7 @@ struct EventRow {
     aggregate_id: uuid::Uuid,
     aggregate_type: String,
     event_type: String,
-    event_version: i32,
+    event_version: i64,
     event_data: serde_json::Value,
     created_by: Option<uuid::Uuid>,
     created_at: chrono::DateTime<chrono::Utc>,
@@ -746,7 +752,8 @@ impl From<EventRow> for EventEnvelope {
             aggregate_id: row.aggregate_id,
             aggregate_type: row.aggregate_type,
             event_type: row.event_type,
-            event_version: Version::new(row.event_version),
+            #[allow(clippy::cast_sign_loss)]
+            event_version: Version::new(row.event_version as u64),
             event_data: row.event_data,
             created_by: row.created_by,
             created_at: row.created_at,
@@ -765,8 +772,8 @@ struct SnapshotRow {
 
 impl From<SnapshotRow> for Snapshot {
     fn from(row: SnapshotRow) -> Self {
-        #[allow(clippy::cast_possible_truncation)]
-        let snapshot_version = Version::new(row.snapshot_version as i32);
+        #[allow(clippy::cast_sign_loss)]
+        let snapshot_version = Version::new(row.snapshot_version as u64);
 
         Snapshot {
             aggregate_id: row.aggregate_id,

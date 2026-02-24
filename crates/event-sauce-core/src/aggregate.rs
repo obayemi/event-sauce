@@ -54,7 +54,7 @@ use crate::DefaultAggregateId;
 ///     fn event_type(&self) -> &'static str {
 ///         "CounterIncremented"
 ///     }
-///     fn event_version(&self) -> i32 {
+///     fn event_version(&self) -> u64 {
 ///         1
 ///     }
 ///     fn occurred_at(&self) -> DateTime<Utc> {
@@ -308,7 +308,7 @@ pub trait Aggregate: Send + Sync {
     ///     fn event_type(&self) -> &'static str {
     ///         "CounterIncremented"
     ///     }
-    ///     fn event_version(&self) -> i32 {
+    ///     fn event_version(&self) -> u64 {
     ///         1
     ///     }
     ///     fn occurred_at(&self) -> DateTime<Utc> {
@@ -492,7 +492,7 @@ mod tests {
             }
         }
 
-        fn event_version(&self) -> i32 {
+        fn event_version(&self) -> u64 {
             1
         }
 

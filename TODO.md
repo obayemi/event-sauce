@@ -11,3 +11,8 @@
 - [ ] update examples to use projection! macro
 
 - [ ] investigate if it would be possible to implement a version of the projection macro that would not require to write the event twice
+
+- [ ] find how to reduce Aggregate boilerplate while not interfering with ability to not use the full framework. would it be usefull to implement an "entity" trait to allow non-event-sourced entity ?
+- [ ] make apply_internal require events that implement ApplyEvent, drop manual match implementation
+- [ ] make EventStore object safe by using pin<box<dyn Stream>> instead of "impl stream" to allow Arc<dyn EventStore>
+- [ ] remove unsafe for specification

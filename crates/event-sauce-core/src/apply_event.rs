@@ -72,7 +72,7 @@ use crate::AggregateError;
 /// impl DomainEvent for CounterEvent {
 ///     type Aggregate = Counter;
 ///     fn event_type(&self) -> &'static str { "Incremented" }
-///     fn event_version(&self) -> i32 { 1 }
+///     fn event_version(&self) -> u64 { 1 }
 ///     fn occurred_at(&self) -> chrono::DateTime<Utc> { Utc::now() }
 /// }
 ///
@@ -179,7 +179,7 @@ use crate::AggregateError;
 /// impl DomainEvent for BankAccountEvent {
 ///     type Aggregate = BankAccount;
 ///     fn event_type(&self) -> &'static str { "MoneyWithdrawn" }
-///     fn event_version(&self) -> i32 { 1 }
+///     fn event_version(&self) -> u64 { 1 }
 ///     fn occurred_at(&self) -> chrono::DateTime<Utc> { Utc::now() }
 /// }
 ///
@@ -288,7 +288,7 @@ use crate::AggregateError;
 /// impl DomainEvent for CounterEvent {
 ///     type Aggregate = Counter;
 ///     fn event_type(&self) -> &'static str { "Incremented" }
-///     fn event_version(&self) -> i32 { 1 }
+///     fn event_version(&self) -> u64 { 1 }
 ///     fn occurred_at(&self) -> chrono::DateTime<Utc> { Utc::now() }
 /// }
 ///
@@ -420,7 +420,7 @@ pub trait ApplyEvent<A: Aggregate> {
     /// impl DomainEvent for CounterEvent {
     ///     type Aggregate = Counter;
     ///     fn event_type(&self) -> &'static str { "Incremented" }
-    ///     fn event_version(&self) -> i32 { 1 }
+    ///     fn event_version(&self) -> u64 { 1 }
     ///     fn occurred_at(&self) -> chrono::DateTime<Utc> { Utc::now() }
     /// }
     ///
@@ -536,7 +536,7 @@ pub trait ApplyEvent<A: Aggregate> {
     /// impl DomainEvent for CounterEvent {
     ///     type Aggregate = Counter;
     ///     fn event_type(&self) -> &'static str { "Incremented" }
-    ///     fn event_version(&self) -> i32 { 1 }
+    ///     fn event_version(&self) -> u64 { 1 }
     ///     fn occurred_at(&self) -> chrono::DateTime<Utc> { Utc::now() }
     /// }
     ///
@@ -663,7 +663,7 @@ pub trait ApplyEvent<A: Aggregate> {
     /// impl DomainEvent for BankAccountEvent {
     ///     type Aggregate = BankAccount;
     ///     fn event_type(&self) -> &'static str { "MoneyWithdrawn" }
-    ///     fn event_version(&self) -> i32 { 1 }
+    ///     fn event_version(&self) -> u64 { 1 }
     ///     fn occurred_at(&self) -> chrono::DateTime<Utc> { Utc::now() }
     /// }
     ///
@@ -776,7 +776,7 @@ mod tests {
             }
         }
 
-        fn event_version(&self) -> i32 {
+        fn event_version(&self) -> u64 {
             1
         }
 

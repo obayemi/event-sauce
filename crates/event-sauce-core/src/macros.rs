@@ -762,7 +762,7 @@ macro_rules! define_events {
                 }
             }
 
-            fn event_version(&self) -> i32 {
+            fn event_version(&self) -> u64 {
                 match self {
                     $(
                         $event_enum::$variant { .. } => {
@@ -979,7 +979,7 @@ mod tests {
             }
         }
 
-        fn event_version(&self) -> i32 {
+        fn event_version(&self) -> u64 {
             1
         }
 
@@ -1444,7 +1444,7 @@ mod tests {
                 uuid::Uuid::new_v4(),
                 "Test".to_string(),
                 "Test.Incremented".to_string(),
-                crate::Version::from(i),
+                crate::Version::new(u64::try_from(i).unwrap()),
                 serde_json::to_value(&event).unwrap(),
             );
             projection.handle(&envelope).await.unwrap();

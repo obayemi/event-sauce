@@ -32,7 +32,7 @@ impl DomainEvent for TestEvent {
     fn event_type(&self) -> &'static str {
         "Created"
     }
-    fn event_version(&self) -> i32 {
+    fn event_version(&self) -> u64 {
         1
     }
     fn occurred_at(&self) -> chrono::DateTime<chrono::Utc> {

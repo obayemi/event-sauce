@@ -28,7 +28,9 @@
       "Bash(jj cat:*)",
       "Bash(jj file show:*)",
       "Bash(rustc:*)",
-      "Bash(cargo --version:*)"
+      "Bash(cargo --version:*)",
+      "Bash(wc:*)",
+      "Bash(jj new:*)"
     ],
     "deny": [],
     "ask": []

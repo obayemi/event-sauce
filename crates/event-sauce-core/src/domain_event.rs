@@ -53,7 +53,7 @@ use crate::{Aggregate, Error, EventEnvelope, Result, Version};
 ///         }
 ///     }
 ///
-///     fn event_version(&self) -> i32 {
+///     fn event_version(&self) -> u64 {
 ///         1 // Schema version
 ///     }
 ///
@@ -82,7 +82,7 @@ pub trait DomainEvent: Clone + Debug + Send + Sync + Serialize + DeserializeOwne
     ///
     /// Used for event versioning and schema evolution.
     /// Start at 1 and increment when the event structure changes.
-    fn event_version(&self) -> i32;
+    fn event_version(&self) -> u64;
 
     /// Returns when this event occurred.
     ///
@@ -127,7 +127,7 @@ pub trait DomainEvent: Clone + Debug + Send + Sync + Serialize + DeserializeOwne
     ///     type Aggregate = User;
     ///
     ///     fn event_type(&self) -> &'static str { "UserRegistered" }
-    ///     fn event_version(&self) -> i32 { 1 }
+    ///     fn event_version(&self) -> u64 { 1 }
     ///     fn occurred_at(&self) -> chrono::DateTime<Utc> {
     ///         match self {
     ///             UserEvent::Registered { timestamp, .. } => *timestamp,
@@ -190,7 +190,7 @@ pub trait DomainEvent: Clone + Debug + Send + Sync + Serialize + DeserializeOwne
     ///     type Aggregate = UserAggregate;
     ///
     ///     fn event_type(&self) -> &'static str { "UserRegistered" }
-    ///     fn event_version(&self) -> i32 { 1 }
+    ///     fn event_version(&self) -> u64 { 1 }
     ///     fn occurred_at(&self) -> chrono::DateTime<Utc> { self.timestamp }
     /// }
     ///
@@ -415,7 +415,7 @@ mod tests {
             }
         }
 
-        fn event_version(&self) -> i32 {
+        fn event_version(&self) -> u64 {
             1
         }
 
@@ -613,7 +613,7 @@ mod tests {
             "SimpleEvent"
         }
 
-        fn event_version(&self) -> i32 {
+        fn event_version(&self) -> u64 {
             1
         }
 
@@ -635,7 +635,7 @@ mod tests {
     // Test versioned event - needs its own aggregate
     #[derive(Debug, Clone, Serialize, Deserialize)]
     struct VersionedEvent {
-        version: i32,
+        version: u64,
         timestamp: DateTime<Utc>,
     }
 
@@ -717,7 +717,7 @@ mod tests {
             "VersionedEvent"
         }
 
-        fn event_version(&self) -> i32 {
+        fn event_version(&self) -> u64 {
             self.version
         }
 

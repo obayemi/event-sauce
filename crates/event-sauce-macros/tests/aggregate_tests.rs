@@ -47,7 +47,7 @@ impl DomainEvent for TestCounterEvent {
         }
     }
 
-    fn event_version(&self) -> i32 {
+    fn event_version(&self) -> u64 {
         1
     }
 
