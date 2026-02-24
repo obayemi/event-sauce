@@ -179,7 +179,7 @@ fn test_aggregate_derive_apply() {
 
     // Version should be incremented
     assert_eq!(counter.version(), initial_version.next());
-    // Value should be updated (via apply_event) - accessible via Deref
+    // Value should be updated (via EventApplicator dispatch) - accessible via Deref
     assert_eq!(counter.value, 10);
 }
 

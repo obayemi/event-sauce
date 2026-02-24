@@ -22,6 +22,7 @@
 mod aggregate;
 mod aggregate_error;
 mod aggregate_id;
+mod aggregate_state;
 mod apply_event;
 mod domain_event;
 mod error;
@@ -41,6 +42,7 @@ mod version;
 pub use aggregate::Aggregate;
 pub use aggregate_error::AggregateError;
 pub use aggregate_id::{AggregateId, DefaultAggregateId};
+pub use aggregate_state::{AggregateRoot, AggregateState};
 pub use apply_event::ApplyEvent;
 pub use domain_event::{DomainEvent, EventType};
 pub use error::{Error, Result};

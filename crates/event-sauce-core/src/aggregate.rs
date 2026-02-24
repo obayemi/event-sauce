@@ -77,35 +77,30 @@ use crate::DefaultAggregateId;
 ///     pending_events: Vec<CounterEvent>,
 /// }
 ///
-/// impl Counter {
-///     fn new(id: AggregateId) -> Self {
-///         Self {
-///             id,
-///             value: 0,
-///             version: Version::initial(),
-///             pending_events: Vec::new(),
-///         }
-///     }
-///
-///     fn increment(&mut self, amount: i32) {
-///         self.apply(CounterEvent::Incremented {
-///             amount,
-///             timestamp: Utc::now(),
-///         });
-///     }
-///
-///     fn apply_event(&mut self, event: &CounterEvent) {
-///         match event {
+/// // Implement EventApplicator for event dispatching
+/// impl EventApplicator<Counter> for CounterEvent {
+///     fn dispatch(&self, aggregate: &mut Counter) -> Result<(), CounterError> {
+///         match self {
 ///             CounterEvent::Incremented { amount, .. } => {
-///                 self.value += amount;
+///                 aggregate.value += amount;
+///             }
+///         }
+///         Ok(())
+///     }
+///     fn dispatch_unchecked(&self, aggregate: &mut Counter) {
+///         match self {
+///             CounterEvent::Incremented { amount, .. } => {
+///                 aggregate.value += amount;
 ///             }
 ///         }
 ///     }
 /// }
 ///
 /// impl Aggregate for Counter {
+///     type Id = AggregateId;
 ///     type Event = CounterEvent;
 ///     type Error = CounterError;
+///     type State = ();
 ///
 ///     fn new(id: AggregateId) -> Self {
 ///         Self {
@@ -132,17 +127,20 @@ use crate::DefaultAggregateId;
 ///         self.pending_events.clear();
 ///     }
 ///
-///     fn apply<E: Into<Self::Event>>(&mut self, event: E) -> Result<(), Self::Error> {
-///         let event = event.into();
-///         self.apply_internal(&event)?;
+///     fn push_pending_event(&mut self, event: Self::Event) {
 ///         self.pending_events.push(event);
-///         Ok(())
 ///     }
 ///
-///     fn apply_internal(&mut self, event: &Self::Event) -> Result<(), Self::Error> {
-///         self.apply_event(event);
+///     fn increment_version(&mut self) {
 ///         self.version = self.version.next();
-///         Ok(())
+///     }
+///
+///     // apply, apply_internal, and apply_unchecked are default methods
+///     // provided by the Aggregate trait using EventApplicator.
+///
+///     fn state(&self) -> &() { &() }
+///     fn from_snapshot(id: AggregateId, _version: Version, _state: ()) -> Self {
+///         Self::new(id)
 ///     }
 /// }
 /// ```

@@ -113,7 +113,7 @@ Derive macros for reducing boilerplate (~40% less code):
 - **#[derive(AggregateId)]** - Auto-implements AggregateId trait + Display
 - **#[derive(AggregateError)]** - Auto-implements AggregateError marker trait
 - **#[derive(AggregateState)]** - Generates aggregate wrapper with infrastructure
-- **#[derive(Event)]** - Implements DomainEvent trait + auto-generates apply_event
+- **#[derive(Event)]** - Implements DomainEvent trait + auto-generates EventApplicator
 - Compile-time code generation
 - Type-safe and zero-runtime cost
 - Clean separation between business logic and infrastructure

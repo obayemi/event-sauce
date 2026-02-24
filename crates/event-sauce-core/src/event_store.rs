@@ -921,24 +921,24 @@ mod tests {
         fn update(&mut self, value: i32) -> std::result::Result<(), TestAggErr> {
             self.apply(TestAggregateEvent::Updated { value })
         }
-
-        fn apply_event(&mut self, event: &TestAggregateEvent) {
-            match event {
-                TestAggregateEvent::Created { value } | TestAggregateEvent::Updated { value } => {
-                    self.state.value = *value;
-                }
-            }
-        }
     }
 
     impl crate::EventApplicator<TestAgg> for TestAggregateEvent {
         fn dispatch(&self, aggregate: &mut TestAgg) -> std::result::Result<(), TestAggErr> {
-            aggregate.apply_event(self);
+            match self {
+                TestAggregateEvent::Created { value } | TestAggregateEvent::Updated { value } => {
+                    aggregate.state.value = *value;
+                }
+            }
             Ok(())
         }
 
         fn dispatch_unchecked(&self, aggregate: &mut TestAgg) {
-            aggregate.apply_event(self);
+            match self {
+                TestAggregateEvent::Created { value } | TestAggregateEvent::Updated { value } => {
+                    aggregate.state.value = *value;
+                }
+            }
         }
     }
 

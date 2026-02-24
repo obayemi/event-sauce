@@ -240,7 +240,7 @@ impl ApplyEvent<BankAccount> for AccountClosedEvent {
 /// - event_version() returning the specified version
 /// - occurred_at() extracting timestamp from each variant
 /// - Into implementations for each event struct
-/// - apply_event() method that delegates to ApplyEvent trait
+/// - EventApplicator impl that delegates to ApplyEvent trait
 #[derive(Debug, Clone, Serialize, Deserialize, event_sauce_macros::Event)]
 #[event(version = 1, aggregate = "BankAccount")]
 enum BankAccountEvent {

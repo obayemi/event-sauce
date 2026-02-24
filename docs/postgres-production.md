@@ -474,7 +474,7 @@ info!("Event append took: {:?}", start.elapsed());
 
 // 2. Event count per aggregate
 let version = store.get_version(stream_id).await?;
-if version.as_i32() > 1000 {
+if version.as_u64() > 1000 {
     warn!("High event count for aggregate: {}", stream_id);
 }
 

@@ -245,7 +245,7 @@ struct AccountWithdrawnEvent {
 }
 
 // Step 2: Wrap them in an enum for the domain event
-// The aggregate attribute auto-generates the apply_event method!
+// The aggregate attribute auto-generates the EventApplicator impl!
 #[derive(DeriveEvent, Debug, Clone, Serialize, Deserialize)]
 #[event(version = 1, type_prefix = "Account", aggregate = "BankAccountAggregate")]
 enum AccountEvent {
@@ -267,7 +267,7 @@ enum AccountEvent {
 
 - **`version`**: The schema version for this event type (required)
 - **`type_prefix`**: Prefix for generated event type names (optional)
-- **`aggregate`**: The aggregate type name for auto-generating `apply_event` method (optional but recommended)
+- **`aggregate`**: The aggregate type name for auto-generating `EventApplicator` impl (optional but recommended)
 
 ### Event Requirements
 
@@ -288,13 +288,13 @@ AccountEvent::Withdrawn(..)   → "AccountWithdrawn"
 With type_prefix and aggregate:
 ```rust
 #[event(version = 1, type_prefix = "Account", aggregate = "BankAccountAggregate")]
-//                     ^^^^^^^^^ prefix       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ auto-generates apply_event
+//                     ^^^^^^^^^ prefix       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ auto-generates EventApplicator
 
 AccountEvent::Opened(..)      → "AccountOpened"
 AccountEvent::Deposited(..)   → "AccountDeposited"
 ```
 
-**Note**: When you specify the `aggregate` attribute, the macro automatically generates an `apply_event` method on your aggregate that dispatches to each event's `ApplyEvent::apply()` implementation. You don't need to write this manually!
+**Note**: When you specify the `aggregate` attribute, the macro automatically generates an `EventApplicator` trait impl that dispatches to each event's `ApplyEvent::apply()` implementation. The `Aggregate` trait's default methods use `EventApplicator` for event dispatching. You don't need to write this manually!
 
 ## ApplyEvent Trait - Self-Contained Events (Recommended)
 
