@@ -123,7 +123,6 @@ cargo llvm-cov --workspace --all-features --all-targets --summary-only
 |------------|---------|------------------|
 | tokio | 1.48.0 | Check monthly |
 | sqlx | 0.8.6 | Check monthly |
-| clap | 4.5.51 | Check monthly |
 | serde | 1.0.228 | Check monthly |
 | syn | 2.0.104 | Check monthly |
 | thiserror | 2.0.16 | Check monthly |
@@ -131,7 +130,6 @@ cargo llvm-cov --workspace --all-features --all-targets --summary-only
 | chrono | 0.4.42 | Check monthly |
 | proptest | 1.9.0 | Check monthly |
 | async-trait | 0.1.88 | Check monthly |
-| indicatif | 0.17.11 | Check monthly |
 
 #### Dependency Management
 
@@ -419,7 +417,6 @@ event-sauce/
 ├── event-sauce-memory/        # In-memory implementation
 ├── event-sauce-postgres/      # PostgreSQL implementation
 ├── event-sauce-macros/        # Derive macros
-├── event-sauce-cli/           # CLI tool
 └── event-sauce/               # Facade crate
 ```
 

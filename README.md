@@ -9,7 +9,7 @@
 
 ## Features
 
-- 🚀 **Modern Rust**: Built with latest stable dependencies (Tokio 1.48, SQLx 0.8, Clap 4.5)
+- 🚀 **Modern Rust**: Built with latest stable dependencies (Tokio 1.48, SQLx 0.8)
 - ✅ **100% Test Coverage**: Strict TDD with property-based testing
 - 🔄 **Async Streaming**: Memory-efficient event processing with backpressure
 - 🗄️ **Multiple Backends**: PostgreSQL, in-memory
@@ -318,13 +318,12 @@ cargo llvm-cov --workspace --all-features --all-targets --summary-only
 cargo llvm-cov -p event-sauce-core --all-features --all-targets --summary-only
 ```
 
-**Current Test Status: across 5 crates**
+**Current Test Status: across 4 crates**
 
 - Core: 180 tests, 100% coverage
 - Memory: 33 tests, 100% coverage
 - PostgreSQL: 39 tests (uses testcontainers - requires Docker)
 - Macros: 78 tests (Aggregate, Event, AggregateState, UI tests)
-- CLI: 23 tests (init, generate, db commands)
 
 The PostgreSQL tests use [testcontainers](https://github.com/testcontainers/testcontainers-rs) to automatically spin up isolated PostgreSQL instances. Tests run automatically in CI and locally with Docker installed.
 
@@ -345,62 +344,6 @@ All contributions must:
    - `cargo clippy --workspace --all-features --all-targets -- -D warnings`
 4. Include documentation
 5. Use Jujutsu for commits
-
-## CLI Tool
-
-The `event-sauce` CLI provides project scaffolding and code generation:
-
-### Installation
-
-```bash
-cargo install event-sauce-cli
-```
-
-### Commands
-
-**Initialize a new project:**
-
-```bash
-# Create a new project with PostgreSQL backend
-event-sauce init my-project --backend postgres
-
-# Create with in-memory backend (for testing)
-event-sauce init my-project --backend memory
-```
-
-**Generate code:**
-
-```bash
-# Generate an aggregate
-event-sauce generate aggregate BankAccount
-
-# Generate events for an aggregate
-event-sauce generate event AccountOpened --aggregate BankAccount
-
-# Generate a projection
-event-sauce generate projection AccountBalance --events AccountOpened,FundsDeposited,FundsWithdrawn
-```
-
-**Database management:**
-
-```bash
-# Display PostgreSQL schema
-event-sauce db init --backend postgres
-
-# For memory backend (no-op)
-event-sauce db init --backend memory
-```
-
-### Help
-
-```bash
-# Show all commands
-event-sauce --help
-
-# Show help for specific command
-event-sauce generate --help
-event-sauce init --help
-```
 
 ## PostgreSQL Production Setup
 
@@ -507,8 +450,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 - [x] **Phase 3: PostgreSQL backend (event-sauce-postgres)** - ✅ 39 tests
 - [x] **Phase 4: Derive macros (event-sauce-macros)** - ✅ 78 tests
 - [x] **Phase 5: Subscription system (event-sauce-core)** - ✅ Integrated into core (Subscription, CheckpointStore, EventFilter)
-- [x] **Phase 6: CLI tooling (event-sauce-cli)** - ✅ 23 tests (init, generate, db commands)
-- [x] **Phase 7: Examples and documentation** - ✅ 5 examples, comprehensive guides
+- [x] **Phase 6: Examples and documentation** - ✅ 5 examples, comprehensive guides
 - [ ] Phase 8: v0.1.0 release
 
 ## License

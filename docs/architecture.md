@@ -128,15 +128,6 @@ Read model building via durable subscriptions:
 - **CheckpointStrategy** - Configure checkpoint frequency
 - No separate projection trait needed - use simple handler functions
 
-### event-sauce-cli
-
-Developer tooling:
-
-- Project scaffolding
-- Code generation
-- Database schema management
-- Reduces setup time
-
 ### event-sauce (facade)
 
 Re-exports all crates with feature flags:

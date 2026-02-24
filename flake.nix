@@ -26,6 +26,7 @@
         devShells.default = pkgs.mkShell {
           buildInputs = [
             rustToolchain
+            pkgs.cargo-llvm-cov
           ];
         };
       });

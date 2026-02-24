@@ -102,14 +102,6 @@ uuid = { version = "1.18", features = ["v4", "serde"] }
 serde = { version = "1.0", features = ["derive"] }
 ```
 
-Or use the CLI to scaffold a new project:
-
-```bash
-cargo install event-sauce-cli
-event-sauce init my-app --backend memory
-cd my-app
-```
-
 ## Your First Aggregate
 
 Let's create a simple counter aggregate. An **aggregate** is a consistency boundary in your domain that processes commands and produces events.
