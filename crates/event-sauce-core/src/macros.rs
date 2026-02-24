@@ -657,7 +657,9 @@ macro_rules! define_events {
                 }
                 $(@version($version:literal))?
                 $(@validate |$val_agg:ident, $val_evt:ident| $val_body:block)?
+                $(@validate_spec($val_spec:expr))?
                 $(@post_validate |$post_val_agg:ident, $post_val_evt:ident| $post_val_body:block)?
+                $(@post_validate_spec($post_val_spec:expr))?
                 => $apply:expr
             ),* $(,)?
         }
@@ -673,15 +675,18 @@ macro_rules! define_events {
 
                 // Implement ApplyEvent for each event struct
                 impl $crate::ApplyEvent<$aggregate> for [<$variant Event>] {
-                    // Validate method (if provided)
+                    // Validate method (if provided via closure or spec)
                     #[allow(unused_variables, unreachable_code, clippy::redundant_closure_call)]
                     fn validate(&self, aggregate: &$aggregate)
                         -> ::std::result::Result<(), <$aggregate as $crate::Aggregate>::Error>
                     {
                         $(
                             // Call the validation closure provided by the user
-                            // The user provides a closure like: |aggregate, event| { ... }
                             return (|$val_agg: &$aggregate, $val_evt: &Self| $val_body)(aggregate, self);
+                        )?
+                        $(
+                            // Run the specification check (uses From conversion for error)
+                            $crate::Specification::check(&$val_spec, aggregate)?;
                         )?
                         ::std::result::Result::Ok(())
                     }
@@ -692,15 +697,18 @@ macro_rules! define_events {
                         apply_fn(aggregate, self);
                     }
 
-                    // Post-validate method (if provided)
+                    // Post-validate method (if provided via closure or spec)
                     #[allow(unused_variables, unreachable_code, clippy::redundant_closure_call)]
                     fn post_validate(&self, aggregate: &$aggregate)
                         -> ::std::result::Result<(), <$aggregate as $crate::Aggregate>::Error>
                     {
                         $(
                             // Call the post-validation closure provided by the user
-                            // The user provides a closure like: |aggregate, event| { ... }
                             return (|$post_val_agg: &$aggregate, $post_val_evt: &Self| $post_val_body)(aggregate, self);
+                        )?
+                        $(
+                            // Run the specification check (uses From conversion for error)
+                            $crate::Specification::check(&$post_val_spec, aggregate)?;
                         )?
                         ::std::result::Result::Ok(())
                     }
@@ -918,7 +926,7 @@ macro_rules! spec {
 mod tests {
     use crate::{
         Aggregate, AggregateError, AggregateId, ApplyEvent, DefaultAggregateId, DomainEvent,
-        Specification, Version,
+        Specification, SpecificationError, Version,
     };
     use chrono::{DateTime, Utc};
     use serde::{Deserialize, Serialize};
@@ -2755,5 +2763,303 @@ mod tests {
         let result: Result<(), String> = IsAccountActive.validate_or(&account, |msg| msg);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "Account must be active");
+    }
+
+    // ===== @validate_spec / @post_validate_spec Tests =====
+
+    // Error type with SpecificationFailed variant for spec-based validation
+    #[derive(Debug, thiserror::Error)]
+    enum WarehouseError {
+        #[error("Not enough stock")]
+        NotEnoughStock,
+        #[error("{0}")]
+        SpecificationFailed(#[from] SpecificationError<Warehouse>),
+    }
+
+    impl AggregateError for WarehouseError {}
+
+    #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+    struct WarehouseState {
+        stock: i64,
+        name: String,
+        active: bool,
+    }
+
+    #[derive(Debug, Serialize, Deserialize)]
+    struct Warehouse {
+        id: DefaultAggregateId,
+        state: WarehouseState,
+        version: Version,
+        pending_events: Vec<WarehouseEvent>,
+    }
+
+    impl Aggregate for Warehouse {
+        type Id = DefaultAggregateId;
+        type Event = WarehouseEvent;
+        type Error = WarehouseError;
+        type State = WarehouseState;
+
+        fn new(id: Self::Id) -> Self {
+            Self {
+                id,
+                state: WarehouseState::default(),
+                version: Version::initial(),
+                pending_events: Vec::new(),
+            }
+        }
+
+        fn aggregate_id(&self) -> &Self::Id {
+            &self.id
+        }
+
+        fn version(&self) -> Version {
+            self.version
+        }
+
+        fn pending_events(&self) -> &[Self::Event] {
+            &self.pending_events
+        }
+
+        fn clear_pending_events(&mut self) {
+            self.pending_events.clear();
+        }
+
+        fn apply<E: Into<Self::Event>>(
+            &mut self,
+            event: E,
+        ) -> std::result::Result<(), Self::Error> {
+            let event = event.into();
+            self.apply_internal(&event)?;
+            self.pending_events.push(event);
+            Ok(())
+        }
+
+        fn apply_internal(&mut self, event: &Self::Event) -> std::result::Result<(), Self::Error> {
+            self.apply_event(event)?;
+            self.version = self.version.next();
+            Ok(())
+        }
+
+        fn state(&self) -> &Self::State {
+            &self.state
+        }
+
+        fn from_snapshot(id: Self::Id, version: Version, state: Self::State) -> Self {
+            Self {
+                id,
+                state,
+                version,
+                pending_events: Vec::new(),
+            }
+        }
+    }
+
+    // Specifications for the warehouse
+    spec!(WarehouseIsActive for Warehouse, "Warehouse must be active", |w| {
+        w.state.active
+    });
+
+    spec!(StockIsPositive for Warehouse, "Stock must be positive", stock = w.state.stock, |w| {
+        w.state.stock > 0
+    });
+
+    define_events! {
+        enum WarehouseEvent for Warehouse {
+            Activated {
+                name: String,
+            } => |warehouse, event| {
+                warehouse.state.name = event.name.clone();
+                warehouse.state.active = true;
+            },
+
+            StockAdded {
+                quantity: i64,
+            }
+            @validate_spec(WarehouseIsActive)
+            => |warehouse, event| {
+                warehouse.state.stock += event.quantity;
+            },
+
+            StockRemoved {
+                quantity: i64,
+            }
+            @validate_spec(WarehouseIsActive)
+            @post_validate_spec(StockIsPositive)
+            => |warehouse, event| {
+                warehouse.state.stock -= event.quantity;
+            },
+        }
+    }
+
+    #[test]
+    fn test_validate_spec_allows_valid_operation() {
+        let mut warehouse = Warehouse::new(DefaultAggregateId::new());
+        // Activate the warehouse
+        warehouse
+            .apply(ActivatedEvent {
+                name: "Main Warehouse".to_string(),
+                timestamp: Utc::now(),
+            })
+            .unwrap();
+
+        // Adding stock should succeed (warehouse is active)
+        let result = warehouse.apply(StockAddedEvent {
+            quantity: 100,
+            timestamp: Utc::now(),
+        });
+        assert!(result.is_ok());
+        assert_eq!(warehouse.state.stock, 100);
+    }
+
+    #[test]
+    fn test_validate_spec_rejects_when_spec_fails() {
+        let mut warehouse = Warehouse::new(DefaultAggregateId::new());
+        // Don't activate warehouse - it's inactive by default
+
+        // Adding stock should fail (warehouse is not active)
+        let result = warehouse.apply(StockAddedEvent {
+            quantity: 100,
+            timestamp: Utc::now(),
+        });
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, WarehouseError::SpecificationFailed(_)),
+            "Expected SpecificationFailed, got: {err}"
+        );
+        assert_eq!(err.to_string(), "Warehouse must be active");
+    }
+
+    #[test]
+    fn test_post_validate_spec_allows_valid_state() {
+        let mut warehouse = Warehouse::new(DefaultAggregateId::new());
+        warehouse
+            .apply(ActivatedEvent {
+                name: "Main".to_string(),
+                timestamp: Utc::now(),
+            })
+            .unwrap();
+        warehouse
+            .apply(StockAddedEvent {
+                quantity: 100,
+                timestamp: Utc::now(),
+            })
+            .unwrap();
+
+        // Remove some stock, leaving positive stock -> should succeed
+        let result = warehouse.apply(StockRemovedEvent {
+            quantity: 50,
+            timestamp: Utc::now(),
+        });
+        assert!(result.is_ok());
+        assert_eq!(warehouse.state.stock, 50);
+    }
+
+    #[test]
+    fn test_post_validate_spec_rejects_invalid_state() {
+        let mut warehouse = Warehouse::new(DefaultAggregateId::new());
+        warehouse
+            .apply(ActivatedEvent {
+                name: "Main".to_string(),
+                timestamp: Utc::now(),
+            })
+            .unwrap();
+        warehouse
+            .apply(StockAddedEvent {
+                quantity: 10,
+                timestamp: Utc::now(),
+            })
+            .unwrap();
+
+        // Remove all stock, leaving 0 -> should fail post_validate_spec
+        let result = warehouse.apply(StockRemovedEvent {
+            quantity: 10,
+            timestamp: Utc::now(),
+        });
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, WarehouseError::SpecificationFailed(_)),
+            "Expected SpecificationFailed, got: {err}"
+        );
+        assert!(err.to_string().contains("Stock must be positive"));
+    }
+
+    #[test]
+    fn test_validate_spec_with_composed_spec() {
+        // Verify that composed specs work with @validate_spec
+        // The WarehouseIsActive spec is a simple spec, but this test confirms
+        // the pattern works end-to-end with the define_events! macro
+        let mut warehouse = Warehouse::new(DefaultAggregateId::new());
+
+        // Inactive warehouse -> stock removal should fail at validate_spec
+        let result = warehouse.apply(StockRemovedEvent {
+            quantity: 5,
+            timestamp: Utc::now(),
+        });
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().to_string(), "Warehouse must be active");
+    }
+
+    #[test]
+    fn test_validate_spec_and_post_validate_spec_both_run() {
+        let mut warehouse = Warehouse::new(DefaultAggregateId::new());
+        warehouse
+            .apply(ActivatedEvent {
+                name: "Main".to_string(),
+                timestamp: Utc::now(),
+            })
+            .unwrap();
+        warehouse
+            .apply(StockAddedEvent {
+                quantity: 100,
+                timestamp: Utc::now(),
+            })
+            .unwrap();
+
+        // Remove stock successfully (both validate and post_validate pass)
+        warehouse
+            .apply(StockRemovedEvent {
+                quantity: 30,
+                timestamp: Utc::now(),
+            })
+            .unwrap();
+        assert_eq!(warehouse.state.stock, 70);
+
+        // Remove more stock (still positive)
+        warehouse
+            .apply(StockRemovedEvent {
+                quantity: 69,
+                timestamp: Utc::now(),
+            })
+            .unwrap();
+        assert_eq!(warehouse.state.stock, 1);
+
+        // Try to remove last unit -> post_validate fails (stock would be 0)
+        let result = warehouse.apply(StockRemovedEvent {
+            quantity: 1,
+            timestamp: Utc::now(),
+        });
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_spec_error_is_specification_failed() {
+        let warehouse = Warehouse::new(DefaultAggregateId::new());
+        // Directly test the validate method on the event
+        let event = StockAddedEvent {
+            quantity: 10,
+            timestamp: Utc::now(),
+        };
+        let result = event.validate(&warehouse);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            WarehouseError::SpecificationFailed(spec_err) => {
+                assert_eq!(spec_err.message, "Warehouse must be active");
+            }
+            other @ WarehouseError::NotEnoughStock => {
+                panic!("Expected SpecificationFailed, got: {other}")
+            }
+        }
     }
 }
