@@ -814,6 +814,98 @@ macro_rules! define_events {
     (@version) => { 1 };
 }
 
+/// Create a specification struct or inline specification value.
+///
+/// This macro provides a concise way to define specifications that implement
+/// the `Specification<T>` trait.
+///
+/// # Named Struct Form (Static Message)
+///
+/// Creates a struct that implements `Specification<T>`:
+///
+/// ```ignore
+/// spec!(pub IsActive for Account, "Account must be active",
+///     |account| { account.status == "active" }
+/// );
+/// ```
+///
+/// # Named Struct Form (With Context Fields)
+///
+/// Adds key=value context to the error message:
+///
+/// ```ignore
+/// spec!(pub HasPositiveBalance for Account,
+///     "Balance must be positive", balance = candidate.balance,
+///     |candidate| { candidate.balance > 0 }
+/// );
+/// // error_message: "Balance must be positive: balance=<value>"
+/// ```
+///
+/// # Inline Form
+///
+/// Creates a `FnSpec` value for one-off specifications:
+///
+/// ```ignore
+/// let s = spec!("Must be positive", |val: &i64| { *val > 0 });
+/// ```
+#[macro_export]
+macro_rules! spec {
+    // Named struct form with context fields:
+    // spec!(pub SpecName for Type, "message", key = expr, ..., |candidate| { body })
+    (
+        $vis:vis $name:ident for $target:ty,
+        $msg:literal, $($ctx_key:ident = $ctx_expr:expr),+ ,
+        |$candidate:ident| $body:block
+    ) => {
+        $vis struct $name;
+
+        impl $crate::Specification<$target> for $name {
+            fn is_satisfied_by(&self, $candidate: &$target) -> bool {
+                $body
+            }
+
+            fn error_message(&self, $candidate: &$target) -> String {
+                let base = $msg;
+                let ctx = [
+                    $(format!("{}={}", stringify!($ctx_key), $ctx_expr)),+
+                ].join(", ");
+                format!("{base}: {ctx}")
+            }
+        }
+    };
+
+    // Named struct form with static message:
+    // spec!(pub SpecName for Type, "message", |candidate| { body })
+    (
+        $vis:vis $name:ident for $target:ty,
+        $msg:literal,
+        |$candidate:ident| $body:block
+    ) => {
+        $vis struct $name;
+
+        impl $crate::Specification<$target> for $name {
+            fn is_satisfied_by(&self, $candidate: &$target) -> bool {
+                $body
+            }
+
+            fn error_message(&self, _candidate: &$target) -> String {
+                $msg.to_string()
+            }
+        }
+    };
+
+    // Inline form:
+    // spec!("message", |val: &Type| { body })
+    (
+        $msg:literal, |$candidate:ident : &$target:ty| $body:block
+    ) => {
+        $crate::specification::FnSpec::new(
+            |$candidate: &$target| -> bool { $body },
+            |_: &$target| -> String { $msg.to_string() },
+        )
+    };
+}
+
 #[cfg(test)]
 #[allow(dead_code)]
 #[allow(clippy::enum_variant_names)]
@@ -826,7 +918,7 @@ macro_rules! define_events {
 mod tests {
     use crate::{
         Aggregate, AggregateError, AggregateId, ApplyEvent, DefaultAggregateId, DomainEvent,
-        Version,
+        Specification, Version,
     };
     use chrono::{DateTime, Utc};
     use serde::{Deserialize, Serialize};
@@ -2421,5 +2513,248 @@ mod tests {
         // Should only have applied event1 and event3
         assert_eq!(aggregate.value(), 20); // 5 + 15
         assert_eq!(aggregate.pending_events().len(), 2);
+    }
+
+    // ===== spec! Macro Tests =====
+
+    // Test type for spec! tests
+    #[derive(Debug)]
+    struct BankAccount {
+        balance: i64,
+        status: &'static str,
+    }
+
+    // Named struct form with static message
+    spec!(pub IsAccountActive for BankAccount, "Account must be active",
+        |account| { account.status == "active" }
+    );
+
+    // Named struct form with context fields
+    spec!(HasSufficientBalance for BankAccount,
+        "Insufficient balance", balance = candidate.balance,
+        |candidate| { candidate.balance > 0 }
+    );
+
+    #[test]
+    fn test_spec_macro_named_static_message_satisfied() {
+        let account = BankAccount {
+            balance: 100,
+            status: "active",
+        };
+        assert!(IsAccountActive.is_satisfied_by(&account));
+    }
+
+    #[test]
+    fn test_spec_macro_named_static_message_unsatisfied() {
+        let account = BankAccount {
+            balance: 100,
+            status: "frozen",
+        };
+        assert!(!IsAccountActive.is_satisfied_by(&account));
+    }
+
+    #[test]
+    fn test_spec_macro_named_static_error_message() {
+        let account = BankAccount {
+            balance: 100,
+            status: "frozen",
+        };
+        assert_eq!(
+            IsAccountActive.error_message(&account),
+            "Account must be active"
+        );
+    }
+
+    #[test]
+    fn test_spec_macro_named_static_check() {
+        let active = BankAccount {
+            balance: 100,
+            status: "active",
+        };
+        let frozen = BankAccount {
+            balance: 100,
+            status: "frozen",
+        };
+        assert!(IsAccountActive.check(&active).is_ok());
+        assert!(IsAccountActive.check(&frozen).is_err());
+    }
+
+    #[test]
+    fn test_spec_macro_named_context_satisfied() {
+        let account = BankAccount {
+            balance: 100,
+            status: "active",
+        };
+        assert!(HasSufficientBalance.is_satisfied_by(&account));
+    }
+
+    #[test]
+    fn test_spec_macro_named_context_unsatisfied() {
+        let account = BankAccount {
+            balance: -50,
+            status: "active",
+        };
+        assert!(!HasSufficientBalance.is_satisfied_by(&account));
+    }
+
+    #[test]
+    fn test_spec_macro_named_context_error_message() {
+        let account = BankAccount {
+            balance: -50,
+            status: "active",
+        };
+        assert_eq!(
+            HasSufficientBalance.error_message(&account),
+            "Insufficient balance: balance=-50"
+        );
+    }
+
+    #[test]
+    fn test_spec_macro_named_context_check() {
+        let positive = BankAccount {
+            balance: 100,
+            status: "active",
+        };
+        let negative = BankAccount {
+            balance: -50,
+            status: "active",
+        };
+        assert!(HasSufficientBalance.check(&positive).is_ok());
+        let err = HasSufficientBalance.check(&negative).unwrap_err();
+        assert_eq!(err.message, "Insufficient balance: balance=-50");
+    }
+
+    #[test]
+    fn test_spec_macro_inline_form_satisfied() {
+        let s = spec!("Must be positive", |val: &i64| { *val > 0 });
+        assert!(s.is_satisfied_by(&42));
+    }
+
+    #[test]
+    fn test_spec_macro_inline_form_unsatisfied() {
+        let s = spec!("Must be positive", |val: &i64| { *val > 0 });
+        assert!(!s.is_satisfied_by(&-1));
+    }
+
+    #[test]
+    fn test_spec_macro_inline_form_error_message() {
+        let s = spec!("Must be positive", |val: &i64| { *val > 0 });
+        assert_eq!(s.error_message(&-1), "Must be positive");
+    }
+
+    #[test]
+    fn test_spec_macro_inline_form_check() {
+        let s = spec!("Must be positive", |val: &i64| { *val > 0 });
+        assert!(s.check(&42).is_ok());
+        assert!(s.check(&-1).is_err());
+    }
+
+    #[test]
+    fn test_spec_macro_named_composable_with_and() {
+        let account = BankAccount {
+            balance: 100,
+            status: "active",
+        };
+        let spec = IsAccountActive.and(HasSufficientBalance);
+        assert!(spec.check(&account).is_ok());
+    }
+
+    #[test]
+    fn test_spec_macro_named_composable_with_and_fails() {
+        let account = BankAccount {
+            balance: -50,
+            status: "active",
+        };
+        let spec = IsAccountActive.and(HasSufficientBalance);
+        assert!(spec.check(&account).is_err());
+    }
+
+    #[test]
+    fn test_spec_macro_named_composable_with_or() {
+        let account = BankAccount {
+            balance: -50,
+            status: "active",
+        };
+        let spec = IsAccountActive.or(HasSufficientBalance);
+        assert!(spec.check(&account).is_ok());
+    }
+
+    #[test]
+    fn test_spec_macro_named_composable_with_not() {
+        let frozen = BankAccount {
+            balance: 100,
+            status: "frozen",
+        };
+        let spec = IsAccountActive.not();
+        assert!(spec.check(&frozen).is_ok());
+    }
+
+    #[test]
+    fn test_spec_macro_inline_composable() {
+        let positive = spec!("Must be positive", |val: &i64| { *val > 0 });
+        let even = spec!("Must be even", |val: &i64| { *val % 2 == 0 });
+        let spec = positive.and(even);
+        assert!(spec.check(&42).is_ok());
+        assert!(spec.check(&3).is_err());
+    }
+
+    // Test multiple context fields
+    spec!(HasMinMaxBalance for BankAccount,
+        "Balance out of range", balance = candidate.balance, status = candidate.status,
+        |candidate| { candidate.balance > 0 && candidate.balance < 1_000_000 }
+    );
+
+    #[test]
+    fn test_spec_macro_multiple_context_fields() {
+        let account = BankAccount {
+            balance: -50,
+            status: "active",
+        };
+        assert_eq!(
+            HasMinMaxBalance.error_message(&account),
+            "Balance out of range: balance=-50, status=active"
+        );
+    }
+
+    #[test]
+    fn test_spec_macro_multiple_context_satisfied() {
+        let account = BankAccount {
+            balance: 500,
+            status: "active",
+        };
+        assert!(HasMinMaxBalance.check(&account).is_ok());
+    }
+
+    #[test]
+    fn test_spec_macro_multiple_context_unsatisfied() {
+        let account = BankAccount {
+            balance: 2_000_000,
+            status: "active",
+        };
+        assert!(HasMinMaxBalance.check(&account).is_err());
+    }
+
+    // Test private visibility (default)
+    spec!(PrivateSpec for i64, "must pass",
+        |val| { *val > 0 }
+    );
+
+    #[test]
+    fn test_spec_macro_private_visibility() {
+        assert!(PrivateSpec.is_satisfied_by(&1));
+    }
+
+    // Test with validate_or
+    #[test]
+    fn test_spec_macro_with_validate_or() {
+        let account = BankAccount {
+            balance: -50,
+            status: "frozen",
+        };
+
+        let result: Result<(), String> =
+            IsAccountActive.validate_or(&account, |msg| msg);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Account must be active");
     }
 }
