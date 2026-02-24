@@ -16,10 +16,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use event_sauce_core::{
-    command_handler, define_events, Aggregate, CheckpointStrategy, ErrorPolicy, EventFilter,
-    EventStore, Repository,
+    command_handler, define_events, spec, Aggregate, CheckpointStrategy, ErrorPolicy, EventFilter,
+    EventStore, Repository, Specification,
 };
-use event_sauce_macros::{aggregate, AggregateError, AggregateId};
+use event_sauce_macros::{aggregate, aggregate_error, AggregateError, AggregateId};
 use event_sauce_postgres::{PostgresCheckpointStore, PostgresEventStore};
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -134,13 +134,14 @@ impl OrderId {
     }
 }
 
-/// Order domain errors - auto-implements AggregateError trait
-#[derive(AggregateError, Debug, thiserror::Error)]
+/// Order domain errors - auto-implements AggregateError trait with spec support.
+/// Uses `#[aggregate_error]` to auto-inject `SpecificationFailed` variant
+/// for seamless spec-based validation via the `?` operator.
+#[aggregate_error(aggregate = "Order")]
+#[derive(Debug, thiserror::Error)]
 enum OrderError {
     #[error("Invalid amount: {0}")]
     InvalidAmount(i64),
-    #[error("Order is already {0:?}")]
-    InvalidStatus(OrderStatus),
 }
 
 /// Order status
@@ -159,6 +160,11 @@ struct OrderItem {
     quantity: u32,
     price: i64,
 }
+
+// Specification: Order must be in Pending status
+spec!(OrderIsPending for Order, "Order must be pending", |o| {
+    o.status == OrderStatus::Pending
+});
 
 // Order events with define_events! macro (defined BEFORE aggregate)
 define_events! {
@@ -180,9 +186,7 @@ define_events! {
             if evt.price <= 0 {
                 return Err(OrderError::InvalidAmount(evt.price));
             }
-            if agg.status != OrderStatus::Pending {
-                return Err(OrderError::InvalidStatus(agg.status));
-            }
+            OrderIsPending.check(agg)?; // Uses SpecificationError -> OrderError via From
             Ok(())
         }
         => |order, event| {
@@ -196,12 +200,7 @@ define_events! {
         },
 
         OrderCompleted {}
-        @validate |agg, _evt| {
-            if agg.status != OrderStatus::Pending {
-                return Err(OrderError::InvalidStatus(agg.status));
-            }
-            Ok(())
-        }
+        @validate_spec(OrderIsPending)
         => |order, _event| {
             order.status = OrderStatus::Completed;
         },

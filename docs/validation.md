@@ -11,6 +11,7 @@ This guide explains validation strategies in event-sauce, including when to vali
 - [Replay Without Validation](#replay-without-validation)
 - [Testing Validation](#testing-validation)
 - [Common Patterns](#common-patterns)
+- [Specification Pattern](#specification-pattern)
 - [Best Practices](#best-practices)
 
 ## Validation Basics
@@ -638,6 +639,130 @@ fn schedule_delivery(&mut self, date: DateTime<Utc>) -> Result<(), OrderError> {
 
     Ok(())
 }
+```
+
+## Specification Pattern
+
+The Specification Pattern provides reusable, composable business rules as named objects. Specifications can be combined with AND/OR/NOT combinators and integrated directly into the validation lifecycle.
+
+### Core Trait
+
+```rust
+use event_sauce::Specification;
+
+// Specifications implement is_satisfied_by + error_message
+// and provide check(), validate_or(), and(), or(), not() out of the box.
+```
+
+### Defining Specifications
+
+#### With `spec!` Macro
+
+```rust
+use event_sauce::{spec, Specification};
+
+// Simple specification with static message
+spec!(IsActive for Account, "Account must be active", |account| {
+    account.status == AccountStatus::Active
+});
+
+// Parameterized specification with context fields
+spec!(HasSufficientFunds for Account, "Insufficient funds",
+    balance = account.balance, requested = amount,
+    |account, amount: i64| {
+        account.balance >= *amount
+    }
+);
+// Error message: "Insufficient funds: balance=100, requested=200"
+```
+
+#### With `#[specification]` Attribute Macro
+
+```rust
+use event_sauce_macros::specification;
+
+#[specification("Account must be active")]
+fn is_active(account: &Account) -> bool {
+    account.status == AccountStatus::Active
+}
+// Generates: struct IsActive; impl Specification<Account> for IsActive { ... }
+
+#[specification("Insufficient funds", requested = amount)]
+fn has_sufficient_funds(account: &Account, amount: i64) -> bool {
+    account.balance >= *amount
+}
+// Generates: struct HasSufficientFunds { pub amount: i64 }
+```
+
+### Composing Specifications
+
+```rust
+// AND: both must be satisfied
+let spec = IsActive.and(HasPositiveBalance);
+
+// OR: at least one must be satisfied
+let spec = IsActive.or(HasPositiveBalance);
+
+// NOT: inverts the specification
+let spec = IsActive.not();
+
+// Complex composition
+let spec = IsActive.and(HasSufficientFunds { amount: 100 }).or(IsAdmin);
+```
+
+### Integration with Error Types
+
+Use `#[aggregate_error]` to auto-inject a `SpecificationFailed` variant with `From` conversion:
+
+```rust
+use event_sauce_macros::aggregate_error;
+
+#[aggregate_error(aggregate = "Order")]
+#[derive(Debug, thiserror::Error)]
+enum OrderError {
+    #[error("Invalid amount: {0}")]
+    InvalidAmount(i64),
+}
+// Auto-generates: SpecificationFailed(#[from] SpecificationError<Order>)
+// Now `spec.check(order)?` works automatically via the `?` operator.
+```
+
+### Integration with `define_events!`
+
+Use `@validate_spec` and `@post_validate_spec` for declarative spec-based validation:
+
+```rust
+spec!(OrderIsPending for Order, "Order must be pending", |o| {
+    o.status == OrderStatus::Pending
+});
+
+define_events! {
+    enum OrderEvent for Order {
+        Completed {}
+        @validate_spec(OrderIsPending)
+        => |order, _event| {
+            order.status = OrderStatus::Completed;
+        },
+    }
+}
+```
+
+You can also use specifications inside `@validate` closures for more control:
+
+```rust
+@validate |agg, evt| {
+    HasSufficientFunds { amount: evt.amount }
+        .check(agg)?; // SpecificationError -> OrderError via From
+    Ok(())
+}
+```
+
+### Custom Error Mapping
+
+For cases where you don't use `#[aggregate_error]`, use `validate_or`:
+
+```rust
+IsActive.validate_or(&account, |msg| AccountError::ValidationFailed(msg))?;
 ```
 
 ## Best Practices

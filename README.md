@@ -17,6 +17,7 @@
 - 📦 **Production Ready**: Optimistic concurrency, snapshots, distributed locking
 - 🧪 **Testing First-Class**: Built-in test helpers and fixtures
 - 🛡️ **Rich Validation**: Aggregate-specific errors with business rule enforcement
+- 🧩 **Specification Pattern**: Composable, reusable business rules with AND/OR/NOT combinators
 - ⚡ **Optimized Replay**: Fast event replay without re-validation
 
 ### Modern Event Sourcing Features
@@ -26,6 +27,8 @@ event-sauce provides a powerful and ergonomic event sourcing experience with min
 - **📝 Declarative Macros**: Build event-sourced aggregates with minimal code
   - `#[derive(AggregateId)]` - ID types with Display
   - `#[derive(AggregateError)]` - Error marker trait
+  - `#[aggregate_error(...)]` - Error type with spec support
+  - `#[specification(...)]` - Specification struct generation
   - `#[aggregate(...)]` - Aggregate infrastructure management
   - `#[derive(Event)]` - Event dispatching
   - `define_events!` - Event definitions with validation
