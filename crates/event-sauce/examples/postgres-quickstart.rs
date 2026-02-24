@@ -49,15 +49,10 @@ enum UserError {
 }
 
 /// User status
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 enum UserStatus {
+    #[default]
     Active,
-}
-
-impl Default for UserStatus {
-    fn default() -> Self {
-        Self::Active
-    }
 }
 
 // User events with define_events! macro (defined BEFORE aggregate)
@@ -149,17 +144,12 @@ enum OrderError {
 }
 
 /// Order status
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 enum OrderStatus {
+    #[default]
     Pending,
     Completed,
     Cancelled,
-}
-
-impl Default for OrderStatus {
-    fn default() -> Self {
-        Self::Pending
-    }
 }
 
 /// Order item

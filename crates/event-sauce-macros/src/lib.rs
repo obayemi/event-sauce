@@ -520,6 +520,462 @@ pub fn derive_aggregate_error(input: TokenStream) -> TokenStream {
     gen.into()
 }
 
+/// Attributes for the `#[aggregate_error(...)]` attribute
+#[derive(Debug, FromMeta)]
+struct AggregateErrorMacroAttrs {
+    aggregate: String,
+}
+
+/// Attribute macro for aggregate errors that use the specification pattern.
+///
+/// This macro injects a `SpecificationFailed` variant into the error enum
+/// with `#[from]` for automatic `SpecificationError<T>` conversion, and
+/// implements the `AggregateError` marker trait.
+///
+/// # Usage
+///
+/// ```ignore
+/// #[aggregate_error(aggregate = "Order")]
+/// #[derive(Debug, thiserror::Error)]
+/// enum OrderError {
+///     #[error("Order already completed")]
+///     OrderAlreadyCompleted,
+/// }
+/// ```
+///
+/// Expands to:
+///
+/// ```ignore
+/// #[derive(Debug, thiserror::Error)]
+/// enum OrderError {
+///     #[error("Order already completed")]
+///     OrderAlreadyCompleted,
+///     /// Specification validation failure
+///     #[error("{0}")]
+///     SpecificationFailed(#[from] event_sauce_core::SpecificationError<Order>),
+/// }
+/// impl event_sauce_core::AggregateError for OrderError {}
+/// ```
+///
+/// # Panics
+///
+/// Will fail to compile if not applied to an enum.
+#[proc_macro_attribute]
+pub fn aggregate_error(attr: TokenStream, item: TokenStream) -> TokenStream {
+    // Parse the "for = Type" attribute
+    let attr_tokens: proc_macro2::TokenStream = attr.into();
+    let nested_meta = match darling::ast::NestedMeta::parse_meta_list(attr_tokens) {
+        Ok(meta) => meta,
+        Err(err) => return err.to_compile_error().into(),
+    };
+
+    let attrs = match AggregateErrorMacroAttrs::from_list(&nested_meta) {
+        Ok(attrs) => attrs,
+        Err(err) => return err.write_errors().into(),
+    };
+
+    let aggregate_type = Ident::new(&attrs.aggregate, proc_macro2::Span::call_site());
+
+    // Parse the input enum
+    let mut input = parse_macro_input!(item as DeriveInput);
+    let name = input.ident.clone();
+
+    // Add the SpecificationFailed variant to the enum
+    match &mut input.data {
+        Data::Enum(data) => {
+            // Build the new variant tokens
+            let variant: syn::Variant = syn::parse_quote! {
+                /// Specification validation failure
+                #[error("{0}")]
+                SpecificationFailed(#[from] event_sauce_core::SpecificationError<#aggregate_type>)
+            };
+            data.variants.push(variant);
+        }
+        _ => {
+            return syn::Error::new_spanned(&name, "#[aggregate_error] can only be used on enums")
+                .to_compile_error()
+                .into();
+        }
+    }
+
+    // Emit the modified enum + AggregateError impl
+    let gen = quote! {
+        #input
+        impl event_sauce_core::AggregateError for #name {}
+    };
+
+    gen.into()
+}
+
+/// Attribute macro for creating specification structs from functions.
+///
+/// Transforms a predicate function into a struct implementing `Specification<T>`.
+///
+/// # Usage
+///
+/// ## Simple static message
+///
+/// ```ignore
+/// #[specification("Account must be active")]
+/// fn is_active(account: &Account) -> bool {
+///     account.status == AccountStatus::Active
+/// }
+/// // Generates: struct IsActive; impl Specification<Account> for IsActive { ... }
+/// ```
+///
+/// ## With context fields referencing spec fields
+///
+/// ```ignore
+/// #[specification("Insufficient funds", requested = amount)]
+/// fn has_sufficient_funds(account: &Account, amount: i64) -> bool {
+///     account.balance >= amount
+/// }
+/// // Generates: struct HasSufficientFunds { pub amount: i64 }
+/// // error_message: "Insufficient funds: requested=<amount>"
+/// ```
+///
+/// ## With context referencing candidate and spec fields
+///
+/// ```ignore
+/// #[specification("Insufficient funds", balance = account.balance, requested = amount)]
+/// fn has_sufficient_funds(account: &Account, amount: i64) -> bool {
+///     account.balance >= amount
+/// }
+/// // error_message: "Insufficient funds: balance=<balance>, requested=<amount>"
+/// ```
+///
+/// # Panics
+///
+/// Will fail to compile if the function doesn't have at least one `&T` parameter.
+#[proc_macro_attribute]
+pub fn specification(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let attr_tokens: proc_macro2::TokenStream = attr.into();
+    let input_fn = parse_macro_input!(item as syn::ItemFn);
+
+    // Parse the attribute: "message" or "message", key = expr, ...
+    let parsed = match parse_specification_attr(attr_tokens) {
+        Ok(p) => p,
+        Err(err) => return err.to_compile_error().into(),
+    };
+
+    let fn_name = &input_fn.sig.ident;
+    let struct_name = Ident::new(&to_pascal_case(&fn_name.to_string()), fn_name.span());
+
+    // Extract function parameters
+    let params: Vec<_> = input_fn.sig.inputs.iter().collect();
+    if params.is_empty() {
+        return syn::Error::new_spanned(
+            &input_fn.sig,
+            "#[specification] function must have at least one &T parameter",
+        )
+        .to_compile_error()
+        .into();
+    }
+
+    // First param is the candidate (e.g., account: &Account)
+    let (candidate_name, candidate_type) = match extract_ref_param(params[0]) {
+        Ok(v) => v,
+        Err(err) => return err.to_compile_error().into(),
+    };
+
+    // Extra params become struct fields
+    let extra_params: Vec<_> = params[1..].to_vec();
+    let fn_body = &input_fn.block;
+    let fn_vis = &input_fn.vis;
+
+    if extra_params.is_empty() {
+        generate_unit_spec(
+            &parsed,
+            fn_vis,
+            &struct_name,
+            &candidate_name,
+            &candidate_type,
+            fn_body,
+        )
+    } else {
+        generate_parameterized_spec(
+            &parsed,
+            fn_vis,
+            &struct_name,
+            &candidate_name,
+            &candidate_type,
+            fn_body,
+            &extra_params,
+        )
+    }
+}
+
+/// Generate a unit struct specification (no extra params)
+fn generate_unit_spec(
+    parsed: &SpecificationAttrData,
+    fn_vis: &syn::Visibility,
+    struct_name: &Ident,
+    candidate_name: &Ident,
+    candidate_type: &syn::Type,
+    fn_body: &syn::Block,
+) -> TokenStream {
+    let message = &parsed.message;
+    let error_message_body =
+        build_error_message_body(message, &parsed.context, &[], candidate_name);
+
+    // If the error message doesn't reference the candidate, prefix with _ to avoid warning
+    let err_msg_param = if parsed.context.is_empty() {
+        Ident::new(&format!("_{candidate_name}"), candidate_name.span())
+    } else {
+        candidate_name.clone()
+    };
+
+    let gen = quote! {
+        #fn_vis struct #struct_name;
+
+        impl event_sauce_core::Specification<#candidate_type> for #struct_name {
+            fn is_satisfied_by(&self, #candidate_name: &#candidate_type) -> bool
+                #fn_body
+
+            fn error_message(&self, #err_msg_param: &#candidate_type) -> String {
+                #error_message_body
+            }
+        }
+    };
+
+    gen.into()
+}
+
+/// Generate a parameterized struct specification (with extra params as fields)
+fn generate_parameterized_spec(
+    parsed: &SpecificationAttrData,
+    fn_vis: &syn::Visibility,
+    struct_name: &Ident,
+    candidate_name: &Ident,
+    candidate_type: &syn::Type,
+    fn_body: &syn::Block,
+    extra_params: &[&syn::FnArg],
+) -> TokenStream {
+    let message = &parsed.message;
+
+    let field_defs: Vec<_> = extra_params
+        .iter()
+        .filter_map(|p| match p {
+            syn::FnArg::Typed(pat_type) => {
+                let pat = &pat_type.pat;
+                let ty = &pat_type.ty;
+                Some(quote! { pub #pat: #ty })
+            }
+            syn::FnArg::Receiver(_) => None,
+        })
+        .collect();
+
+    let field_names: Vec<_> = extra_params
+        .iter()
+        .filter_map(|p| match p {
+            syn::FnArg::Typed(pat_type) => Some(pat_type.pat.as_ref()),
+            syn::FnArg::Receiver(_) => None,
+        })
+        .collect();
+
+    let error_message_body =
+        build_error_message_body(message, &parsed.context, &field_names, candidate_name);
+
+    // If no context expr references the candidate, prefix with _ to avoid warning
+    let err_msg_param = if context_references_candidate(&parsed.context, candidate_name) {
+        candidate_name.clone()
+    } else {
+        Ident::new(&format!("_{candidate_name}"), candidate_name.span())
+    };
+
+    let gen = quote! {
+        #fn_vis struct #struct_name {
+            #(#field_defs),*
+        }
+
+        impl event_sauce_core::Specification<#candidate_type> for #struct_name {
+            fn is_satisfied_by(&self, #candidate_name: &#candidate_type) -> bool {
+                #(let #field_names = &self.#field_names;)*
+                let _ = (#(&#field_names),*);
+                #fn_body
+            }
+
+            fn error_message(&self, #err_msg_param: &#candidate_type) -> String {
+                #(let #field_names = &self.#field_names;)*
+                #error_message_body
+            }
+        }
+    };
+
+    gen.into()
+}
+
+/// Build the error message body token stream from context pairs
+fn build_error_message_body(
+    message: &str,
+    context: &[(Ident, proc_macro2::TokenStream)],
+    field_names: &[&syn::Pat],
+    candidate_name: &Ident,
+) -> proc_macro2::TokenStream {
+    if context.is_empty() {
+        quote! { #message.to_string() }
+    } else {
+        let ctx_parts: Vec<_> = context
+            .iter()
+            .map(|(key, expr)| {
+                let key_str = key.to_string();
+                let resolved = resolve_context_expr(expr, field_names, candidate_name);
+                quote! { format!("{}={}", #key_str, #resolved) }
+            })
+            .collect();
+        quote! {
+            let ctx = [#(#ctx_parts),*].join(", ");
+            format!("{}: {}", #message, ctx)
+        }
+    }
+}
+
+/// Check if any context expression references the candidate parameter name
+fn context_references_candidate(
+    context: &[(Ident, proc_macro2::TokenStream)],
+    candidate_name: &Ident,
+) -> bool {
+    let candidate_str = candidate_name.to_string();
+    context
+        .iter()
+        .any(|(_, expr)| expr.to_string().contains(&candidate_str))
+}
+
+/// Parsed specification attribute data
+struct SpecificationAttrData {
+    message: String,
+    context: Vec<(Ident, proc_macro2::TokenStream)>,
+}
+
+/// Parse `"message"` or `"message", key = expr, ...`
+fn parse_specification_attr(
+    tokens: proc_macro2::TokenStream,
+) -> Result<SpecificationAttrData, syn::Error> {
+    let mut iter = tokens.into_iter().peekable();
+
+    // First token should be a string literal
+    let message = match iter.next() {
+        Some(proc_macro2::TokenTree::Literal(lit)) => {
+            let s = lit.to_string();
+            // Strip quotes
+            s.trim_matches('"').to_string()
+        }
+        other => {
+            return Err(syn::Error::new(
+                other
+                    .as_ref()
+                    .map_or(proc_macro2::Span::call_site(), proc_macro2::TokenTree::span),
+                "Expected a string literal as first argument to #[specification]",
+            ));
+        }
+    };
+
+    let mut context = Vec::new();
+
+    // Parse optional ", key = expr" pairs
+    while iter.peek().is_some() {
+        // Expect comma
+        match iter.next() {
+            Some(proc_macro2::TokenTree::Punct(p)) if p.as_char() == ',' => {}
+            _ => break,
+        }
+
+        // Check if remaining tokens look like a key = expr or end of stream
+        if iter.peek().is_none() {
+            break;
+        }
+
+        // Read key ident
+        let Some(proc_macro2::TokenTree::Ident(key)) = iter.next() else {
+            break;
+        };
+
+        // Expect '='
+        match iter.next() {
+            Some(proc_macro2::TokenTree::Punct(p)) if p.as_char() == '=' => {}
+            _ => {
+                return Err(syn::Error::new(
+                    key.span(),
+                    "Expected '=' after context key",
+                ));
+            }
+        }
+
+        // Read expr tokens until comma or end
+        let mut expr_tokens = Vec::new();
+        while let Some(tok) = iter.peek() {
+            if let proc_macro2::TokenTree::Punct(p) = tok {
+                if p.as_char() == ',' {
+                    break;
+                }
+            }
+            expr_tokens.push(iter.next().unwrap());
+        }
+
+        let expr: proc_macro2::TokenStream = expr_tokens.into_iter().collect();
+        context.push((key, expr));
+    }
+
+    Ok(SpecificationAttrData { message, context })
+}
+
+/// Convert `snake_case` to `PascalCase`
+fn to_pascal_case(s: &str) -> String {
+    s.split('_')
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                None => String::new(),
+                Some(c) => c.to_uppercase().chain(chars).collect(),
+            }
+        })
+        .collect()
+}
+
+/// Extract the name and type from a `&T` function parameter
+fn extract_ref_param(param: &syn::FnArg) -> Result<(Ident, syn::Type), syn::Error> {
+    match param {
+        syn::FnArg::Typed(pat_type) => {
+            let name = match pat_type.pat.as_ref() {
+                syn::Pat::Ident(pat_ident) => pat_ident.ident.clone(),
+                _ => {
+                    return Err(syn::Error::new_spanned(
+                        &pat_type.pat,
+                        "Expected a simple identifier pattern",
+                    ));
+                }
+            };
+
+            // Extract the inner type from &T
+            match pat_type.ty.as_ref() {
+                syn::Type::Reference(type_ref) => Ok((name, *type_ref.elem.clone())),
+                _ => Err(syn::Error::new_spanned(
+                    &pat_type.ty,
+                    "First parameter must be a reference type (&T)",
+                )),
+            }
+        }
+        syn::FnArg::Receiver(_) => Err(syn::Error::new_spanned(
+            param,
+            "#[specification] functions cannot have self parameters",
+        )),
+    }
+}
+
+/// Resolve a context expression:
+/// - If expr is a bare ident matching an extra param -> `self.ident`
+/// - If expr references candidate param -> passed through as-is
+fn resolve_context_expr(
+    expr: &proc_macro2::TokenStream,
+    _field_names: &[&syn::Pat],
+    _candidate_name: &Ident,
+) -> proc_macro2::TokenStream {
+    // Just pass through - the let bindings in is_satisfied_by/error_message
+    // handle the resolution (spec fields are bound as local vars,
+    // candidate param is the function parameter)
+    expr.clone()
+}
+
 /// Attribute macro for aggregate transformation
 ///
 /// This macro transforms an aggregate struct with business fields into:

@@ -80,16 +80,11 @@ enum BankAccountError {
 // Account Status
 // ============================================================================
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 enum AccountStatus {
+    #[default]
     Active,
     Closed,
-}
-
-impl Default for AccountStatus {
-    fn default() -> Self {
-        Self::Active
-    }
 }
 
 // ============================================================================

@@ -847,8 +847,7 @@ mod tests {
         }
 
         let spec = HasMinBalance { min: 100 };
-        let result: Result<(), OrderError> =
-            spec.validate_or(&50, OrderError::InsufficientFunds);
+        let result: Result<(), OrderError> = spec.validate_or(&50, OrderError::InsufficientFunds);
 
         assert_eq!(
             result.unwrap_err(),

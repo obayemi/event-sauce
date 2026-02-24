@@ -4,7 +4,7 @@ error: #[aggregate] can only be used on structs
 53 | enum TestAggregate {
    |      ^^^^^^^^^^^^^
 
-error[E0412]: cannot find type `TestAggregate` in this scope
+error[E0425]: cannot find type `TestAggregate` in this scope
   --> tests/ui/aggregate_on_enum.rs:31:22
    |
 31 |     type Aggregate = TestAggregate;

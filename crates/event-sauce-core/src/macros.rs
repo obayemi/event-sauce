@@ -2752,8 +2752,7 @@ mod tests {
             status: "frozen",
         };
 
-        let result: Result<(), String> =
-            IsAccountActive.validate_or(&account, |msg| msg);
+        let result: Result<(), String> = IsAccountActive.validate_or(&account, |msg| msg);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "Account must be active");
     }

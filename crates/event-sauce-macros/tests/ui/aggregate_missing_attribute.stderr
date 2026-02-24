@@ -6,7 +6,7 @@ error: Missing field `event`
    |
    = note: this error originates in the attribute macro `event_sauce_macros::aggregate` (in Nightly builds, run with -Z macro-backtrace for more info)
 
-error[E0412]: cannot find type `TestAggregate` in this scope
+error[E0425]: cannot find type `TestAggregate` in this scope
   --> tests/ui/aggregate_missing_attribute.rs:31:22
    |
 31 |     type Aggregate = TestAggregate;
