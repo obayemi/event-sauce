@@ -33,18 +33,12 @@ use crate::{Aggregate, Error, EventEnvelope, Result, Version};
 ///
 /// #[derive(Debug, Clone, Serialize, Deserialize)]
 /// enum UserEvent {
-///     Registered {
-///         email: String,
-///         timestamp: DateTime<Utc>,
-///     },
-///     EmailChanged {
-///         new_email: String,
-///         timestamp: DateTime<Utc>,
-///     },
+///     Registered { email: String, timestamp: DateTime<Utc> },
+///     EmailChanged { new_email: String, timestamp: DateTime<Utc> },
 /// }
 ///
 /// impl DomainEvent for UserEvent {
-///     type Aggregate = UserAggregate; // Must specify the aggregate type
+///     type Aggregate = User;
 ///
 ///     fn event_type(&self) -> &'static str {
 ///         match self {
@@ -53,9 +47,7 @@ use crate::{Aggregate, Error, EventEnvelope, Result, Version};
 ///         }
 ///     }
 ///
-///     fn event_version(&self) -> u64 {
-///         1 // Schema version
-///     }
+///     fn event_version(&self) -> u64 { 1 }
 ///
 ///     fn occurred_at(&self) -> DateTime<Utc> {
 ///         match self {
@@ -67,85 +59,21 @@ use crate::{Aggregate, Error, EventEnvelope, Result, Version};
 /// ```
 pub trait DomainEvent: Clone + Debug + Send + Sync + Serialize + DeserializeOwned {
     /// The aggregate type that produces this event.
-    ///
-    /// This is used to automatically determine the aggregate type name
-    /// when converting events to envelopes.
     type Aggregate: Aggregate<Event = Self>;
 
     /// Returns the event type name.
-    ///
-    /// This is used for serialization/deserialization and event routing.
-    /// Should be a stable identifier (e.g., `UserRegistered`, `OrderPlaced`).
     fn event_type(&self) -> &'static str;
 
     /// Returns the event schema version.
-    ///
-    /// Used for event versioning and schema evolution.
-    /// Start at 1 and increment when the event structure changes.
     fn event_version(&self) -> u64;
 
     /// Returns when this event occurred.
-    ///
-    /// This should be the business timestamp, not when it was persisted.
     fn occurred_at(&self) -> DateTime<Utc>;
 
     /// Converts this domain event into an `EventEnvelope`.
     ///
-    /// This method serializes the event data to JSON and wraps it in an envelope
-    /// with metadata needed for persistence and replay. The aggregate type name
-    /// is automatically derived from the associated `Aggregate` type.
-    ///
-    /// # Arguments
-    ///
-    /// * `aggregate_id` - The ID of the aggregate that produced this event
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// use event_sauce_core::{Aggregate, DomainEvent};
-    /// use chrono::Utc;
-    /// use serde::{Serialize, Deserialize};
-    /// use uuid::Uuid;
-    ///
-    /// // Aggregate definition
-    /// struct User {
-    ///     id: UserId,
-    ///     // ... other fields
-    /// }
-    ///
-    /// impl Aggregate for User {
-    ///     type Event = UserEvent;
-    ///     // ... other implementations
-    /// }
-    ///
-    /// #[derive(Debug, Clone, Serialize, Deserialize)]
-    /// enum UserEvent {
-    ///     Registered { email: String, timestamp: DateTime<Utc> },
-    /// }
-    ///
-    /// impl DomainEvent for UserEvent {
-    ///     type Aggregate = User;
-    ///
-    ///     fn event_type(&self) -> &'static str { "UserRegistered" }
-    ///     fn event_version(&self) -> u64 { 1 }
-    ///     fn occurred_at(&self) -> chrono::DateTime<Utc> {
-    ///         match self {
-    ///             UserEvent::Registered { timestamp, .. } => *timestamp,
-    ///         }
-    ///     }
-    /// }
-    ///
-    /// let event = UserEvent::Registered {
-    ///     email: "user@example.com".to_string(),
-    ///     timestamp: Utc::now(),
-    /// };
-    ///
-    /// let aggregate_id = Uuid::new_v4();
-    /// // Aggregate type is automatically determined from UserEvent::Aggregate
-    /// let envelope = event.to_envelope(aggregate_id).unwrap();
-    ///
-    /// assert_eq!(envelope.aggregate_type, "User");
-    /// ```
+    /// Uses `EntityId.as_uuid()` for the aggregate ID and
+    /// `Aggregate::aggregate_type()` for the aggregate type name.
     ///
     /// # Errors
     ///
@@ -167,59 +95,11 @@ pub trait DomainEvent: Clone + Debug + Send + Sync + Serialize + DeserializeOwne
 
     /// Creates a domain event from an `EventEnvelope`.
     ///
-    /// This method deserializes the event data from the envelope's JSON payload
-    /// back into the concrete event type.
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// use event_sauce_core::{DomainEvent, EventEnvelope, Version};
-    /// use chrono::Utc;
-    /// use serde::{Serialize, Deserialize};
-    /// use serde_json::json;
-    /// use uuid::Uuid;
-    ///
-    /// # struct UserAggregate;
-    /// #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-    /// struct UserRegistered {
-    ///     email: String,
-    ///     timestamp: chrono::DateTime<Utc>,
-    /// }
-    ///
-    /// impl DomainEvent for UserRegistered {
-    ///     type Aggregate = UserAggregate;
-    ///
-    ///     fn event_type(&self) -> &'static str { "UserRegistered" }
-    ///     fn event_version(&self) -> u64 { 1 }
-    ///     fn occurred_at(&self) -> chrono::DateTime<Utc> { self.timestamp }
-    /// }
-    ///
-    /// let timestamp = Utc::now();
-    /// let event_data = json!({
-    ///     "email": "user@example.com",
-    ///     "timestamp": timestamp,
-    /// });
-    ///
-    /// let envelope = EventEnvelope::new(
-    ///     Uuid::new_v4(),
-    ///     Uuid::new_v4(),
-    ///     "User".to_string(),
-    ///     "UserRegistered".to_string(),
-    ///     Version::new(1),
-    ///     event_data,
-    /// );
-    ///
-    /// let event = UserRegistered::from_envelope(&envelope).unwrap();
-    /// assert_eq!(event.email, "user@example.com");
-    /// # Ok::<(), Box<dyn std::error::Error>>(())
-    /// ```
+    /// Deserializes the event data from the envelope's JSON payload.
     ///
     /// # Errors
     ///
-    /// Returns an error if:
-    /// - The envelope's event data is not valid JSON
-    /// - The JSON cannot be deserialized into the expected event type
-    /// - Required fields are missing from the event data
+    /// Returns an error if deserialization fails.
     fn from_envelope(envelope: &EventEnvelope) -> Result<Self> {
         serde_json::from_value(envelope.event_data.clone())
             .map_err(|e| Error::custom(format!("Failed to deserialize event: {e}")))
@@ -232,10 +112,7 @@ pub trait DomainEvent: Clone + Debug + Send + Sync + Serialize + DeserializeOwne
 /// eliminating the need to specify string literals when working with
 /// event handlers and projections.
 ///
-/// # Implementation
-///
-/// This trait is typically implemented automatically by the `define_events!` macro.
-/// For manual event definitions, you can implement it like this:
+/// # Examples
 ///
 /// ```
 /// use event_sauce_core::EventType;
@@ -250,36 +127,8 @@ pub trait DomainEvent: Clone + Debug + Send + Sync + Serialize + DeserializeOwne
 ///     const EVENT_TYPE: &'static str = "User.Registered";
 /// }
 /// ```
-///
-/// # Benefits
-///
-/// - **Type-safe**: Compile-time verification that event types exist
-/// - **DRY**: Single source of truth for event type strings
-/// - **Zero overhead**: Const evaluation, no runtime cost
-/// - **Refactor-friendly**: Compiler catches mismatches
-///
-/// # Usage with Projections
-///
-/// When using the `projection!` macro, the `EventType` trait allows you
-/// to omit the event type string:
-///
-/// ```ignore
-/// projection! {
-///     pub struct UserProjection {
-///         state: HashMap<UserId, UserView>,
-///
-///         // No string literal needed - inferred from EventType trait
-///         on UserRegisteredEvent |proj, event| {
-///             proj.state.insert(event.user_id, UserView::new(event));
-///         },
-///     }
-/// }
-/// ```
 pub trait EventType {
     /// The event type identifier string.
-    ///
-    /// This should match the event type string used in event envelopes
-    /// (e.g., "User.Registered", "Order.Created").
     const EVENT_TYPE: &'static str;
 }
 
@@ -290,8 +139,7 @@ mod tests {
     use chrono::Utc;
     use serde::{Deserialize, Serialize};
 
-    // Test aggregate for DomainEvent
-    use crate::{AggregateError, DefaultAggregateId};
+    use crate::{AggregateError, EntityId};
     use thiserror::Error;
 
     #[derive(Debug, Error)]
@@ -300,18 +148,21 @@ mod tests {
 
     impl AggregateError for TestAggregateError {}
 
-    // Test aggregate implementation
+    // Test aggregate
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    struct TestAggregateState {
+    struct TestAggregate {
+        id: EntityId,
         value: i32,
     }
 
-    #[derive(Debug, Clone, Serialize, Deserialize)]
-    struct TestAggregate {
-        id: DefaultAggregateId,
-        state: TestAggregateState,
-        version: crate::Version,
-        pending_events: Vec<TestEvent>,
+    impl crate::Entity for TestAggregate {
+        fn new(id: EntityId) -> Self {
+            Self { id, value: 0 }
+        }
+
+        fn entity_id(&self) -> EntityId {
+            self.id
+        }
     }
 
     impl crate::EventApplicator<TestAggregate> for TestEvent {
@@ -320,14 +171,12 @@ mod tests {
             aggregate: &mut TestAggregate,
         ) -> std::result::Result<(), TestAggregateError> {
             match self {
-                TestEvent::Created { .. } => {
-                    // Created doesn't have a value field
-                }
+                TestEvent::Created { .. } => {}
                 TestEvent::Updated { value, .. } => {
-                    aggregate.state.value = *value;
+                    aggregate.value = *value;
                 }
                 TestEvent::Deleted { .. } => {
-                    aggregate.state.value = 0;
+                    aggregate.value = 0;
                 }
             }
             Ok(())
@@ -337,66 +186,18 @@ mod tests {
             match self {
                 TestEvent::Created { .. } => {}
                 TestEvent::Updated { value, .. } => {
-                    aggregate.state.value = *value;
+                    aggregate.value = *value;
                 }
                 TestEvent::Deleted { .. } => {
-                    aggregate.state.value = 0;
+                    aggregate.value = 0;
                 }
             }
         }
     }
 
     impl crate::Aggregate for TestAggregate {
-        type Id = DefaultAggregateId;
         type Event = TestEvent;
         type Error = TestAggregateError;
-        type State = TestAggregateState;
-
-        fn new(id: Self::Id) -> Self {
-            Self {
-                id,
-                state: TestAggregateState { value: 0 },
-                version: crate::Version::initial(),
-                pending_events: Vec::new(),
-            }
-        }
-
-        fn aggregate_id(&self) -> &Self::Id {
-            &self.id
-        }
-
-        fn version(&self) -> crate::Version {
-            self.version
-        }
-
-        fn pending_events(&self) -> &[Self::Event] {
-            &self.pending_events
-        }
-
-        fn clear_pending_events(&mut self) {
-            self.pending_events.clear();
-        }
-
-        fn push_pending_event(&mut self, event: Self::Event) {
-            self.pending_events.push(event);
-        }
-
-        fn increment_version(&mut self) {
-            self.version = self.version.next();
-        }
-
-        fn state(&self) -> &Self::State {
-            &self.state
-        }
-
-        fn from_snapshot(id: Self::Id, version: crate::Version, state: Self::State) -> Self {
-            Self {
-                id,
-                state,
-                version,
-                pending_events: Vec::new(),
-            }
-        }
     }
 
     // Test event implementation
@@ -527,7 +328,6 @@ mod tests {
             timestamp: time1,
         };
 
-        // Ensure some time passes
         std::thread::sleep(std::time::Duration::from_millis(1));
 
         let time2 = Utc::now();
@@ -541,89 +341,43 @@ mod tests {
         assert!(event2.occurred_at() > event1.occurred_at());
     }
 
-    // Test with simple event (single variant) - needs its own aggregate
+    // Test with simple event
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
     struct SimpleEvent {
         timestamp: DateTime<Utc>,
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    struct SimpleAggregateState;
-
-    #[derive(Debug, Clone, Serialize, Deserialize)]
-    struct SimpleAggregate {
-        id: DefaultAggregateId,
-        state: SimpleAggregateState,
-        version: crate::Version,
-        pending_events: Vec<SimpleEvent>,
+    struct SimpleEntity {
+        id: EntityId,
     }
 
-    impl crate::EventApplicator<SimpleAggregate> for SimpleEvent {
+    impl crate::Entity for SimpleEntity {
+        fn new(id: EntityId) -> Self {
+            Self { id }
+        }
+        fn entity_id(&self) -> EntityId {
+            self.id
+        }
+    }
+
+    impl crate::EventApplicator<SimpleEntity> for SimpleEvent {
         fn dispatch(
             &self,
-            _aggregate: &mut SimpleAggregate,
+            _entity: &mut SimpleEntity,
         ) -> std::result::Result<(), TestAggregateError> {
             Ok(())
         }
-
-        fn dispatch_unchecked(&self, _aggregate: &mut SimpleAggregate) {}
+        fn dispatch_unchecked(&self, _entity: &mut SimpleEntity) {}
     }
 
-    impl crate::Aggregate for SimpleAggregate {
-        type Id = DefaultAggregateId;
+    impl crate::Aggregate for SimpleEntity {
         type Event = SimpleEvent;
         type Error = TestAggregateError;
-        type State = SimpleAggregateState;
-
-        fn new(id: Self::Id) -> Self {
-            Self {
-                id,
-                state: SimpleAggregateState,
-                version: crate::Version::initial(),
-                pending_events: Vec::new(),
-            }
-        }
-
-        fn aggregate_id(&self) -> &Self::Id {
-            &self.id
-        }
-
-        fn version(&self) -> crate::Version {
-            self.version
-        }
-
-        fn pending_events(&self) -> &[Self::Event] {
-            &self.pending_events
-        }
-
-        fn clear_pending_events(&mut self) {
-            self.pending_events.clear();
-        }
-
-        fn push_pending_event(&mut self, event: Self::Event) {
-            self.pending_events.push(event);
-        }
-
-        fn increment_version(&mut self) {
-            self.version = self.version.next();
-        }
-
-        fn state(&self) -> &Self::State {
-            &self.state
-        }
-
-        fn from_snapshot(id: Self::Id, version: crate::Version, state: Self::State) -> Self {
-            Self {
-                id,
-                state,
-                version,
-                pending_events: Vec::new(),
-            }
-        }
     }
 
     impl DomainEvent for SimpleEvent {
-        type Aggregate = SimpleAggregate;
+        type Aggregate = SimpleEntity;
 
         fn event_type(&self) -> &'static str {
             "SimpleEvent"
@@ -648,7 +402,7 @@ mod tests {
         assert_eq!(event.occurred_at(), timestamp);
     }
 
-    // Test versioned event - needs its own aggregate
+    // Test versioned event
     #[derive(Debug, Clone, Serialize, Deserialize)]
     struct VersionedEvent {
         version: u64,
@@ -656,81 +410,36 @@ mod tests {
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    struct VersionedAggregateState;
-
-    struct VersionedAggregate {
-        id: DefaultAggregateId,
-        state: VersionedAggregateState,
-        version: crate::Version,
-        pending_events: Vec<VersionedEvent>,
+    struct VersionedEntity {
+        id: EntityId,
     }
 
-    impl crate::EventApplicator<VersionedAggregate> for VersionedEvent {
+    impl crate::Entity for VersionedEntity {
+        fn new(id: EntityId) -> Self {
+            Self { id }
+        }
+        fn entity_id(&self) -> EntityId {
+            self.id
+        }
+    }
+
+    impl crate::EventApplicator<VersionedEntity> for VersionedEvent {
         fn dispatch(
             &self,
-            _aggregate: &mut VersionedAggregate,
+            _entity: &mut VersionedEntity,
         ) -> std::result::Result<(), TestAggregateError> {
             Ok(())
         }
-
-        fn dispatch_unchecked(&self, _aggregate: &mut VersionedAggregate) {}
+        fn dispatch_unchecked(&self, _entity: &mut VersionedEntity) {}
     }
 
-    impl crate::Aggregate for VersionedAggregate {
-        type Id = DefaultAggregateId;
+    impl crate::Aggregate for VersionedEntity {
         type Event = VersionedEvent;
         type Error = TestAggregateError;
-        type State = VersionedAggregateState;
-
-        fn new(id: Self::Id) -> Self {
-            Self {
-                id,
-                state: VersionedAggregateState,
-                version: crate::Version::initial(),
-                pending_events: Vec::new(),
-            }
-        }
-
-        fn aggregate_id(&self) -> &Self::Id {
-            &self.id
-        }
-
-        fn version(&self) -> crate::Version {
-            self.version
-        }
-
-        fn pending_events(&self) -> &[Self::Event] {
-            &self.pending_events
-        }
-
-        fn clear_pending_events(&mut self) {
-            self.pending_events.clear();
-        }
-
-        fn push_pending_event(&mut self, event: Self::Event) {
-            self.pending_events.push(event);
-        }
-
-        fn increment_version(&mut self) {
-            self.version = self.version.next();
-        }
-
-        fn state(&self) -> &Self::State {
-            &self.state
-        }
-
-        fn from_snapshot(id: Self::Id, version: crate::Version, state: Self::State) -> Self {
-            Self {
-                id,
-                state,
-                version,
-                pending_events: Vec::new(),
-            }
-        }
     }
 
     impl DomainEvent for VersionedEvent {
-        type Aggregate = VersionedAggregate;
+        type Aggregate = VersionedEntity;
 
         fn event_type(&self) -> &'static str {
             "VersionedEvent"
@@ -764,8 +473,6 @@ mod tests {
     // Tests for to_envelope()
     #[test]
     fn test_to_envelope_basic() {
-        use uuid::Uuid;
-
         let timestamp = Utc::now();
         let event = TestEvent::Created {
             id: "test-1".to_string(),
@@ -784,8 +491,6 @@ mod tests {
 
     #[test]
     fn test_to_envelope_with_complex_event() {
-        use uuid::Uuid;
-
         let timestamp = Utc::now();
         let event = TestEvent::Updated {
             id: "test-1".to_string(),
@@ -798,7 +503,6 @@ mod tests {
 
         assert_eq!(envelope.event_type, "TestUpdated");
         assert_eq!(envelope.aggregate_type, "TestAggregate");
-        // Serde serializes enums with externally tagged format: {"Updated": {...}}
         assert!(envelope.event_data.get("Updated").is_some());
         let updated_data = &envelope.event_data["Updated"];
         assert!(updated_data.get("id").is_some());
@@ -808,8 +512,6 @@ mod tests {
 
     #[test]
     fn test_to_envelope_preserves_occurred_at() {
-        use uuid::Uuid;
-
         let timestamp = Utc::now();
         let event = TestEvent::Created {
             id: "test-1".to_string(),
@@ -823,8 +525,6 @@ mod tests {
 
     #[test]
     fn test_to_envelope_uses_aggregate_type() {
-        use uuid::Uuid;
-
         let timestamp = Utc::now();
         let event = TestEvent::Created {
             id: "test-1".to_string(),
@@ -833,7 +533,6 @@ mod tests {
 
         let envelope = event.to_envelope(Uuid::new_v4()).unwrap();
 
-        // Verify the aggregate type is automatically determined
         assert_eq!(envelope.aggregate_type, TestAggregate::aggregate_type());
         assert_eq!(envelope.aggregate_type, "TestAggregate");
     }
@@ -843,10 +542,8 @@ mod tests {
     fn test_from_envelope_basic() {
         use crate::{EventEnvelope, Version};
         use serde_json::json;
-        use uuid::Uuid;
 
         let timestamp = Utc::now();
-        // Serde serializes enums with externally tagged format by default
         let event_data = json!({
             "Created": {
                 "id": "test-1",
@@ -878,10 +575,8 @@ mod tests {
     fn test_from_envelope_with_complex_event() {
         use crate::{EventEnvelope, Version};
         use serde_json::json;
-        use uuid::Uuid;
 
         let timestamp = Utc::now();
-        // Serde serializes enums with externally tagged format by default
         let event_data = json!({
             "Updated": {
                 "id": "test-1",
@@ -914,7 +609,6 @@ mod tests {
     fn test_from_envelope_with_invalid_data() {
         use crate::{EventEnvelope, Version};
         use serde_json::json;
-        use uuid::Uuid;
 
         let event_data = json!({
             "invalid": "data",
@@ -935,8 +629,6 @@ mod tests {
 
     #[test]
     fn test_roundtrip_serialization() {
-        use uuid::Uuid;
-
         let timestamp = Utc::now();
         let original_event = TestEvent::Created {
             id: "test-1".to_string(),
@@ -945,7 +637,6 @@ mod tests {
 
         let aggregate_id = Uuid::new_v4();
         let envelope = original_event.to_envelope(aggregate_id).unwrap();
-
         let deserialized_event = TestEvent::from_envelope(&envelope).unwrap();
 
         assert_eq!(original_event, deserialized_event);
@@ -953,12 +644,9 @@ mod tests {
 
     #[test]
     fn test_roundtrip_with_all_variants() {
-        use uuid::Uuid;
-
         let timestamp = Utc::now();
         let aggregate_id = Uuid::new_v4();
 
-        // Test Created
         let created = TestEvent::Created {
             id: "test-1".to_string(),
             timestamp,
@@ -967,7 +655,6 @@ mod tests {
         let deserialized = TestEvent::from_envelope(&envelope).unwrap();
         assert_eq!(created, deserialized);
 
-        // Test Updated
         let updated = TestEvent::Updated {
             id: "test-1".to_string(),
             value: 42,
@@ -977,7 +664,6 @@ mod tests {
         let deserialized = TestEvent::from_envelope(&envelope).unwrap();
         assert_eq!(updated, deserialized);
 
-        // Test Deleted
         let deleted = TestEvent::Deleted {
             id: "test-1".to_string(),
             timestamp,
@@ -987,12 +673,10 @@ mod tests {
         assert_eq!(deleted, deserialized);
     }
 
-    // Tests for try_into_event/into_event methods
     #[test]
     fn test_try_into_event_reference() {
         use crate::{EventEnvelope, Version};
         use serde_json::json;
-        use uuid::Uuid;
 
         let timestamp = Utc::now();
         let event_data = json!({
@@ -1011,7 +695,6 @@ mod tests {
             event_data,
         );
 
-        // Test try_into_event with reference
         let event: TestEvent = envelope.try_into_event().unwrap();
 
         match event {
@@ -1027,7 +710,6 @@ mod tests {
     fn test_into_event_owned() {
         use crate::{EventEnvelope, Version};
         use serde_json::json;
-        use uuid::Uuid;
 
         let timestamp = Utc::now();
         let event_data = json!({
@@ -1047,7 +729,6 @@ mod tests {
             event_data,
         );
 
-        // Test into_event with owned value
         let event: TestEvent = envelope.into_event().unwrap();
 
         match event {
@@ -1063,11 +744,8 @@ mod tests {
     fn test_try_into_event_with_invalid_data() {
         use crate::{EventEnvelope, Version};
         use serde_json::json;
-        use uuid::Uuid;
 
-        let event_data = json!({
-            "invalid": "data",
-        });
+        let event_data = json!({ "invalid": "data" });
 
         let envelope = EventEnvelope::new(
             Uuid::new_v4(),
@@ -1078,7 +756,6 @@ mod tests {
             event_data,
         );
 
-        // Test try_into_event with invalid data
         let result: Result<TestEvent> = envelope.try_into_event();
         assert!(result.is_err());
     }
@@ -1087,7 +764,6 @@ mod tests {
     fn test_try_into_event_with_question_mark() {
         use crate::{EventEnvelope, Version};
         use serde_json::json;
-        use uuid::Uuid;
 
         fn process_envelope(envelope: &EventEnvelope) -> Result<String> {
             let event: TestEvent = envelope.try_into_event()?;
@@ -1122,7 +798,6 @@ mod tests {
     // Tests for EventType trait
     use crate::EventType;
 
-    // Test struct that implements EventType
     #[derive(Debug, Clone, Serialize, Deserialize)]
     struct TestEventWithType {
         timestamp: DateTime<Utc>,
@@ -1139,14 +814,12 @@ mod tests {
 
     #[test]
     fn test_event_type_is_static() {
-        // Verify the event type string can be used in const contexts
         const EVENT_TYPE: &str = TestEventWithType::EVENT_TYPE;
         assert_eq!(EVENT_TYPE, "Test.EventWithType");
     }
 
     #[test]
     fn test_event_type_accessible_without_instance() {
-        // Can access EVENT_TYPE without creating an instance
         let event_type = TestEventWithType::EVENT_TYPE;
         assert!(!event_type.is_empty());
     }
@@ -1160,7 +833,6 @@ mod tests {
         assert_sync::<TestEventWithType>();
     }
 
-    // Test multiple event types with different names
     #[derive(Debug, Clone, Serialize, Deserialize)]
     struct FirstEvent {
         value: i32,
@@ -1188,7 +860,6 @@ mod tests {
 
     #[test]
     fn test_event_type_follows_naming_convention() {
-        // Verify event types follow Aggregate.EventName convention
         assert!(TestEventWithType::EVENT_TYPE.contains('.'));
 
         let parts: Vec<&str> = TestEventWithType::EVENT_TYPE.split('.').collect();

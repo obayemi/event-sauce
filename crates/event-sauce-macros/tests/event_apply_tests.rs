@@ -1,26 +1,18 @@
 //! Integration tests for #[derive(Event)] macro with aggregate attribute.
 //!
 //! These tests verify that the Event derive macro correctly generates
-//! the apply_internal method when the aggregate attribute is specified.
+//! EventApplicator when the aggregate attribute is specified.
 
 use chrono::{DateTime, Utc};
-use event_sauce_core::{Aggregate, AggregateId as _, ApplyEvent, DomainEvent, Version};
-use event_sauce_macros::{
-    aggregate, AggregateError, AggregateId as DeriveAggregateId, Event as DeriveEvent,
+use event_sauce_core::{
+    Aggregate, AggregateRoot, ApplyEvent, DomainEvent, Entity, EntityId, Version,
 };
+use event_sauce_macros::{aggregate, AggregateError, Event as DeriveEvent};
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 // ============================================================================
 // Test Domain Model
 // ============================================================================
-
-/// Test aggregate ID
-#[derive(
-    DeriveAggregateId, Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default,
-)]
-#[repr(transparent)]
-struct TestId(Uuid);
 
 /// Test error type
 #[derive(AggregateError, Debug, thiserror::Error)]
@@ -67,46 +59,46 @@ enum TestEvent {
 // ============================================================================
 
 impl ApplyEvent<TestAgg> for ValueSetEvent {
-    fn validate(&self, _aggregate: &TestAgg) -> Result<(), <TestAgg as Aggregate>::Error> {
+    fn validate(&self, _entity: &TestAgg) -> Result<(), <TestAgg as Aggregate>::Error> {
         if self.value < 0 {
             return Err(TestError::InvalidValue(self.value));
         }
         Ok(())
     }
 
-    fn apply(&self, aggregate: &mut TestAgg) {
-        aggregate.value = self.value;
+    fn apply(&self, entity: &mut TestAgg) {
+        entity.value = self.value;
     }
 }
 
 impl ApplyEvent<TestAgg> for ValueIncrementedEvent {
-    fn validate(&self, _aggregate: &TestAgg) -> Result<(), <TestAgg as Aggregate>::Error> {
+    fn validate(&self, _entity: &TestAgg) -> Result<(), <TestAgg as Aggregate>::Error> {
         if self.amount <= 0 {
             return Err(TestError::InvalidValue(self.amount));
         }
         Ok(())
     }
 
-    fn apply(&self, aggregate: &mut TestAgg) {
-        aggregate.value += self.amount;
+    fn apply(&self, entity: &mut TestAgg) {
+        entity.value += self.amount;
     }
 }
 
 impl ApplyEvent<TestAgg> for ValueResetEvent {
-    fn apply(&self, aggregate: &mut TestAgg) {
-        aggregate.value = 0;
+    fn apply(&self, entity: &mut TestAgg) {
+        entity.value = 0;
     }
 }
 
 // ============================================================================
-// Test Aggregate
+// Test Aggregate (uses #[aggregate] attribute macro)
 // ============================================================================
 
-#[aggregate(id = "TestId", event = "TestEvent", error = "TestError")]
-#[derive(Default)]
+#[aggregate(event = "TestEvent", error = "TestError")]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 struct TestAgg {
-    #[aggregate_id]
-    id: TestId,
+    #[id]
+    id: EntityId,
     value: i32,
 }
 
@@ -115,62 +107,52 @@ struct TestAgg {
 // ============================================================================
 
 #[test]
-fn test_aggregate_attribute_generates_apply_internal() {
-    // Test that the aggregate attribute causes apply_internal to be generated
-    let id = TestId::new();
-    let mut aggregate = TestAgg::new(id);
+fn test_event_applicator_dispatch() {
+    // Test that the derive Event with aggregate attribute generates EventApplicator
+    let mut entity = TestAgg::new(EntityId::new());
 
     let event = TestEvent::Set(ValueSetEvent {
         value: 42,
         timestamp: Utc::now(),
     });
 
-    // This should compile and work - apply_internal is auto-generated
-    aggregate.apply_internal(&event).unwrap();
+    // EventApplicator::dispatch works on the entity directly
+    event_sauce_core::EventApplicator::dispatch(&event, &mut entity).unwrap();
 
-    assert_eq!(aggregate.value, 42);
+    assert_eq!(entity.value, 42);
 }
 
 #[test]
-fn test_apply_internal_dispatches_to_apply_internal_impl() {
-    let id = TestId::new();
-    let mut aggregate = TestAgg::new(id);
-    // Initialize value to 10
-    aggregate
-        .apply(ValueSetEvent {
-            value: 10,
-            timestamp: Utc::now(),
-        })
-        .unwrap();
+fn test_event_applicator_dispatches_all_variants() {
+    let mut entity = TestAgg::new(EntityId::new());
 
     // Test Set event
     let set_event = TestEvent::Set(ValueSetEvent {
         value: 20,
         timestamp: Utc::now(),
     });
-    aggregate.apply_internal(&set_event).unwrap();
-    assert_eq!(aggregate.value, 20);
+    event_sauce_core::EventApplicator::dispatch(&set_event, &mut entity).unwrap();
+    assert_eq!(entity.value, 20);
 
     // Test Incremented event
     let inc_event = TestEvent::Incremented(ValueIncrementedEvent {
         amount: 5,
         timestamp: Utc::now(),
     });
-    aggregate.apply_internal(&inc_event).unwrap();
-    assert_eq!(aggregate.value, 25);
+    event_sauce_core::EventApplicator::dispatch(&inc_event, &mut entity).unwrap();
+    assert_eq!(entity.value, 25);
 
     // Test Reset event
     let reset_event = TestEvent::Reset(ValueResetEvent {
         timestamp: Utc::now(),
     });
-    aggregate.apply_internal(&reset_event).unwrap();
-    assert_eq!(aggregate.value, 0);
+    event_sauce_core::EventApplicator::dispatch(&reset_event, &mut entity).unwrap();
+    assert_eq!(entity.value, 0);
 }
 
 #[test]
-fn test_apply_internal_with_multiple_events() {
-    let id = TestId::new();
-    let mut aggregate = TestAgg::new(id);
+fn test_apply_multiple_events() {
+    let mut entity = TestAgg::new(EntityId::new());
 
     let events = vec![
         TestEvent::Set(ValueSetEvent {
@@ -187,159 +169,87 @@ fn test_apply_internal_with_multiple_events() {
         }),
     ];
 
-    for event in events {
-        aggregate.apply_internal(&event).unwrap();
+    for event in &events {
+        event_sauce_core::EventApplicator::dispatch(event, &mut entity).unwrap();
     }
 
-    assert_eq!(aggregate.value, 18); // 10 + 5 + 3
+    assert_eq!(entity.value, 18); // 10 + 5 + 3
 }
 
 #[test]
-fn test_apply_internal_through_aggregate_trait() {
-    let id = TestId::new();
-    let mut aggregate = TestAgg::new(id);
+fn test_aggregate_root_apply_with_generated_event_applicator() {
+    let id = EntityId::new();
+    let mut root = AggregateRoot::<TestAgg>::new(id);
 
-    // Use the Aggregate trait's apply method
-    aggregate
-        .apply(ValueSetEvent {
-            value: 100,
-            timestamp: Utc::now(),
-        })
-        .unwrap();
+    // Use the AggregateRoot's apply method which delegates to EventApplicator
+    root.apply(ValueSetEvent {
+        value: 100,
+        timestamp: Utc::now(),
+    })
+    .unwrap();
 
-    assert_eq!(aggregate.value, 100);
-    assert_eq!(aggregate.version(), Version::from(1));
-    assert_eq!(aggregate.pending_events().len(), 1);
+    assert_eq!(root.value, 100);
+    assert_eq!(root.version(), Version::new(1));
+    assert_eq!(root.pending_events().len(), 1);
 }
 
 #[test]
-fn test_apply_internal_preserves_aggregate_state() {
-    let id = TestId::new();
-    let mut aggregate = TestAgg::new(id);
-    // Initialize value to 10
-    aggregate
-        .apply(ValueSetEvent {
-            value: 10,
-            timestamp: Utc::now(),
-        })
-        .unwrap();
+fn test_apply_preserves_entity_state() {
+    let id = EntityId::new();
+    let mut entity = TestAgg::new(id);
 
     let event = TestEvent::Incremented(ValueIncrementedEvent {
         amount: 5,
         timestamp: Utc::now(),
     });
 
-    aggregate.apply_internal(&event).unwrap();
+    event_sauce_core::EventApplicator::dispatch(&event, &mut entity).unwrap();
 
-    // Check that the aggregate state is preserved
-    assert_eq!(aggregate.aggregate_id(), &id);
-    assert_eq!(aggregate.value, 15);
+    // Check that the entity state is preserved
+    assert_eq!(entity.entity_id(), id);
+    assert_eq!(entity.value, 5);
 }
 
 #[test]
-fn test_apply_internal_works_with_deref() {
-    let id = TestId::new();
-    let mut aggregate = TestAgg::new(id);
+fn test_aggregate_root_integration_lifecycle() {
+    // Create a new aggregate via AggregateRoot
+    let id = EntityId::new();
+    let mut root = AggregateRoot::<TestAgg>::new(id);
 
-    // The aggregate derefs to state, so we can access state fields directly
-    assert_eq!(aggregate.value, 0);
-
-    aggregate
-        .apply_internal(&TestEvent::Set(ValueSetEvent {
-            value: 50,
-            timestamp: Utc::now(),
-        }))
-        .unwrap();
-
-    // After applying, we can still access through deref
-    assert_eq!(aggregate.value, 50);
-}
-
-#[test]
-fn test_generated_apply_internal_is_public() {
-    // This test ensures the generated apply_internal method is public
-    // by calling it from outside the module
-    let mut aggregate = TestAgg::new(TestId::new());
-
-    let event = TestEvent::Reset(ValueResetEvent {
+    // Apply events through AggregateRoot
+    root.apply(ValueSetEvent {
+        value: 10,
         timestamp: Utc::now(),
-    });
-
-    // This should compile without errors
-    aggregate.apply_internal(&event).unwrap();
-}
-
-#[test]
-fn test_apply_internal_with_validation() {
-    let id = TestId::new();
-    let mut aggregate = TestAgg::new(id);
-
-    // Valid event through apply (which validates)
-    aggregate
-        .apply(ValueSetEvent {
-            value: 10,
-            timestamp: Utc::now(),
-        })
-        .unwrap();
-
-    // Get the event before applying to avoid borrow checker issue
-    let event = aggregate.pending_events()[0].clone();
-
-    // Reset value to test apply_internal
-    aggregate.value = 0;
-
-    // This should work since validation passes
-    aggregate.apply_internal(&event).unwrap();
-    assert_eq!(aggregate.value, 10);
-}
-
-#[test]
-fn test_apply_internal_integration_with_aggregate_lifecycle() {
-    // Create a new aggregate
-    let id = TestId::new();
-    let mut aggregate = TestAgg::new(id);
-
-    // Apply events through the Aggregate trait
-    aggregate
-        .apply(ValueSetEvent {
-            value: 10,
-            timestamp: Utc::now(),
-        })
-        .unwrap();
-    aggregate
-        .apply(ValueIncrementedEvent {
-            amount: 5,
-            timestamp: Utc::now(),
-        })
-        .unwrap();
+    })
+    .unwrap();
+    root.apply(ValueIncrementedEvent {
+        amount: 5,
+        timestamp: Utc::now(),
+    })
+    .unwrap();
 
     // Check state
-    assert_eq!(aggregate.value, 15);
-    assert_eq!(aggregate.version(), Version::from(2));
-    assert_eq!(aggregate.pending_events().len(), 2);
+    assert_eq!(root.value, 15);
+    assert_eq!(root.version(), Version::new(2));
+    assert_eq!(root.pending_events().len(), 2);
 
-    // Replay events using apply_internal
-    let events: Vec<_> = aggregate.pending_events().to_vec();
-    let mut replayed = TestAgg::new(id);
+    // Replay events using dispatch_unchecked on a fresh entity
+    let events: Vec<_> = root.pending_events().to_vec();
+    let mut replayed_entity = TestAgg::new(id);
 
-    for event in events {
-        replayed.apply_unchecked(&event);
+    for event in &events {
+        event_sauce_core::EventApplicator::dispatch_unchecked(event, &mut replayed_entity);
     }
 
-    assert_eq!(replayed.value, 15);
-    assert_eq!(replayed.version(), Version::from(2));
+    assert_eq!(replayed_entity.value, 15);
 }
 
 // ============================================================================
-// Test Without Aggregate Attribute
+// Test Without Tuple Variants (no auto-generated EventApplicator)
 // ============================================================================
 
-#[derive(DeriveAggregateId, Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[repr(transparent)]
-struct BasicAggregateId(Uuid);
-
-/// Event enum without aggregate attribute - should NOT generate apply_internal
-#[derive(DeriveEvent, Debug, Clone, Serialize, Deserialize)]
+/// Event enum without tuple variants - should NOT generate EventApplicator
+#[derive(event_sauce_macros::Event, Debug, Clone, Serialize, Deserialize)]
 #[event(version = 1, type_prefix = "Basic", aggregate = "BasicAggregate")]
 enum BasicEvent {
     Happened { timestamp: DateTime<Utc> },
@@ -347,14 +257,18 @@ enum BasicEvent {
 
 // Mock aggregate for BasicEvent
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct BasicAggregateState;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 struct BasicAggregate {
-    id: BasicAggregateId,
-    state: BasicAggregateState,
-    version: event_sauce_core::Version,
-    pending_events: Vec<BasicEvent>,
+    id: EntityId,
+}
+
+impl Entity for BasicAggregate {
+    fn new(id: EntityId) -> Self {
+        Self { id }
+    }
+
+    fn entity_id(&self) -> EntityId {
+        self.id
+    }
 }
 
 impl event_sauce_core::EventApplicator<BasicAggregate> for BasicEvent {
@@ -366,67 +280,14 @@ impl event_sauce_core::EventApplicator<BasicAggregate> for BasicEvent {
 }
 
 impl Aggregate for BasicAggregate {
-    type Id = BasicAggregateId;
     type Event = BasicEvent;
     type Error = TestError;
-    type State = BasicAggregateState;
-
-    fn new(id: BasicAggregateId) -> Self {
-        Self {
-            id,
-            state: BasicAggregateState,
-            version: event_sauce_core::Version::initial(),
-            pending_events: Vec::new(),
-        }
-    }
-
-    fn aggregate_id(&self) -> &BasicAggregateId {
-        &self.id
-    }
-
-    fn version(&self) -> event_sauce_core::Version {
-        self.version
-    }
-
-    fn pending_events(&self) -> &[Self::Event] {
-        &self.pending_events
-    }
-
-    fn clear_pending_events(&mut self) {
-        self.pending_events.clear();
-    }
-
-    fn push_pending_event(&mut self, event: Self::Event) {
-        self.pending_events.push(event);
-    }
-
-    fn increment_version(&mut self) {
-        self.version = self.version.next();
-    }
-
-    fn state(&self) -> &Self::State {
-        &self.state
-    }
-
-    fn from_snapshot(
-        id: BasicAggregateId,
-        version: event_sauce_core::Version,
-        state: Self::State,
-    ) -> Self {
-        Self {
-            id,
-            state,
-            version,
-            pending_events: Vec::new(),
-        }
-    }
 }
 
 #[test]
-fn test_without_aggregate_attribute_no_apply_internal() {
-    // This test verifies that without the aggregate attribute,
-    // no apply_internal is generated. This is verified at compile time -
-    // if we tried to call BasicEvent's apply_internal, it wouldn't compile.
+fn test_without_tuple_variants_no_auto_event_applicator() {
+    // This test verifies that without tuple variants,
+    // no auto EventApplicator is generated.
     let event = BasicEvent::Happened {
         timestamp: Utc::now(),
     };
@@ -441,30 +302,34 @@ fn test_without_aggregate_attribute_no_apply_internal() {
 // ============================================================================
 
 #[test]
-fn test_apply_internal_with_reset_to_zero() {
-    let id = TestId::new();
-    let mut aggregate = TestAgg::new(id);
-    // Initialize value to 100
-    aggregate
-        .apply(ValueSetEvent {
+fn test_apply_with_reset_to_zero() {
+    let mut entity = TestAgg::new(EntityId::new());
+
+    // Set to 100
+    event_sauce_core::EventApplicator::dispatch(
+        &TestEvent::Set(ValueSetEvent {
             value: 100,
             timestamp: Utc::now(),
-        })
-        .unwrap();
+        }),
+        &mut entity,
+    )
+    .unwrap();
 
-    aggregate
-        .apply_internal(&TestEvent::Reset(ValueResetEvent {
+    // Reset
+    event_sauce_core::EventApplicator::dispatch(
+        &TestEvent::Reset(ValueResetEvent {
             timestamp: Utc::now(),
-        }))
-        .unwrap();
+        }),
+        &mut entity,
+    )
+    .unwrap();
 
-    assert_eq!(aggregate.value, 0);
+    assert_eq!(entity.value, 0);
 }
 
 #[test]
-fn test_apply_internal_multiple_times_same_event() {
-    let id = TestId::new();
-    let mut aggregate = TestAgg::new(id);
+fn test_apply_same_event_multiple_times() {
+    let mut entity = TestAgg::new(EntityId::new());
 
     let event = TestEvent::Incremented(ValueIncrementedEvent {
         amount: 1,
@@ -473,28 +338,44 @@ fn test_apply_internal_multiple_times_same_event() {
 
     // Apply the same event multiple times
     for _ in 0..10 {
-        aggregate.apply_internal(&event).unwrap();
+        event_sauce_core::EventApplicator::dispatch(&event, &mut entity).unwrap();
     }
 
-    assert_eq!(aggregate.value, 10);
+    assert_eq!(entity.value, 10);
 }
 
 #[test]
-fn test_apply_internal_is_deterministic() {
-    let id = TestId::new();
+fn test_apply_is_deterministic() {
+    let id = EntityId::new();
     let event = TestEvent::Set(ValueSetEvent {
         value: 42,
         timestamp: Utc::now(),
     });
 
-    // Apply to first aggregate
-    let mut aggregate1 = TestAgg::new(id);
-    aggregate1.apply_internal(&event).unwrap();
+    // Apply to first entity
+    let mut entity1 = TestAgg::new(id);
+    event_sauce_core::EventApplicator::dispatch(&event, &mut entity1).unwrap();
 
-    // Apply to second aggregate
-    let mut aggregate2 = TestAgg::new(id);
-    aggregate2.apply_internal(&event).unwrap();
+    // Apply to second entity
+    let mut entity2 = TestAgg::new(id);
+    event_sauce_core::EventApplicator::dispatch(&event, &mut entity2).unwrap();
 
     // Results should be identical
-    assert_eq!(aggregate1.value, aggregate2.value);
+    assert_eq!(entity1.value, entity2.value);
+}
+
+#[test]
+fn test_validation_failure_via_aggregate_root() {
+    let mut root = AggregateRoot::<TestAgg>::new(EntityId::new());
+
+    // Set with negative value should fail validation
+    let result = root.apply(ValueSetEvent {
+        value: -5,
+        timestamp: Utc::now(),
+    });
+
+    assert!(result.is_err());
+    assert_eq!(root.value, 0); // State unchanged
+    assert_eq!(root.version(), Version::initial()); // Version unchanged
+    assert_eq!(root.pending_events().len(), 0); // No pending events
 }

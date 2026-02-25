@@ -16,3 +16,8 @@
 - [ ] make apply_internal require events that implement ApplyEvent, drop manual match implementation
 - [ ] make EventStore object safe by using pin<box<dyn Stream>> instead of "impl stream" to allow Arc<dyn EventStore>
 - [ ] remove unsafe for specification
+
+- [ ] would there be any use in implementing actual Domain layer with types / traits for Entity / ValueItem / Aggregate / AggregateRoot ?
+
+- [ ] do add Entity derive macro to avoid the boilerplate of implementing entity trait
+- [ ] is there a best way to implement the "aggregate_type" method that is consistent acros rust versions ?

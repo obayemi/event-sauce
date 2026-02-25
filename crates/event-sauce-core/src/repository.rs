@@ -5,17 +5,17 @@
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use crate::{count_events, load, Aggregate, AggregateId, EventStore, Result, StreamId, Version};
+use crate::{count_events, load, Aggregate, AggregateRoot, EntityId, EventStore, Result, StreamId, Version};
 
 /// Repository provides a high-level API for aggregate persistence.
 ///
 /// Wraps an `EventStore` and provides type-safe operations for a specific
-/// aggregate type, abstracting away stream IDs and other low-level concerns.
+/// aggregate type, working with `AggregateRoot<A>` and `EntityId`.
 ///
 /// # Type Parameters
 ///
 /// - `S`: The event store implementation
-/// - `A`: The aggregate type
+/// - `A`: The aggregate type (entity)
 ///
 /// # Examples
 ///
@@ -24,16 +24,8 @@ use crate::{count_events, load, Aggregate, AggregateId, EventStore, Result, Stre
 ///
 /// let repo = Repository::<PostgresEventStore, User>::new(store);
 ///
-/// // Load aggregate
-/// let user = repo.load(user_id).await?;
-///
-/// // Save aggregate
+/// let user = repo.load(entity_id).await?;
 /// repo.save(&mut user).await?;
-///
-/// // Check existence
-/// if repo.exists(user_id).await? {
-///     println!("User exists");
-/// }
 /// ```
 #[derive(Debug)]
 pub struct Repository<S, A> {
@@ -48,16 +40,6 @@ where
     A::Event: serde::Serialize + serde::de::DeserializeOwned,
 {
     /// Creates a new repository wrapping the given event store.
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// use event_sauce_core::Repository;
-    /// use std::sync::Arc;
-    ///
-    /// let store = Arc::new(PostgresEventStore::new(pool));
-    /// let repo = Repository::<PostgresEventStore, User>::new(store);
-    /// ```
     #[must_use]
     pub fn new(store: Arc<S>) -> Self {
         Self {
@@ -66,25 +48,15 @@ where
         }
     }
 
-    /// Saves an aggregate to the event store.
+    /// Saves an aggregate root to the event store.
     ///
     /// Commits all pending events and clears them on success.
     ///
     /// # Errors
     ///
-    /// Returns an error if:
-    /// - Event serialization fails
-    /// - The event store operation fails
-    /// - A concurrency conflict occurs
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// let mut user = repo.load(user_id).await?;
-    /// user.update_email("new@example.com")?;
-    /// repo.save(&mut user).await?;
-    /// ```
-    pub async fn save(&self, aggregate: &mut A) -> Result<()> {
+    /// Returns an error if serialization, the event store operation,
+    /// or concurrency control fails.
+    pub async fn save(&self, aggregate: &mut AggregateRoot<A>) -> Result<()> {
         self.store.commit(aggregate).await
     }
 
@@ -95,79 +67,38 @@ where
     ///
     /// # Errors
     ///
-    /// Returns an error if:
-    /// - The aggregate doesn't exist (no events found)
-    /// - Event deserialization fails
-    /// - Snapshot deserialization fails
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// let user = repo.load(user_id).await?;
-    /// println!("User email: {}", user.email());
-    /// ```
-    pub async fn load(&self, id: A::Id) -> Result<A> {
+    /// Returns an error if the aggregate doesn't exist or deserialization fails.
+    pub async fn load(&self, id: EntityId) -> Result<AggregateRoot<A>> {
         load(&*self.store, id).await
     }
 
     /// Checks if an aggregate exists in the event store.
     ///
-    /// Returns `true` if the aggregate has any events in the store.
-    ///
     /// # Errors
     ///
     /// Returns an error if the event store operation fails.
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// if repo.exists(user_id).await? {
-    ///     println!("User exists");
-    /// } else {
-    ///     println!("User not found");
-    /// }
-    /// ```
-    pub async fn exists(&self, id: A::Id) -> Result<bool> {
-        let stream_id = StreamId::new(A::aggregate_type(), id.to_uuid());
+    pub async fn exists(&self, id: EntityId) -> Result<bool> {
+        let stream_id = StreamId::new(A::aggregate_type(), id.as_uuid());
         self.store.stream_exists(stream_id).await
     }
 
     /// Gets the current version of an aggregate without loading it.
     ///
-    /// Useful for checking version without the overhead of loading
-    /// all events and reconstructing state.
-    ///
     /// # Errors
     ///
     /// Returns an error if the event store operation fails.
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// let version = repo.get_version(user_id).await?;
-    /// println!("User is at version {}", version.as_u64());
-    /// ```
-    pub async fn get_version(&self, id: A::Id) -> Result<Version> {
-        let stream_id = StreamId::new(A::aggregate_type(), id.to_uuid());
+    pub async fn get_version(&self, id: EntityId) -> Result<Version> {
+        let stream_id = StreamId::new(A::aggregate_type(), id.as_uuid());
         self.store.get_version(stream_id).await
     }
 
     /// Counts the number of events for an aggregate.
     ///
-    /// Returns the total number of events in the aggregate's stream.
-    ///
     /// # Errors
     ///
     /// Returns an error if the event store operation fails.
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// let count = repo.count_events(user_id).await?;
-    /// println!("User has {} events", count);
-    /// ```
-    pub async fn count_events(&self, id: A::Id) -> Result<usize> {
-        let stream_id = StreamId::new(A::aggregate_type(), id.to_uuid());
+    pub async fn count_events(&self, id: EntityId) -> Result<usize> {
+        let stream_id = StreamId::new(A::aggregate_type(), id.as_uuid());
         count_events(&*self.store, stream_id).await
     }
 }
@@ -184,37 +115,9 @@ impl<S, A> Clone for Repository<S, A> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AggregateError, ApplyEvent, DomainEvent, EventEnvelope, Version};
+    use crate::{AggregateError, ApplyEvent, DomainEvent, EntityId, EventEnvelope, Version};
     use chrono::Utc;
     use serde::{Deserialize, Serialize};
-    use std::fmt;
-    use uuid::Uuid;
-
-    // Test aggregate ID
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-    struct TestId(Uuid);
-
-    impl TestId {
-        fn new() -> Self {
-            Self(Uuid::new_v4())
-        }
-    }
-
-    impl fmt::Display for TestId {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            write!(f, "Test-{}", self.0)
-        }
-    }
-
-    impl AggregateId for TestId {
-        fn to_uuid(&self) -> Uuid {
-            self.0
-        }
-
-        fn from_uuid(uuid: Uuid) -> Self {
-            Self(uuid)
-        }
-    }
 
     // Test events
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -224,7 +127,7 @@ mod tests {
     }
 
     impl DomainEvent for TestEvent {
-        type Aggregate = TestAggregate;
+        type Aggregate = TestEntity;
 
         fn event_type(&self) -> &'static str {
             match self {
@@ -242,105 +145,49 @@ mod tests {
         }
     }
 
-    impl ApplyEvent<TestAggregate> for TestEvent {
-        fn apply(&self, aggregate: &mut TestAggregate) {
+    impl ApplyEvent<TestEntity> for TestEvent {
+        fn apply(&self, entity: &mut TestEntity) {
             match self {
-                Self::Incremented { amount } => aggregate.state.value += amount,
-                Self::Reset => aggregate.state.value = 0,
+                Self::Incremented { amount } => entity.value += amount,
+                Self::Reset => entity.value = 0,
             }
         }
     }
 
-    // Test aggregate state
-    #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-    struct TestState {
+    // Test entity
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    struct TestEntity {
+        id: EntityId,
         value: i32,
     }
 
-    // Test aggregate
-    #[derive(Debug, Clone, Serialize, Deserialize)]
-    struct TestAggregate {
-        id: TestId,
-        state: TestState,
-        version: Version,
-        pending_events: Vec<TestEvent>,
+    impl crate::Entity for TestEntity {
+        fn new(id: EntityId) -> Self {
+            Self { id, value: 0 }
+        }
+
+        fn entity_id(&self) -> EntityId {
+            self.id
+        }
     }
 
-    impl crate::EventApplicator<TestAggregate> for TestEvent {
-        fn dispatch(&self, aggregate: &mut TestAggregate) -> std::result::Result<(), TestError> {
-            self.apply(aggregate);
+    impl crate::EventApplicator<TestEntity> for TestEvent {
+        fn dispatch(&self, entity: &mut TestEntity) -> std::result::Result<(), TestError> {
+            self.apply(entity);
             Ok(())
         }
 
-        fn dispatch_unchecked(&self, aggregate: &mut TestAggregate) {
-            self.apply(aggregate);
+        fn dispatch_unchecked(&self, entity: &mut TestEntity) {
+            self.apply(entity);
         }
     }
 
-    impl Aggregate for TestAggregate {
+    impl Aggregate for TestEntity {
         type Event = TestEvent;
-        type Id = TestId;
         type Error = TestError;
-        type State = TestState;
-
-        fn new(id: Self::Id) -> Self {
-            Self {
-                id,
-                state: TestState::default(),
-                version: Version::initial(),
-                pending_events: Vec::new(),
-            }
-        }
-
-        fn aggregate_id(&self) -> &Self::Id {
-            &self.id
-        }
-
-        fn version(&self) -> Version {
-            self.version
-        }
-
-        fn pending_events(&self) -> &[Self::Event] {
-            &self.pending_events
-        }
-
-        fn clear_pending_events(&mut self) {
-            self.pending_events.clear();
-        }
-
-        fn push_pending_event(&mut self, event: Self::Event) {
-            self.pending_events.push(event);
-        }
-
-        fn increment_version(&mut self) {
-            self.version = self.version.next();
-        }
-
-        fn state(&self) -> &Self::State {
-            &self.state
-        }
-
-        fn from_snapshot(id: Self::Id, version: Version, state: Self::State) -> Self {
-            Self {
-                id,
-                state,
-                version,
-                pending_events: Vec::new(),
-            }
-        }
 
         fn aggregate_type() -> &'static str {
-            "TestAggregate"
-        }
-    }
-
-    impl TestAggregate {
-        fn increment(&mut self, amount: i32) -> std::result::Result<(), TestError> {
-            self.apply(TestEvent::Incremented { amount })
-        }
-
-        fn value(&self) -> i32 {
-            self.state.value
+            "TestEntity"
         }
     }
 
@@ -354,7 +201,7 @@ mod tests {
 
     impl AggregateError for TestError {}
 
-    // Mock event store for testing
+    // Mock event store
     use async_trait::async_trait;
     use futures::stream;
     use std::collections::HashMap;
@@ -431,7 +278,6 @@ mod tests {
         }
 
         fn snapshot_config(&self) -> &crate::SnapshotConfig {
-            // Use a static config instance
             static CONFIG: std::sync::OnceLock<crate::SnapshotConfig> = std::sync::OnceLock::new();
             CONFIG.get_or_init(crate::SnapshotConfig::disabled)
         }
@@ -440,54 +286,49 @@ mod tests {
     #[tokio::test]
     async fn test_repository_new() {
         let store = Arc::new(MockEventStore::new());
-        let _repo = Repository::<MockEventStore, TestAggregate>::new(store);
+        let _repo = Repository::<MockEventStore, TestEntity>::new(store);
     }
 
     #[tokio::test]
     async fn test_repository_save_and_load() {
         let store = Arc::new(MockEventStore::new());
-        let repo = Repository::<MockEventStore, TestAggregate>::new(store);
+        let repo = Repository::<MockEventStore, TestEntity>::new(store);
 
-        let test_id = TestId::new();
-        let mut aggregate = TestAggregate::new(test_id);
-        aggregate.increment(5).unwrap();
+        let test_id = EntityId::new();
+        let mut aggregate = AggregateRoot::<TestEntity>::new(test_id);
+        aggregate.apply(TestEvent::Incremented { amount: 5 }).unwrap();
 
-        // Save aggregate
         repo.save(&mut aggregate).await.unwrap();
 
-        // Load aggregate
         let loaded = repo.load(test_id).await.unwrap();
-        assert_eq!(loaded.value(), 5);
+        assert_eq!(loaded.value, 5);
     }
 
     #[tokio::test]
     async fn test_repository_exists() {
         let store = Arc::new(MockEventStore::new());
-        let repo = Repository::<MockEventStore, TestAggregate>::new(store);
+        let repo = Repository::<MockEventStore, TestEntity>::new(store);
 
-        let test_id = TestId::new();
+        let test_id = EntityId::new();
 
-        // Should not exist initially
         assert!(!repo.exists(test_id).await.unwrap());
 
-        // Create and save aggregate
-        let mut aggregate = TestAggregate::new(test_id);
-        aggregate.increment(5).unwrap();
+        let mut aggregate = AggregateRoot::<TestEntity>::new(test_id);
+        aggregate.apply(TestEvent::Incremented { amount: 5 }).unwrap();
         repo.save(&mut aggregate).await.unwrap();
 
-        // Should exist now
         assert!(repo.exists(test_id).await.unwrap());
     }
 
     #[tokio::test]
     async fn test_repository_get_version() {
         let store = Arc::new(MockEventStore::new());
-        let repo = Repository::<MockEventStore, TestAggregate>::new(store);
+        let repo = Repository::<MockEventStore, TestEntity>::new(store);
 
-        let test_id = TestId::new();
-        let mut aggregate = TestAggregate::new(test_id);
-        aggregate.increment(5).unwrap();
-        aggregate.increment(3).unwrap();
+        let test_id = EntityId::new();
+        let mut aggregate = AggregateRoot::<TestEntity>::new(test_id);
+        aggregate.apply(TestEvent::Incremented { amount: 5 }).unwrap();
+        aggregate.apply(TestEvent::Incremented { amount: 3 }).unwrap();
 
         repo.save(&mut aggregate).await.unwrap();
 
@@ -498,13 +339,13 @@ mod tests {
     #[tokio::test]
     async fn test_repository_count_events() {
         let store = Arc::new(MockEventStore::new());
-        let repo = Repository::<MockEventStore, TestAggregate>::new(store);
+        let repo = Repository::<MockEventStore, TestEntity>::new(store);
 
-        let test_id = TestId::new();
-        let mut aggregate = TestAggregate::new(test_id);
-        aggregate.increment(5).unwrap();
-        aggregate.increment(3).unwrap();
-        aggregate.increment(2).unwrap();
+        let test_id = EntityId::new();
+        let mut aggregate = AggregateRoot::<TestEntity>::new(test_id);
+        aggregate.apply(TestEvent::Incremented { amount: 5 }).unwrap();
+        aggregate.apply(TestEvent::Incremented { amount: 3 }).unwrap();
+        aggregate.apply(TestEvent::Incremented { amount: 2 }).unwrap();
 
         repo.save(&mut aggregate).await.unwrap();
 
@@ -515,7 +356,7 @@ mod tests {
     #[tokio::test]
     async fn test_repository_clone() {
         let store = Arc::new(MockEventStore::new());
-        let repo = Repository::<MockEventStore, TestAggregate>::new(store);
+        let repo = Repository::<MockEventStore, TestEntity>::new(store);
         let _cloned = repo.clone();
     }
 }

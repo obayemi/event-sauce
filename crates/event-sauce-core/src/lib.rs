@@ -3,11 +3,12 @@
 //! Core traits and types for the event-sauce event sourcing library.
 //!
 //! This crate provides the fundamental building blocks for event-sourced systems:
-//! - `Aggregate` trait for domain aggregates
+//! - `Entity` trait for domain objects with identity
+//! - `Aggregate` trait for event-sourced entities
+//! - `AggregateRoot<A>` wrapper for infrastructure concerns
 //! - `DomainEvent` trait for events
 //! - `EventStore` trait for event persistence
-//! - `EventBus` trait for event publishing
-//! - Core types like `EventEnvelope`, `StreamId`, `Version`
+//! - Core types like `EventEnvelope`, `StreamId`, `Version`, `EntityId`
 //! - Helper macros like `command_handler!` for reducing boilerplate
 //!
 //! ## TDD Approach
@@ -21,10 +22,11 @@
 
 mod aggregate;
 mod aggregate_error;
-mod aggregate_id;
-mod aggregate_state;
+mod aggregate_root;
 mod apply_event;
 mod domain_event;
+mod entity;
+mod entity_id;
 mod error;
 mod event_applicator;
 mod event_envelope;
@@ -41,10 +43,11 @@ mod version;
 
 pub use aggregate::Aggregate;
 pub use aggregate_error::AggregateError;
-pub use aggregate_id::{AggregateId, DefaultAggregateId};
-pub use aggregate_state::{AggregateRoot, AggregateState};
+pub use aggregate_root::AggregateRoot;
 pub use apply_event::ApplyEvent;
 pub use domain_event::{DomainEvent, EventType};
+pub use entity::Entity;
+pub use entity_id::EntityId;
 pub use error::{Error, Result};
 pub use event_applicator::EventApplicator;
 pub use event_envelope::{EventEnvelope, EventMetadata};
@@ -59,3 +62,6 @@ pub use subscription::{
 };
 pub use types::{CheckpointStoreRef, EventStoreRef};
 pub use version::Version;
+
+#[doc(hidden)]
+pub use aggregate_root::tests_support;

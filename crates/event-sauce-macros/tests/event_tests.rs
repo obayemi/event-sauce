@@ -31,9 +31,8 @@ enum TestEvent {
     },
 }
 
-// Mock aggregate for TestEvent
-use event_sauce_core::{Aggregate, AggregateError};
-use event_sauce_macros::AggregateId as DeriveAggregateId;
+// Mock aggregate for TestEvent - now uses Entity + Aggregate pattern
+use event_sauce_core::{Aggregate, AggregateError, Entity, EntityId};
 use uuid::Uuid;
 
 #[derive(Debug, thiserror::Error)]
@@ -42,19 +41,19 @@ struct TestAggregateError;
 
 impl AggregateError for TestAggregateError {}
 
-#[derive(DeriveAggregateId, Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[repr(transparent)]
-struct TestAggregateId(Uuid);
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct TestAggregateState;
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct TestAggregate {
-    id: TestAggregateId,
-    state: TestAggregateState,
-    version: event_sauce_core::Version,
-    pending_events: Vec<TestEvent>,
+    id: EntityId,
+}
+
+impl Entity for TestAggregate {
+    fn new(id: EntityId) -> Self {
+        Self { id }
+    }
+
+    fn entity_id(&self) -> EntityId {
+        self.id
+    }
 }
 
 impl EventApplicator<TestAggregate> for TestEvent {
@@ -66,56 +65,8 @@ impl EventApplicator<TestAggregate> for TestEvent {
 }
 
 impl Aggregate for TestAggregate {
-    type Id = TestAggregateId;
     type Event = TestEvent;
     type Error = TestAggregateError;
-    type State = TestAggregateState;
-
-    fn new(id: TestAggregateId) -> Self {
-        Self {
-            id,
-            state: TestAggregateState,
-            version: Version::initial(),
-            pending_events: Vec::new(),
-        }
-    }
-
-    fn aggregate_id(&self) -> &TestAggregateId {
-        &self.id
-    }
-
-    fn version(&self) -> Version {
-        self.version
-    }
-
-    fn pending_events(&self) -> &[Self::Event] {
-        &self.pending_events
-    }
-
-    fn clear_pending_events(&mut self) {
-        self.pending_events.clear();
-    }
-
-    fn push_pending_event(&mut self, event: Self::Event) {
-        self.pending_events.push(event);
-    }
-
-    fn increment_version(&mut self) {
-        self.version = self.version.next();
-    }
-
-    fn state(&self) -> &Self::State {
-        &self.state
-    }
-
-    fn from_snapshot(id: TestAggregateId, version: Version, state: Self::State) -> Self {
-        Self {
-            id,
-            state,
-            version,
-            pending_events: Vec::new(),
-        }
-    }
 }
 
 #[test]
@@ -220,14 +171,18 @@ enum TestEventV2 {
 
 // Mock aggregate for TestEventV2
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct TestAggregateV2State;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 struct TestAggregateV2 {
-    id: TestAggregateId,
-    state: TestAggregateV2State,
-    version: event_sauce_core::Version,
-    pending_events: Vec<TestEventV2>,
+    id: EntityId,
+}
+
+impl Entity for TestAggregateV2 {
+    fn new(id: EntityId) -> Self {
+        Self { id }
+    }
+
+    fn entity_id(&self) -> EntityId {
+        self.id
+    }
 }
 
 impl EventApplicator<TestAggregateV2> for TestEventV2 {
@@ -239,56 +194,8 @@ impl EventApplicator<TestAggregateV2> for TestEventV2 {
 }
 
 impl Aggregate for TestAggregateV2 {
-    type Id = TestAggregateId;
     type Event = TestEventV2;
     type Error = TestAggregateError;
-    type State = TestAggregateV2State;
-
-    fn new(id: TestAggregateId) -> Self {
-        Self {
-            id,
-            state: TestAggregateV2State,
-            version: Version::initial(),
-            pending_events: Vec::new(),
-        }
-    }
-
-    fn aggregate_id(&self) -> &TestAggregateId {
-        &self.id
-    }
-
-    fn version(&self) -> Version {
-        self.version
-    }
-
-    fn pending_events(&self) -> &[Self::Event] {
-        &self.pending_events
-    }
-
-    fn clear_pending_events(&mut self) {
-        self.pending_events.clear();
-    }
-
-    fn push_pending_event(&mut self, event: Self::Event) {
-        self.pending_events.push(event);
-    }
-
-    fn increment_version(&mut self) {
-        self.version = self.version.next();
-    }
-
-    fn state(&self) -> &Self::State {
-        &self.state
-    }
-
-    fn from_snapshot(id: TestAggregateId, version: Version, state: Self::State) -> Self {
-        Self {
-            id,
-            state,
-            version,
-            pending_events: Vec::new(),
-        }
-    }
 }
 
 #[test]
@@ -320,14 +227,18 @@ enum OrderEvent {
 
 // Mock aggregate for OrderEvent
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct OrderAggregateState;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 struct OrderAggregate {
-    id: TestAggregateId,
-    state: OrderAggregateState,
-    version: event_sauce_core::Version,
-    pending_events: Vec<OrderEvent>,
+    id: EntityId,
+}
+
+impl Entity for OrderAggregate {
+    fn new(id: EntityId) -> Self {
+        Self { id }
+    }
+
+    fn entity_id(&self) -> EntityId {
+        self.id
+    }
 }
 
 impl EventApplicator<OrderAggregate> for OrderEvent {
@@ -339,56 +250,8 @@ impl EventApplicator<OrderAggregate> for OrderEvent {
 }
 
 impl Aggregate for OrderAggregate {
-    type Id = TestAggregateId;
     type Event = OrderEvent;
     type Error = TestAggregateError;
-    type State = OrderAggregateState;
-
-    fn new(id: TestAggregateId) -> Self {
-        Self {
-            id,
-            state: OrderAggregateState,
-            version: Version::initial(),
-            pending_events: Vec::new(),
-        }
-    }
-
-    fn aggregate_id(&self) -> &TestAggregateId {
-        &self.id
-    }
-
-    fn version(&self) -> Version {
-        self.version
-    }
-
-    fn pending_events(&self) -> &[Self::Event] {
-        &self.pending_events
-    }
-
-    fn clear_pending_events(&mut self) {
-        self.pending_events.clear();
-    }
-
-    fn push_pending_event(&mut self, event: Self::Event) {
-        self.pending_events.push(event);
-    }
-
-    fn increment_version(&mut self) {
-        self.version = self.version.next();
-    }
-
-    fn state(&self) -> &Self::State {
-        &self.state
-    }
-
-    fn from_snapshot(id: TestAggregateId, version: Version, state: Self::State) -> Self {
-        Self {
-            id,
-            state,
-            version,
-            pending_events: Vec::new(),
-        }
-    }
 }
 
 #[test]
@@ -418,14 +281,18 @@ enum SimpleEvent {
 
 // Mock aggregate for SimpleEvent
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct SimpleAggregateState;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 struct SimpleAggregate {
-    id: TestAggregateId,
-    state: SimpleAggregateState,
-    version: event_sauce_core::Version,
-    pending_events: Vec<SimpleEvent>,
+    id: EntityId,
+}
+
+impl Entity for SimpleAggregate {
+    fn new(id: EntityId) -> Self {
+        Self { id }
+    }
+
+    fn entity_id(&self) -> EntityId {
+        self.id
+    }
 }
 
 impl EventApplicator<SimpleAggregate> for SimpleEvent {
@@ -437,56 +304,8 @@ impl EventApplicator<SimpleAggregate> for SimpleEvent {
 }
 
 impl Aggregate for SimpleAggregate {
-    type Id = TestAggregateId;
     type Event = SimpleEvent;
     type Error = TestAggregateError;
-    type State = SimpleAggregateState;
-
-    fn new(id: TestAggregateId) -> Self {
-        Self {
-            id,
-            state: SimpleAggregateState,
-            version: Version::initial(),
-            pending_events: Vec::new(),
-        }
-    }
-
-    fn aggregate_id(&self) -> &TestAggregateId {
-        &self.id
-    }
-
-    fn version(&self) -> Version {
-        self.version
-    }
-
-    fn pending_events(&self) -> &[Self::Event] {
-        &self.pending_events
-    }
-
-    fn clear_pending_events(&mut self) {
-        self.pending_events.clear();
-    }
-
-    fn push_pending_event(&mut self, event: Self::Event) {
-        self.pending_events.push(event);
-    }
-
-    fn increment_version(&mut self) {
-        self.version = self.version.next();
-    }
-
-    fn state(&self) -> &Self::State {
-        &self.state
-    }
-
-    fn from_snapshot(id: TestAggregateId, version: Version, state: Self::State) -> Self {
-        Self {
-            id,
-            state,
-            version,
-            pending_events: Vec::new(),
-        }
-    }
 }
 
 #[test]

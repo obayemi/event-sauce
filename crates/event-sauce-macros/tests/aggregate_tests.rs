@@ -1,16 +1,15 @@
 //! Integration tests for #[aggregate(...)] attribute macro.
 //!
 //! These tests verify that the aggregate attribute macro correctly generates
-//! the State struct and Aggregate trait implementation.
+//! the Entity and Aggregate trait implementations.
 
 use chrono::{DateTime, Utc};
 use event_sauce_core::{
-    Aggregate, AggregateError, AggregateId as _, DomainEvent, EventApplicator, Version,
+    Aggregate, AggregateError, AggregateRoot, DomainEvent, Entity, EntityId, EventApplicator,
+    Version,
 };
-use event_sauce_macros::AggregateId as DeriveAggregateId;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use uuid::Uuid;
 
 // Define error type for testing
 #[derive(Debug, Error)]
@@ -18,13 +17,6 @@ use uuid::Uuid;
 struct TestCounterError;
 
 impl AggregateError for TestCounterError {}
-
-// Define a simple aggregate ID for testing
-#[derive(
-    Default, DeriveAggregateId, Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize,
-)]
-#[repr(transparent)]
-struct TestCounterId(Uuid);
 
 // Define a simple event for testing
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -61,139 +53,125 @@ impl DomainEvent for TestCounterEvent {
     }
 }
 
-// EventApplicator must be defined before the aggregate macro expands,
-// since the generated Aggregate impl requires it.
+// EventApplicator dispatches to &mut TestCounter (entity) directly
 impl EventApplicator<TestCounter> for TestCounterEvent {
-    fn dispatch(&self, aggregate: &mut TestCounter) -> Result<(), TestCounterError> {
+    fn dispatch(&self, entity: &mut TestCounter) -> Result<(), TestCounterError> {
         match self {
             TestCounterEvent::Incremented { amount, .. } => {
-                aggregate.value += amount;
+                entity.value += amount;
             }
             TestCounterEvent::Decremented { amount, .. } => {
-                aggregate.value -= amount;
+                entity.value -= amount;
             }
         }
         Ok(())
     }
 
-    fn dispatch_unchecked(&self, aggregate: &mut TestCounter) {
+    fn dispatch_unchecked(&self, entity: &mut TestCounter) {
         match self {
             TestCounterEvent::Incremented { amount, .. } => {
-                aggregate.value += amount;
+                entity.value += amount;
             }
             TestCounterEvent::Decremented { amount, .. } => {
-                aggregate.value -= amount;
+                entity.value -= amount;
             }
         }
     }
 }
 
 // This is the aggregate struct using the new attribute macro
-// The macro will generate TestCounterState and transform TestCounter into a wrapper
-#[event_sauce_macros::aggregate(
-    id = "TestCounterId",
-    event = "TestCounterEvent",
-    error = "TestCounterError"
-)]
-#[derive(Default)]
+// The macro generates Entity + Aggregate impls (no wrapper or state struct)
+#[event_sauce_macros::aggregate(event = "TestCounterEvent", error = "TestCounterError")]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 struct TestCounter {
-    #[aggregate_id]
-    id: TestCounterId,
+    #[id]
+    id: EntityId,
     value: i32,
 }
 
-// Business methods on the aggregate
-impl TestCounter {
-    fn increment(&mut self, amount: i32) {
-        self.apply(TestCounterEvent::Incremented {
-            amount,
-            timestamp: Utc::now(),
-        })
-        .expect("increment should not fail");
-    }
-}
-
 #[test]
-fn test_aggregate_derive_implements_aggregate_trait() {
-    let id = TestCounterId::new();
+fn test_aggregate_derive_generates_entity_trait() {
+    let id = EntityId::new();
     let counter = TestCounter::new(id);
 
-    // The Aggregate trait should be implemented
-    assert_eq!(counter.aggregate_id(), &id);
-    assert_eq!(counter.version(), Version::initial());
-    assert_eq!(counter.pending_events().len(), 0);
+    // The Entity trait should be implemented
+    assert_eq!(counter.entity_id(), id);
+    assert_eq!(counter.value, 0);
 }
 
 #[test]
-fn test_aggregate_derive_aggregate_id() {
-    let id = TestCounterId::new();
+fn test_aggregate_derive_entity_id() {
+    let id = EntityId::new();
     let counter = TestCounter::new(id);
 
-    assert_eq!(counter.aggregate_id(), &id);
+    assert_eq!(counter.entity_id(), id);
 }
 
 #[test]
-fn test_aggregate_derive_version() {
-    let id = TestCounterId::new();
-    let counter = TestCounter::new(id);
+fn test_aggregate_root_new() {
+    let id = EntityId::new();
+    let root = AggregateRoot::<TestCounter>::new(id);
 
-    assert_eq!(counter.version(), Version::initial());
+    assert_eq!(root.entity_id(), id);
+    assert_eq!(root.version(), Version::initial());
+    assert_eq!(root.pending_events().len(), 0);
 }
 
 #[test]
-fn test_aggregate_derive_pending_events() {
-    let id = TestCounterId::new();
-    let mut counter = TestCounter::new(id);
-
-    assert_eq!(counter.pending_events().len(), 0);
-
-    counter.increment(5);
-
-    assert_eq!(counter.pending_events().len(), 1);
-}
-
-#[test]
-fn test_aggregate_derive_clear_pending_events() {
-    let id = TestCounterId::new();
-    let mut counter = TestCounter::new(id);
-
-    counter.increment(5);
-    assert_eq!(counter.pending_events().len(), 1);
-
-    counter.clear_pending_events();
-    assert_eq!(counter.pending_events().len(), 0);
-}
-
-#[test]
-fn test_aggregate_derive_apply() {
-    let id = TestCounterId::new();
-    let mut counter = TestCounter::new(id);
+fn test_aggregate_root_apply() {
+    let id = EntityId::new();
+    let mut root = AggregateRoot::<TestCounter>::new(id);
 
     let event = TestCounterEvent::Incremented {
         amount: 10,
         timestamp: Utc::now(),
     };
 
-    let initial_version = counter.version();
-    counter.apply(event).unwrap();
+    root.apply(event).unwrap();
 
     // Version should be incremented
-    assert_eq!(counter.version(), initial_version.next());
-    // Value should be updated (via EventApplicator dispatch) - accessible via Deref
-    assert_eq!(counter.value, 10);
+    assert_eq!(root.version(), Version::new(1));
+    // Value should be updated - accessible via Deref
+    assert_eq!(root.value, 10);
+    // Pending events recorded
+    assert_eq!(root.pending_events().len(), 1);
 }
 
 #[test]
-fn test_aggregate_derive_multiple_events() {
-    let id = TestCounterId::new();
-    let mut counter = TestCounter::new(id);
+fn test_aggregate_root_multiple_events() {
+    let id = EntityId::new();
+    let mut root = AggregateRoot::<TestCounter>::new(id);
 
-    counter.increment(5);
-    counter.increment(3);
+    root.apply(TestCounterEvent::Incremented {
+        amount: 5,
+        timestamp: Utc::now(),
+    })
+    .unwrap();
+    root.apply(TestCounterEvent::Incremented {
+        amount: 3,
+        timestamp: Utc::now(),
+    })
+    .unwrap();
 
-    assert_eq!(counter.pending_events().len(), 2);
-    assert_eq!(counter.value, 8);
-    assert_eq!(counter.version(), Version::new(2));
+    assert_eq!(root.pending_events().len(), 2);
+    assert_eq!(root.value, 8);
+    assert_eq!(root.version(), Version::new(2));
+}
+
+#[test]
+fn test_aggregate_root_clear_pending_events() {
+    let id = EntityId::new();
+    let mut root = AggregateRoot::<TestCounter>::new(id);
+
+    root.apply(TestCounterEvent::Incremented {
+        amount: 5,
+        timestamp: Utc::now(),
+    })
+    .unwrap();
+    assert_eq!(root.pending_events().len(), 1);
+
+    root.clear_pending_events();
+    assert_eq!(root.pending_events().len(), 0);
 }
 
 #[test]
@@ -212,61 +190,52 @@ fn test_aggregate_derive_aggregate_type() {
 }
 
 #[test]
-fn test_state_struct_generated() {
-    // The macro should generate TestCounterState (business fields only, no id)
-    let state = TestCounterState { value: 42 };
-
-    assert_eq!(state.value, 42);
+fn test_no_state_struct_generated() {
+    // In the new design, no separate State struct is generated.
+    // The entity struct IS the domain type with direct field access.
+    let counter = TestCounter::new(EntityId::new());
+    assert_eq!(counter.value, 0);
 }
 
 #[test]
-fn test_from_snapshot_constructor() {
-    let id = TestCounterId::new();
-    let state = TestCounterState { value: 100 };
+fn test_from_snapshot() {
+    let id = EntityId::new();
+    let entity = TestCounter { id, value: 100 };
 
-    let counter = TestCounter::from_snapshot(id, Version::new(5), state);
+    let root = AggregateRoot::<TestCounter>::from_snapshot(Version::new(5), entity);
 
-    assert_eq!(counter.value, 100);
-    assert_eq!(counter.version(), Version::new(5));
+    assert_eq!(root.value, 100);
+    assert_eq!(root.version(), Version::new(5));
+    assert_eq!(root.entity_id(), id);
 }
 
 #[test]
-fn test_deref_transparent_access() {
-    let id = TestCounterId::new();
-    let mut counter = TestCounter::new(id);
+fn test_deref_read_access() {
+    let id = EntityId::new();
+    let mut root = AggregateRoot::<TestCounter>::new(id);
 
-    // Can access and modify state fields directly via Deref/DerefMut
-    counter.value = 999;
+    root.apply(TestCounterEvent::Incremented {
+        amount: 999,
+        timestamp: Utc::now(),
+    })
+    .unwrap();
 
-    assert_eq!(counter.value, 999);
+    // Can read state fields directly via Deref
+    assert_eq!(root.value, 999);
 }
 
 #[test]
-fn test_state_ref_and_mut() {
-    let id = TestCounterId::new();
-    let mut counter = TestCounter::new(id);
+fn test_entity_ref_access() {
+    let id = EntityId::new();
+    let mut root = AggregateRoot::<TestCounter>::new(id);
 
-    counter.increment(5);
+    root.apply(TestCounterEvent::Incremented {
+        amount: 5,
+        timestamp: Utc::now(),
+    })
+    .unwrap();
 
-    // Can get a reference to the state
-    let state_ref = counter.state_ref();
-    assert_eq!(state_ref.value, 5);
-
-    // Can get a mutable reference to the state
-    let state_mut = counter.state_mut();
-    state_mut.value = 100;
-
-    assert_eq!(counter.value, 100);
-}
-
-#[test]
-fn test_aggregate_state_method() {
-    let id = TestCounterId::new();
-    let mut counter = TestCounter::new(id);
-
-    counter.increment(42);
-
-    // The state() method from Aggregate trait
-    let state = counter.state();
-    assert_eq!(state.value, 42);
+    // Can get a reference to the entity
+    let entity_ref = root.entity();
+    assert_eq!(entity_ref.value, 5);
 }

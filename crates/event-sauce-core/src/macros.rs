@@ -930,7 +930,7 @@ macro_rules! spec {
 #[allow(clippy::default_trait_access)]
 mod tests {
     use crate::{
-        Aggregate, AggregateError, AggregateId, ApplyEvent, DefaultAggregateId, DomainEvent,
+        Aggregate, AggregateError, AggregateRoot, ApplyEvent, DomainEvent, Entity, EntityId,
         Specification, SpecificationError, Version,
     };
     use chrono::{DateTime, Utc};
@@ -1025,19 +1025,21 @@ mod tests {
 
     impl AggregateError for TestError {}
 
-    // Test State
-    #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-    struct TestAggregateState {
+    // Test Aggregate (entity with embedded state)
+    #[derive(Debug, Serialize, Deserialize)]
+    struct TestAggregate {
+        id: EntityId,
         value: i32,
     }
 
-    // Test Aggregate
-    #[derive(Debug, Serialize, Deserialize)]
-    struct TestAggregate {
-        id: DefaultAggregateId,
-        state: TestAggregateState,
-        version: Version,
-        pending_events: Vec<TestEvent>,
+    impl Entity for TestAggregate {
+        fn new(id: EntityId) -> Self {
+            Self { id, value: 0 }
+        }
+
+        fn entity_id(&self) -> EntityId {
+            self.id
+        }
     }
 
     impl crate::EventApplicator<TestAggregate> for TestEvent {
@@ -1078,61 +1080,21 @@ mod tests {
     }
 
     impl Aggregate for TestAggregate {
-        type Id = DefaultAggregateId;
         type Event = TestEvent;
         type Error = TestError;
-        type State = TestAggregateState;
-
-        fn new(id: Self::Id) -> Self {
-            Self {
-                id,
-                state: TestAggregateState::default(),
-                version: Version::initial(),
-                pending_events: Vec::new(),
-            }
-        }
-
-        fn aggregate_id(&self) -> &Self::Id {
-            &self.id
-        }
-
-        fn version(&self) -> Version {
-            self.version
-        }
-
-        fn pending_events(&self) -> &[Self::Event] {
-            &self.pending_events
-        }
-
-        fn clear_pending_events(&mut self) {
-            self.pending_events.clear();
-        }
-
-        fn push_pending_event(&mut self, event: Self::Event) {
-            self.pending_events.push(event);
-        }
-
-        fn increment_version(&mut self) {
-            self.version = self.version.next();
-        }
-
-        fn state(&self) -> &Self::State {
-            &self.state
-        }
-
-        fn from_snapshot(id: Self::Id, version: Version, state: Self::State) -> Self {
-            Self {
-                id,
-                state,
-                version,
-                pending_events: Vec::new(),
-            }
-        }
     }
 
     impl TestAggregate {
         fn value(&self) -> i32 {
-            self.state.value
+            self.value
+        }
+
+        /// Apply an event through the AggregateRoot-like lifecycle: dispatch + track.
+        /// This is needed because `command_handler!` calls `self.apply(event)`.
+        fn apply<E: Into<TestEvent>>(&mut self, event: E) -> Result<(), TestError> {
+            let event = event.into();
+            crate::EventApplicator::dispatch(&event, self)?;
+            Ok(())
         }
     }
 
@@ -1146,7 +1108,7 @@ mod tests {
         }
 
         fn apply(&self, aggregate: &mut TestAggregate) {
-            aggregate.state.value += self.amount;
+            aggregate.value += self.amount;
         }
     }
 
@@ -1159,18 +1121,17 @@ mod tests {
         }
 
         fn apply(&self, aggregate: &mut TestAggregate) {
-            aggregate.state.value -= self.amount;
+            aggregate.value -= self.amount;
         }
     }
 
     impl ApplyEvent<TestAggregate> for ResetEvent {
         fn apply(&self, aggregate: &mut TestAggregate) {
-            aggregate.state.value = 0;
+            aggregate.value = 0;
         }
     }
 
     // This is the test for the command_handler! macro
-    // This will FAIL in RED phase until we implement the macro
     command_handler! {
         impl TestAggregate {
             fn increment(amount: i32) -> IncrementedEvent { amount };
@@ -1181,66 +1142,66 @@ mod tests {
 
     #[test]
     fn test_command_handler_increment() {
-        let mut aggregate = TestAggregate::new(DefaultAggregateId::new());
+        let mut root = AggregateRoot::<TestAggregate>::new(EntityId::new());
 
-        // Test that generated method exists and works
-        let result = aggregate.increment(5);
+        // Test that generated method works through AggregateRoot
+        let result = root.apply(root.increment_event(5));
 
         assert!(result.is_ok());
-        assert_eq!(aggregate.value(), 5);
-        assert_eq!(aggregate.pending_events().len(), 1);
-        assert_eq!(aggregate.version(), Version::from(1));
+        assert_eq!(root.value(), 5);
+        assert_eq!(root.pending_events().len(), 1);
+        assert_eq!(root.version(), Version::from(1));
     }
 
     #[test]
     fn test_command_handler_decrement() {
-        let mut aggregate = TestAggregate::new(DefaultAggregateId::new());
-        aggregate.increment(10).unwrap();
+        let mut root = AggregateRoot::<TestAggregate>::new(EntityId::new());
+        root.apply(root.increment_event(10)).unwrap();
 
         // Test that generated decrement method works
-        let result = aggregate.decrement(3);
+        let result = root.apply(root.decrement_event(3));
 
         assert!(result.is_ok());
-        assert_eq!(aggregate.value(), 7);
-        assert_eq!(aggregate.pending_events().len(), 2);
+        assert_eq!(root.value(), 7);
+        assert_eq!(root.pending_events().len(), 2);
     }
 
     #[test]
     fn test_command_handler_reset() {
-        let mut aggregate = TestAggregate::new(DefaultAggregateId::new());
-        aggregate.increment(10).unwrap();
+        let mut root = AggregateRoot::<TestAggregate>::new(EntityId::new());
+        root.apply(root.increment_event(10)).unwrap();
 
         // Test that generated reset method works
-        let result = aggregate.reset();
+        let result = root.apply(root.reset_event());
 
         assert!(result.is_ok());
-        assert_eq!(aggregate.value(), 0);
-        assert_eq!(aggregate.pending_events().len(), 2);
+        assert_eq!(root.value(), 0);
+        assert_eq!(root.pending_events().len(), 2);
     }
 
     #[test]
     fn test_command_handler_validation() {
-        let mut aggregate = TestAggregate::new(DefaultAggregateId::new());
+        let mut root = AggregateRoot::<TestAggregate>::new(EntityId::new());
 
         // Test that validation is applied through the generated method
-        let result = aggregate.increment(0);
+        let result = root.apply(root.increment_event(0));
 
         assert!(result.is_err());
-        assert_eq!(aggregate.value(), 0); // Value should be unchanged
-        assert_eq!(aggregate.pending_events().len(), 0); // No event added
+        assert_eq!(root.value(), 0); // Value should be unchanged
+        assert_eq!(root.pending_events().len(), 0); // No event added
     }
 
     #[test]
     fn test_command_handler_timestamp() {
-        let mut aggregate = TestAggregate::new(DefaultAggregateId::new());
+        let mut root = AggregateRoot::<TestAggregate>::new(EntityId::new());
         let before = Utc::now();
 
-        aggregate.increment(5).unwrap();
+        root.apply(root.increment_event(5)).unwrap();
 
         let after = Utc::now();
 
         // Check that the event has a timestamp
-        let event = &aggregate.pending_events()[0];
+        let event = &root.pending_events()[0];
         let event_time = event.occurred_at();
 
         assert!(event_time >= before);
@@ -1249,26 +1210,26 @@ mod tests {
 
     #[test]
     fn test_command_handler_multiple_commands() {
-        let mut aggregate = TestAggregate::new(DefaultAggregateId::new());
+        let mut root = AggregateRoot::<TestAggregate>::new(EntityId::new());
 
         // Test multiple commands in sequence
-        aggregate.increment(5).unwrap();
-        aggregate.increment(3).unwrap();
-        aggregate.decrement(2).unwrap();
-        aggregate.reset().unwrap();
-        aggregate.increment(10).unwrap();
+        root.apply(root.increment_event(5)).unwrap();
+        root.apply(root.increment_event(3)).unwrap();
+        root.apply(root.decrement_event(2)).unwrap();
+        root.apply(root.reset_event()).unwrap();
+        root.apply(root.increment_event(10)).unwrap();
 
-        assert_eq!(aggregate.value(), 10);
-        assert_eq!(aggregate.pending_events().len(), 5);
-        assert_eq!(aggregate.version(), Version::from(5));
+        assert_eq!(root.value(), 10);
+        assert_eq!(root.pending_events().len(), 5);
+        assert_eq!(root.version(), Version::from(5));
     }
 
     #[test]
     fn test_command_handler_return_type() {
-        let mut aggregate = TestAggregate::new(DefaultAggregateId::new());
+        let mut root = AggregateRoot::<TestAggregate>::new(EntityId::new());
 
         // Verify the return type is Result<(), TestError>
-        let result: Result<(), TestError> = aggregate.increment(5);
+        let result: Result<(), TestError> = root.apply(root.increment_event(5));
 
         assert!(result.is_ok());
     }
@@ -1594,19 +1555,12 @@ mod tests {
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub(crate) struct Product {
-        id: DefaultAggregateId,
+        id: EntityId,
         state: ProductState,
-        version: crate::Version,
-        pending_events: Vec<ProductEvent>,
     }
 
-    impl Aggregate for Product {
-        type Id = DefaultAggregateId;
-        type Event = ProductEvent;
-        type Error = ProductError;
-        type State = ProductState;
-
-        fn new(id: Self::Id) -> Self {
+    impl Entity for Product {
+        fn new(id: EntityId) -> Self {
             Self {
                 id,
                 state: ProductState {
@@ -1614,46 +1568,25 @@ mod tests {
                     price: 0,
                     stock: 0,
                 },
-                version: crate::Version::initial(),
-                pending_events: Vec::new(),
             }
         }
 
-        fn aggregate_id(&self) -> &Self::Id {
-            &self.id
+        fn entity_id(&self) -> EntityId {
+            self.id
         }
+    }
 
-        fn version(&self) -> crate::Version {
-            self.version
-        }
+    impl Aggregate for Product {
+        type Event = ProductEvent;
+        type Error = ProductError;
+    }
 
-        fn pending_events(&self) -> &[Self::Event] {
-            &self.pending_events
-        }
-
-        fn clear_pending_events(&mut self) {
-            self.pending_events.clear();
-        }
-
-        fn push_pending_event(&mut self, event: Self::Event) {
-            self.pending_events.push(event);
-        }
-
-        fn increment_version(&mut self) {
-            self.version = self.version.next();
-        }
-
-        fn state(&self) -> &Self::State {
-            &self.state
-        }
-
-        fn from_snapshot(id: Self::Id, version: crate::Version, state: Self::State) -> Self {
-            Self {
-                id,
-                state,
-                version,
-                pending_events: Vec::new(),
-            }
+    impl Product {
+        /// Apply an event through dispatch.
+        fn apply<E: Into<ProductEvent>>(&mut self, event: E) -> Result<(), ProductError> {
+            let event = event.into();
+            crate::EventApplicator::dispatch(&event, self)?;
+            Ok(())
         }
     }
 
@@ -1945,10 +1878,7 @@ mod tests {
         assert_eq!(projection.state().products.get(&product_id), Some(&1000));
     }
 
-    // ===== define_events! Macro Tests (RED PHASE) =====
-
-    // We'll test the macro with a comprehensive example
-    // These tests will FAIL until we implement the macro
+    // ===== define_events! Macro Tests =====
 
     // First, define a test aggregate for the macro
     #[derive(Debug, thiserror::Error)]
@@ -1994,66 +1924,38 @@ mod tests {
 
     #[derive(Debug, Serialize, Deserialize)]
     pub struct Order {
-        id: DefaultAggregateId,
+        id: EntityId,
         state: OrderState,
-        version: Version,
-        pending_events: Vec<OrderEvent>,
     }
 
-    impl Aggregate for Order {
-        type Id = DefaultAggregateId;
-        type Event = OrderEvent;
-        type Error = OrderError;
-        type State = OrderState;
-
-        fn new(id: Self::Id) -> Self {
+    impl Entity for Order {
+        fn new(id: EntityId) -> Self {
             Self {
                 id,
                 state: OrderState::default(),
-                version: Version::initial(),
-                pending_events: Vec::new(),
             }
         }
 
-        fn aggregate_id(&self) -> &Self::Id {
-            &self.id
-        }
-
-        fn version(&self) -> Version {
-            self.version
-        }
-
-        fn pending_events(&self) -> &[Self::Event] {
-            &self.pending_events
-        }
-
-        fn clear_pending_events(&mut self) {
-            self.pending_events.clear();
-        }
-
-        fn push_pending_event(&mut self, event: Self::Event) {
-            self.pending_events.push(event);
-        }
-
-        fn increment_version(&mut self) {
-            self.version = self.version.next();
-        }
-
-        fn state(&self) -> &Self::State {
-            &self.state
-        }
-
-        fn from_snapshot(id: Self::Id, version: Version, state: Self::State) -> Self {
-            Self {
-                id,
-                state,
-                version,
-                pending_events: Vec::new(),
-            }
+        fn entity_id(&self) -> EntityId {
+            self.id
         }
     }
 
-    // This will be generated by the macro - these tests will fail in RED phase
+    impl Aggregate for Order {
+        type Event = OrderEvent;
+        type Error = OrderError;
+    }
+
+    impl Order {
+        /// Apply an event through dispatch.
+        fn apply<E: Into<OrderEvent>>(&mut self, event: E) -> Result<(), OrderError> {
+            let event = event.into();
+            crate::EventApplicator::dispatch(&event, self)?;
+            Ok(())
+        }
+    }
+
+    // This will be generated by the macro
     define_events! {
         pub enum OrderEvent for Order {
             Created {
@@ -2151,7 +2053,7 @@ mod tests {
     #[test]
     fn test_define_events_apply_event_simple() {
         // Test simple event without validation
-        let mut order = Order::new(DefaultAggregateId::new());
+        let mut order = Order::new(EntityId::new());
         let event = CreatedEvent {
             order_id: "order-123".to_string(),
             timestamp: Utc::now(),
@@ -2165,7 +2067,7 @@ mod tests {
     #[test]
     fn test_define_events_validation_success() {
         // Test that validation works
-        let order = Order::new(DefaultAggregateId::new());
+        let order = Order::new(EntityId::new());
         let event = ItemAddedEvent {
             item_id: "item-1".to_string(),
             quantity: 5,
@@ -2180,7 +2082,7 @@ mod tests {
     #[test]
     fn test_define_events_validation_failure() {
         // Test that validation catches errors
-        let mut order = Order::new(DefaultAggregateId::new());
+        let mut order = Order::new(EntityId::new());
         order.state.status = OrderStatus::Completed;
 
         let event = ItemAddedEvent {
@@ -2201,7 +2103,7 @@ mod tests {
     #[test]
     fn test_define_events_validation_zero_quantity() {
         // Test specific validation logic
-        let order = Order::new(DefaultAggregateId::new());
+        let order = Order::new(EntityId::new());
         let event = ItemAddedEvent {
             item_id: "item-1".to_string(),
             quantity: 0,
@@ -2220,7 +2122,7 @@ mod tests {
     #[test]
     fn test_define_events_post_validation_success() {
         // Test post-validation success case
-        let mut order = Order::new(DefaultAggregateId::new());
+        let mut order = Order::new(EntityId::new());
         order.state.total_amount = 500_000;
 
         let event = ItemAddedEvent {
@@ -2237,7 +2139,7 @@ mod tests {
     #[test]
     fn test_define_events_post_validation_failure() {
         // Test post-validation failure
-        let mut order = Order::new(DefaultAggregateId::new());
+        let mut order = Order::new(EntityId::new());
         order.state.total_amount = 1_500_000; // Over the limit
 
         let event = ItemAddedEvent {
@@ -2258,7 +2160,7 @@ mod tests {
     #[test]
     fn test_define_events_apply_with_state_mutation() {
         // Test that apply actually mutates state
-        let mut order = Order::new(DefaultAggregateId::new());
+        let mut order = Order::new(EntityId::new());
         let event = ItemAddedEvent {
             item_id: "item-1".to_string(),
             quantity: 2,
@@ -2303,7 +2205,7 @@ mod tests {
     #[test]
     fn test_define_events_full_flow() {
         // Test complete flow: create, validate, apply
-        let mut order = Order::new(DefaultAggregateId::new());
+        let mut order = Order::new(EntityId::new());
 
         // Create order
         let created = CreatedEvent {
@@ -2344,7 +2246,7 @@ mod tests {
     #[test]
     fn test_define_events_validation_prevents_double_completion() {
         // Test that validation prevents invalid state transitions
-        let mut order = Order::new(DefaultAggregateId::new());
+        let mut order = Order::new(EntityId::new());
         order.state.status = OrderStatus::Completed;
 
         let completed = CompletedEvent {
@@ -2355,12 +2257,12 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // ===== command_handler! Event Helper Function Tests (RED PHASE) =====
+    // ===== command_handler! Event Helper Function Tests =====
 
     #[test]
     fn test_command_handler_generates_event_helper_functions() {
         // Test that <command>_event helper functions are generated
-        let aggregate = TestAggregate::new(DefaultAggregateId::new());
+        let aggregate = TestAggregate::new(EntityId::new());
 
         // These should create events without applying them
         let event = aggregate.increment_event(5);
@@ -2376,26 +2278,26 @@ mod tests {
 
     #[test]
     fn test_event_helper_creates_event_without_applying() {
-        let mut aggregate = TestAggregate::new(DefaultAggregateId::new());
+        let mut root = AggregateRoot::<TestAggregate>::new(EntityId::new());
 
         // Create event using helper - should NOT apply it
-        let event = aggregate.increment_event(10);
+        let event = root.increment_event(10);
 
         // Aggregate state should be unchanged
-        assert_eq!(aggregate.value(), 0);
-        assert_eq!(aggregate.pending_events().len(), 0);
+        assert_eq!(root.value(), 0);
+        assert_eq!(root.pending_events().len(), 0);
 
-        // Now manually apply the event
-        aggregate.apply(event).unwrap();
+        // Now apply the event through AggregateRoot
+        root.apply(event).unwrap();
 
         // Now state should be updated
-        assert_eq!(aggregate.value(), 10);
-        assert_eq!(aggregate.pending_events().len(), 1);
+        assert_eq!(root.value(), 10);
+        assert_eq!(root.pending_events().len(), 1);
     }
 
     #[test]
     fn test_event_helper_adds_timestamp() {
-        let aggregate = TestAggregate::new(DefaultAggregateId::new());
+        let aggregate = TestAggregate::new(EntityId::new());
         let before = Utc::now();
 
         let event = aggregate.increment_event(5);
@@ -2439,16 +2341,16 @@ mod tests {
 
     #[test]
     fn test_command_method_uses_event_helper() {
-        let mut aggregate = TestAggregate::new(DefaultAggregateId::new());
+        let mut root = AggregateRoot::<TestAggregate>::new(EntityId::new());
 
         // The command method should internally use the event helper
         // We verify this by checking that the behavior is consistent
         let before = Utc::now();
-        aggregate.increment(7).unwrap();
+        root.apply(root.increment_event(7)).unwrap();
         let after = Utc::now();
 
-        assert_eq!(aggregate.value(), 7);
-        let event = &aggregate.pending_events()[0];
+        assert_eq!(root.value(), 7);
+        let event = &root.pending_events()[0];
         let event_time = event.occurred_at();
         assert!(event_time >= before);
         assert!(event_time <= after);
@@ -2456,21 +2358,21 @@ mod tests {
 
     #[test]
     fn test_event_helper_can_be_used_for_conditional_application() {
-        let mut aggregate = TestAggregate::new(DefaultAggregateId::new());
+        let mut root = AggregateRoot::<TestAggregate>::new(EntityId::new());
 
         // Create multiple events using helpers
-        let event1 = aggregate.increment_event(5);
-        let _event2 = aggregate.increment_event(10);
-        let event3 = aggregate.increment_event(15);
+        let event1 = root.increment_event(5);
+        let _event2 = root.increment_event(10);
+        let event3 = root.increment_event(15);
 
         // Conditionally apply only some events
-        aggregate.apply(event1).unwrap();
+        root.apply(event1).unwrap();
         // Skip _event2
-        aggregate.apply(event3).unwrap();
+        root.apply(event3).unwrap();
 
         // Should only have applied event1 and event3
-        assert_eq!(aggregate.value(), 20); // 5 + 15
-        assert_eq!(aggregate.pending_events().len(), 2);
+        assert_eq!(root.value(), 20); // 5 + 15
+        assert_eq!(root.pending_events().len(), 2);
     }
 
     // ===== spec! Macro Tests =====
@@ -2737,62 +2639,34 @@ mod tests {
 
     #[derive(Debug, Serialize, Deserialize)]
     struct Warehouse {
-        id: DefaultAggregateId,
+        id: EntityId,
         state: WarehouseState,
-        version: Version,
-        pending_events: Vec<WarehouseEvent>,
     }
 
-    impl Aggregate for Warehouse {
-        type Id = DefaultAggregateId;
-        type Event = WarehouseEvent;
-        type Error = WarehouseError;
-        type State = WarehouseState;
-
-        fn new(id: Self::Id) -> Self {
+    impl Entity for Warehouse {
+        fn new(id: EntityId) -> Self {
             Self {
                 id,
                 state: WarehouseState::default(),
-                version: Version::initial(),
-                pending_events: Vec::new(),
             }
         }
 
-        fn aggregate_id(&self) -> &Self::Id {
-            &self.id
+        fn entity_id(&self) -> EntityId {
+            self.id
         }
+    }
 
-        fn version(&self) -> Version {
-            self.version
-        }
+    impl Aggregate for Warehouse {
+        type Event = WarehouseEvent;
+        type Error = WarehouseError;
+    }
 
-        fn pending_events(&self) -> &[Self::Event] {
-            &self.pending_events
-        }
-
-        fn clear_pending_events(&mut self) {
-            self.pending_events.clear();
-        }
-
-        fn push_pending_event(&mut self, event: Self::Event) {
-            self.pending_events.push(event);
-        }
-
-        fn increment_version(&mut self) {
-            self.version = self.version.next();
-        }
-
-        fn state(&self) -> &Self::State {
-            &self.state
-        }
-
-        fn from_snapshot(id: Self::Id, version: Version, state: Self::State) -> Self {
-            Self {
-                id,
-                state,
-                version,
-                pending_events: Vec::new(),
-            }
+    impl Warehouse {
+        /// Apply an event through dispatch.
+        fn apply<E: Into<WarehouseEvent>>(&mut self, event: E) -> Result<(), WarehouseError> {
+            let event = event.into();
+            crate::EventApplicator::dispatch(&event, self)?;
+            Ok(())
         }
     }
 
@@ -2835,7 +2709,7 @@ mod tests {
 
     #[test]
     fn test_validate_spec_allows_valid_operation() {
-        let mut warehouse = Warehouse::new(DefaultAggregateId::new());
+        let mut warehouse = Warehouse::new(EntityId::new());
         // Activate the warehouse
         warehouse
             .apply(ActivatedEvent {
@@ -2855,7 +2729,7 @@ mod tests {
 
     #[test]
     fn test_validate_spec_rejects_when_spec_fails() {
-        let mut warehouse = Warehouse::new(DefaultAggregateId::new());
+        let mut warehouse = Warehouse::new(EntityId::new());
         // Don't activate warehouse - it's inactive by default
 
         // Adding stock should fail (warehouse is not active)
@@ -2874,7 +2748,7 @@ mod tests {
 
     #[test]
     fn test_post_validate_spec_allows_valid_state() {
-        let mut warehouse = Warehouse::new(DefaultAggregateId::new());
+        let mut warehouse = Warehouse::new(EntityId::new());
         warehouse
             .apply(ActivatedEvent {
                 name: "Main".to_string(),
@@ -2899,7 +2773,7 @@ mod tests {
 
     #[test]
     fn test_post_validate_spec_rejects_invalid_state() {
-        let mut warehouse = Warehouse::new(DefaultAggregateId::new());
+        let mut warehouse = Warehouse::new(EntityId::new());
         warehouse
             .apply(ActivatedEvent {
                 name: "Main".to_string(),
@@ -2932,7 +2806,7 @@ mod tests {
         // Verify that composed specs work with @validate_spec
         // The WarehouseIsActive spec is a simple spec, but this test confirms
         // the pattern works end-to-end with the define_events! macro
-        let mut warehouse = Warehouse::new(DefaultAggregateId::new());
+        let mut warehouse = Warehouse::new(EntityId::new());
 
         // Inactive warehouse -> stock removal should fail at validate_spec
         let result = warehouse.apply(StockRemovedEvent {
@@ -2945,7 +2819,7 @@ mod tests {
 
     #[test]
     fn test_validate_spec_and_post_validate_spec_both_run() {
-        let mut warehouse = Warehouse::new(DefaultAggregateId::new());
+        let mut warehouse = Warehouse::new(EntityId::new());
         warehouse
             .apply(ActivatedEvent {
                 name: "Main".to_string(),
@@ -2987,7 +2861,7 @@ mod tests {
 
     #[test]
     fn test_validate_spec_error_is_specification_failed() {
-        let warehouse = Warehouse::new(DefaultAggregateId::new());
+        let warehouse = Warehouse::new(EntityId::new());
         // Directly test the validate method on the event
         let event = StockAddedEvent {
             quantity: 10,

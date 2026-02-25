@@ -1,11 +1,5 @@
 error: #[aggregate] can only be used on structs
-  --> tests/ui/aggregate_on_enum.rs:53:6
+  --> tests/ui/aggregate_on_enum.rs:14:6
    |
-53 | enum TestAggregate {
+14 | enum TestAggregate {
    |      ^^^^^^^^^^^^^
-
-error[E0425]: cannot find type `TestAggregate` in this scope
-  --> tests/ui/aggregate_on_enum.rs:31:22
-   |
-31 |     type Aggregate = TestAggregate;
-   |                      ^^^^^^^^^^^^^ not found in this scope

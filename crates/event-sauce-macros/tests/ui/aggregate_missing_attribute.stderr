@@ -1,13 +1,15 @@
 error: Missing field `event`
-  --> tests/ui/aggregate_missing_attribute.rs:44:1
-   |
-44 | #[event_sauce_macros::aggregate(id = "TestId")]
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-   |
-   = note: this error originates in the attribute macro `event_sauce_macros::aggregate` (in Nightly builds, run with -Z macro-backtrace for more info)
+ --> tests/ui/aggregate_missing_attribute.rs:7:1
+  |
+7 | #[event_sauce_macros::aggregate()]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `event_sauce_macros::aggregate` (in Nightly builds, run with -Z macro-backtrace for more info)
 
-error[E0425]: cannot find type `TestAggregate` in this scope
-  --> tests/ui/aggregate_missing_attribute.rs:31:22
-   |
-31 |     type Aggregate = TestAggregate;
-   |                      ^^^^^^^^^^^^^ not found in this scope
+warning: unused import: `event_sauce_core::EntityId`
+ --> tests/ui/aggregate_missing_attribute.rs:4:5
+  |
+4 | use event_sauce_core::EntityId;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

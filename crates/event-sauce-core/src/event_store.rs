@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use futures::Stream;
 use uuid::Uuid;
 
-use crate::{Aggregate, AggregateId, DomainEvent, EventEnvelope, Result, SnapshotConfig, Version};
+use crate::{Aggregate, AggregateRoot, DomainEvent, EntityId, EventEnvelope, Result, SnapshotConfig, Version};
 
 /// Stream ID uniquely identifying an event stream.
 ///
@@ -138,7 +138,7 @@ pub struct Snapshot {
     pub aggregate_type: String,
     /// Version at which snapshot was taken.
     pub snapshot_version: Version,
-    /// Serialized aggregate state.
+    /// Serialized entity state.
     pub snapshot_data: serde_json::Value,
 }
 
@@ -162,58 +162,15 @@ impl Snapshot {
 
 /// Trait for event store implementations.
 ///
-/// The event store is responsible for:
-/// - Persisting events durably
-/// - Loading events for aggregate reconstruction
-/// - Streaming events for projections
-/// - Managing snapshots for performance
-/// - Enforcing optimistic concurrency control
-///
-/// # Streaming Support
-///
-/// All read operations return `Stream` for memory-efficient processing
-/// of large event sets.
-///
-/// # Concurrency Control
-///
-/// Uses optimistic locking via version numbers. Append operations
-/// must specify expected version and will fail if actual version differs.
-///
-/// # Examples
-///
-/// ```ignore
-/// use event_sauce_core::{EventStore, StreamId, Version, EventEnvelope};
-/// use futures::StreamExt;
-///
-/// async fn example(store: impl EventStore) -> Result<(), Box<dyn std::error::Error>> {
-///     let stream_id = StreamId::new("User", uuid::Uuid::new_v4());
-///
-///     // Append events
-///     store.append(stream_id.clone(), vec![envelope], Version::new(0)).await?;
-///
-///     // Load events as stream
-///     let mut events = store.load_stream(stream_id, Version::new(0)).await?;
-///     while let Some(event) = events.next().await {
-///         println!("Event: {:?}", event?);
-///     }
-///
-///     Ok(())
-/// }
-/// ```
+/// The event store is responsible for persisting and retrieving events,
+/// managing snapshots, and enforcing optimistic concurrency control.
 #[async_trait]
 pub trait EventStore: Send + Sync {
     /// Appends events to a stream with optimistic concurrency control.
     ///
     /// # Errors
     ///
-    /// Returns `Error::ConcurrencyConflict` if the expected version doesn't match
-    /// the current stream version.
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// store.append(stream_id, events, Version::new(5)).await?;
-    /// ```
+    /// Returns `Error::ConcurrencyConflict` if the expected version doesn't match.
     async fn append(
         &self,
         stream_id: StreamId,
@@ -222,17 +179,6 @@ pub trait EventStore: Send + Sync {
     ) -> Result<()>;
 
     /// Loads events from a stream starting at a specific version.
-    ///
-    /// Returns a stream of events for memory-efficient processing.
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// let mut stream = store.load_stream(stream_id, Version::new(0)).await?;
-    /// while let Some(event) = stream.next().await {
-    ///     // Process event
-    /// }
-    /// ```
     async fn load_stream(
         &self,
         stream_id: StreamId,
@@ -240,97 +186,33 @@ pub trait EventStore: Send + Sync {
     ) -> Result<impl Stream<Item = Result<EventEnvelope>> + Send>;
 
     /// Streams all events from the store.
-    ///
-    /// Used for projection rebuilds and catch-up subscriptions.
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// let mut all_events = store.stream_all(Position::start()).await?;
-    /// while let Some(event) = all_events.next().await {
-    ///     // Rebuild projection
-    /// }
-    /// ```
     async fn stream_all(
         &self,
         from_position: Position,
     ) -> Result<impl Stream<Item = Result<EventEnvelope>> + Send>;
 
     /// Gets the current version of a stream.
-    ///
-    /// Returns `Version::initial()` if the stream doesn't exist.
     async fn get_version(&self, stream_id: StreamId) -> Result<Version>;
 
     /// Checks if a stream exists.
-    ///
-    /// Returns `true` if the stream has any events, `false` otherwise.
-    ///
-    /// # Default Implementation
-    ///
-    /// The default implementation uses `get_version()` to check if the stream
-    /// exists by comparing the version to `Version::initial()`. Backends may
-    /// override this for optimized existence checks.
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// if store.stream_exists(stream_id).await? {
-    ///     println!("Stream exists with events");
-    /// }
-    /// ```
     async fn stream_exists(&self, stream_id: StreamId) -> Result<bool> {
         let version = self.get_version(stream_id).await?;
         Ok(version != Version::initial())
     }
 
     /// Saves a snapshot.
-    ///
-    /// Optional operation - implementations may choose not to support snapshots.
-    ///
-    /// # Default Implementation
-    ///
-    /// The default implementation is a no-op that always succeeds.
-    /// Implementations without snapshot support can use this default.
-    /// Coverage: Tested via `MockEventStore` in tests.
     async fn save_snapshot(&self, snapshot: Snapshot) -> Result<()> {
         let _ = snapshot;
-        Ok(()) // Default: no-op
+        Ok(())
     }
 
     /// Loads a snapshot.
-    ///
-    /// Returns `None` if no snapshot exists or snapshots are not supported.
-    ///
-    /// # Default Implementation
-    ///
-    /// The default implementation always returns `None`.
-    /// Implementations without snapshot support can use this default.
-    /// Coverage: Tested via `MockEventStore` in tests.
     async fn load_snapshot(&self, stream_id: StreamId) -> Result<Option<Snapshot>> {
         let _ = stream_id;
-        Ok(None) // Default: no snapshots
+        Ok(None)
     }
 
     /// Returns the snapshot configuration for this store.
-    ///
-    /// The configuration controls:
-    /// - When snapshots are created (strategy per aggregate type)
-    /// - Whether snapshots are used during loading
-    ///
-    /// # Default Implementation
-    ///
-    /// The default implementation returns a disabled configuration.
-    /// Implementations can override this to provide custom snapshot behavior.
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// let config = store.snapshot_config();
-    /// let strategy = config.strategy_for_type("User");
-    /// if strategy.should_snapshot(aggregate.version()) {
-    ///     // Create snapshot
-    /// }
-    /// ```
     fn snapshot_config(&self) -> &SnapshotConfig {
         use std::sync::OnceLock;
         static DISABLED_CONFIG: OnceLock<SnapshotConfig> = OnceLock::new();
@@ -338,46 +220,11 @@ pub trait EventStore: Send + Sync {
     }
 
     /// Returns the checkpoint store associated with this event store, if any.
-    ///
-    /// Checkpoint stores track the progress of subscriptions, enabling
-    /// resumption after restarts or failures.
-    ///
-    /// # Default Implementation
-    ///
-    /// The default implementation returns `None`, indicating no checkpoint store
-    /// is configured. Implementations can override this to provide checkpoint storage.
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// if let Some(checkpoint_store) = store.checkpoint_store() {
-    ///     checkpoint_store.save_checkpoint("my-sub", Position::new(42)).await?;
-    /// }
-    /// ```
     fn checkpoint_store(&self) -> Option<crate::CheckpointStoreRef> {
         None
     }
 
     /// Creates a subscription builder pre-configured with this event store.
-    ///
-    /// If the event store has an associated checkpoint store, it will be
-    /// automatically included in the subscription builder.
-    ///
-    /// This method requires the store to be wrapped in an Arc.
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// use event_sauce_core::EventFilter;
-    /// use std::sync::Arc;
-    ///
-    /// let store = Arc::new(event_store);
-    ///
-    /// let subscription = store
-    ///     .subscription_builder("my-subscription")
-    ///     .filter(EventFilter::by_event_type("UserCreated"))
-    ///     .build()?;
-    /// ```
     fn subscription_builder(
         self: &crate::EventStoreRef<Self>,
         name: impl Into<String>,
@@ -394,35 +241,19 @@ pub trait EventStore: Send + Sync {
         builder
     }
 
-    /// Commits pending events from an aggregate to the event store.
+    /// Commits pending events from an aggregate root to the event store.
     ///
     /// This method:
-    /// 1. Extracts pending events from the aggregate
+    /// 1. Extracts pending events from the aggregate root
     /// 2. Converts them to event envelopes
     /// 3. Appends them to the event store with optimistic concurrency control
     /// 4. Creates a snapshot if the strategy indicates it should
-    /// 5. Clears the pending events from the aggregate on success
-    ///
-    /// Snapshots are created based on the [`SnapshotConfig`] returned by
-    /// [`snapshot_config()`](Self::snapshot_config). The strategy is evaluated
-    /// per aggregate type, and snapshot creation failures are logged but don't
-    /// fail the commit.
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// let mut user = User::new(UserId::new());
-    /// user.register("alice@example.com")?;
-    /// user.verify_email()?;
-    ///
-    /// // Commit all pending events (and possibly create a snapshot)
-    /// event_store.commit(&mut user).await?;
-    /// ```
+    /// 5. Clears the pending events on success
     ///
     /// # Errors
     ///
     /// Returns `Error::ConcurrencyConflict` if another process modified the aggregate.
-    async fn commit<A>(&self, aggregate: &mut A) -> Result<()>
+    async fn commit<A>(&self, aggregate: &mut AggregateRoot<A>) -> Result<()>
     where
         A: Aggregate + serde::Serialize,
         A::Event: serde::Serialize,
@@ -432,8 +263,8 @@ pub trait EventStore: Send + Sync {
             return Ok(());
         }
 
-        let aggregate_id = aggregate.aggregate_id().to_uuid();
-        let aggregate_type = A::aggregate_type();
+        let aggregate_id = aggregate.entity_id().as_uuid();
+        let aggregate_type = AggregateRoot::<A>::aggregate_type();
         let expected_version = Version::new(
             aggregate
                 .version()
@@ -441,14 +272,12 @@ pub trait EventStore: Send + Sync {
                 .saturating_sub(pending.len() as u64),
         );
 
-        // Convert events to envelopes using the new to_envelope() method
         let envelopes: Result<Vec<EventEnvelope>> = pending
             .iter()
             .map(|event| event.to_envelope(aggregate_id))
             .collect();
         let envelopes = envelopes?;
 
-        // Append to store
         self.append(
             StreamId::new(aggregate_type, aggregate_id),
             envelopes.clone(),
@@ -462,8 +291,7 @@ pub trait EventStore: Send + Sync {
         let current_version = aggregate.version();
 
         if strategy.should_snapshot(current_version) {
-            // Try to serialize and save snapshot (only the state, not the entire aggregate)
-            match serde_json::to_value(aggregate.state()) {
+            match serde_json::to_value(aggregate.entity()) {
                 Ok(snapshot_data) => {
                     let snapshot = Snapshot::new(
                         aggregate_id,
@@ -472,7 +300,6 @@ pub trait EventStore: Send + Sync {
                         snapshot_data,
                     );
 
-                    // Log error but don't fail commit
                     if let Err(e) = self.save_snapshot(snapshot).await {
                         tracing::warn!(
                             aggregate_type = %aggregate_type,
@@ -487,13 +314,12 @@ pub trait EventStore: Send + Sync {
                         aggregate_type = %aggregate_type,
                         aggregate_id = %aggregate_id,
                         error = %e,
-                        "Failed to serialize state for snapshot"
+                        "Failed to serialize entity for snapshot"
                     );
                 }
             }
         }
 
-        // Clear pending events
         aggregate.clear_pending_events();
 
         Ok(())
@@ -502,39 +328,13 @@ pub trait EventStore: Send + Sync {
 
 /// Loads an aggregate from the event store by its ID.
 ///
-/// This helper function:
-/// 1. Checks if snapshots are enabled and loads a snapshot if available
-/// 2. Loads events from the snapshot version (or from start if no snapshot)
-/// 3. Deserializes them into domain events
-/// 4. Replays them onto the aggregate instance
-///
-/// The snapshot behavior is controlled by the store's [`SnapshotConfig`].
-/// When `use_snapshots_on_load` is true and a snapshot exists, only events
-/// after the snapshot are loaded and replayed, significantly improving
-/// performance for aggregates with many events.
-///
-/// # Note
-///
-/// Due to Rust's async trait limitations with generic return types, this must be
-/// a standalone function rather than a trait method.
-///
-/// # Examples
-///
-/// ```ignore
-/// use event_sauce_core::load;
-///
-/// let user_id = AggregateId::new();
-/// let user: User = load(&event_store, user_id).await?;
-/// ```
+/// Returns an `AggregateRoot<A>` reconstructed by replaying events,
+/// optionally using a snapshot for optimization.
 ///
 /// # Errors
 ///
-/// Returns an error if:
-/// - The aggregate doesn't exist (no events found)
-/// - Events cannot be deserialized
-/// - Snapshot cannot be deserialized
-/// - Event replay fails
-pub async fn load<S, A>(store: &S, aggregate_id: A::Id) -> Result<A>
+/// Returns an error if events cannot be deserialized or replay fails.
+pub async fn load<S, A>(store: &S, id: EntityId) -> Result<AggregateRoot<A>>
 where
     S: EventStore,
     A: Aggregate + serde::de::DeserializeOwned,
@@ -542,7 +342,7 @@ where
 {
     use futures::StreamExt;
 
-    let uuid = aggregate_id.to_uuid();
+    let uuid = id.as_uuid();
     let aggregate_type = A::aggregate_type();
     let stream_id = StreamId::new(aggregate_type, uuid);
 
@@ -551,27 +351,22 @@ where
     let (mut aggregate, from_version) = if config.use_snapshots_on_load() {
         match store.load_snapshot(stream_id.clone()).await? {
             Some(snapshot) => {
-                // Deserialize state from snapshot (not the entire aggregate)
-                let state: A::State =
+                let entity: A =
                     serde_json::from_value(snapshot.snapshot_data).map_err(|e| {
-                        crate::Error::custom(format!("Failed to deserialize snapshot state: {e}"))
+                        crate::Error::custom(format!("Failed to deserialize snapshot entity: {e}"))
                     })?;
 
-                // Reconstruct aggregate from snapshot components
                 let aggregate =
-                    A::from_snapshot(aggregate_id.clone(), snapshot.snapshot_version, state);
+                    AggregateRoot::from_snapshot(snapshot.snapshot_version, entity);
 
-                // Start loading events from after the snapshot
                 (aggregate, snapshot.snapshot_version.next())
             }
             None => {
-                // No snapshot, load from beginning
-                (A::new(aggregate_id.clone()), Version::initial())
+                (AggregateRoot::new(id), Version::initial())
             }
         }
     } else {
-        // Snapshots disabled, load from beginning
-        (A::new(aggregate_id), Version::initial())
+        (AggregateRoot::new(id), Version::initial())
     };
 
     // Load events from the appropriate version
@@ -581,9 +376,7 @@ where
     // Replay events
     while let Some(envelope) = event_stream.next().await {
         let envelope = envelope?;
-        // Use the new try_into_event() method for idiomatic event deserialization
         let event: A::Event = envelope.try_into_event()?;
-
         aggregate.apply_unchecked(&event);
     }
 
@@ -591,30 +384,6 @@ where
 }
 
 /// Counts the number of events in a stream.
-///
-/// Returns the total count of events in the specified stream, or 0 if
-/// the stream doesn't exist.
-///
-/// This is a generic helper function that works with any `EventStore`
-/// implementation. It loads all events from the stream and counts them using
-/// streaming for memory efficiency. Backends may provide optimized count
-/// methods (e.g., `SELECT COUNT(*)`), but this function provides a universal
-/// fallback.
-///
-/// # Note
-///
-/// Due to Rust's async trait limitations with generic return types, this must be
-/// a standalone function rather than a trait method (similar to `load()`).
-///
-/// # Examples
-///
-/// ```ignore
-/// use event_sauce_core::count_events;
-///
-/// let stream_id = StreamId::new("User", uuid);
-/// let count = count_events(&event_store, stream_id).await?;
-/// println!("Stream has {} events", count);
-/// ```
 ///
 /// # Errors
 ///
@@ -630,7 +399,7 @@ where
 
     let mut count = 0;
     while let Some(result) = event_stream.next().await {
-        result?; // Propagate any errors
+        result?;
         count += 1;
     }
 
@@ -777,7 +546,6 @@ mod tests {
     use async_trait::async_trait;
     use futures::stream;
 
-    /// Mock `EventStore` for testing default snapshot implementations
     struct MockEventStore;
 
     #[async_trait]
@@ -811,8 +579,6 @@ mod tests {
         async fn get_version(&self, _stream_id: StreamId) -> crate::Result<Version> {
             Ok(Version::initial())
         }
-
-        // Using default implementations for snapshot methods
     }
 
     #[tokio::test]
@@ -825,7 +591,6 @@ mod tests {
             serde_json::json!({"value": 42}),
         );
 
-        // Default implementation should succeed but do nothing
         let result = store.save_snapshot(snapshot).await;
         assert!(result.is_ok());
     }
@@ -835,7 +600,6 @@ mod tests {
         let store = MockEventStore;
         let stream_id = StreamId::new("TestAggregate", Uuid::new_v4());
 
-        // Default implementation should return None
         let result = store.load_snapshot(stream_id).await;
         assert!(result.is_ok());
         assert!(result.unwrap().is_none());
@@ -847,7 +611,6 @@ mod tests {
         let aggregate_id = Uuid::new_v4();
         let stream_id = StreamId::new("TestAggregate", aggregate_id);
 
-        // Save a snapshot (default does nothing)
         let snapshot = Snapshot::new(
             aggregate_id,
             "TestAggregate".to_string(),
@@ -856,18 +619,15 @@ mod tests {
         );
         store.save_snapshot(snapshot).await.unwrap();
 
-        // Load snapshot (default returns None)
         let loaded = store.load_snapshot(stream_id).await.unwrap();
         assert!(loaded.is_none());
     }
 
-    // Test utilities
+    // Test aggregates for helper function tests
 
-    use crate::{Aggregate, AggregateError, DefaultAggregateId, DomainEvent};
+    use crate::{AggregateError, DomainEvent, EntityId};
     use chrono::Utc;
     use thiserror::Error;
-
-    // Test aggregate for event bus testing - now uses DefaultAggregateId
 
     #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
     enum TestAggregateEvent {
@@ -901,103 +661,46 @@ mod tests {
     impl AggregateError for TestAggErr {}
 
     #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-    struct TestAggState {
+    struct TestAgg {
+        id: EntityId,
         value: i32,
     }
 
-    struct TestAgg {
-        id: DefaultAggregateId,
-        state: TestAggState,
-        version: Version,
-        pending_events: Vec<TestAggregateEvent>,
-    }
-
-    #[allow(dead_code)]
-    impl TestAgg {
-        fn create(&mut self, value: i32) -> std::result::Result<(), TestAggErr> {
-            self.apply(TestAggregateEvent::Created { value })
+    impl crate::Entity for TestAgg {
+        fn new(id: EntityId) -> Self {
+            Self { id, value: 0 }
         }
-
-        fn update(&mut self, value: i32) -> std::result::Result<(), TestAggErr> {
-            self.apply(TestAggregateEvent::Updated { value })
+        fn entity_id(&self) -> EntityId {
+            self.id
         }
     }
 
     impl crate::EventApplicator<TestAgg> for TestAggregateEvent {
-        fn dispatch(&self, aggregate: &mut TestAgg) -> std::result::Result<(), TestAggErr> {
+        fn dispatch(&self, entity: &mut TestAgg) -> std::result::Result<(), TestAggErr> {
             match self {
                 TestAggregateEvent::Created { value } | TestAggregateEvent::Updated { value } => {
-                    aggregate.state.value = *value;
+                    entity.value = *value;
                 }
             }
             Ok(())
         }
 
-        fn dispatch_unchecked(&self, aggregate: &mut TestAgg) {
+        fn dispatch_unchecked(&self, entity: &mut TestAgg) {
             match self {
                 TestAggregateEvent::Created { value } | TestAggregateEvent::Updated { value } => {
-                    aggregate.state.value = *value;
+                    entity.value = *value;
                 }
             }
         }
     }
 
     impl Aggregate for TestAgg {
-        type Id = DefaultAggregateId;
         type Event = TestAggregateEvent;
         type Error = TestAggErr;
-        type State = TestAggState;
-
-        fn new(id: Self::Id) -> Self {
-            Self {
-                id,
-                state: TestAggState { value: 0 },
-                version: Version::initial(),
-                pending_events: Vec::new(),
-            }
-        }
-
-        fn aggregate_id(&self) -> &Self::Id {
-            &self.id
-        }
-
-        fn version(&self) -> Version {
-            self.version
-        }
-
-        fn pending_events(&self) -> &[Self::Event] {
-            &self.pending_events
-        }
-
-        fn clear_pending_events(&mut self) {
-            self.pending_events.clear();
-        }
-
-        fn push_pending_event(&mut self, event: Self::Event) {
-            self.pending_events.push(event);
-        }
-
-        fn increment_version(&mut self) {
-            self.version = self.version.next();
-        }
-
-        fn state(&self) -> &Self::State {
-            &self.state
-        }
-
-        fn from_snapshot(id: Self::Id, version: Version, state: Self::State) -> Self {
-            Self {
-                id,
-                state,
-                version,
-                pending_events: Vec::new(),
-            }
-        }
     }
 
-    // Tests for new helper methods: stream_exists() and count_events()
+    // Tests for stream_exists and count_events
 
-    /// Mock `EventStore` with some streams for testing helper methods
     struct MockEventStoreWithStreams {
         streams: std::collections::HashMap<StreamId, Vec<EventEnvelope>>,
     }
