@@ -16,30 +16,19 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use event_sauce_core::{
-    command_handler, define_events, spec, Aggregate, CheckpointStrategy, ErrorPolicy, EventFilter,
-    EventStore, Repository, Specification,
+    command_handler, define_events, spec, AggregateRoot, CheckpointStrategy, EntityId, ErrorPolicy,
+    EventFilter, EventStore, Repository, Specification,
 };
-use event_sauce_macros::{aggregate, aggregate_error, AggregateError, AggregateId};
+use event_sauce_macros::{aggregate, aggregate_error, AggregateError};
 use event_sauce_postgres::{PostgresCheckpointStore, PostgresEventStore};
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
-use uuid::Uuid;
 
 // ============================================================================
 // User Aggregate
 // ============================================================================
-
-/// User aggregate ID - auto-implements AggregateId trait and Display
-#[derive(AggregateId, Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
-struct UserId(Uuid);
-
-impl UserId {
-    fn new() -> Self {
-        Self(Uuid::new_v4())
-    }
-}
 
 /// User domain errors - auto-implements AggregateError trait
 #[derive(AggregateError, Debug, thiserror::Error)]
@@ -90,26 +79,14 @@ define_events! {
 }
 
 /// User aggregate with #[aggregate] macro
-#[aggregate(id = "UserId", event = "UserEvent", error = "UserError")]
-#[derive(Default)]
+#[aggregate(event = "UserEvent", error = "UserError")]
+#[derive(Default, Serialize, Deserialize)]
 struct User {
+    #[id]
+    id: EntityId,
     email: String,
     name: String,
     status: UserStatus,
-}
-
-impl User {
-    /// Create a new user
-    fn create(email: String, name: String) -> Result<Self, UserError> {
-        let mut user = Self::new(UserId::new());
-        let event = CreatedEvent {
-            email,
-            name,
-            timestamp: chrono::Utc::now(),
-        };
-        user.apply(event)?;
-        Ok(user)
-    }
 }
 
 // Use command_handler! macro for command methods
@@ -123,16 +100,6 @@ command_handler! {
 // ============================================================================
 // Order Aggregate
 // ============================================================================
-
-/// Order aggregate ID - auto-implements AggregateId trait and Display
-#[derive(AggregateId, Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
-struct OrderId(Uuid);
-
-impl OrderId {
-    fn new() -> Self {
-        Self(Uuid::new_v4())
-    }
-}
 
 /// Order domain errors - auto-implements AggregateError trait with spec support.
 /// Uses `#[aggregate_error]` to auto-inject `SpecificationFailed` variant
@@ -150,6 +117,7 @@ enum OrderStatus {
     #[default]
     Pending,
     Completed,
+    #[allow(dead_code)]
     Cancelled,
 }
 
@@ -170,7 +138,7 @@ spec!(OrderIsPending for Order, "Order must be pending", |o| {
 define_events! {
     enum OrderEvent for Order {
         OrderCreated {
-            user_id: UserId,
+            user_id: EntityId,
         }
         => |order, event| {
             order.user_id = Some(event.user_id);
@@ -208,26 +176,15 @@ define_events! {
 }
 
 /// Order aggregate with #[aggregate] macro
-#[aggregate(id = "OrderId", event = "OrderEvent", error = "OrderError")]
-#[derive(Default)]
+#[aggregate(event = "OrderEvent", error = "OrderError")]
+#[derive(Default, Serialize, Deserialize)]
 struct Order {
-    user_id: Option<UserId>,
+    #[id]
+    id: EntityId,
+    user_id: Option<EntityId>,
     items: Vec<OrderItem>,
     total: i64,
     status: OrderStatus,
-}
-
-impl Order {
-    /// Create a new order for a user
-    fn create(user_id: UserId) -> Result<Self, OrderError> {
-        let mut order = Self::new(OrderId::new());
-        let event = OrderCreatedEvent {
-            user_id,
-            timestamp: chrono::Utc::now(),
-        };
-        order.apply(event)?;
-        Ok(order)
-    }
 }
 
 // Use command_handler! macro for command methods
@@ -250,8 +207,8 @@ command_handler! {
 /// Order summary view
 #[derive(Debug, Clone)]
 struct OrderSummaryView {
-    order_id: OrderId,
-    user_id: UserId,
+    order_id: EntityId,
+    user_id: EntityId,
     user_email: String,
     user_name: String,
     item_count: usize,
@@ -262,8 +219,8 @@ struct OrderSummaryView {
 /// Projection state
 #[derive(Debug, Default)]
 struct ProjectionState {
-    users: HashMap<UserId, (String, String)>,
-    orders: HashMap<OrderId, OrderSummaryView>,
+    users: HashMap<EntityId, (String, String)>,
+    orders: HashMap<EntityId, OrderSummaryView>,
 }
 
 // Order summary projection using the projection! macro with aggregate_id
@@ -272,12 +229,11 @@ event_sauce_core::projection! {
         state: ProjectionState,
 
         on UserEvent::Created |proj, event, aggregate_id| {
-            let user_id = UserId(aggregate_id);
-            proj.state.users.insert(user_id, (event.email.clone(), event.name.clone()));
+            proj.state.users.insert(EntityId::from(aggregate_id), (event.email.clone(), event.name.clone()));
         },
 
         on UserEvent::EmailChanged |proj, event, aggregate_id| {
-            let user_id = UserId(aggregate_id);
+            let user_id = EntityId::from(aggregate_id);
             if let Some((email, _)) = proj.state.users.get_mut(&user_id) {
                 *email = event.new_email.clone();
             }
@@ -290,7 +246,7 @@ event_sauce_core::projection! {
         },
 
         on OrderEvent::OrderCreated |proj, event, aggregate_id| {
-            let order_id = OrderId(aggregate_id);
+            let order_id = EntityId::from(aggregate_id);
             let (email, name) = proj.state.users.get(&event.user_id).cloned().unwrap_or_else(|| {
                 ("unknown@example.com".to_string(), "Unknown".to_string())
             });
@@ -309,7 +265,7 @@ event_sauce_core::projection! {
         },
 
         on OrderEvent::ItemAdded |proj, event, aggregate_id| {
-            let order_id = OrderId(aggregate_id);
+            let order_id = EntityId::from(aggregate_id);
             if let Some(order) = proj.state.orders.get_mut(&order_id) {
                 order.item_count += 1;
                 order.total_amount += event.price * event.quantity as i64;
@@ -317,7 +273,7 @@ event_sauce_core::projection! {
         },
 
         on OrderEvent::OrderCompleted |proj, _event, aggregate_id| {
-            let order_id = OrderId(aggregate_id);
+            let order_id = EntityId::from(aggregate_id);
             if let Some(order) = proj.state.orders.get_mut(&order_id) {
                 order.status = OrderStatus::Completed;
             }
@@ -337,16 +293,16 @@ impl OrderSummaryProjection {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("🚀 Event Sauce - PostgreSQL Quick Start\n");
+    println!("Event Sauce - PostgreSQL Quick Start\n");
     println!("This example demonstrates:");
-    println!("  ✓ Two aggregates: User and Order");
-    println!("  ✓ Events for both aggregates");
-    println!("  ✓ Repository pattern for type-safe persistence");
-    println!("  ✓ Projection combining data from both");
-    println!("  ✓ PostgreSQL backend with testcontainers\n");
+    println!("  - Two aggregates: User and Order");
+    println!("  - Events for both aggregates");
+    println!("  - Repository pattern for type-safe persistence");
+    println!("  - Projection combining data from both");
+    println!("  - PostgreSQL backend with testcontainers\n");
 
     // Setup PostgreSQL
-    println!("📦 Starting PostgreSQL container...");
+    println!("  Starting PostgreSQL container...");
     let postgres = Postgres::default().start().await?;
     let port = postgres.get_host_port_ipv4(5432).await?;
 
@@ -354,14 +310,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pool = sqlx::postgres::PgPool::connect(&database_url).await?;
 
     // Setup stores using builder pattern
-    println!("🗄️  Initializing event store...");
+    println!("  Initializing event store...");
     let event_store = PostgresEventStore::builder()
         .pool(pool.clone())
         .schema("event_sauce") // Use custom schema for isolation
         .build();
     event_store.migrate().await?;
 
-    println!("📊 Initializing checkpoint store...");
+    println!("  Initializing checkpoint store...");
     let checkpoint_store = PostgresCheckpointStore::builder()
         .pool(pool.clone())
         .schema("event_sauce") // Use same schema as event store
@@ -372,39 +328,57 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let checkpoint_ref = Arc::new(checkpoint_store);
 
     // Create repositories for type-safe aggregate persistence
-    println!("🔧 Creating repositories...");
+    println!("  Creating repositories...");
     let user_repo = Repository::<PostgresEventStore, User>::new(Arc::clone(&store));
     let order_repo = Repository::<PostgresEventStore, Order>::new(Arc::clone(&store));
 
     println!("\n=== Creating Users ===\n");
 
     // Create users
-    let mut alice = User::create("alice@example.com".to_string(), "Alice Smith".to_string())?;
-    println!("👤 Created user: {} ({})", alice.name, alice.email);
+    let mut alice = AggregateRoot::<User>::new(EntityId::new());
+    alice.apply(CreatedEvent {
+        email: "alice@example.com".to_string(),
+        name: "Alice Smith".to_string(),
+        timestamp: chrono::Utc::now(),
+    })?;
+    println!("  Created user: {} ({})", alice.name, alice.email);
     user_repo.save(&mut alice).await?;
 
-    let mut bob = User::create("bob@example.com".to_string(), "Bob Jones".to_string())?;
-    println!("👤 Created user: {} ({})", bob.name, bob.email);
+    let mut bob = AggregateRoot::<User>::new(EntityId::new());
+    bob.apply(CreatedEvent {
+        email: "bob@example.com".to_string(),
+        name: "Bob Jones".to_string(),
+        timestamp: chrono::Utc::now(),
+    })?;
+    println!("  Created user: {} ({})", bob.name, bob.email);
     user_repo.save(&mut bob).await?;
 
     println!("\n=== Creating Orders ===\n");
 
     // Create orders
-    let mut order1 = Order::create(alice.id)?;
-    order1.add_item("laptop".to_string(), 1, 120000)?;
+    let mut order1 = AggregateRoot::<Order>::new(EntityId::new());
+    order1.apply(OrderCreatedEvent {
+        user_id: alice.entity_id(),
+        timestamp: chrono::Utc::now(),
+    })?;
+    order1.add_item("laptop".to_string(), 1, 120_000)?;
     order1.add_item("mouse".to_string(), 2, 2500)?;
     println!(
-        "🛒 Order {} created for Alice (${:.2})",
-        order1.id,
+        "  Order {} created for Alice (${:.2})",
+        order1.entity_id(),
         order1.total as f64 / 100.0
     );
     order_repo.save(&mut order1).await?;
 
-    let mut order2 = Order::create(bob.id)?;
+    let mut order2 = AggregateRoot::<Order>::new(EntityId::new());
+    order2.apply(OrderCreatedEvent {
+        user_id: bob.entity_id(),
+        timestamp: chrono::Utc::now(),
+    })?;
     order2.add_item("keyboard".to_string(), 1, 8500)?;
     println!(
-        "🛒 Order {} created for Bob (${:.2})",
-        order2.id,
+        "  Order {} created for Bob (${:.2})",
+        order2.entity_id(),
         order2.total as f64 / 100.0
     );
     order_repo.save(&mut order2).await?;
@@ -413,13 +387,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     order1.complete()?;
     order_repo.save(&mut order1).await?;
-    println!("✅ Order {} completed", order1.id);
+    println!("  Order {} completed", order1.entity_id());
 
     println!("\n=== Updating User ===\n");
 
     alice.change_email("alice.smith@newdomain.com".to_string())?;
     user_repo.save(&mut alice).await?;
-    println!("📧 Alice's email changed to {}", alice.email);
+    println!("  Alice's email changed to {}", alice.email);
 
     println!("\n=== Building Projection ===\n");
 
@@ -443,7 +417,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         event_count += 1;
     }
 
-    println!("📊 Processed {event_count} events");
+    println!("  Processed {event_count} events");
     println!("\n=== Projection Results ===\n");
 
     for order_view in projection.get_all_orders() {
@@ -464,25 +438,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Repository API examples:");
 
     // Check existence
-    let alice_exists = user_repo.exists(alice.id).await?;
-    println!("  • Alice exists: {alice_exists}");
+    let alice_exists = user_repo.exists(alice.entity_id()).await?;
+    println!("  Alice exists: {alice_exists}");
 
     // Get version
-    let alice_version = user_repo.get_version(alice.id).await?;
-    println!("  • Alice version: {}", alice_version.as_u64());
+    let alice_version = user_repo.get_version(alice.entity_id()).await?;
+    println!("  Alice version: {}", alice_version.as_u64());
 
     // Count events
-    let alice_event_count = user_repo.count_events(alice.id).await?;
-    println!("  • Alice event count: {alice_event_count}");
+    let alice_event_count = user_repo.count_events(alice.entity_id()).await?;
+    println!("  Alice event count: {alice_event_count}");
 
     // Load aggregate from repository
-    let loaded_alice = user_repo.load(alice.id).await?;
+    let loaded_alice = user_repo.load(alice.entity_id()).await?;
     println!(
-        "  • Loaded Alice: {} ({})",
+        "  Loaded Alice: {} ({})",
         loaded_alice.name, loaded_alice.email
     );
 
-    println!("\n✨ Demo complete!");
+    println!("\n  Demo complete!");
 
     Ok(())
 }

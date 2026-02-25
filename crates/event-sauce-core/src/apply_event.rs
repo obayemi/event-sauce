@@ -118,7 +118,7 @@ pub trait ApplyEvent<A: Aggregate> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AggregateError, DomainEvent, Entity, EntityId, EventApplicator, Version};
+    use crate::{AggregateError, DomainEvent, Entity, EntityId, EventApplicator};
     use chrono::Utc;
     use thiserror::Error;
 

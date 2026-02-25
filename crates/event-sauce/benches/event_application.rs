@@ -1,47 +1,20 @@
 //! Benchmarks for event application performance
 //!
 //! This benchmark suite measures the performance of:
-//! - Event application with validation (apply)
-//! - Event application without validation (apply_unchecked)
+//! - Event application with validation (apply via `AggregateRoot`)
+//! - Event application without validation (`dispatch_unchecked`)
 //! - Full event replay scenarios
 //!
 //! Run with: cargo bench --bench event_application
 
 use chrono::Utc;
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use event_sauce_core::{Aggregate, AggregateId, DomainEvent, Version};
-use event_sauce_macros::{AggregateError, Event as DeriveEvent};
-use std::fmt;
-use uuid::Uuid;
+use event_sauce_core::{Aggregate, AggregateRoot, DomainEvent, Entity, EntityId, EventApplicator};
+use event_sauce_macros::AggregateError;
 
 // ============================================================================
 // Benchmark Aggregate: BankAccount
 // ============================================================================
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-struct BenchAccountId(Uuid);
-
-impl BenchAccountId {
-    fn new() -> Self {
-        Self(Uuid::new_v4())
-    }
-}
-
-impl fmt::Display for BenchAccountId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "BenchAccount-{}", self.0)
-    }
-}
-
-impl AggregateId for BenchAccountId {
-    fn to_uuid(&self) -> Uuid {
-        self.0
-    }
-
-    fn from_uuid(uuid: Uuid) -> Self {
-        Self(uuid)
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[allow(dead_code)]
@@ -49,13 +22,6 @@ enum AccountStatus {
     Active,
     Frozen,
     Closed,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct BenchAccountState {
-    owner: String,
-    balance: i64,
-    status: AccountStatus,
 }
 
 #[derive(AggregateError, Debug, thiserror::Error)]
@@ -70,8 +36,7 @@ enum BenchAccountError {
     AccountNotActive(AccountStatus),
 }
 
-#[derive(DeriveEvent, Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[event(aggregate = "BenchAccount", version = 1, type_prefix = "BenchAccount")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 enum BenchAccountEvent {
     Opened {
         owner: String,
@@ -88,209 +53,157 @@ enum BenchAccountEvent {
     },
 }
 
-#[derive(Debug, Clone)]
+impl DomainEvent for BenchAccountEvent {
+    type Aggregate = BenchAccount;
+
+    fn event_type(&self) -> &'static str {
+        match self {
+            BenchAccountEvent::Opened { .. } => "BenchAccount.Opened",
+            BenchAccountEvent::Deposited { .. } => "BenchAccount.Deposited",
+            BenchAccountEvent::Withdrawn { .. } => "BenchAccount.Withdrawn",
+        }
+    }
+
+    fn event_version(&self) -> u64 {
+        1
+    }
+
+    fn occurred_at(&self) -> chrono::DateTime<Utc> {
+        match self {
+            BenchAccountEvent::Opened { timestamp, .. }
+            | BenchAccountEvent::Deposited { timestamp, .. }
+            | BenchAccountEvent::Withdrawn { timestamp, .. } => *timestamp,
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct BenchAccount {
-    id: BenchAccountId,
-    state: BenchAccountState,
-    version: Version,
-    pending_events: Vec<BenchAccountEvent>,
+    id: EntityId,
+    owner: String,
+    balance: i64,
+    status: AccountStatus,
 }
 
-impl BenchAccount {
-    fn open(
-        id: BenchAccountId,
-        owner: String,
-        initial_balance: i64,
-    ) -> Result<Self, BenchAccountError> {
-        if initial_balance < 0 {
-            return Err(BenchAccountError::InvalidAmount(initial_balance));
-        }
-
-        let mut account = Self {
+impl Entity for BenchAccount {
+    fn new(id: EntityId) -> Self {
+        Self {
             id,
-            state: BenchAccountState {
-                owner: String::new(),
-                balance: 0,
-                status: AccountStatus::Active,
-            },
-            version: Version::initial(),
-            pending_events: Vec::new(),
-        };
-
-        let event = BenchAccountEvent::Opened {
-            owner,
-            initial_balance,
-            timestamp: Utc::now(),
-        };
-
-        account.apply(event).unwrap();
-
-        Ok(account)
+            owner: String::new(),
+            balance: 0,
+            status: AccountStatus::Active,
+        }
     }
 
-    fn deposit(&mut self, amount: i64) -> Result<(), BenchAccountError> {
-        if self.state.status != AccountStatus::Active {
-            return Err(BenchAccountError::AccountNotActive(self.state.status));
-        }
-
-        if amount <= 0 {
-            return Err(BenchAccountError::InvalidAmount(amount));
-        }
-
-        let event = BenchAccountEvent::Deposited {
-            amount,
-            timestamp: Utc::now(),
-        };
-
-        self.apply(event).unwrap();
-
-        Ok(())
-    }
-
-    fn withdraw(&mut self, amount: i64) -> Result<(), BenchAccountError> {
-        if self.state.status != AccountStatus::Active {
-            return Err(BenchAccountError::AccountNotActive(self.state.status));
-        }
-
-        if amount <= 0 {
-            return Err(BenchAccountError::InvalidAmount(amount));
-        }
-
-        if self.state.balance < amount {
-            return Err(BenchAccountError::InsufficientFunds {
-                balance: self.state.balance,
-                requested: amount,
-            });
-        }
-
-        let event = BenchAccountEvent::Withdrawn {
-            amount,
-            timestamp: Utc::now(),
-        };
-
-        self.apply(event).unwrap();
-
-        Ok(())
-    }
-
-    fn from_events(id: BenchAccountId, events: Vec<BenchAccountEvent>) -> Self {
-        let mut account = Self {
-            id,
-            state: BenchAccountState {
-                owner: String::new(),
-                balance: 0,
-                status: AccountStatus::Active,
-            },
-            version: Version::initial(),
-            pending_events: Vec::new(),
-        };
-
-        for event in events {
-            account.apply_unchecked(&event);
-        }
-
-        account
-    }
-}
-
-impl event_sauce_core::EventApplicator<BenchAccount> for BenchAccountEvent {
-    fn dispatch(&self, aggregate: &mut BenchAccount) -> Result<(), BenchAccountError> {
-        match self {
-            BenchAccountEvent::Opened {
-                owner,
-                initial_balance,
-                ..
-            } => {
-                aggregate.state.owner = owner.clone();
-                aggregate.state.balance = *initial_balance;
-                aggregate.state.status = AccountStatus::Active;
-            }
-            BenchAccountEvent::Deposited { amount, .. } => {
-                aggregate.state.balance += amount;
-            }
-            BenchAccountEvent::Withdrawn { amount, .. } => {
-                aggregate.state.balance -= amount;
-            }
-        }
-        Ok(())
-    }
-
-    fn dispatch_unchecked(&self, aggregate: &mut BenchAccount) {
-        match self {
-            BenchAccountEvent::Opened {
-                owner,
-                initial_balance,
-                ..
-            } => {
-                aggregate.state.owner = owner.clone();
-                aggregate.state.balance = *initial_balance;
-                aggregate.state.status = AccountStatus::Active;
-            }
-            BenchAccountEvent::Deposited { amount, .. } => {
-                aggregate.state.balance += amount;
-            }
-            BenchAccountEvent::Withdrawn { amount, .. } => {
-                aggregate.state.balance -= amount;
-            }
-        }
+    fn entity_id(&self) -> EntityId {
+        self.id
     }
 }
 
 impl Aggregate for BenchAccount {
-    type Id = BenchAccountId;
     type Event = BenchAccountEvent;
     type Error = BenchAccountError;
-    type State = BenchAccountState;
+}
 
-    fn new(id: Self::Id) -> Self {
-        Self {
-            id,
-            state: BenchAccountState {
-                owner: String::new(),
-                balance: 0,
-                status: AccountStatus::Active,
-            },
-            version: Version::initial(),
-            pending_events: Vec::new(),
+impl EventApplicator<BenchAccount> for BenchAccountEvent {
+    fn dispatch(&self, entity: &mut BenchAccount) -> Result<(), BenchAccountError> {
+        match self {
+            BenchAccountEvent::Opened {
+                owner,
+                initial_balance,
+                ..
+            } => {
+                entity.owner = owner.clone();
+                entity.balance = *initial_balance;
+                entity.status = AccountStatus::Active;
+            }
+            BenchAccountEvent::Deposited { amount, .. } => {
+                entity.balance += amount;
+            }
+            BenchAccountEvent::Withdrawn { amount, .. } => {
+                entity.balance -= amount;
+            }
+        }
+        Ok(())
+    }
+
+    fn dispatch_unchecked(&self, entity: &mut BenchAccount) {
+        match self {
+            BenchAccountEvent::Opened {
+                owner,
+                initial_balance,
+                ..
+            } => {
+                entity.owner = owner.clone();
+                entity.balance = *initial_balance;
+                entity.status = AccountStatus::Active;
+            }
+            BenchAccountEvent::Deposited { amount, .. } => {
+                entity.balance += amount;
+            }
+            BenchAccountEvent::Withdrawn { amount, .. } => {
+                entity.balance -= amount;
+            }
         }
     }
+}
 
-    fn aggregate_id(&self) -> &Self::Id {
-        &self.id
+fn open_account(
+    id: EntityId,
+    owner: String,
+    initial_balance: i64,
+) -> Result<AggregateRoot<BenchAccount>, BenchAccountError> {
+    if initial_balance < 0 {
+        return Err(BenchAccountError::InvalidAmount(initial_balance));
     }
 
-    fn version(&self) -> Version {
-        self.version
-    }
+    let mut root = AggregateRoot::<BenchAccount>::new(id);
+    root.apply(BenchAccountEvent::Opened {
+        owner,
+        initial_balance,
+        timestamp: Utc::now(),
+    })?;
+    Ok(root)
+}
 
-    fn pending_events(&self) -> &[Self::Event] {
-        &self.pending_events
+fn deposit(root: &mut AggregateRoot<BenchAccount>, amount: i64) -> Result<(), BenchAccountError> {
+    if root.status != AccountStatus::Active {
+        return Err(BenchAccountError::AccountNotActive(root.status));
     }
+    if amount <= 0 {
+        return Err(BenchAccountError::InvalidAmount(amount));
+    }
+    root.apply(BenchAccountEvent::Deposited {
+        amount,
+        timestamp: Utc::now(),
+    })
+}
 
-    fn clear_pending_events(&mut self) {
-        self.pending_events.clear();
+fn withdraw(root: &mut AggregateRoot<BenchAccount>, amount: i64) -> Result<(), BenchAccountError> {
+    if root.status != AccountStatus::Active {
+        return Err(BenchAccountError::AccountNotActive(root.status));
     }
+    if amount <= 0 {
+        return Err(BenchAccountError::InvalidAmount(amount));
+    }
+    if root.balance < amount {
+        return Err(BenchAccountError::InsufficientFunds {
+            balance: root.balance,
+            requested: amount,
+        });
+    }
+    root.apply(BenchAccountEvent::Withdrawn {
+        amount,
+        timestamp: Utc::now(),
+    })
+}
 
-    fn push_pending_event(&mut self, event: Self::Event) {
-        self.pending_events.push(event);
+fn from_events(id: EntityId, events: &[BenchAccountEvent]) -> BenchAccount {
+    let mut entity = BenchAccount::new(id);
+    for event in events {
+        EventApplicator::dispatch_unchecked(event, &mut entity);
     }
-
-    fn increment_version(&mut self) {
-        self.version = self.version.next();
-    }
-
-    fn state(&self) -> &Self::State {
-        &self.state
-    }
-
-    fn from_snapshot(id: Self::Id, version: Version, state: Self::State) -> Self {
-        Self {
-            id,
-            state,
-            version,
-            pending_events: Vec::new(),
-        }
-    }
+    entity
 }
 
 // ============================================================================
@@ -300,9 +213,8 @@ impl Aggregate for BenchAccount {
 fn bench_single_event_apply(c: &mut Criterion) {
     let mut group = c.benchmark_group("single_event");
 
-    let id = BenchAccountId::new();
-    let mut account = BenchAccount::open(id, "Alice".to_string(), 1000).unwrap();
-    account.pending_events.clear();
+    let id = EntityId::new();
+    let account = open_account(id, "Alice".to_string(), 1000).unwrap();
 
     let event = BenchAccountEvent::Deposited {
         amount: 100,
@@ -359,29 +271,29 @@ fn bench_event_replay(c: &mut Criterion) {
             &events,
             |b, events| {
                 b.iter(|| {
-                    let mut account = BenchAccount::new(BenchAccountId::new());
+                    let mut root = AggregateRoot::<BenchAccount>::new(EntityId::new());
 
                     for event in events {
-                        account.apply(black_box(event.clone())).unwrap();
+                        root.apply(black_box(event.clone())).unwrap();
                     }
 
-                    black_box(account)
+                    black_box(root)
                 });
             },
         );
 
         group.bench_with_input(
-            BenchmarkId::new("apply_unchecked", event_count),
+            BenchmarkId::new("dispatch_unchecked", event_count),
             &events,
             |b, events| {
                 b.iter(|| {
-                    let mut account = BenchAccount::new(BenchAccountId::new());
+                    let mut entity = BenchAccount::new(EntityId::new());
 
                     for event in events {
-                        account.apply_unchecked(black_box(event));
+                        EventApplicator::dispatch_unchecked(black_box(event), &mut entity);
                     }
 
-                    black_box(account)
+                    black_box(entity)
                 });
             },
         );
@@ -421,9 +333,8 @@ fn bench_from_events(c: &mut Criterion) {
             &events,
             |b, events| {
                 b.iter(|| {
-                    let account =
-                        BenchAccount::from_events(BenchAccountId::new(), black_box(events.clone()));
-                    black_box(account)
+                    let entity = from_events(EntityId::new(), black_box(events));
+                    black_box(entity)
                 });
             },
         );
@@ -435,22 +346,22 @@ fn bench_from_events(c: &mut Criterion) {
 fn bench_business_operations(c: &mut Criterion) {
     let mut group = c.benchmark_group("business_operations");
 
-    let id = BenchAccountId::new();
-    let account = BenchAccount::open(id, "Alice".to_string(), 10000).unwrap();
+    let id = EntityId::new();
+    let account = open_account(id, "Alice".to_string(), 10000).unwrap();
 
     group.bench_function("deposit", |b| {
         b.iter(|| {
             let mut acc = account.clone();
-            acc.pending_events.clear();
-            acc.deposit(black_box(100)).unwrap();
+            acc.clear_pending_events();
+            deposit(&mut acc, black_box(100)).unwrap();
         });
     });
 
     group.bench_function("withdraw", |b| {
         b.iter(|| {
             let mut acc = account.clone();
-            acc.pending_events.clear();
-            acc.withdraw(black_box(50)).unwrap();
+            acc.clear_pending_events();
+            withdraw(&mut acc, black_box(50)).unwrap();
         });
     });
 

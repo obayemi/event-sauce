@@ -5,7 +5,9 @@
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use crate::{count_events, load, Aggregate, AggregateRoot, EntityId, EventStore, Result, StreamId, Version};
+use crate::{
+    count_events, load, Aggregate, AggregateRoot, EntityId, EventStore, Result, StreamId, Version,
+};
 
 /// Repository provides a high-level API for aggregate persistence.
 ///
@@ -296,7 +298,9 @@ mod tests {
 
         let test_id = EntityId::new();
         let mut aggregate = AggregateRoot::<TestEntity>::new(test_id);
-        aggregate.apply(TestEvent::Incremented { amount: 5 }).unwrap();
+        aggregate
+            .apply(TestEvent::Incremented { amount: 5 })
+            .unwrap();
 
         repo.save(&mut aggregate).await.unwrap();
 
@@ -314,7 +318,9 @@ mod tests {
         assert!(!repo.exists(test_id).await.unwrap());
 
         let mut aggregate = AggregateRoot::<TestEntity>::new(test_id);
-        aggregate.apply(TestEvent::Incremented { amount: 5 }).unwrap();
+        aggregate
+            .apply(TestEvent::Incremented { amount: 5 })
+            .unwrap();
         repo.save(&mut aggregate).await.unwrap();
 
         assert!(repo.exists(test_id).await.unwrap());
@@ -327,8 +333,12 @@ mod tests {
 
         let test_id = EntityId::new();
         let mut aggregate = AggregateRoot::<TestEntity>::new(test_id);
-        aggregate.apply(TestEvent::Incremented { amount: 5 }).unwrap();
-        aggregate.apply(TestEvent::Incremented { amount: 3 }).unwrap();
+        aggregate
+            .apply(TestEvent::Incremented { amount: 5 })
+            .unwrap();
+        aggregate
+            .apply(TestEvent::Incremented { amount: 3 })
+            .unwrap();
 
         repo.save(&mut aggregate).await.unwrap();
 
@@ -343,9 +353,15 @@ mod tests {
 
         let test_id = EntityId::new();
         let mut aggregate = AggregateRoot::<TestEntity>::new(test_id);
-        aggregate.apply(TestEvent::Incremented { amount: 5 }).unwrap();
-        aggregate.apply(TestEvent::Incremented { amount: 3 }).unwrap();
-        aggregate.apply(TestEvent::Incremented { amount: 2 }).unwrap();
+        aggregate
+            .apply(TestEvent::Incremented { amount: 5 })
+            .unwrap();
+        aggregate
+            .apply(TestEvent::Incremented { amount: 3 })
+            .unwrap();
+        aggregate
+            .apply(TestEvent::Incremented { amount: 2 })
+            .unwrap();
 
         repo.save(&mut aggregate).await.unwrap();
 

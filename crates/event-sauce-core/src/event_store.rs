@@ -6,7 +6,9 @@ use async_trait::async_trait;
 use futures::Stream;
 use uuid::Uuid;
 
-use crate::{Aggregate, AggregateRoot, DomainEvent, EntityId, EventEnvelope, Result, SnapshotConfig, Version};
+use crate::{
+    Aggregate, AggregateRoot, DomainEvent, EntityId, EventEnvelope, Result, SnapshotConfig, Version,
+};
 
 /// Stream ID uniquely identifying an event stream.
 ///
@@ -351,19 +353,15 @@ where
     let (mut aggregate, from_version) = if config.use_snapshots_on_load() {
         match store.load_snapshot(stream_id.clone()).await? {
             Some(snapshot) => {
-                let entity: A =
-                    serde_json::from_value(snapshot.snapshot_data).map_err(|e| {
-                        crate::Error::custom(format!("Failed to deserialize snapshot entity: {e}"))
-                    })?;
+                let entity: A = serde_json::from_value(snapshot.snapshot_data).map_err(|e| {
+                    crate::Error::custom(format!("Failed to deserialize snapshot entity: {e}"))
+                })?;
 
-                let aggregate =
-                    AggregateRoot::from_snapshot(snapshot.snapshot_version, entity);
+                let aggregate = AggregateRoot::from_snapshot(snapshot.snapshot_version, entity);
 
                 (aggregate, snapshot.snapshot_version.next())
             }
-            None => {
-                (AggregateRoot::new(id), Version::initial())
-            }
+            None => (AggregateRoot::new(id), Version::initial()),
         }
     } else {
         (AggregateRoot::new(id), Version::initial())
@@ -630,6 +628,7 @@ mod tests {
     use thiserror::Error;
 
     #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+    #[allow(dead_code)]
     enum TestAggregateEvent {
         Created { value: i32 },
         Updated { value: i32 },
@@ -656,11 +655,13 @@ mod tests {
 
     #[derive(Debug, Error)]
     #[error("Test aggregate error")]
+    #[allow(dead_code)]
     struct TestAggErr;
 
     impl AggregateError for TestAggErr {}
 
     #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+    #[allow(dead_code)]
     struct TestAgg {
         id: EntityId,
         value: i32,

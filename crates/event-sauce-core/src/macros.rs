@@ -7,8 +7,11 @@
 /// Generate command handler methods for an aggregate.
 ///
 /// This macro reduces boilerplate by automatically generating command methods
-/// that create events, apply timestamps, and apply the events to the aggregate.
-/// It also generates event helper functions for creating events without applying them.
+/// that create events, apply timestamps, and apply the events via `AggregateRoot`.
+/// It generates:
+///
+/// 1. **Event helper functions** on the entity type (for creating events)
+/// 2. **A commands trait** implemented on `AggregateRoot<Entity>` (for applying them)
 ///
 /// # Syntax
 ///
@@ -28,16 +31,14 @@
 ///
 /// For each command, the macro generates:
 ///
-/// 1. **Event helper function** `<command>_event(&self, params) -> EventStruct`:
+/// 1. **Event helper function** on entity: `<command>_event(&self, params) -> EventStruct`
 ///    - Creates the event struct with provided parameters
 ///    - Adds `timestamp: chrono::Utc::now()` automatically
 ///    - Returns the event **without applying it**
-///    - Useful for batch operations, conditional application, or testing
 ///
-/// 2. **Command method** `<command>(&mut self, params) -> Result<(), Error>`:
-///    - Uses the event helper function to create the event
-///    - Applies the event using `self.apply(event)?`
-///    - Returns `Result<(), <Self as Aggregate>::Error>`
+/// 2. **Commands trait + impl on `AggregateRoot`**:
+///    - `<command>(&mut self, params) -> Result<(), Error>`
+///    - Applies the event through `AggregateRoot::apply()`
 ///
 /// # Examples
 ///
@@ -47,7 +48,6 @@
 /// command_handler! {
 ///     impl Counter {
 ///         fn increment(amount: i32) -> CounterIncrementedEvent { amount };
-///         fn decrement(amount: i32) -> CounterDecrementedEvent { amount };
 ///         fn reset() -> CounterResetEvent { };
 ///     }
 /// }
@@ -57,7 +57,6 @@
 ///
 /// ```ignore
 /// impl Counter {
-///     // Event helper function - creates event without applying
 ///     pub fn increment_event(&self, amount: i32) -> CounterIncrementedEvent {
 ///         CounterIncrementedEvent {
 ///             amount,
@@ -65,42 +64,32 @@
 ///         }
 ///     }
 ///
-///     // Command method - uses helper and applies event
-///     pub fn increment(&mut self, amount: i32)
-///         -> Result<(), <Self as Aggregate>::Error>
-///     {
-///         let event = self.increment_event(amount);
-///         self.apply(event)?;
-///         Ok(())
-///     }
-///
-///     pub fn decrement_event(&self, amount: i32) -> CounterDecrementedEvent {
-///         CounterDecrementedEvent {
-///             amount,
-///             timestamp: ::chrono::Utc::now(),
-///         }
-///     }
-///
-///     pub fn decrement(&mut self, amount: i32)
-///         -> Result<(), <Self as Aggregate>::Error>
-///     {
-///         let event = self.decrement_event(amount);
-///         self.apply(event)?;
-///         Ok(())
-///     }
-///
 ///     pub fn reset_event(&self) -> CounterResetEvent {
 ///         CounterResetEvent {
 ///             timestamp: ::chrono::Utc::now(),
 ///         }
 ///     }
+/// }
 ///
-///     pub fn reset(&mut self)
-///         -> Result<(), <Self as Aggregate>::Error>
+/// pub trait CounterCommands {
+///     fn increment(&mut self, amount: i32)
+///         -> Result<(), <Counter as Aggregate>::Error>;
+///     fn reset(&mut self)
+///         -> Result<(), <Counter as Aggregate>::Error>;
+/// }
+///
+/// impl CounterCommands for AggregateRoot<Counter> {
+///     fn increment(&mut self, amount: i32)
+///         -> Result<(), <Counter as Aggregate>::Error>
+///     {
+///         let event = self.increment_event(amount);
+///         self.apply(event)
+///     }
+///     fn reset(&mut self)
+///         -> Result<(), <Counter as Aggregate>::Error>
 ///     {
 ///         let event = self.reset_event();
-///         self.apply(event)?;
-///         Ok(())
+///         self.apply(event)
 ///     }
 /// }
 /// ```
@@ -115,26 +104,14 @@
 /// - **Custom workflows**: Full control over when events are applied
 ///
 /// ```ignore
-/// // Conditional application
-/// let event = counter.increment_event(5);
-/// if some_condition {
-///     counter.apply(event)?;
-/// }
+/// // Use command methods on AggregateRoot
+/// let mut root = AggregateRoot::<Counter>::new(EntityId::new());
+/// root.increment(5)?;
+/// root.reset()?;
 ///
-/// // Batch operations
-/// let events = vec![
-///     counter.increment_event(5),
-///     counter.increment_event(10),
-///     counter.increment_event(15),
-/// ];
-/// for event in events {
-///     counter.apply(event)?;
-/// }
-///
-/// // Testing
-/// let event = counter.increment_event(5);
-/// assert_eq!(event.amount, 5);
-/// // Counter state unchanged
+/// // Or use event helpers for fine-grained control
+/// let event = root.increment_event(5);
+/// root.apply(event)?;
 /// ```
 ///
 /// # Benefits
@@ -143,8 +120,7 @@
 /// - Ensures consistent command pattern
 /// - Automatic timestamp handling
 /// - Type-safe command parameters
-/// - Clear, declarative syntax
-/// - Flexible event creation and application
+/// - Commands operate through `AggregateRoot` (events are the only mutation path)
 #[macro_export]
 macro_rules! command_handler {
     (
@@ -156,10 +132,10 @@ macro_rules! command_handler {
             );* $(;)?
         }
     ) => {
+        // Generate event helper functions on the entity type
         impl $aggregate {
             $(
                 paste::paste! {
-                    // Generate event helper function
                     $(#[$attr])*
                     #[allow(missing_docs)]
                     pub fn [<$command _event>](&self, $($param: $param_ty),*) -> $event_struct {
@@ -168,19 +144,33 @@ macro_rules! command_handler {
                             timestamp: ::chrono::Utc::now(),
                         }
                     }
-
-                    // Generate command method that uses the helper
-                    $(#[$attr])*
-                    #[allow(missing_docs)]
-                    pub fn $command(&mut self, $($param: $param_ty),*)
-                        -> ::std::result::Result<(), <Self as $crate::Aggregate>::Error>
-                    {
-                        let event = self.[<$command _event>]($($param),*);
-                        self.apply(event)?;
-                        ::std::result::Result::Ok(())
-                    }
                 }
             )*
+        }
+
+        // Generate commands trait
+        paste::paste! {
+            #[allow(missing_docs, private_interfaces)]
+            pub trait [<$aggregate Commands>] {
+                $(
+                    $(#[$attr])*
+                    fn $command(&mut self, $($param: $param_ty),*)
+                        -> ::std::result::Result<(), <$aggregate as $crate::Aggregate>::Error>;
+                )*
+            }
+
+            // Implement commands trait on AggregateRoot<Entity>
+            impl [<$aggregate Commands>] for $crate::AggregateRoot<$aggregate> {
+                $(
+                    $(#[$attr])*
+                    fn $command(&mut self, $($param: $param_ty),*)
+                        -> ::std::result::Result<(), <$aggregate as $crate::Aggregate>::Error>
+                    {
+                        let event = self.[<$command _event>]($($param),*);
+                        self.apply(event)
+                    }
+                )*
+            }
         }
     };
 }
@@ -1088,14 +1078,6 @@ mod tests {
         fn value(&self) -> i32 {
             self.value
         }
-
-        /// Apply an event through the AggregateRoot-like lifecycle: dispatch + track.
-        /// This is needed because `command_handler!` calls `self.apply(event)`.
-        fn apply<E: Into<TestEvent>>(&mut self, event: E) -> Result<(), TestError> {
-            let event = event.into();
-            crate::EventApplicator::dispatch(&event, self)?;
-            Ok(())
-        }
     }
 
     // ApplyEvent implementations
@@ -1144,8 +1126,8 @@ mod tests {
     fn test_command_handler_increment() {
         let mut root = AggregateRoot::<TestAggregate>::new(EntityId::new());
 
-        // Test that generated method works through AggregateRoot
-        let result = root.apply(root.increment_event(5));
+        // Test that generated command method works through AggregateRoot
+        let result = root.increment(5);
 
         assert!(result.is_ok());
         assert_eq!(root.value(), 5);
@@ -1156,10 +1138,10 @@ mod tests {
     #[test]
     fn test_command_handler_decrement() {
         let mut root = AggregateRoot::<TestAggregate>::new(EntityId::new());
-        root.apply(root.increment_event(10)).unwrap();
+        root.increment(10).unwrap();
 
         // Test that generated decrement method works
-        let result = root.apply(root.decrement_event(3));
+        let result = root.decrement(3);
 
         assert!(result.is_ok());
         assert_eq!(root.value(), 7);
@@ -1169,10 +1151,10 @@ mod tests {
     #[test]
     fn test_command_handler_reset() {
         let mut root = AggregateRoot::<TestAggregate>::new(EntityId::new());
-        root.apply(root.increment_event(10)).unwrap();
+        root.increment(10).unwrap();
 
         // Test that generated reset method works
-        let result = root.apply(root.reset_event());
+        let result = root.reset();
 
         assert!(result.is_ok());
         assert_eq!(root.value(), 0);
@@ -1183,8 +1165,8 @@ mod tests {
     fn test_command_handler_validation() {
         let mut root = AggregateRoot::<TestAggregate>::new(EntityId::new());
 
-        // Test that validation is applied through the generated method
-        let result = root.apply(root.increment_event(0));
+        // Test that validation is applied through the generated command
+        let result = root.increment(0);
 
         assert!(result.is_err());
         assert_eq!(root.value(), 0); // Value should be unchanged
@@ -1196,7 +1178,7 @@ mod tests {
         let mut root = AggregateRoot::<TestAggregate>::new(EntityId::new());
         let before = Utc::now();
 
-        root.apply(root.increment_event(5)).unwrap();
+        root.increment(5).unwrap();
 
         let after = Utc::now();
 
@@ -1213,11 +1195,11 @@ mod tests {
         let mut root = AggregateRoot::<TestAggregate>::new(EntityId::new());
 
         // Test multiple commands in sequence
-        root.apply(root.increment_event(5)).unwrap();
-        root.apply(root.increment_event(3)).unwrap();
-        root.apply(root.decrement_event(2)).unwrap();
-        root.apply(root.reset_event()).unwrap();
-        root.apply(root.increment_event(10)).unwrap();
+        root.increment(5).unwrap();
+        root.increment(3).unwrap();
+        root.decrement(2).unwrap();
+        root.reset().unwrap();
+        root.increment(10).unwrap();
 
         assert_eq!(root.value(), 10);
         assert_eq!(root.pending_events().len(), 5);
@@ -1229,9 +1211,18 @@ mod tests {
         let mut root = AggregateRoot::<TestAggregate>::new(EntityId::new());
 
         // Verify the return type is Result<(), TestError>
-        let result: Result<(), TestError> = root.apply(root.increment_event(5));
+        let result: Result<(), TestError> = root.increment(5);
 
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_command_handler_event_helper() {
+        let root = AggregateRoot::<TestAggregate>::new(EntityId::new());
+
+        // Event helpers are available on the entity via Deref
+        let event = root.increment_event(42);
+        assert_eq!(event.amount, 42);
     }
 
     // ===== Projection Macro Tests =====

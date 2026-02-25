@@ -10,7 +10,7 @@ use crate::{Aggregate, EntityId, EventApplicator, Version};
 ///
 /// Wraps an entity that implements `Aggregate`, providing all infrastructure
 /// concerns: version tracking, pending event management, and event application
-/// lifecycle (validate → apply → post_validate).
+/// lifecycle (validate → apply → `post_validate`).
 ///
 /// # Read-Only Access via Deref
 ///
@@ -147,7 +147,7 @@ impl<A: Aggregate> AggregateRoot<A> {
     ///
     /// This method:
     /// 1. Converts the event into the aggregate's event type (via `Into`)
-    /// 2. Dispatches through `EventApplicator` (validate → apply → post_validate)
+    /// 2. Dispatches through `EventApplicator` (validate → apply → `post_validate`)
     /// 3. Increments the version
     /// 4. Adds the event to pending events
     ///
@@ -225,8 +225,7 @@ where
 /// documentation examples and integration tests.
 #[doc(hidden)]
 pub mod tests_support {
-    use super::*;
-    use crate::{AggregateError, EntityId};
+    use crate::{AggregateError, EntityId, EventApplicator};
     use chrono::Utc;
 
     /// A simple counter entity for testing and doc examples.
@@ -271,10 +270,7 @@ pub mod tests_support {
     }
 
     impl EventApplicator<TestCounter> for TestCounterEvent {
-        fn dispatch(
-            &self,
-            counter: &mut TestCounter,
-        ) -> Result<(), TestCounterError> {
+        fn dispatch(&self, counter: &mut TestCounter) -> Result<(), TestCounterError> {
             match self {
                 TestCounterEvent::Incremented { amount } => counter.value += amount,
             }

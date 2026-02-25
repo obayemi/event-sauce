@@ -1,4 +1,4 @@
-//! Integration tests for the new event system with AggregateError and ApplyEvent traits.
+//! Integration tests for the event system with Entity, Aggregate, AggregateRoot, and ApplyEvent.
 //!
 //! These tests verify:
 //! - Aggregate-specific error types
@@ -8,47 +8,16 @@
 //! - Type safety throughout the system
 
 use chrono::Utc;
-use event_sauce_core::{Aggregate, AggregateId, DomainEvent, EventApplicator, Version};
+use event_sauce_core::{
+    Aggregate, AggregateRoot, DomainEvent, Entity, EntityId, EventApplicator, Version,
+};
 use event_sauce_macros::AggregateError;
 use serde::{Deserialize, Serialize};
-use std::fmt;
 use thiserror::Error;
-use uuid::Uuid;
 
 // ============================================================================
 // Test Aggregate: Account
 // ============================================================================
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-struct TestAccountId(Uuid);
-
-impl Default for TestAccountId {
-    fn default() -> Self {
-        Self(Uuid::nil())
-    }
-}
-
-impl TestAccountId {
-    fn new() -> Self {
-        Self(Uuid::new_v4())
-    }
-}
-
-impl fmt::Display for TestAccountId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "TestAccount-{}", self.0)
-    }
-}
-
-impl AggregateId for TestAccountId {
-    fn to_uuid(&self) -> Uuid {
-        self.0
-    }
-
-    fn from_uuid(uuid: Uuid) -> Self {
-        Self(uuid)
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[allow(dead_code)]
@@ -71,7 +40,7 @@ enum TestAccountError {
     AccountNotActive(AccountStatus),
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 enum TestAccountEvent {
     Opened {
         owner: String,
@@ -118,141 +87,138 @@ impl DomainEvent for TestAccountEvent {
 }
 
 impl EventApplicator<TestAccount> for TestAccountEvent {
-    fn dispatch(&self, aggregate: &mut TestAccount) -> Result<(), TestAccountError> {
+    fn dispatch(&self, entity: &mut TestAccount) -> Result<(), TestAccountError> {
         match self {
             TestAccountEvent::Opened {
                 owner,
                 initial_balance,
                 ..
             } => {
-                aggregate.owner = owner.clone();
-                aggregate.balance = *initial_balance;
-                aggregate.status = AccountStatus::Active;
+                entity.owner = owner.clone();
+                entity.balance = *initial_balance;
+                entity.status = AccountStatus::Active;
             }
             TestAccountEvent::Deposited { amount, .. } => {
-                aggregate.balance += amount;
+                entity.balance += amount;
             }
             TestAccountEvent::Withdrawn { amount, .. } => {
-                aggregate.balance -= amount;
+                entity.balance -= amount;
             }
             TestAccountEvent::Frozen { .. } => {
-                aggregate.status = AccountStatus::Frozen;
+                entity.status = AccountStatus::Frozen;
             }
         }
         Ok(())
     }
 
-    fn dispatch_unchecked(&self, aggregate: &mut TestAccount) {
+    fn dispatch_unchecked(&self, entity: &mut TestAccount) {
         match self {
             TestAccountEvent::Opened {
                 owner,
                 initial_balance,
                 ..
             } => {
-                aggregate.owner = owner.clone();
-                aggregate.balance = *initial_balance;
-                aggregate.status = AccountStatus::Active;
+                entity.owner = owner.clone();
+                entity.balance = *initial_balance;
+                entity.status = AccountStatus::Active;
             }
             TestAccountEvent::Deposited { amount, .. } => {
-                aggregate.balance += amount;
+                entity.balance += amount;
             }
             TestAccountEvent::Withdrawn { amount, .. } => {
-                aggregate.balance -= amount;
+                entity.balance -= amount;
             }
             TestAccountEvent::Frozen { .. } => {
-                aggregate.status = AccountStatus::Frozen;
+                entity.status = AccountStatus::Frozen;
             }
         }
     }
 }
 
-#[event_sauce_macros::aggregate(
-    id = "TestAccountId",
-    event = "TestAccountEvent",
-    error = "TestAccountError"
-)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct TestAccount {
-    id: TestAccountId,
+    id: EntityId,
     owner: String,
     balance: i64,
     status: AccountStatus,
 }
 
-impl TestAccount {
-    fn open(
-        id: TestAccountId,
-        owner: String,
-        initial_balance: i64,
-    ) -> Result<Self, TestAccountError> {
-        if initial_balance < 0 {
-            return Err(TestAccountError::InvalidAmount(initial_balance));
+impl Entity for TestAccount {
+    fn new(id: EntityId) -> Self {
+        Self {
+            id,
+            owner: String::new(),
+            balance: 0,
+            status: AccountStatus::Active,
         }
-
-        let mut account = Self::new(id);
-
-        account
-            .apply(TestAccountEvent::Opened {
-                owner,
-                initial_balance,
-                timestamp: Utc::now(),
-            })
-            .unwrap();
-
-        Ok(account)
     }
 
-    fn deposit(&mut self, amount: i64) -> Result<(), TestAccountError> {
-        if self.status != AccountStatus::Active {
-            return Err(TestAccountError::AccountNotActive(self.status));
-        }
+    fn entity_id(&self) -> EntityId {
+        self.id
+    }
+}
 
-        if amount <= 0 {
-            return Err(TestAccountError::InvalidAmount(amount));
-        }
+impl Aggregate for TestAccount {
+    type Event = TestAccountEvent;
+    type Error = TestAccountError;
+}
 
-        self.apply(TestAccountEvent::Deposited {
-            amount,
-            timestamp: Utc::now(),
-        })
-        .unwrap();
-
-        Ok(())
+/// Opens a new account, returning an AggregateRoot wrapping the entity.
+fn open_account(
+    id: EntityId,
+    owner: String,
+    initial_balance: i64,
+) -> Result<AggregateRoot<TestAccount>, TestAccountError> {
+    if initial_balance < 0 {
+        return Err(TestAccountError::InvalidAmount(initial_balance));
     }
 
-    fn withdraw(&mut self, amount: i64) -> Result<(), TestAccountError> {
-        if self.status != AccountStatus::Active {
-            return Err(TestAccountError::AccountNotActive(self.status));
-        }
+    let mut root = AggregateRoot::<TestAccount>::new(id);
+    root.apply(TestAccountEvent::Opened {
+        owner,
+        initial_balance,
+        timestamp: Utc::now(),
+    })?;
 
-        if amount <= 0 {
-            return Err(TestAccountError::InvalidAmount(amount));
-        }
+    Ok(root)
+}
 
-        if self.balance < amount {
-            return Err(TestAccountError::InsufficientFunds {
-                balance: self.balance,
-                requested: amount,
-            });
-        }
-
-        self.apply(TestAccountEvent::Withdrawn {
-            amount,
-            timestamp: Utc::now(),
-        })
-        .unwrap();
-
-        Ok(())
+fn deposit(root: &mut AggregateRoot<TestAccount>, amount: i64) -> Result<(), TestAccountError> {
+    if root.status != AccountStatus::Active {
+        return Err(TestAccountError::AccountNotActive(root.status));
     }
-
-    fn freeze(&mut self) -> Result<(), TestAccountError> {
-        self.apply(TestAccountEvent::Frozen {
-            timestamp: Utc::now(),
-        })
-        .unwrap();
-
-        Ok(())
+    if amount <= 0 {
+        return Err(TestAccountError::InvalidAmount(amount));
     }
+    root.apply(TestAccountEvent::Deposited {
+        amount,
+        timestamp: Utc::now(),
+    })
+}
+
+fn withdraw(root: &mut AggregateRoot<TestAccount>, amount: i64) -> Result<(), TestAccountError> {
+    if root.status != AccountStatus::Active {
+        return Err(TestAccountError::AccountNotActive(root.status));
+    }
+    if amount <= 0 {
+        return Err(TestAccountError::InvalidAmount(amount));
+    }
+    if root.balance < amount {
+        return Err(TestAccountError::InsufficientFunds {
+            balance: root.balance,
+            requested: amount,
+        });
+    }
+    root.apply(TestAccountEvent::Withdrawn {
+        amount,
+        timestamp: Utc::now(),
+    })
+}
+
+fn freeze(root: &mut AggregateRoot<TestAccount>) -> Result<(), TestAccountError> {
+    root.apply(TestAccountEvent::Frozen {
+        timestamp: Utc::now(),
+    })
 }
 
 // ============================================================================
@@ -284,10 +250,10 @@ fn test_aggregate_has_error_type() {
 
 #[test]
 fn test_create_account_with_validation() {
-    let id = TestAccountId::new();
-    let account = TestAccount::open(id.clone(), "Alice".to_string(), 1000).unwrap();
+    let id = EntityId::new();
+    let account = open_account(id, "Alice".to_string(), 1000).unwrap();
 
-    assert_eq!(account.aggregate_id(), &id);
+    assert_eq!(account.entity_id(), id);
     assert_eq!(account.owner, "Alice");
     assert_eq!(account.balance, 1000);
     assert_eq!(account.status, AccountStatus::Active);
@@ -297,8 +263,8 @@ fn test_create_account_with_validation() {
 
 #[test]
 fn test_create_account_rejects_negative_balance() {
-    let id = TestAccountId::new();
-    let result = TestAccount::open(id, "Alice".to_string(), -100);
+    let id = EntityId::new();
+    let result = open_account(id, "Alice".to_string(), -100);
 
     assert!(result.is_err());
     match result.unwrap_err() {
@@ -309,10 +275,10 @@ fn test_create_account_rejects_negative_balance() {
 
 #[test]
 fn test_deposit_validates_positive_amount() {
-    let id = TestAccountId::new();
-    let mut account = TestAccount::open(id, "Alice".to_string(), 1000).unwrap();
+    let id = EntityId::new();
+    let mut account = open_account(id, "Alice".to_string(), 1000).unwrap();
 
-    let result = account.deposit(-50);
+    let result = deposit(&mut account, -50);
 
     assert!(result.is_err());
     match result.unwrap_err() {
@@ -323,15 +289,15 @@ fn test_deposit_validates_positive_amount() {
 
 #[test]
 fn test_deposit_validates_account_status() {
-    let id = TestAccountId::new();
-    let mut account = TestAccount::open(id, "Alice".to_string(), 1000).unwrap();
+    let id = EntityId::new();
+    let mut account = open_account(id, "Alice".to_string(), 1000).unwrap();
 
     // Freeze the account
-    account.freeze().unwrap();
+    freeze(&mut account).unwrap();
     assert_eq!(account.status, AccountStatus::Frozen);
 
     // Try to deposit
-    let result = account.deposit(100);
+    let result = deposit(&mut account, 100);
 
     assert!(result.is_err());
     match result.unwrap_err() {
@@ -342,10 +308,10 @@ fn test_deposit_validates_account_status() {
 
 #[test]
 fn test_withdraw_validates_sufficient_funds() {
-    let id = TestAccountId::new();
-    let mut account = TestAccount::open(id, "Alice".to_string(), 1000).unwrap();
+    let id = EntityId::new();
+    let mut account = open_account(id, "Alice".to_string(), 1000).unwrap();
 
-    let result = account.withdraw(2000);
+    let result = withdraw(&mut account, 2000);
 
     assert!(result.is_err());
     match result.unwrap_err() {
@@ -359,14 +325,14 @@ fn test_withdraw_validates_sufficient_funds() {
 
 #[test]
 fn test_withdraw_validates_account_status() {
-    let id = TestAccountId::new();
-    let mut account = TestAccount::open(id, "Alice".to_string(), 1000).unwrap();
+    let id = EntityId::new();
+    let mut account = open_account(id, "Alice".to_string(), 1000).unwrap();
 
     // Freeze the account
-    account.freeze().unwrap();
+    freeze(&mut account).unwrap();
 
     // Try to withdraw
-    let result = account.withdraw(100);
+    let result = withdraw(&mut account, 100);
 
     assert!(result.is_err());
     match result.unwrap_err() {
@@ -377,14 +343,14 @@ fn test_withdraw_validates_account_status() {
 
 #[test]
 fn test_successful_transactions_update_state() {
-    let id = TestAccountId::new();
-    let mut account = TestAccount::open(id, "Alice".to_string(), 1000).unwrap();
+    let id = EntityId::new();
+    let mut account = open_account(id, "Alice".to_string(), 1000).unwrap();
 
-    account.deposit(500).unwrap();
+    deposit(&mut account, 500).unwrap();
     assert_eq!(account.balance, 1500);
     assert_eq!(account.version(), Version::new(2));
 
-    account.withdraw(300).unwrap();
+    withdraw(&mut account, 300).unwrap();
     assert_eq!(account.balance, 1200);
     assert_eq!(account.version(), Version::new(3));
 
@@ -392,8 +358,8 @@ fn test_successful_transactions_update_state() {
 }
 
 #[test]
-fn test_event_replay_with_apply_unchecked() {
-    let id = TestAccountId::new();
+fn test_event_replay_with_dispatch_unchecked() {
+    let id = EntityId::new();
 
     // Create events
     let events = vec![
@@ -412,44 +378,50 @@ fn test_event_replay_with_apply_unchecked() {
         },
     ];
 
-    // Replay events using apply_unchecked (no validation)
-    let mut account = TestAccount::new(id.clone());
+    // Replay events using dispatch_unchecked (no validation)
+    let mut entity = TestAccount::new(id);
 
     for event in &events {
-        account.apply_unchecked(event);
+        EventApplicator::dispatch_unchecked(event, &mut entity);
     }
 
-    assert_eq!(account.owner, "Alice");
-    assert_eq!(account.balance, 1200);
-    assert_eq!(account.version(), Version::new(3));
-    assert_eq!(account.status, AccountStatus::Active);
+    assert_eq!(entity.owner, "Alice");
+    assert_eq!(entity.balance, 1200);
+    assert_eq!(entity.status, AccountStatus::Active);
 }
 
 #[test]
 fn test_apply_vs_apply_unchecked() {
-    let id = TestAccountId::new();
-    let mut account1 = TestAccount::open(id.clone(), "Alice".to_string(), 1000).unwrap();
-    account1.pending_events.clear(); // Clear for fair comparison
+    let id = EntityId::new();
+    let mut root1 = open_account(id, "Alice".to_string(), 1000).unwrap();
+    root1.clear_pending_events(); // Clear for fair comparison
 
-    let mut account2 = TestAccount::open(id, "Alice".to_string(), 1000).unwrap();
-    account2.pending_events.clear();
+    let mut entity2 = TestAccount::new(id);
+    // Set up entity2 to match root1 state
+    EventApplicator::dispatch_unchecked(
+        &TestAccountEvent::Opened {
+            owner: "Alice".to_string(),
+            initial_balance: 1000,
+            timestamp: Utc::now(),
+        },
+        &mut entity2,
+    );
 
     let event = TestAccountEvent::Deposited {
         amount: 500,
         timestamp: Utc::now(),
     };
 
-    // apply records the event while apply_unchecked doesn't
-    account1.apply(event.clone()).unwrap();
-    account2.apply_unchecked(&event);
+    // apply on AggregateRoot records the event
+    root1.apply(event.clone()).unwrap();
+    // dispatch_unchecked on entity doesn't track events
+    EventApplicator::dispatch_unchecked(&event, &mut entity2);
 
-    // Both update state and version the same way
-    assert_eq!(account1.balance, account2.balance);
-    assert_eq!(account1.version(), account2.version());
+    // Both update state the same way
+    assert_eq!(root1.balance, entity2.balance);
 
-    // But apply adds to pending events
-    assert_eq!(account1.pending_events().len(), 1);
-    assert_eq!(account2.pending_events().len(), 0);
+    // But AggregateRoot tracks pending events
+    assert_eq!(root1.pending_events().len(), 1);
 }
 
 #[test]
@@ -471,63 +443,63 @@ fn test_domain_event_trait_implementation() {
 
 #[test]
 fn test_aggregate_type_safety() {
-    let id = TestAccountId::new();
-    let account = TestAccount::open(id, "Alice".to_string(), 1000).unwrap();
+    let id = EntityId::new();
+    let account = open_account(id, "Alice".to_string(), 1000).unwrap();
 
     // Verify types are correct
-    let _id: &TestAccountId = account.aggregate_id();
+    let _id: EntityId = account.entity_id();
     let _version: Version = account.version();
     let _events: &[TestAccountEvent] = account.pending_events();
 }
 
 #[test]
 fn test_business_rules_enforced_consistently() {
-    let id = TestAccountId::new();
-    let mut account = TestAccount::open(id, "Alice".to_string(), 1000).unwrap();
+    let id = EntityId::new();
+    let mut account = open_account(id, "Alice".to_string(), 1000).unwrap();
 
     // Invalid amount should always fail
-    assert!(account.deposit(0).is_err());
-    assert!(account.deposit(-50).is_err());
-    assert!(account.withdraw(0).is_err());
-    assert!(account.withdraw(-50).is_err());
+    assert!(deposit(&mut account, 0).is_err());
+    assert!(deposit(&mut account, -50).is_err());
+    assert!(withdraw(&mut account, 0).is_err());
+    assert!(withdraw(&mut account, -50).is_err());
 
     // Insufficient funds should fail
-    assert!(account.withdraw(2000).is_err());
+    assert!(withdraw(&mut account, 2000).is_err());
 
     // After freezing, transactions should fail
-    account.freeze().unwrap();
-    assert!(account.deposit(100).is_err());
-    assert!(account.withdraw(100).is_err());
+    freeze(&mut account).unwrap();
+    assert!(deposit(&mut account, 100).is_err());
+    assert!(withdraw(&mut account, 100).is_err());
 }
 
 #[test]
 fn test_version_increments_correctly() {
-    let id = TestAccountId::new();
-    let mut account = TestAccount::open(id, "Alice".to_string(), 1000).unwrap();
+    let id = EntityId::new();
+    let mut account = open_account(id, "Alice".to_string(), 1000).unwrap();
 
     assert_eq!(account.version(), Version::new(1));
 
-    account.deposit(100).unwrap();
+    deposit(&mut account, 100).unwrap();
     assert_eq!(account.version(), Version::new(2));
 
-    account.withdraw(50).unwrap();
+    withdraw(&mut account, 50).unwrap();
     assert_eq!(account.version(), Version::new(3));
 
-    account.freeze().unwrap();
+    freeze(&mut account).unwrap();
     assert_eq!(account.version(), Version::new(4));
 }
 
 #[test]
 fn test_pending_events_tracking() {
-    let id = TestAccountId::new();
-    let mut account = TestAccount::open(id, "Alice".to_string(), 1000).unwrap();
+    let id = EntityId::new();
+    let mut account = open_account(id, "Alice".to_string(), 1000).unwrap();
 
     assert_eq!(account.pending_events().len(), 1);
 
-    account.deposit(100).unwrap();
+    deposit(&mut account, 100).unwrap();
     assert_eq!(account.pending_events().len(), 2);
 
-    account.withdraw(50).unwrap();
+    withdraw(&mut account, 50).unwrap();
     assert_eq!(account.pending_events().len(), 3);
 
     account.clear_pending_events();

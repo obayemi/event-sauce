@@ -150,8 +150,8 @@ mod tests {
 
     #[test]
     fn test_entity_id_default() {
-        let id1: EntityId = Default::default();
-        let id2: EntityId = Default::default();
+        let id1: EntityId = EntityId::default();
+        let id2: EntityId = EntityId::default();
         assert_ne!(id1, id2);
     }
 
