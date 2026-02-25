@@ -42,8 +42,8 @@ use crate::{Aggregate, Error, EventEnvelope, Result, Version};
 ///
 ///     fn event_type(&self) -> &'static str {
 ///         match self {
-///             UserEvent::Registered { .. } => "UserRegistered",
-///             UserEvent::EmailChanged { .. } => "UserEmailChanged",
+///             UserEvent::Registered { .. } => "User.Registered",
+///             UserEvent::EmailChanged { .. } => "User.EmailChanged",
 ///         }
 ///     }
 ///
@@ -616,128 +616,6 @@ mod tests {
         let envelope = deleted.to_envelope(aggregate_id).unwrap();
         let deserialized = TestEvent::from_envelope(&envelope).unwrap();
         assert_eq!(deleted, deserialized);
-    }
-
-    #[test]
-    fn test_try_into_event_reference() {
-        use crate::{EventEnvelope, Version};
-        use serde_json::json;
-
-        let timestamp = Utc::now();
-        let event_data = json!({
-            "Created": {
-                "id": "test-1",
-                "timestamp": timestamp,
-            }
-        });
-
-        let envelope = EventEnvelope::new(
-            Uuid::new_v4(),
-            Uuid::new_v4(),
-            "TestAggregate".to_string(),
-            "TestCreated".to_string(),
-            Version::new(1),
-            event_data,
-        );
-
-        let event: TestEvent = envelope.try_into_event().unwrap();
-
-        match event {
-            TestEvent::Created { id, timestamp: ts } => {
-                assert_eq!(id, "test-1");
-                assert_eq!(ts, timestamp);
-            }
-            _ => panic!("Expected Created event"),
-        }
-    }
-
-    #[test]
-    fn test_into_event_owned() {
-        use crate::{EventEnvelope, Version};
-        use serde_json::json;
-
-        let timestamp = Utc::now();
-        let event_data = json!({
-            "Updated": {
-                "id": "test-1",
-                "value": 42,
-                "timestamp": timestamp,
-            }
-        });
-
-        let envelope = EventEnvelope::new(
-            Uuid::new_v4(),
-            Uuid::new_v4(),
-            "TestAggregate".to_string(),
-            "TestUpdated".to_string(),
-            Version::new(1),
-            event_data,
-        );
-
-        let event: TestEvent = envelope.into_event().unwrap();
-
-        match event {
-            TestEvent::Updated { id, value, .. } => {
-                assert_eq!(id, "test-1");
-                assert_eq!(value, 42);
-            }
-            _ => panic!("Expected Updated event"),
-        }
-    }
-
-    #[test]
-    fn test_try_into_event_with_invalid_data() {
-        use crate::{EventEnvelope, Version};
-        use serde_json::json;
-
-        let event_data = json!({ "invalid": "data" });
-
-        let envelope = EventEnvelope::new(
-            Uuid::new_v4(),
-            Uuid::new_v4(),
-            "TestAggregate".to_string(),
-            "TestCreated".to_string(),
-            Version::new(1),
-            event_data,
-        );
-
-        let result: Result<TestEvent> = envelope.try_into_event();
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_try_into_event_with_question_mark() {
-        use crate::{EventEnvelope, Version};
-        use serde_json::json;
-
-        fn process_envelope(envelope: &EventEnvelope) -> Result<String> {
-            let event: TestEvent = envelope.try_into_event()?;
-            Ok(match event {
-                TestEvent::Created { id, .. } => format!("Created: {id}"),
-                TestEvent::Updated { id, .. } => format!("Updated: {id}"),
-                TestEvent::Deleted { id, .. } => format!("Deleted: {id}"),
-            })
-        }
-
-        let timestamp = Utc::now();
-        let event_data = json!({
-            "Created": {
-                "id": "test-123",
-                "timestamp": timestamp,
-            }
-        });
-
-        let envelope = EventEnvelope::new(
-            Uuid::new_v4(),
-            Uuid::new_v4(),
-            "TestAggregate".to_string(),
-            "TestCreated".to_string(),
-            Version::new(1),
-            event_data,
-        );
-
-        let result = process_envelope(&envelope).unwrap();
-        assert_eq!(result, "Created: test-123");
     }
 
     // Tests for EventType trait

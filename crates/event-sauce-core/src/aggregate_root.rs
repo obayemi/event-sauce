@@ -100,7 +100,7 @@ impl<A: Aggregate> AggregateRoot<A> {
     ///
     /// ```
     /// # use event_sauce_core::{AggregateRoot, EntityId};
-    /// # use event_sauce_core::tests_support::TestCounter;
+    /// # use event_sauce_core::test_fixtures::TestCounter;
     /// let counter = AggregateRoot::<TestCounter>::new(EntityId::new());
     /// ```
     #[must_use]
@@ -216,83 +216,6 @@ where
             version: self.version,
             pending_events: self.pending_events.clone(),
         }
-    }
-}
-
-/// Test support types for use in doc tests and across crates.
-///
-/// This module provides simple aggregate types that can be used in
-/// documentation examples and integration tests.
-#[doc(hidden)]
-pub mod tests_support {
-    use crate::{AggregateError, EntityId, EventApplicator};
-    use chrono::Utc;
-
-    /// A simple counter entity for testing and doc examples.
-    #[derive(Debug, serde::Serialize, serde::Deserialize)]
-    pub struct TestCounter {
-        /// The entity's ID.
-        pub id: EntityId,
-        /// The counter value.
-        pub value: i32,
-    }
-
-    impl crate::Entity for TestCounter {
-        fn new(id: EntityId) -> Self {
-            Self { id, value: 0 }
-        }
-        fn entity_id(&self) -> EntityId {
-            self.id
-        }
-    }
-
-    /// Events for the test counter.
-    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-    pub enum TestCounterEvent {
-        /// Value was incremented.
-        Incremented {
-            /// Amount to increment by.
-            amount: i32,
-        },
-    }
-
-    impl crate::DomainEvent for TestCounterEvent {
-        type Aggregate = TestCounter;
-        fn event_type(&self) -> &'static str {
-            "TestCounter.Incremented"
-        }
-        fn event_version(&self) -> u64 {
-            1
-        }
-        fn occurred_at(&self) -> chrono::DateTime<Utc> {
-            Utc::now()
-        }
-    }
-
-    impl EventApplicator<TestCounter> for TestCounterEvent {
-        fn dispatch(&self, counter: &mut TestCounter) -> Result<(), TestCounterError> {
-            match self {
-                TestCounterEvent::Incremented { amount } => counter.value += amount,
-            }
-            Ok(())
-        }
-        fn dispatch_unchecked(&self, counter: &mut TestCounter) {
-            match self {
-                TestCounterEvent::Incremented { amount } => counter.value += amount,
-            }
-        }
-    }
-
-    /// Error type for the test counter.
-    #[derive(Debug, thiserror::Error)]
-    #[error("Test counter error")]
-    pub struct TestCounterError;
-
-    impl AggregateError for TestCounterError {}
-
-    impl crate::Aggregate for TestCounter {
-        type Event = TestCounterEvent;
-        type Error = TestCounterError;
     }
 }
 

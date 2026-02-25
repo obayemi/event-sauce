@@ -228,13 +228,13 @@ pub trait EventStore: Send + Sync {
 
     /// Creates a subscription builder pre-configured with this event store.
     fn subscription_builder(
-        self: &crate::EventStoreRef<Self>,
+        self: &std::sync::Arc<Self>,
         name: impl Into<String>,
     ) -> crate::SubscriptionBuilder<Self>
     where
         Self: Sized + 'static,
     {
-        let mut builder = crate::SubscriptionBuilder::new(name, crate::EventStoreRef::clone(self));
+        let mut builder = crate::SubscriptionBuilder::new(name, std::sync::Arc::clone(self));
 
         if let Some(checkpoint_store) = self.checkpoint_store() {
             builder = builder.checkpoint_store(checkpoint_store);
@@ -336,7 +336,7 @@ pub trait EventStore: Send + Sync {
 /// # Errors
 ///
 /// Returns an error if events cannot be deserialized or replay fails.
-pub async fn load<S, A>(store: &S, id: EntityId) -> Result<AggregateRoot<A>>
+pub(crate) async fn load<S, A>(store: &S, id: EntityId) -> Result<AggregateRoot<A>>
 where
     S: EventStore,
     A: Aggregate + serde::de::DeserializeOwned,
@@ -374,7 +374,7 @@ where
     // Replay events
     while let Some(envelope) = event_stream.next().await {
         let envelope = envelope?;
-        let event: A::Event = envelope.try_into_event()?;
+        let event = A::Event::from_envelope(&envelope)?;
         aggregate.apply_unchecked(&event);
     }
 
@@ -386,7 +386,7 @@ where
 /// # Errors
 ///
 /// Returns an error if the event store fails to load the stream.
-pub async fn count_events<S>(store: &S, stream_id: StreamId) -> Result<usize>
+pub(crate) async fn count_events<S>(store: &S, stream_id: StreamId) -> Result<usize>
 where
     S: EventStore,
 {

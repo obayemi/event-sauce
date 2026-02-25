@@ -9,10 +9,20 @@ use uuid::Uuid;
 
 use crate::Version;
 
-/// Metadata associated with an event.
+/// Optional metadata associated with an event.
 ///
-/// Contains tracking and context information for distributed tracing,
-/// causation tracking, and audit trails.
+/// `EventMetadata` is an **extension point** for attaching cross-cutting concerns
+/// to events without modifying the domain event types themselves. It is stored
+/// alongside the event in the [`EventEnvelope`] and is entirely optional — the
+/// core event sourcing flow works without it.
+///
+/// # Built-in Fields
+///
+/// - **`correlation_id`** — Links related events across services for distributed tracing.
+/// - **`causation_id`** — Identifies the command or event that caused this event.
+/// - **`timestamp`** — When the metadata was created (set automatically).
+/// - **`additional`** — Arbitrary JSON for application-specific data (e.g., user ID,
+///   IP address, tenant ID).
 ///
 /// # Examples
 ///
@@ -150,13 +160,13 @@ impl Default for EventMetadata {
 ///     Uuid::new_v4(),
 ///     Uuid::new_v4(),
 ///     "User".to_string(),
-///     "UserRegistered".to_string(),
+///     "User.Registered".to_string(),
 ///     Version::new(1),
 ///     json!({"email": "user@example.com"}),
 /// );
 ///
 /// assert_eq!(envelope.aggregate_type, "User");
-/// assert_eq!(envelope.event_type, "UserRegistered");
+/// assert_eq!(envelope.event_type, "User.Registered");
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EventEnvelope {
@@ -181,7 +191,7 @@ pub struct EventEnvelope {
     /// Who created this event.
     pub created_by: Option<Uuid>,
 
-    /// Event metadata.
+    /// Optional metadata for cross-cutting concerns (tracing, audit, etc.).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<EventMetadata>,
 
@@ -203,7 +213,7 @@ impl EventEnvelope {
     ///     Uuid::new_v4(),
     ///     Uuid::new_v4(),
     ///     "Order".to_string(),
-    ///     "OrderPlaced".to_string(),
+    ///     "Order.Placed".to_string(),
     ///     Version::new(1),
     ///     json!({"total": 99.99}),
     /// );
@@ -249,41 +259,6 @@ impl EventEnvelope {
     pub fn with_created_at(mut self, timestamp: DateTime<Utc>) -> Self {
         self.created_at = timestamp;
         self
-    }
-
-    /// Attempts to deserialize this envelope into a concrete domain event.
-    ///
-    /// This provides a more ergonomic API for converting envelopes back to events,
-    /// similar to the `TryFrom` pattern but without orphan rule issues.
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// use event_sauce_core::{EventEnvelope, DomainEvent};
-    ///
-    /// fn process_envelope(envelope: &EventEnvelope) -> Result<()> {
-    ///     let event: UserEvent = envelope.try_into_event()?;
-    ///     // Process the event...
-    ///     Ok(())
-    /// }
-    /// ```
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the envelope cannot be deserialized into the target event type.
-    pub fn try_into_event<T: crate::DomainEvent>(&self) -> crate::Result<T> {
-        T::from_envelope(self)
-    }
-
-    /// Consumes this envelope and attempts to deserialize it into a concrete domain event.
-    ///
-    /// Similar to `try_into_event` but consumes the envelope.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the envelope cannot be deserialized into the target event type.
-    pub fn into_event<T: crate::DomainEvent>(self) -> crate::Result<T> {
-        T::from_envelope(&self)
     }
 }
 

@@ -32,7 +32,10 @@
       "Bash(wc:*)",
       "Bash(jj new:*)",
       "Bash(jj describe:*)",
-      "Bash(grep:*)"
+      "Bash(grep:*)",
+      "Bash(jj squash:*)",
+      "Bash(cargo metadata:*)",
+      "Bash(git ls-tree:*)"
     ],
     "deny": [],
     "ask": []

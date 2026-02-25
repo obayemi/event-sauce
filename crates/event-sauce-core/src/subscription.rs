@@ -22,7 +22,7 @@
 //! // 2. Create subscription using trait method (checkpoint store included automatically!)
 //! let subscription = event_store
 //!     .subscription_builder("my-projection")
-//!     .filter(EventFilter::by_event_type("UserCreated"))
+//!     .filter(EventFilter::by_event_type("User.Created"))
 //!     .build()?;
 //!
 //! // 3. Process events using Stream API (composable, type-safe)
@@ -68,7 +68,7 @@ use crate::{EventEnvelope, Position, Result};
 /// use event_sauce_core::EventFilter;
 ///
 /// // Filter by event type
-/// let filter = EventFilter::by_event_type("UserRegistered");
+/// let filter = EventFilter::by_event_type("User.Registered");
 ///
 /// // Filter by aggregate type
 /// let filter = EventFilter::by_aggregate_type("User");
@@ -115,11 +115,27 @@ impl EventFilter {
     /// ```
     /// use event_sauce_core::EventFilter;
     ///
-    /// let filter = EventFilter::by_event_type("UserRegistered");
+    /// let filter = EventFilter::by_event_type("User.Registered");
     /// ```
     #[must_use]
     pub fn by_event_type(event_type: impl Into<String>) -> Self {
         Self::EventType(event_type.into())
+    }
+
+    /// Creates a filter matching a specific event type using the `EventType` trait.
+    ///
+    /// This provides type-safe event filtering using the `EventType::EVENT_TYPE` const.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use event_sauce_core::EventFilter;
+    ///
+    /// let filter = EventFilter::by_event::<UserRegisteredEvent>();
+    /// ```
+    #[must_use]
+    pub fn by_event<T: crate::EventType>() -> Self {
+        Self::EventType(T::EVENT_TYPE.to_string())
     }
 
     /// Creates a filter matching a specific aggregate type.
@@ -143,7 +159,7 @@ impl EventFilter {
     /// ```
     /// use event_sauce_core::EventFilter;
     ///
-    /// let filter = EventFilter::both("UserRegistered", "User");
+    /// let filter = EventFilter::both("User.Registered", "User");
     /// ```
     #[must_use]
     pub fn both(event_type: impl Into<String>, aggregate_type: impl Into<String>) -> Self {
@@ -162,12 +178,12 @@ impl EventFilter {
     /// use uuid::Uuid;
     /// use serde_json::json;
     ///
-    /// let filter = EventFilter::by_event_type("UserRegistered");
+    /// let filter = EventFilter::by_event_type("User.Registered");
     /// let envelope = EventEnvelope::new(
     ///     Uuid::new_v4(),
     ///     Uuid::new_v4(),
     ///     "User".to_string(),
-    ///     "UserRegistered".to_string(),
+    ///     "User.Registered".to_string(),
     ///     Version::new(1),
     ///     json!({}),
     /// );
@@ -263,13 +279,13 @@ pub trait CheckpointStore: Send + Sync {
 ///
 /// let subscription = Subscription::builder("my-subscription", store)
 ///     .checkpoint_store(checkpoint_store)
-///     .filter(EventFilter::by_event_type("UserCreated"))
+///     .filter(EventFilter::by_event_type("User.Created"))
 ///     .checkpoint_strategy(CheckpointStrategy::EveryN(10))
 ///     .build()?;
 /// ```
 pub struct SubscriptionBuilder<S> {
     name: String,
-    store: crate::EventStoreRef<S>,
+    store: std::sync::Arc<S>,
     checkpoint_store: Option<crate::CheckpointStoreRef>,
     config: SubscriptionConfig,
 }
@@ -282,7 +298,7 @@ where
     ///
     /// This method is public to allow event stores to create subscription builders.
     /// Users should prefer using `Subscription::builder()` or `EventStore::subscription_builder()`.
-    pub fn new(name: impl Into<String>, store: crate::EventStoreRef<S>) -> Self {
+    pub fn new(name: impl Into<String>, store: std::sync::Arc<S>) -> Self {
         Self {
             name: name.into(),
             store,
@@ -364,7 +380,7 @@ where
 /// ```
 pub struct Subscription<S> {
     name: String,
-    store: crate::EventStoreRef<S>,
+    store: std::sync::Arc<S>,
     checkpoint_store: Option<crate::CheckpointStoreRef>,
     config: SubscriptionConfig,
 }
@@ -382,10 +398,7 @@ where
     ///     .checkpoint_store(checkpoint_store)
     ///     .build()?;
     /// ```
-    pub fn builder(
-        name: impl Into<String>,
-        store: crate::EventStoreRef<S>,
-    ) -> SubscriptionBuilder<S> {
+    pub fn builder(name: impl Into<String>, store: std::sync::Arc<S>) -> SubscriptionBuilder<S> {
         SubscriptionBuilder::new(name, store)
     }
 
@@ -781,7 +794,7 @@ mod tests {
         subscription.run(|_event| Ok(())).await.unwrap();
 
         // Checkpoint should be saved
-        let checkpoint = checkpoint_store.get("test").await;
+        let checkpoint = checkpoint_store.get("test");
         assert!(checkpoint.is_some());
         assert_eq!(checkpoint.unwrap().as_i64(), 2);
     }
@@ -844,7 +857,7 @@ mod tests {
         subscription.rebuild().await.unwrap();
 
         // Checkpoint should be deleted
-        let checkpoint = checkpoint_store.get("test").await;
+        let checkpoint = checkpoint_store.get("test");
         assert!(checkpoint.is_none());
     }
 
@@ -913,7 +926,7 @@ mod tests {
         assert_eq!(count, 3);
 
         // Checkpoint should be saved
-        let checkpoint = checkpoint_store.get("test-stream").await;
+        let checkpoint = checkpoint_store.get("test-stream");
         assert!(checkpoint.is_some());
         assert_eq!(checkpoint.unwrap().as_i64(), 3);
     }
@@ -1013,7 +1026,7 @@ mod tests {
 
             // Check checkpoint after every 3 events
             if count == 3 {
-                let checkpoint = checkpoint_store.get("every-n-stream").await;
+                let checkpoint = checkpoint_store.get("every-n-stream");
                 assert!(checkpoint.is_some());
                 assert_eq!(checkpoint.unwrap().as_i64(), 3);
             }
@@ -1022,7 +1035,7 @@ mod tests {
         assert_eq!(count, 10);
 
         // Final checkpoint should be saved
-        let checkpoint = checkpoint_store.get("every-n-stream").await;
+        let checkpoint = checkpoint_store.get("every-n-stream");
         assert_eq!(checkpoint.unwrap().as_i64(), 10);
     }
 
@@ -1054,7 +1067,7 @@ mod tests {
         assert_eq!(count, 2);
 
         // No checkpoint should be saved automatically with Manual strategy
-        let checkpoint = checkpoint_store.get("manual-stream").await;
+        let checkpoint = checkpoint_store.get("manual-stream");
         assert!(checkpoint.is_none());
     }
 

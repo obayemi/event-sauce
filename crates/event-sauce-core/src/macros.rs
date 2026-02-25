@@ -744,9 +744,11 @@ macro_rules! define_events {
                 match self {
                     $(
                         $event_enum::$variant { .. } => {
-                            paste::paste! {
-                                stringify!([<$aggregate $variant>])
-                            }
+                            concat!(
+                                stringify!($aggregate),
+                                ".",
+                                stringify!($variant)
+                            )
                         }
                     ),*
                 }
@@ -1447,11 +1449,11 @@ mod tests {
     }
 
     impl crate::EventType for UserCreatedEvent {
-        const EVENT_TYPE: &'static str = "UserCreated";
+        const EVENT_TYPE: &'static str = "User.Created";
     }
 
     impl crate::EventType for UserUpdatedEvent {
-        const EVENT_TYPE: &'static str = "UserUpdated";
+        const EVENT_TYPE: &'static str = "User.Updated";
     }
 
     projection! {
@@ -1490,7 +1492,7 @@ mod tests {
             uuid::Uuid::new_v4(),
             uuid::Uuid::new_v4(),
             "User".to_string(),
-            "UserCreated".to_string(),
+            "User.Created".to_string(),
             crate::Version::from(1),
             serde_json::to_value(&event).unwrap(),
         );
@@ -1514,7 +1516,7 @@ mod tests {
             uuid::Uuid::new_v4(),
             uuid::Uuid::new_v4(),
             "User".to_string(),
-            "UserUpdated".to_string(),
+            "User.Updated".to_string(),
             crate::Version::from(2),
             serde_json::to_value(&event).unwrap(),
         );
@@ -2027,7 +2029,7 @@ mod tests {
             timestamp: Utc::now(),
         };
 
-        assert_eq!(event.event_type(), "OrderCreated");
+        assert_eq!(event.event_type(), "Order.Created");
         assert_eq!(event.event_version(), 1); // default version
     }
 

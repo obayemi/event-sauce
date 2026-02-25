@@ -8,8 +8,7 @@ use chrono::Utc;
 use futures::stream;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use tokio::sync::RwLock as AsyncRwLock;
+use std::sync::{Arc, Mutex, RwLock};
 
 use crate::{
     AggregateError, ApplyEvent, CheckpointStore, EntityId, EventApplicator, EventEnvelope,
@@ -62,8 +61,8 @@ impl crate::DomainEvent for SimpleTestEvent {
 
     fn event_type(&self) -> &'static str {
         match self {
-            Self::Created { .. } => "SimpleTestCreated",
-            Self::Updated { .. } => "SimpleTestUpdated",
+            Self::Created { .. } => "SimpleTestEntity.Created",
+            Self::Updated { .. } => "SimpleTestEntity.Updated",
         }
     }
 
@@ -112,8 +111,15 @@ pub struct MockEventStore {
     global_log: Arc<Mutex<Vec<EventEnvelope>>>,
 }
 
+impl Default for MockEventStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MockEventStore {
     /// Creates a new empty mock event store.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             streams: Arc::new(Mutex::new(HashMap::new())),
@@ -200,20 +206,28 @@ impl EventStore for MockEventStore {
 /// Mock checkpoint store for subscription tests.
 #[derive(Clone)]
 pub struct MockCheckpointStore {
-    checkpoints: Arc<AsyncRwLock<HashMap<String, Position>>>,
+    checkpoints: Arc<RwLock<HashMap<String, Position>>>,
+}
+
+impl Default for MockCheckpointStore {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl MockCheckpointStore {
     /// Creates a new empty mock checkpoint store.
+    #[must_use]
     pub fn new() -> Self {
         Self {
-            checkpoints: Arc::new(AsyncRwLock::new(HashMap::new())),
+            checkpoints: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
     /// Gets the checkpoint for a subscription.
-    pub async fn get(&self, name: &str) -> Option<Position> {
-        self.checkpoints.read().await.get(name).copied()
+    #[must_use]
+    pub fn get(&self, name: &str) -> Option<Position> {
+        self.checkpoints.read().unwrap().get(name).copied()
     }
 }
 
@@ -222,7 +236,7 @@ impl CheckpointStore for MockCheckpointStore {
     async fn save_checkpoint(&self, subscription_name: &str, position: Position) -> Result<()> {
         self.checkpoints
             .write()
-            .await
+            .unwrap()
             .insert(subscription_name.to_string(), position);
         Ok(())
     }
@@ -231,18 +245,19 @@ impl CheckpointStore for MockCheckpointStore {
         Ok(self
             .checkpoints
             .read()
-            .await
+            .unwrap()
             .get(subscription_name)
             .copied())
     }
 
     async fn delete_checkpoint(&self, subscription_name: &str) -> Result<()> {
-        self.checkpoints.write().await.remove(subscription_name);
+        self.checkpoints.write().unwrap().remove(subscription_name);
         Ok(())
     }
 }
 
 /// Creates a test event envelope with the given event and aggregate types.
+#[must_use]
 pub fn create_test_envelope(event_type: &str, aggregate_type: &str) -> EventEnvelope {
     EventEnvelope::new(
         uuid::Uuid::new_v4(),
@@ -252,4 +267,71 @@ pub fn create_test_envelope(event_type: &str, aggregate_type: &str) -> EventEnve
         Version::new(1),
         serde_json::json!({}),
     )
+}
+
+/// A simple counter entity for testing and doc examples.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TestCounter {
+    /// The entity's ID.
+    pub id: EntityId,
+    /// The counter value.
+    pub value: i32,
+}
+
+impl crate::Entity for TestCounter {
+    fn new(id: EntityId) -> Self {
+        Self { id, value: 0 }
+    }
+    fn entity_id(&self) -> EntityId {
+        self.id
+    }
+}
+
+/// Events for the test counter.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum TestCounterEvent {
+    /// Value was incremented.
+    Incremented {
+        /// Amount to increment by.
+        amount: i32,
+    },
+}
+
+impl crate::DomainEvent for TestCounterEvent {
+    type Aggregate = TestCounter;
+    fn event_type(&self) -> &'static str {
+        "TestCounter.Incremented"
+    }
+    fn event_version(&self) -> u64 {
+        1
+    }
+    fn occurred_at(&self) -> chrono::DateTime<Utc> {
+        Utc::now()
+    }
+}
+
+impl EventApplicator<TestCounter> for TestCounterEvent {
+    fn dispatch(&self, counter: &mut TestCounter) -> std::result::Result<(), TestCounterError> {
+        match self {
+            TestCounterEvent::Incremented { amount } => counter.value += amount,
+        }
+        Ok(())
+    }
+    fn dispatch_unchecked(&self, counter: &mut TestCounter) {
+        match self {
+            TestCounterEvent::Incremented { amount } => counter.value += amount,
+        }
+    }
+}
+
+/// Error type for the test counter.
+#[derive(Debug, thiserror::Error)]
+#[error("Test counter error")]
+pub struct TestCounterError;
+
+impl AggregateError for TestCounterError {}
+
+impl crate::Aggregate for TestCounter {
+    type Event = TestCounterEvent;
+    type Error = TestCounterError;
 }

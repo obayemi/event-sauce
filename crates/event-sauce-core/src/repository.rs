@@ -6,7 +6,8 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use crate::{
-    count_events, load, Aggregate, AggregateRoot, EntityId, EventStore, Result, StreamId, Version,
+    event_store::{count_events, load},
+    Aggregate, AggregateRoot, EntityId, EventStore, Result, StreamId, Version,
 };
 
 /// Repository provides a high-level API for aggregate persistence.

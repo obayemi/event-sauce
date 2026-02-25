@@ -115,7 +115,7 @@ pub fn derive_event(input: TokenStream) -> TokenStream {
 
     let version = attrs.version;
 
-    // Generate Into implementations for tuple variants
+    // Generate Into and EventType implementations for tuple variants
     let into_impls = variants.iter().filter_map(|variant| {
         let variant_name = &variant.ident;
 
@@ -128,6 +128,25 @@ pub fn derive_event(input: TokenStream) -> TokenStream {
                         fn into(self) -> #name {
                             #name::#variant_name(self)
                         }
+                    }
+                })
+            }
+            _ => None,
+        }
+    });
+
+    // Generate EventType implementations for tuple variant inner types
+    let event_type_impls = variants.iter().filter_map(|variant| {
+        let variant_name = &variant.ident;
+        let variant_str = variant_name.to_string();
+        let event_type_name = format!("{type_prefix}.{variant_str}");
+
+        match &variant.fields {
+            Fields::Unnamed(fields) if fields.unnamed.len() == 1 => {
+                let field_type = &fields.unnamed.first().unwrap().ty;
+                Some(quote! {
+                    impl event_sauce_core::EventType for #field_type {
+                        const EVENT_TYPE: &'static str = #event_type_name;
                     }
                 })
             }
@@ -268,6 +287,9 @@ pub fn derive_event(input: TokenStream) -> TokenStream {
 
         // Generate Into implementations for each variant
         #(#into_impls)*
+
+        // Generate EventType implementations for tuple variant inner types
+        #(#event_type_impls)*
 
         // Generate TryFrom implementations for idiomatic Rust conversions
         #try_from_impls

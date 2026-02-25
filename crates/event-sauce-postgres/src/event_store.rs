@@ -681,9 +681,8 @@ impl EventStore for PostgresEventStore {
 impl PostgresEventStore {
     /// Counts events in a stream using an optimized SQL COUNT(*) query.
     ///
-    /// This is a Postgres-specific optimization that's much faster than using
-    /// the generic [`count_events()`](event_sauce_core::count_events) function,
-    /// especially for streams with many events.
+    /// This is a Postgres-specific optimization that's much faster than
+    /// counting events by streaming them, especially for streams with many events.
     ///
     /// # Examples
     ///
@@ -1518,15 +1517,23 @@ mod tests {
                 .unwrap();
         }
 
-        // Compare optimized and generic counts
+        // Compare optimized count against manual stream count
         let fast_count = store.count_events_fast(stream_id.clone()).await.unwrap();
-        let generic_count = event_sauce_core::count_events(&store, stream_id)
+
+        let event_stream = store
+            .load_stream(stream_id, Version::initial())
             .await
             .unwrap();
+        futures::pin_mut!(event_stream);
+        let mut manual_count = 0;
+        while let Some(result) = futures::StreamExt::next(&mut event_stream).await {
+            result.unwrap();
+            manual_count += 1;
+        }
 
         assert_eq!(
-            fast_count, generic_count,
-            "Optimized count should match generic count"
+            fast_count, manual_count,
+            "Optimized count should match manual stream count"
         );
     }
 }

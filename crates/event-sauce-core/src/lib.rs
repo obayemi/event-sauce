@@ -41,8 +41,8 @@ mod subscription;
 mod types;
 mod version;
 
-#[cfg(test)]
-pub(crate) mod test_fixtures;
+#[doc(hidden)]
+pub mod test_fixtures;
 
 pub use aggregate::Aggregate;
 pub use aggregate_error::AggregateError;
@@ -54,7 +54,7 @@ pub use entity_id::EntityId;
 pub use error::{Error, Result};
 pub use event_applicator::EventApplicator;
 pub use event_envelope::{EventEnvelope, EventMetadata};
-pub use event_store::{count_events, load, EventStore, Position, Snapshot, StreamId};
+pub use event_store::{EventStore, Position, Snapshot, StreamId};
 pub use repository::Repository;
 pub use snapshot_config::{SnapshotConfig, SnapshotConfigBuilder};
 pub use snapshot_strategy::{AlwaysSnapshot, EveryNEvents, NeverSnapshot, SnapshotStrategy};
@@ -63,8 +63,5 @@ pub use subscription::{
     CheckpointStore, CheckpointStrategy, ErrorPolicy, EventFilter, Subscription,
     SubscriptionBuilder, SubscriptionConfig,
 };
-pub use types::{CheckpointStoreRef, EventStoreRef};
+pub use types::CheckpointStoreRef;
 pub use version::Version;
-
-#[doc(hidden)]
-pub use aggregate_root::tests_support;

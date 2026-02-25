@@ -21,18 +21,3 @@ use crate::CheckpointStore;
 /// let store: CheckpointStoreRef = Arc::new(my_checkpoint_store);
 /// ```
 pub type CheckpointStoreRef = Arc<dyn CheckpointStore>;
-
-/// Arc-wrapped event store for shared ownership across threads.
-///
-/// This generic type alias wraps any event store implementation in an `Arc`,
-/// allowing safe sharing between threads and tasks.
-///
-/// # Examples
-///
-/// ```ignore
-/// use event_sauce_core::EventStoreRef;
-/// use std::sync::Arc;
-///
-/// let store: EventStoreRef<PostgresEventStore> = Arc::new(postgres_store);
-/// ```
-pub type EventStoreRef<S> = Arc<S>;
