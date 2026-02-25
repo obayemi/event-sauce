@@ -35,10 +35,10 @@ Write the smallest test that fails for the right reason.
 ```rust
 #[test]
 fn test_add_item_to_cart() {
-    let mut cart = ShoppingCart::new(CartId::new());
+    let mut cart = AggregateRoot::<ShoppingCart>::new(EntityId::new());
 
     // This will fail because ShoppingCart doesn't exist yet
-    cart.add_item(ProductId::new(), "Coffee", 1299, 2).unwrap();
+    cart.add_item(EntityId::new(), "Coffee", 1299, 2).unwrap();
 
     assert_eq!(cart.item_count(), 1);
 }
@@ -49,23 +49,30 @@ fn test_add_item_to_cart() {
 Write the **minimum** code to pass the test.
 
 ```rust
+#[aggregate(event = "CartEvent", error = "CartError")]
+#[derive(Default)]
 pub struct ShoppingCart {
-    id: CartId,
+    #[id]
+    id: EntityId,
     items: Vec<CartItem>,
 }
 
 impl ShoppingCart {
-    pub fn new(id: CartId) -> Self {
-        Self { id, items: vec![] }
-    }
-
-    pub fn add_item(&mut self, id: ProductId, name: &str, price: i64, qty: u32) -> Result<()> {
-        self.items.push(CartItem { id, name: name.to_string(), price, quantity: qty });
-        Ok(())
-    }
-
     pub fn item_count(&self) -> usize {
         self.items.len()
+    }
+}
+
+impl AggregateRoot<ShoppingCart> {
+    pub fn add_item(&mut self, product_id: EntityId, name: &str, price: i64, qty: u32) -> Result<(), CartError> {
+        let event = ItemAddedEvent {
+            product_id,
+            name: name.to_string(),
+            price,
+            quantity: qty,
+            timestamp: Utc::now(),
+        };
+        self.apply(event)
     }
 }
 ```
@@ -75,29 +82,30 @@ impl ShoppingCart {
 Now improve the code while keeping tests green:
 
 ```rust
-// Extract event
-pub enum CartEvent {
-    ItemAdded {
-        product_id: ProductId,
-        name: String,
-        price: i64,
-        quantity: u32,
+// Use define_events! for less boilerplate
+define_events! {
+    pub enum CartEvent for ShoppingCart {
+        ItemAdded {
+            product_id: EntityId,
+            name: String,
+            price: i64,
+            quantity: u32,
+        } => |cart, event| {
+            cart.items.push(CartItem {
+                product_id: event.product_id,
+                name: event.name.clone(),
+                price: event.price,
+                quantity: event.quantity,
+            });
+        },
     }
 }
 
-// Use event sourcing
-impl ShoppingCart {
-    pub fn add_item(&mut self, id: ProductId, name: &str, price: i64, qty: u32) -> Result<()> {
-        let event = CartEvent::ItemAdded {
-            product_id: id,
-            name: name.to_string(),
-            price,
-            quantity: qty,
-        };
-
-        self.apply(&event);
-        self.pending_events.push(event);
-        Ok(())
+// Use command_handler! for command methods
+command_handler! {
+    impl ShoppingCart {
+        fn add_item(product_id: EntityId, name: String, price: i64, quantity: u32)
+            -> ItemAddedEvent { product_id, name, price, quantity };
     }
 }
 ```
@@ -112,8 +120,8 @@ Test business logic with clear structure:
 #[test]
 fn test_removing_item_decreases_quantity() {
     // GIVEN: A cart with 2 coffees
-    let mut cart = ShoppingCart::new(CartId::new());
-    let product_id = ProductId::new();
+    let mut cart = AggregateRoot::<ShoppingCart>::new(EntityId::new());
+    let product_id = EntityId::new();
     cart.add_item(product_id, "Coffee", 1299, 2).unwrap();
 
     // WHEN: Remove 1 coffee
@@ -131,21 +139,13 @@ Test by verifying events:
 ```rust
 #[test]
 fn test_adding_item_produces_event() {
-    let mut cart = ShoppingCart::new(CartId::new());
+    let mut cart = AggregateRoot::<ShoppingCart>::new(EntityId::new());
 
-    cart.add_item(ProductId::new(), "Coffee", 1299, 2).unwrap();
+    cart.add_item(EntityId::new(), "Coffee", 1299, 2).unwrap();
 
     // Verify the event
     let events = cart.pending_events();
     assert_eq!(events.len(), 1);
-
-    match &events[0] {
-        CartEvent::ItemAdded { name, quantity, .. } => {
-            assert_eq!(name, "Coffee");
-            assert_eq!(*quantity, 2);
-        }
-        _ => panic!("Wrong event type"),
-    }
 }
 ```
 
@@ -156,21 +156,20 @@ Test that events rebuild state correctly:
 ```rust
 #[test]
 fn test_events_reconstruct_state() {
-    let cart_id = CartId::new();
-    let product_id = ProductId::new();
+    let product_id = EntityId::new();
 
     // Build up events
-    let mut cart = ShoppingCart::new(cart_id);
+    let mut cart = AggregateRoot::<ShoppingCart>::new(EntityId::new());
     cart.add_item(product_id, "Coffee", 1299, 2).unwrap();
     cart.add_item(product_id, "Coffee", 1299, 1).unwrap();
     cart.remove_item(product_id, 1).unwrap();
 
     // Replay events
-    let events = cart.pending_events().clone();
-    let mut replayed = ShoppingCart::new(cart_id);
+    let events = cart.pending_events().to_vec();
+    let mut replayed = AggregateRoot::<ShoppingCart>::new(EntityId::new());
 
-    for event in events {
-        replayed.apply(&event);
+    for event in &events {
+        replayed.apply_unchecked(event);
     }
 
     // State should match
@@ -186,9 +185,9 @@ Test business rules are enforced:
 ```rust
 #[test]
 fn test_cannot_add_zero_quantity() {
-    let mut cart = ShoppingCart::new(CartId::new());
+    let mut cart = AggregateRoot::<ShoppingCart>::new(EntityId::new());
 
-    let result = cart.add_item(ProductId::new(), "Coffee", 1299, 0);
+    let result = cart.add_item(EntityId::new(), "Coffee", 1299, 0);
 
     assert!(result.is_err());
     assert_eq!(cart.item_count(), 0); // State unchanged
@@ -196,8 +195,8 @@ fn test_cannot_add_zero_quantity() {
 
 #[test]
 fn test_cannot_remove_more_than_available() {
-    let mut cart = ShoppingCart::new(CartId::new());
-    let product_id = ProductId::new();
+    let mut cart = AggregateRoot::<ShoppingCart>::new(EntityId::new());
+    let product_id = EntityId::new();
 
     cart.add_item(product_id, "Coffee", 1299, 2).unwrap();
 
@@ -217,7 +216,7 @@ use proptest::prelude::*;
 
 #[proptest]
 fn test_total_never_negative(operations: Vec<CartOperation>) {
-    let mut cart = ShoppingCart::new(CartId::new());
+    let mut cart = AggregateRoot::<ShoppingCart>::new(EntityId::new());
 
     for op in operations {
         let _ = cart.apply_operation(op);
@@ -228,7 +227,7 @@ fn test_total_never_negative(operations: Vec<CartOperation>) {
 
 #[proptest]
 fn test_version_always_increases(operations: Vec<CartOperation>) {
-    let mut cart = ShoppingCart::new(CartId::new());
+    let mut cart = AggregateRoot::<ShoppingCart>::new(EntityId::new());
     let mut prev_version = cart.version();
 
     for op in operations {
@@ -250,8 +249,8 @@ Let's build a shopping cart feature using TDD.
 ```rust
 #[test]
 fn test_add_item_to_empty_cart() {
-    let mut cart = ShoppingCart::new(CartId::new());
-    let product = ProductId::new();
+    let mut cart = AggregateRoot::<ShoppingCart>::new(EntityId::new());
+    let product = EntityId::new();
 
     cart.add_item(product, "Coffee", 1299, 2).unwrap();
 
@@ -263,55 +262,61 @@ fn test_add_item_to_empty_cart() {
 **GREEN - Minimal implementation:**
 
 ```rust
-#[derive(Aggregate)]
-pub struct ShoppingCart {
-    #[aggregate_id]
-    id: CartId,
-    items: HashMap<ProductId, CartItem>,
-    #[aggregate_version]
-    version: i64,
-    #[aggregate_events]
-    pending_events: Vec<CartEvent>,
+use event_sauce::prelude::*;
+use event_sauce_macros::AggregateError;
+use thiserror::Error;
+
+#[derive(AggregateError, Debug, Error)]
+enum CartError {
+    #[error("Invalid quantity: {0}")]
+    InvalidQuantity(u32),
+    #[error("Item not found")]
+    ItemNotFound(EntityId),
+    #[error("Insufficient quantity: available={available}, requested={requested}")]
+    InsufficientQuantity { available: u32, requested: u32 },
 }
 
-#[derive(Event)]
-pub enum CartEvent {
-    ItemAdded { product_id: ProductId, name: String, price: i64, quantity: u32 },
+#[aggregate(event = "CartEvent", error = "CartError")]
+#[derive(Default)]
+pub struct ShoppingCart {
+    #[id]
+    id: EntityId,
+    items: HashMap<EntityId, CartItem>,
+}
+
+define_events! {
+    pub enum CartEvent for ShoppingCart {
+        ItemAdded {
+            product_id: EntityId,
+            name: String,
+            price: i64,
+            quantity: u32,
+        } => |cart, event| {
+            cart.items.entry(event.product_id)
+                .and_modify(|item| item.quantity += event.quantity)
+                .or_insert(CartItem {
+                    name: event.name.clone(),
+                    price: event.price,
+                    quantity: event.quantity,
+                });
+        },
+    }
+}
+
+command_handler! {
+    impl ShoppingCart {
+        fn add_item(product_id: EntityId, name: String, price: i64, quantity: u32)
+            -> ItemAddedEvent { product_id, name, price, quantity };
+    }
 }
 
 impl ShoppingCart {
-    pub fn add_item(&mut self, id: ProductId, name: &str, price: i64, qty: u32) -> Result<()> {
-        let event = CartEvent::ItemAdded {
-            product_id: id,
-            name: name.to_string(),
-            price,
-            quantity: qty,
-        };
-
-        self.apply(&event);
-        self.pending_events.push(event);
-        Ok(())
-    }
-
     pub fn item_count(&self) -> usize {
         self.items.len()
     }
 
-    pub fn item_quantity(&self, id: ProductId) -> Option<u32> {
+    pub fn item_quantity(&self, id: EntityId) -> Option<u32> {
         self.items.get(&id).map(|item| item.quantity)
-    }
-
-    fn apply(&mut self, event: &CartEvent) {
-        match event {
-            CartEvent::ItemAdded { product_id, name, price, quantity } => {
-                self.items.insert(*product_id, CartItem {
-                    name: name.clone(),
-                    price: *price,
-                    quantity: *quantity,
-                });
-                self.version += 1;
-            }
-        }
     }
 }
 ```
@@ -323,8 +328,8 @@ impl ShoppingCart {
 ```rust
 #[test]
 fn test_add_same_item_increases_quantity() {
-    let mut cart = ShoppingCart::new(CartId::new());
-    let product = ProductId::new();
+    let mut cart = AggregateRoot::<ShoppingCart>::new(EntityId::new());
+    let product = EntityId::new();
 
     cart.add_item(product, "Coffee", 1299, 2).unwrap();
     cart.add_item(product, "Coffee", 1299, 1).unwrap();
@@ -334,24 +339,7 @@ fn test_add_same_item_increases_quantity() {
 }
 ```
 
-**GREEN:**
-
-```rust
-fn apply(&mut self, event: &CartEvent) {
-    match event {
-        CartEvent::ItemAdded { product_id, name, price, quantity } => {
-            self.items.entry(*product_id)
-                .and_modify(|item| item.quantity += quantity)
-                .or_insert(CartItem {
-                    name: name.clone(),
-                    price: *price,
-                    quantity: *quantity,
-                });
-            self.version += 1;
-        }
-    }
-}
-```
+**GREEN:** Already handled by the `and_modify` in the apply logic above.
 
 ### Iteration 3: Validate Quantity
 
@@ -360,23 +348,41 @@ fn apply(&mut self, event: &CartEvent) {
 ```rust
 #[test]
 fn test_cannot_add_zero_quantity() {
-    let mut cart = ShoppingCart::new(CartId::new());
+    let mut cart = AggregateRoot::<ShoppingCart>::new(EntityId::new());
 
-    let result = cart.add_item(ProductId::new(), "Coffee", 1299, 0);
+    let result = cart.add_item(EntityId::new(), "Coffee", 1299, 0);
 
     assert!(matches!(result, Err(CartError::InvalidQuantity(0))));
 }
 ```
 
-**GREEN:**
+**GREEN:** Add validation to the event:
 
 ```rust
-pub fn add_item(&mut self, id: ProductId, name: &str, price: i64, qty: u32) -> Result<(), CartError> {
-    if qty == 0 {
-        return Err(CartError::InvalidQuantity(qty));
+define_events! {
+    pub enum CartEvent for ShoppingCart {
+        ItemAdded {
+            product_id: EntityId,
+            name: String,
+            price: i64,
+            quantity: u32,
+        }
+        @validate {
+            if self.quantity == 0 {
+                return Err(CartError::InvalidQuantity(self.quantity));
+            }
+            return Ok(());
+        }
+        => |cart, event| {
+            cart.items.entry(event.product_id)
+                .and_modify(|item| item.quantity += event.quantity)
+                .or_insert(CartItem {
+                    name: event.name.clone(),
+                    price: event.price,
+                    quantity: event.quantity,
+                });
+        },
     }
-
-    // ... rest of implementation
 }
 ```
 
@@ -387,8 +393,8 @@ pub fn add_item(&mut self, id: ProductId, name: &str, price: i64, qty: u32) -> R
 ```rust
 #[test]
 fn test_remove_item_decreases_quantity() {
-    let mut cart = ShoppingCart::new(CartId::new());
-    let product = ProductId::new();
+    let mut cart = AggregateRoot::<ShoppingCart>::new(EntityId::new());
+    let product = EntityId::new();
 
     cart.add_item(product, "Coffee", 1299, 3).unwrap();
     cart.remove_item(product, 1).unwrap();
@@ -397,30 +403,43 @@ fn test_remove_item_decreases_quantity() {
 }
 ```
 
-**GREEN:**
+**GREEN:** Add ItemRemoved event and remove_item command:
 
 ```rust
-#[derive(Event)]
-pub enum CartEvent {
-    ItemAdded { ... },
-    ItemRemoved { product_id: ProductId, quantity: u32 },
+define_events! {
+    pub enum CartEvent for ShoppingCart {
+        ItemAdded { ... } => ...,
+
+        ItemRemoved { product_id: EntityId, quantity: u32 }
+        @validate {
+            let current = aggregate.items.get(&self.product_id)
+                .ok_or(CartError::ItemNotFound(self.product_id))?;
+            if current.quantity < self.quantity {
+                return Err(CartError::InsufficientQuantity {
+                    available: current.quantity,
+                    requested: self.quantity,
+                });
+            }
+            return Ok(());
+        }
+        => |cart, event| {
+            if let Some(item) = cart.items.get_mut(&event.product_id) {
+                item.quantity -= event.quantity;
+                if item.quantity == 0 {
+                    cart.items.remove(&event.product_id);
+                }
+            }
+        },
+    }
 }
 
-pub fn remove_item(&mut self, id: ProductId, qty: u32) -> Result<(), CartError> {
-    let current = self.items.get(&id)
-        .ok_or(CartError::ItemNotFound(id))?;
-
-    if current.quantity < qty {
-        return Err(CartError::InsufficientQuantity {
-            available: current.quantity,
-            requested: qty,
-        });
+command_handler! {
+    impl ShoppingCart {
+        fn add_item(product_id: EntityId, name: String, price: i64, quantity: u32)
+            -> ItemAddedEvent { product_id, name, price, quantity };
+        fn remove_item(product_id: EntityId, quantity: u32)
+            -> ItemRemovedEvent { product_id, quantity };
     }
-
-    let event = CartEvent::ItemRemoved { product_id: id, quantity: qty };
-    self.apply(&event);
-    self.pending_events.push(event);
-    Ok(())
 }
 ```
 
@@ -433,35 +452,35 @@ pub fn remove_item(&mut self, id: ProductId, qty: u32) -> Result<(), CartError> 
 cargo install cargo-llvm-cov
 
 # Generate HTML report
-cargo llvm-cov --workspace --html
+cargo llvm-cov --workspace --all-features --all-targets --html
 open target/llvm-cov/html/index.html
 
 # Generate LCOV for CI
-cargo llvm-cov --workspace --lcov --output-path coverage.lcov
+cargo llvm-cov --workspace --all-features --all-targets --lcov --output-path coverage.lcov
 
 # Check coverage percentage
-cargo llvm-cov --workspace --summary-only
+cargo llvm-cov --workspace --all-features --all-targets --summary-only
 ```
 
 ### Aim for 100% Coverage
 
 ```bash
 # This project enforces 100% coverage
-cargo llvm-cov --workspace --fail-under-lines 100
+cargo llvm-cov --workspace --all-features --all-targets --fail-under-lines 100
 ```
 
 ### Run Clippy
 
 ```bash
 # Zero warnings policy
-cargo clippy --workspace -- -D warnings
+cargo clippy --workspace --all-features --all-targets -- -D warnings
 ```
 
 ### Run Tests
 
 ```bash
 # All tests
-cargo test --workspace
+cargo test --workspace --all-features --all-targets
 
 # With output
 cargo test --workspace -- --nocapture
@@ -497,50 +516,50 @@ For each aggregate, test:
 
 ## Common Pitfalls
 
-### ❌ Testing Implementation Details
+### Testing Implementation Details (Bad)
 
 ```rust
 #[test]
 fn test_internal_hashmap_size() {
-    let cart = ShoppingCart::new(CartId::new());
-    assert_eq!(cart.items.len(), 0); // BAD: Testing internal structure
+    let cart = AggregateRoot::<ShoppingCart>::new(EntityId::new());
+    // BAD: Testing internal structure directly
 }
 ```
 
-### ✅ Testing Behavior
+### Testing Behavior (Good)
 
 ```rust
 #[test]
 fn test_new_cart_is_empty() {
-    let cart = ShoppingCart::new(CartId::new());
+    let cart = AggregateRoot::<ShoppingCart>::new(EntityId::new());
     assert_eq!(cart.item_count(), 0); // GOOD: Testing public API
 }
 ```
 
-### ❌ Not Testing Event Replay
+### Not Testing Event Replay (Bad)
 
 ```rust
 #[test]
 fn test_add_item() {
-    let mut cart = ShoppingCart::new(CartId::new());
-    cart.add_item(ProductId::new(), "Coffee", 1299, 2).unwrap();
+    let mut cart = AggregateRoot::<ShoppingCart>::new(EntityId::new());
+    cart.add_item(EntityId::new(), "Coffee", 1299, 2).unwrap();
     assert_eq!(cart.item_count(), 1); // Incomplete: Doesn't test replay
 }
 ```
 
-### ✅ Testing Event Replay
+### Testing Event Replay (Good)
 
 ```rust
 #[test]
 fn test_add_item_and_replay() {
-    let mut cart = ShoppingCart::new(CartId::new());
-    cart.add_item(ProductId::new(), "Coffee", 1299, 2).unwrap();
+    let mut cart = AggregateRoot::<ShoppingCart>::new(EntityId::new());
+    cart.add_item(EntityId::new(), "Coffee", 1299, 2).unwrap();
 
     // Test replay
-    let events = cart.pending_events().clone();
-    let mut replayed = ShoppingCart::new(cart.id());
-    for event in events {
-        replayed.apply(&event);
+    let events = cart.pending_events().to_vec();
+    let mut replayed = AggregateRoot::<ShoppingCart>::new(EntityId::new());
+    for event in &events {
+        replayed.apply_unchecked(event);
     }
 
     assert_eq!(replayed.item_count(), cart.item_count());
@@ -551,5 +570,5 @@ fn test_add_item_and_replay() {
 
 - [Getting Started Guide](getting-started.md)
 - [Architecture Overview](architecture.md)
-- [Examples](../examples/)
+- [Examples](../crates/event-sauce/examples/)
 - [proptest Documentation](https://docs.rs/proptest/)

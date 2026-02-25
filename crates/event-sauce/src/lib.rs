@@ -9,10 +9,10 @@
 //! ```rust,ignore
 //! use event_sauce::prelude::*;
 //!
-//! #[derive(Aggregate)]
+//! #[aggregate(event = "CounterEvent", error = "CounterError")]
 //! struct Counter {
-//!     #[aggregate_id]
-//!     id: Uuid,
+//!     #[id]
+//!     id: EntityId,
 //!     count: i32,
 //! }
 //! ```

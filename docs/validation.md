@@ -35,7 +35,7 @@ Event-sauce supports multiple validation strategies:
 Validate in aggregate methods before creating events:
 
 ```rust
-impl BankAccount {
+impl AggregateRoot<BankAccount> {
     fn withdraw(&mut self, amount: i64) -> Result<(), AccountError> {
         // Validate business rules
         if self.status != AccountStatus::Active {
@@ -54,15 +54,12 @@ impl BankAccount {
         }
 
         // Create and apply event (validation passed)
-        let event = AccountEvent::Withdrawn {
+        let event = AccountWithdrawnEvent {
             amount,
             timestamp: Utc::now(),
         };
 
-        self.apply(&event);
-        self.pending_events.push(event);
-
-        Ok(())
+        self.apply(event)
     }
 }
 ```
@@ -78,7 +75,7 @@ impl BankAccount {
 Implement validation on events using `ApplyEvent` trait:
 
 ```rust
-impl ApplyEvent<BankAccount, AccountError> for WithdrawnEvent {
+impl ApplyEvent<BankAccount> for AccountWithdrawnEvent {
     fn validate(&self, account: &BankAccount) -> Result<(), AccountError> {
         if account.status != AccountStatus::Active {
             return Err(AccountError::AccountNotActive(account.status));
@@ -115,27 +112,21 @@ impl ApplyEvent<BankAccount, AccountError> for WithdrawnEvent {
 Combine business method and event validation:
 
 ```rust
-impl BankAccount {
+impl AggregateRoot<BankAccount> {
     fn withdraw(&mut self, amount: i64) -> Result<(), AccountError> {
         // Quick pre-checks
         if amount <= 0 {
             return Err(AccountError::InvalidAmount(amount));
         }
 
-        // Create event
-        let event = AccountEvent::Withdrawn {
+        // Create event - apply() calls validate() automatically
+        let event = AccountWithdrawnEvent {
             amount,
             timestamp: Utc::now(),
         };
 
-        // Event validates itself
-        event.validate(self)?;
-
-        // Apply and record
-        self.apply(&event);
-        self.pending_events.push(event);
-
-        Ok(())
+        // apply() validates, applies, increments version, and records the event
+        self.apply(event)
     }
 }
 ```
@@ -156,7 +147,7 @@ Business methods are the primary place for validation.
 Validate command parameters:
 
 ```rust
-fn transfer(&mut self, to: AccountId, amount: i64) -> Result<(), AccountError> {
+fn transfer(&mut self, to: EntityId, amount: i64) -> Result<(), AccountError> {
     // Validate amount
     if amount <= 0 {
         return Err(AccountError::InvalidAmount(amount));
@@ -266,13 +257,10 @@ Events can optionally implement validation via `ApplyEvent` trait.
 By default, events have no validation:
 
 ```rust
-impl<A, E: AggregateError> ApplyEvent<A, E> for MyEvent {
-    // Default: no validation
-    fn validate(&self, _aggregate: &A) -> Result<(), E> {
-        Ok(())
-    }
+impl ApplyEvent<MyAggregate> for MyEvent {
+    // Default validate() returns Ok(()) - no need to override
 
-    fn apply(&self, aggregate: &mut A) {
+    fn apply(&self, aggregate: &mut MyAggregate) {
         // State changes...
     }
 }
@@ -283,7 +271,7 @@ impl<A, E: AggregateError> ApplyEvent<A, E> for MyEvent {
 Override `validate()` for event-specific rules:
 
 ```rust
-impl ApplyEvent<Order, OrderError> for ItemAddedEvent {
+impl ApplyEvent<Order> for ItemAddedEvent {
     fn validate(&self, order: &Order) -> Result<(), OrderError> {
         // Check order is in correct state
         if order.status != OrderStatus::Draft {
@@ -337,12 +325,12 @@ Historical events skip validation during replay for performance.
 
 ```rust
 // Creating new events: validate
-let event = AccountEvent::Withdrawn { amount: 100, .. };
-account.apply(&event)?;  // May validate
+let event = AccountWithdrawnEvent { amount: 100, timestamp: Utc::now() };
+account.apply(event)?;  // Validates, applies, increments version, records event
 
 // Replaying historical events: no validation
 for event in historical_events {
-    account.apply_unchecked(&event);  // No validation
+    account.apply_unchecked(&event);  // No validation, just applies and increments version
 }
 ```
 
@@ -351,13 +339,11 @@ for event in historical_events {
 The `Aggregate` trait provides a default implementation:
 
 ```rust
-impl Aggregate for BankAccount {
-    // ...
-
-    // apply_unchecked is now a default method on the Aggregate trait.
-    // It uses EventApplicator::dispatch_unchecked() for direct state change
-    // followed by version increment.
-}
+// apply_unchecked is a method on AggregateRoot<A>.
+// It uses EventApplicator::dispatch_unchecked() for direct state change
+// followed by version increment, without recording the event as pending.
+let mut account = AggregateRoot::<BankAccount>::new(EntityId::new());
+account.apply_unchecked(&event);  // No validation, direct state mutation
 ```
 
 ### Why Skip Validation on Replay?
@@ -370,25 +356,16 @@ impl Aggregate for BankAccount {
 ### Example: Reconstructing from History
 
 ```rust
-impl BankAccount {
-    /// Reconstruct account from event history
-    fn from_events(id: AccountId, events: Vec<AccountEvent>) -> Self {
-        let mut account = Self {
-            id,
-            owner: String::new(),
-            balance: 0,
-            status: AccountStatus::Active,
-            version: Version::initial(),
-            pending_events: Vec::new(),
-        };
+/// Reconstruct account from event history
+fn from_events(id: EntityId, events: Vec<AccountEvent>) -> AggregateRoot<BankAccount> {
+    let mut account = AggregateRoot::<BankAccount>::new(id);
 
-        // Fast replay without validation
-        for event in events {
-            account.apply_unchecked(&event);
-        }
-
-        account
+    // Fast replay without validation
+    for event in &events {
+        account.apply_unchecked(event);
     }
+
+    account
 }
 ```
 
@@ -403,8 +380,7 @@ Test that valid operations succeed:
 ```rust
 #[test]
 fn test_withdraw_with_sufficient_funds() {
-    let mut account = BankAccount::open(
-        AccountId::new(),
+    let mut account = AggregateRoot::<BankAccount>::open(
         "Alice".to_string(),
         1000,
     ).unwrap();
@@ -423,8 +399,7 @@ Test that invalid operations fail with correct errors:
 ```rust
 #[test]
 fn test_withdraw_insufficient_funds() {
-    let mut account = BankAccount::open(
-        AccountId::new(),
+    let mut account = AggregateRoot::<BankAccount>::open(
         "Alice".to_string(),
         100,
     ).unwrap();
@@ -443,8 +418,7 @@ fn test_withdraw_insufficient_funds() {
 
 #[test]
 fn test_withdraw_negative_amount() {
-    let mut account = BankAccount::open(
-        AccountId::new(),
+    let mut account = AggregateRoot::<BankAccount>::open(
         "Alice".to_string(),
         1000,
     ).unwrap();
@@ -468,8 +442,7 @@ Test edge cases and boundaries:
 ```rust
 #[test]
 fn test_withdraw_exact_balance() {
-    let mut account = BankAccount::open(
-        AccountId::new(),
+    let mut account = AggregateRoot::<BankAccount>::open(
         "Alice".to_string(),
         1000,
     ).unwrap();
@@ -482,8 +455,7 @@ fn test_withdraw_exact_balance() {
 
 #[test]
 fn test_withdraw_zero_amount() {
-    let mut account = BankAccount::open(
-        AccountId::new(),
+    let mut account = AggregateRoot::<BankAccount>::open(
         "Alice".to_string(),
         1000,
     ).unwrap();
@@ -501,8 +473,7 @@ Test validation across state changes:
 ```rust
 #[test]
 fn test_cannot_withdraw_from_frozen_account() {
-    let mut account = BankAccount::open(
-        AccountId::new(),
+    let mut account = AggregateRoot::<BankAccount>::open(
         "Alice".to_string(),
         1000,
     ).unwrap();
@@ -534,11 +505,8 @@ fn set_age(&mut self, age: u8) -> Result<(), UserError> {
         return Err(UserError::InvalidAge { age });
     }
 
-    let event = UserEvent::AgeUpdated { age, .. };
-    self.apply(&event);
-    self.pending_events.push(event);
-
-    Ok(())
+    let event = AgeUpdatedEvent { age, timestamp: Utc::now() };
+    self.apply(event)
 }
 ```
 
@@ -551,11 +519,8 @@ fn set_email(&mut self, email: String) -> Result<(), UserError> {
         return Err(UserError::InvalidEmail { email });
     }
 
-    let event = UserEvent::EmailUpdated { email, .. };
-    self.apply(&event);
-    self.pending_events.push(event);
-
-    Ok(())
+    let event = EmailUpdatedEvent { email, timestamp: Utc::now() };
+    self.apply(event)
 }
 ```
 
@@ -579,11 +544,8 @@ fn ship(&mut self) -> Result<(), OrderError> {
         }
     }
 
-    let event = OrderEvent::Shipped { .. };
-    self.apply(&event);
-    self.pending_events.push(event);
-
-    Ok(())
+    let event = OrderShippedEvent { timestamp: Utc::now() };
+    self.apply(event)
 }
 ```
 
@@ -603,11 +565,8 @@ fn add_item(&mut self, item: OrderItem) -> Result<(), OrderError> {
         });
     }
 
-    let event = OrderEvent::ItemAdded { item, .. };
-    self.apply(&event);
-    self.pending_events.push(event);
-
-    Ok(())
+    let event = ItemAddedEvent { item, timestamp: Utc::now() };
+    self.apply(event)
 }
 ```
 
@@ -632,11 +591,8 @@ fn schedule_delivery(&mut self, date: DateTime<Utc>) -> Result<(), OrderError> {
         });
     }
 
-    let event = OrderEvent::DeliveryScheduled { date, .. };
-    self.apply(&event);
-    self.pending_events.push(event);
-
-    Ok(())
+    let event = DeliveryScheduledEvent { date, timestamp: Utc::now() };
+    self.apply(event)
 }
 ```
 
@@ -771,7 +727,7 @@ IsActive.validate_or(&account, |msg| AccountError::ValidationFailed(msg))?;
 Fail fast with early validation:
 
 ```rust
-✅ Good:
+// Good:
 fn process(&mut self, data: Data) -> Result<(), Error> {
     // Validate first
     if data.amount <= 0 {
@@ -779,20 +735,21 @@ fn process(&mut self, data: Data) -> Result<(), Error> {
     }
 
     // Then process
-    let event = ...;
-    self.apply(&event);
+    let event = DataProcessedEvent { amount: data.amount, timestamp: Utc::now() };
+    self.apply(event)
 }
 
-❌ Bad:
+// Bad:
 fn process(&mut self, data: Data) -> Result<(), Error> {
     // Process first
-    let event = ...;
-    self.apply(&event);
+    let event = DataProcessedEvent { amount: data.amount, timestamp: Utc::now() };
+    self.apply(event)?;
 
     // Validate later (too late!)
     if data.amount <= 0 {
         return Err(Error::InvalidAmount);
     }
+    Ok(())
 }
 ```
 
@@ -837,28 +794,31 @@ Keep your `ApplyEvent::apply()` implementations pure:
 **Note**: With the modern pattern, you implement `ApplyEvent` trait for each event struct. The dispatching is handled by the `EventApplicator` trait, auto-generated by the `#[event(aggregate = "...")]` attribute or `define_events!` macro.
 
 ```rust
-✅ Good:
-impl ApplyEvent<BankAccountAggregate, AccountError> for AccountWithdrawnEvent {
-    fn validate(&self, account: &BankAccountAggregate) -> Result<(), AccountError> {
+// Good:
+impl ApplyEvent<BankAccount> for AccountWithdrawnEvent {
+    fn validate(&self, account: &BankAccount) -> Result<(), AccountError> {
         // Validation happens HERE
         if account.balance < self.amount {
-            return Err(AccountError::InsufficientFunds { .. });
+            return Err(AccountError::InsufficientFunds {
+                balance: account.balance,
+                requested: self.amount,
+            });
         }
         Ok(())
     }
 
-    fn apply(&self, account: &mut BankAccountAggregate) {
+    fn apply(&self, account: &mut BankAccount) {
         // Pure state change only - NO validation!
         account.balance -= self.amount;
     }
 }
 
-❌ Bad:
-impl ApplyEvent<BankAccountAggregate, AccountError> for AccountWithdrawnEvent {
-    fn apply(&self, account: &mut BankAccountAggregate) {
+// Bad:
+impl ApplyEvent<BankAccount> for AccountWithdrawnEvent {
+    fn apply(&self, account: &mut BankAccount) {
         // Don't validate in apply!
         if account.balance < self.amount {
-            panic!("Insufficient funds");  // ❌ Wrong!
+            panic!("Insufficient funds");  // Wrong!
         }
         account.balance -= self.amount;
     }

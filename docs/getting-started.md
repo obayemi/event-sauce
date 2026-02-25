@@ -8,24 +8,22 @@ Here's a complete counter aggregate in ~30 lines:
 
 ```rust
 use event_sauce::prelude::*;
-use event_sauce_macros::{AggregateError, AggregateId};
+use event_sauce_macros::AggregateError;
 use thiserror::Error;
-use uuid::Uuid;
 
-// 1. Define ID and errors
-#[derive(AggregateId, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-struct CounterId(Uuid);
-
+// 1. Define errors
 #[derive(AggregateError, Debug, Error)]
 enum CounterError {
     #[error("Invalid amount: {0}")]
     InvalidAmount(i32),
 }
 
-// 2. Define aggregate
-#[aggregate(id = "CounterId", event = "CounterEvent", error = "CounterError")]
+// 2. Define aggregate (EntityId is the universal ID type)
+#[aggregate(event = "CounterEvent", error = "CounterError")]
 #[derive(Default)]
 struct Counter {
+    #[id]
+    id: EntityId,
     value: i32,
 }
 
@@ -40,23 +38,17 @@ define_events! {
             return Ok(());
         }
         => |counter, event| {
-            counter.state.value += event.amount;
+            counter.value += event.amount;
         },
 
         Decremented { amount: i32 }
         => |counter, event| {
-            counter.state.value -= event.amount;
+            counter.value -= event.amount;
         },
     }
 }
 
-// 4. Implement commands
-impl Counter {
-    fn create() -> Self {
-        Self::new(CounterId(Uuid::new_v4()))
-    }
-}
-
+// 4. Implement commands (generates CounterCommands trait on AggregateRoot<Counter>)
 command_handler! {
     impl Counter {
         fn increment(amount: i32) -> IncrementedEvent { amount };
@@ -98,7 +90,6 @@ Add event-sauce to your `Cargo.toml`:
 [dependencies]
 event-sauce = { version = "0.1", features = ["macros", "memory"] }
 tokio = { version = "1.48", features = ["full"] }
-uuid = { version = "1.18", features = ["v4", "serde"] }
 serde = { version = "1.0", features = ["derive"] }
 ```
 
@@ -106,20 +97,7 @@ serde = { version = "1.0", features = ["derive"] }
 
 Let's create a simple counter aggregate. An **aggregate** is a consistency boundary in your domain that processes commands and produces events.
 
-### Step 1: Define the Aggregate ID
-
-```rust
-use event_sauce::prelude::*;
-use event_sauce_macros::AggregateId;
-use uuid::Uuid;
-
-#[derive(AggregateId, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-struct CounterId(Uuid);
-```
-
-The `#[derive(AggregateId)]` macro automatically implements the `AggregateId` trait and `Display`. Use `CounterId(Uuid::new_v4())` when you need a new ID.
-
-### Step 2: Define Domain Errors
+### Step 1: Define Domain Errors
 
 ```rust
 use event_sauce_macros::AggregateError;
@@ -132,22 +110,28 @@ enum CounterError {
 }
 ```
 
-### Step 3: Define the Aggregate
+### Step 2: Define the Aggregate
 
 ```rust
-#[aggregate(id = "CounterId", event = "CounterEvent", error = "CounterError")]
+use event_sauce::prelude::*;
+
+#[aggregate(event = "CounterEvent", error = "CounterError")]
 #[derive(Default)]
 struct Counter {
+    #[id]
+    id: EntityId,
     value: i32,
 }
 ```
 
-The `#[aggregate(...)]` macro generates everything you need:
-- Infrastructure wrapper with `id`, `version`, and `pending_events`
-- Implements the `Aggregate` trait
-- Provides transparent field access
+The `#[aggregate(...)]` macro generates:
+- `Entity` trait implementation (using the `#[id]` field)
+- `Aggregate` trait implementation (with Event + Error types)
+- Read-only field access via `AggregateRoot<Counter>` through `Deref`
 
-### Step 4: Define Events with Validation
+All entities use `EntityId` (a UUID-backed newtype) as their identifier. No custom ID types needed.
+
+### Step 3: Define Events with Validation
 
 ```rust
 use event_sauce::define_events;
@@ -164,14 +148,14 @@ define_events! {
             return Ok(());
         }
         => |counter, event| {
-            counter.state.value += event.amount;
+            counter.value += event.amount;
         },
 
         Decremented {
             amount: i32,
         }
         => |counter, event| {
-            counter.state.value -= event.amount;
+            counter.value -= event.amount;
         },
     }
 }
@@ -185,17 +169,13 @@ define_events! {
 
 **Benefits:** 60% less boilerplate, inline validation, type-safe apply logic.
 
-### Step 5: Implement Business Logic
+### Step 4: Implement Business Logic
 
 ```rust
 use event_sauce::command_handler;
 
-impl Counter {
-    fn create() -> Self {
-        Self::new(CounterId(Uuid::new_v4()))
-    }
-}
-
+// Auto-generate command methods on AggregateRoot<Counter>
+// This generates a CounterCommands trait implemented on AggregateRoot<Counter>
 command_handler! {
     impl Counter {
         fn increment(amount: i32) -> IncrementedEvent { amount };
@@ -205,9 +185,22 @@ command_handler! {
 ```
 
 That's it! Your aggregate is ready with full event sourcing capabilities:
-- ✅ **70% less boilerplate** - Automatic event creation and timestamp handling
-- ✅ **Type-safe** - Compile-time validation
-- ✅ **Inline validation** - Business rules enforced during command execution
+- 70% less boilerplate - Automatic event creation and timestamp handling
+- Type-safe - Compile-time validation
+- Inline validation - Business rules enforced during command execution
+
+Usage:
+
+```rust
+use event_sauce::prelude::*;
+
+let mut counter = AggregateRoot::<Counter>::new(EntityId::new());
+counter.increment(5)?;  // Via CounterCommands trait
+counter.increment(3)?;
+counter.decrement(2)?;
+
+assert_eq!(counter.value, 6);  // Read-only access via Deref
+```
 
 ## Storing and Loading
 
@@ -229,17 +222,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // let store = InMemoryEventStore::new();
 
     // Create and use the counter
-    let mut counter = Counter::create();
+    let mut counter = AggregateRoot::<Counter>::new(EntityId::new());
     counter.increment(5)?;
     counter.increment(3)?;
     counter.decrement(2)?;
 
     // Save to store
-    let id = counter.id();
-    save_aggregate(&store, &counter).await?;
+    let id = counter.entity_id();
+    store.commit(&mut counter).await?;
 
     // Load from store
-    let loaded: Counter = load_aggregate(&store, id).await?;
+    let loaded: AggregateRoot<Counter> = load(&store, id).await?;
     println!("Counter value: {}", loaded.value);
 
     Ok(())
@@ -270,55 +263,6 @@ let store = InMemoryEventStore::builder()
     .build();
 ```
 
-### Helper Functions
-
-```rust
-async fn save_aggregate<A, S>(
-    store: &S,
-    aggregate: &A,
-) -> Result<(), S::Error>
-where
-    A: Aggregate,
-    S: EventStore,
-{
-    let stream_id = format!("{}-{}", A::TYPE_NAME, aggregate.id());
-
-    store.append(
-        &stream_id,
-        A::TYPE_NAME,
-        aggregate.version(),
-        aggregate.pending_events()
-            .iter()
-            .map(|e| e.to_envelope(&stream_id))
-            .collect::<Result<Vec<_>, _>>()?,
-    ).await?;
-
-    Ok(())
-}
-
-async fn load_aggregate<A, S>(
-    store: &S,
-    id: A::Id,
-) -> Result<A, S::Error>
-where
-    A: Aggregate,
-    S: EventStore,
-{
-    let stream_id = format!("{}-{}", A::TYPE_NAME, id);
-    let mut stream = store.load_stream(&stream_id, 0).await?;
-
-    let mut aggregate = A::default();
-
-    while let Some(envelope) = stream.next().await {
-        let envelope = envelope?;
-        let event = A::Event::from_envelope(&envelope)?;
-        aggregate.apply(&event);
-    }
-
-    Ok(aggregate)
-}
-```
-
 ## Building Projections (Read Models)
 
 Build type-safe read models with the `projection!` macro:
@@ -326,6 +270,7 @@ Build type-safe read models with the `projection!` macro:
 ```rust
 use event_sauce::projection;
 use std::collections::HashMap;
+use uuid::Uuid;
 
 #[derive(Debug, Clone)]
 struct CounterView {
@@ -335,10 +280,10 @@ struct CounterView {
 
 projection! {
     pub struct CounterListProjection {
-        state: HashMap<CounterId, CounterView>,
+        state: HashMap<Uuid, CounterView>,
 
-        on "Counter.Incremented" => IncrementedEvent |proj, event| {
-            proj.state.entry(event.aggregate_id)
+        on CounterEvent::Incremented |proj, event, aggregate_id| {
+            proj.state.entry(aggregate_id)
                 .and_modify(|v| {
                     v.value += event.amount;
                     v.total_operations += 1;
@@ -349,8 +294,8 @@ projection! {
                 });
         },
 
-        on "Counter.Decremented" => DecrementedEvent |proj, event| {
-            if let Some(counter) = proj.state.get_mut(&event.aggregate_id) {
+        on CounterEvent::Decremented |proj, event, aggregate_id| {
+            if let Some(counter) = proj.state.get_mut(&aggregate_id) {
                 counter.value -= event.amount;
                 counter.total_operations += 1;
             }
@@ -374,9 +319,9 @@ while let Some(result) = stream.next().await {
 ```
 
 **Benefits:**
-- ✅ Declarative event-to-handler mapping
-- ✅ Type-safe with automatic deserialization
-- ✅ Unknown events safely ignored
+- Declarative event-to-handler mapping
+- Type-safe with automatic deserialization
+- Unknown events safely ignored
 
 ## Testing
 
@@ -389,16 +334,16 @@ mod tests {
 
     #[test]
     fn test_counter_increment() {
-        let mut counter = Counter::create();
+        let mut counter = AggregateRoot::<Counter>::new(EntityId::new());
         counter.increment(5).unwrap();
 
         assert_eq!(counter.value, 5);
-        assert_eq!(counter.version(), 1);
+        assert_eq!(counter.version(), Version::new(1));
     }
 
     #[test]
     fn test_invalid_amount_rejected() {
-        let mut counter = Counter::create();
+        let mut counter = AggregateRoot::<Counter>::new(EntityId::new());
         let result = counter.increment(-5);
 
         assert!(result.is_err());
@@ -407,16 +352,16 @@ mod tests {
 
     #[test]
     fn test_event_replay() {
-        let mut counter = Counter::create();
+        let mut counter = AggregateRoot::<Counter>::new(EntityId::new());
         counter.increment(10).unwrap();
         counter.decrement(3).unwrap();
 
         // Events can be replayed to reconstruct state
-        let events = counter.pending_events().clone();
-        let mut replayed = Counter::create();
+        let events = counter.pending_events().to_vec();
+        let mut replayed = AggregateRoot::<Counter>::new(EntityId::new());
 
-        for event in events {
-            replayed.apply_unchecked(&event);
+        for event in &events {
+            replayed.apply_unchecked(event);
         }
 
         assert_eq!(replayed.value, counter.value);
@@ -443,12 +388,12 @@ Now that you understand the basics, explore:
 ```rust
 async fn handle_increment_command(
     store: &impl EventStore,
-    id: CounterId,
+    id: EntityId,
     amount: i32,
 ) -> Result<()> {
-    let mut counter = load_aggregate(store, id).await?;
+    let mut counter: AggregateRoot<Counter> = load(store, id).await?;
     counter.increment(amount)?;
-    save_aggregate(store, &counter).await?;
+    store.commit(&mut counter).await?;
     Ok(())
 }
 ```
@@ -463,11 +408,11 @@ use event_sauce::Repository;
 let repo = Repository::new(store);
 
 // Save and load aggregates
-let mut counter = Counter::create();
+let mut counter = AggregateRoot::<Counter>::new(EntityId::new());
 counter.increment(5)?;
 repo.save(&counter).await?;
 
-let loaded = repo.load::<Counter>(counter.id()).await?;
+let loaded = repo.load::<Counter>(counter.entity_id()).await?;
 ```
 
 ## Tips

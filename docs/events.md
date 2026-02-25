@@ -1,6 +1,6 @@
 # Event System Guide
 
-This guide explains how to define and work with events in event-sauce using the new event system with aggregate-specific errors and validation.
+This guide explains how to define and work with events in event-sauce using the event system with aggregate-specific errors and validation.
 
 ## Table of Contents
 
@@ -36,15 +36,15 @@ The **`define_events!` macro** is the recommended way to define events in event-
 - `From` conversions between event structs and the enum
 
 **Benefits:**
-- ✅ **60% less boilerplate** - No manual struct definitions or trait implementations
-- ✅ **Declarative syntax** - Clear event definitions with inline validation and apply logic
-- ✅ **Type-safe validation** - Business rules co-located with events
-- ✅ **Automatic versioning** - Support for schema evolution with `@version`
-- ✅ **Pre and post-validation** - `@validate` and `@post_validate` hooks
+- 60% less boilerplate - No manual struct definitions or trait implementations
+- Declarative syntax - Clear event definitions with inline validation and apply logic
+- Type-safe validation - Business rules co-located with events
+- Automatic versioning - Support for schema evolution with `@version`
+- Pre and post-validation - `@validate` and `@post_validate` hooks
 
 ```rust
 use event_sauce_core::{define_events, Aggregate};
-use event_sauce_macros::{AggregateError, AggregateId};
+use event_sauce_macros::AggregateError;
 use thiserror::Error;
 
 // Define your aggregate error
@@ -59,12 +59,13 @@ enum OrderError {
 }
 
 // Define events with the macro
+// Events apply directly to &mut Order (the entity), not AggregateRoot
 define_events! {
     pub enum OrderEvent for Order {
         Created {
             order_id: String,
         } => |order, event| {
-            order.state.order_id = event.order_id.clone();
+            order.order_id = event.order_id.clone();
         },
 
         ItemAdded {
@@ -73,7 +74,7 @@ define_events! {
             price: i64,
         }
         @validate {
-            if aggregate.state.status == OrderStatus::Completed {
+            if aggregate.status == OrderStatus::Completed {
                 return Err(OrderError::OrderAlreadyCompleted);
             }
             if self.quantity == 0 {
@@ -82,30 +83,30 @@ define_events! {
             return Ok(());
         }
         @post_validate {
-            if aggregate.state.total_amount > 1_000_000 {
-                return Err(OrderError::OrderTotalExceeded(aggregate.state.total_amount));
+            if aggregate.total_amount > 1_000_000 {
+                return Err(OrderError::OrderTotalExceeded(aggregate.total_amount));
             }
             return Ok(());
         }
         => |order, event| {
-            order.state.items.push(OrderItem {
+            order.items.push(OrderItem {
                 item_id: event.item_id.clone(),
                 quantity: event.quantity,
                 price: event.price,
             });
-            order.state.total_amount += event.price * event.quantity as i64;
+            order.total_amount += event.price * event.quantity as i64;
         },
 
         Completed {}
         @version(2)  // Custom version for schema evolution
         @validate {
-            if aggregate.state.status == OrderStatus::Completed {
+            if aggregate.status == OrderStatus::Completed {
                 return Err(OrderError::OrderAlreadyCompleted);
             }
             return Ok(());
         }
         => |order, _event| {
-            order.state.status = OrderStatus::Completed;
+            order.status = OrderStatus::Completed;
         },
     }
 }
@@ -139,6 +140,7 @@ pub enum OrderEvent {
 }
 
 // ApplyEvent implementations (automatically generated)
+// Events apply directly to &mut Order (the entity)
 impl ApplyEvent<Order> for CreatedEvent { /* ... */ }
 impl ApplyEvent<Order> for ItemAddedEvent { /* ... */ }
 impl ApplyEvent<Order> for CompletedEvent { /* ... */ }
@@ -158,15 +160,15 @@ impl From<CompletedEvent> for OrderEvent { /* ... */ }
 use event_sauce::command_handler;
 
 impl Order {
-    fn create(id: OrderId, order_id: String) -> Self {
-        let mut order = Self::new(id);
+    fn create(order_id: String) -> AggregateRoot<Self> {
+        let mut order = AggregateRoot::<Self>::new(EntityId::new());
         let event = CreatedEvent { order_id, timestamp: Utc::now() };
         order.apply(event).expect("Creation should never fail");
         order
     }
 }
 
-// Auto-generate command methods - reduces boilerplate by ~70%!
+// Auto-generate command methods as OrderCommands trait on AggregateRoot<Order>
 command_handler! {
     impl Order {
         fn add_item(item_id: String, quantity: u32, price: i64) -> ItemAddedEvent {
@@ -180,42 +182,61 @@ command_handler! {
 **What `command_handler!` generates:**
 
 ```rust
+// Event helper functions on Order (the entity)
 impl Order {
-    pub fn add_item(&mut self, item_id: String, quantity: u32, price: i64)
-        -> Result<(), OrderError>
+    pub fn add_item_event(&self, item_id: String, quantity: u32, price: i64)
+        -> ItemAddedEvent
     {
-        let event = ItemAddedEvent {
+        ItemAddedEvent {
             item_id,
             quantity,
             price,
             timestamp: Utc::now(),  // Automatic timestamp
-        };
-        self.apply(event)?;  // Validation happens automatically via define_events!
-        Ok(())
+        }
     }
 
-    pub fn complete(&mut self) -> Result<(), OrderError> {
-        let event = CompletedEvent {
+    pub fn complete_event(&self) -> CompletedEvent {
+        CompletedEvent {
             timestamp: Utc::now(),
-        };
-        self.apply(event)?;
-        Ok(())
+        }
+    }
+}
+
+// Commands trait on AggregateRoot<Order>
+pub trait OrderCommands {
+    fn add_item(&mut self, item_id: String, quantity: u32, price: i64)
+        -> Result<(), OrderError>;
+    fn complete(&mut self)
+        -> Result<(), OrderError>;
+}
+
+impl OrderCommands for AggregateRoot<Order> {
+    fn add_item(&mut self, item_id: String, quantity: u32, price: i64)
+        -> Result<(), OrderError>
+    {
+        let event = self.add_item_event(item_id, quantity, price);
+        self.apply(event)  // Validation happens automatically via define_events!
+    }
+
+    fn complete(&mut self) -> Result<(), OrderError> {
+        let event = self.complete_event();
+        self.apply(event)
     }
 }
 ```
 
 **Benefits of using both macros together:**
-- ✅ **Combined 80%+ reduction in boilerplate**
-- ✅ **Consistent patterns** - All commands follow the same structure
-- ✅ **Automatic timestamp handling** - No need to manually add `Utc::now()`
-- ✅ **Type-safe** - Compile-time validation of parameters
-- ✅ **Self-documenting** - Clear command structure
+- Combined 80%+ reduction in boilerplate
+- Consistent patterns - All commands follow the same structure
+- Automatic timestamp handling - No need to manually add `Utc::now()`
+- Type-safe - Compile-time validation of parameters
+- Self-documenting - Clear command structure
 
 ### Manual Event Definition
 
-For cases where you need more control or complex event logic, you can define events manually using the separated event pattern
+For cases where you need more control or complex event logic, you can define events manually using the separated event pattern.
 
-The **recommended approach** is to define events as **separate structs** wrapped in an enum. This allows each event to have its own validation and application logic via the `ApplyEvent` trait:
+The **recommended manual approach** is to define events as **separate structs** wrapped in an enum. This allows each event to have its own validation and application logic via the `ApplyEvent` trait:
 
 ```rust
 use event_sauce_core::{ApplyEvent, DomainEvent};
@@ -226,7 +247,6 @@ use serde::{Deserialize, Serialize};
 // Step 1: Define individual event structs
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct AccountOpenedEvent {
-    account_id: String,
     owner: String,
     initial_balance: i64,
     timestamp: DateTime<Utc>,
@@ -247,7 +267,7 @@ struct AccountWithdrawnEvent {
 // Step 2: Wrap them in an enum for the domain event
 // The aggregate attribute auto-generates the EventApplicator impl!
 #[derive(DeriveEvent, Debug, Clone, Serialize, Deserialize)]
-#[event(version = 1, type_prefix = "Account", aggregate = "BankAccountAggregate")]
+#[event(version = 1, type_prefix = "Account", aggregate = "BankAccount")]
 enum AccountEvent {
     Opened(AccountOpenedEvent),
     Deposited(AccountDepositedEvent),
@@ -280,25 +300,16 @@ enum AccountEvent {
 The derive macro automatically generates event type names from the enum variants:
 
 ```rust
-AccountEvent::Opened(..)      → "AccountOpened"
-AccountEvent::Deposited(..)   → "AccountDeposited"
-AccountEvent::Withdrawn(..)   → "AccountWithdrawn"
+AccountEvent::Opened(..)      -> "Account.Opened"
+AccountEvent::Deposited(..)   -> "Account.Deposited"
+AccountEvent::Withdrawn(..)   -> "Account.Withdrawn"
 ```
 
-With type_prefix and aggregate:
-```rust
-#[event(version = 1, type_prefix = "Account", aggregate = "BankAccountAggregate")]
-//                     ^^^^^^^^^ prefix       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ auto-generates EventApplicator
-
-AccountEvent::Opened(..)      → "AccountOpened"
-AccountEvent::Deposited(..)   → "AccountDeposited"
-```
-
-**Note**: When you specify the `aggregate` attribute, the macro automatically generates an `EventApplicator` trait impl that dispatches to each event's `ApplyEvent::apply()` implementation. The `Aggregate` trait's default methods use `EventApplicator` for event dispatching. You don't need to write this manually!
+**Note**: When you specify the `aggregate` attribute, the macro automatically generates an `EventApplicator` trait impl that dispatches to each event's `ApplyEvent::apply()` implementation. You don't need to write this manually!
 
 ## ApplyEvent Trait - Self-Contained Events (Recommended)
 
-The **`ApplyEvent` trait** is the recommended way to implement event logic. Each event struct implements both validation and application logic:
+The **`ApplyEvent` trait** is the recommended way to implement event logic. Each event struct implements both validation and application logic. Events operate directly on `&mut Entity`, not on `AggregateRoot`:
 
 ```rust
 use event_sauce_core::ApplyEvent;
@@ -319,10 +330,10 @@ enum AccountError {
 }
 
 // Step 3: Implement ApplyEvent for each event struct
-// Note: Implement for the GENERATED aggregate (e.g., BankAccountAggregate)
-impl ApplyEvent<BankAccountAggregate, AccountError> for AccountWithdrawnEvent {
+// Note: Events apply to &mut BankAccount (the entity), not AggregateRoot
+impl ApplyEvent<BankAccount> for AccountWithdrawnEvent {
     /// Validate business rules before applying
-    fn validate(&self, account: &BankAccountAggregate) -> Result<(), AccountError> {
+    fn validate(&self, account: &BankAccount) -> Result<(), AccountError> {
         if account.status != AccountStatus::Active {
             return Err(AccountError::AccountNotActive(account.status));
         }
@@ -341,15 +352,14 @@ impl ApplyEvent<BankAccountAggregate, AccountError> for AccountWithdrawnEvent {
         Ok(())
     }
 
-    /// Apply the event to update state
-    fn apply(&self, account: &mut BankAccountAggregate) {
-        // Thanks to Deref, can access state fields directly
+    /// Apply the event to update entity state directly
+    fn apply(&self, account: &mut BankAccount) {
         account.balance -= self.amount;
     }
 }
 
-impl ApplyEvent<BankAccountAggregate, AccountError> for AccountDepositedEvent {
-    fn validate(&self, account: &BankAccountAggregate) -> Result<(), AccountError> {
+impl ApplyEvent<BankAccount> for AccountDepositedEvent {
+    fn validate(&self, account: &BankAccount) -> Result<(), AccountError> {
         if account.status != AccountStatus::Active {
             return Err(AccountError::AccountNotActive(account.status));
         }
@@ -361,7 +371,7 @@ impl ApplyEvent<BankAccountAggregate, AccountError> for AccountDepositedEvent {
         Ok(())
     }
 
-    fn apply(&self, account: &mut BankAccountAggregate) {
+    fn apply(&self, account: &mut BankAccount) {
         account.balance += self.amount;
     }
 }
@@ -378,12 +388,12 @@ impl ApplyEvent<BankAccountAggregate, AccountError> for AccountDepositedEvent {
 
 ### How It Works
 
-When you call `aggregate.apply(event)` in a command:
+When you call `aggregate_root.apply(event)` on an `AggregateRoot`:
 
-1. The framework calls `event.validate(&aggregate)?` first
-2. If validation passes, it calls `event.apply(&mut aggregate)`
-3. The event is added to `pending_events`
-4. The version is incremented
+1. The event is converted into the aggregate's event type via `Into`
+2. `EventApplicator::dispatch()` is called, which runs `validate()`, `apply()`, and `post_validate()`
+3. The version is incremented
+4. The event is added to `pending_events`
 
 During replay with `apply_unchecked`, validation is skipped for performance.
 
@@ -392,8 +402,8 @@ During replay with `apply_unchecked`, validation is skipped for performance.
 With the `ApplyEvent` trait, validation is **part of the event** itself:
 
 ```rust
-// In your command methods on the aggregate
-impl BankAccountAggregate {
+// In your command methods on AggregateRoot<BankAccount>
+impl AggregateRoot<BankAccount> {
     fn withdraw(&mut self, amount: i64) -> Result<(), AccountError> {
         // Create event
         let event = AccountWithdrawnEvent {
@@ -401,13 +411,9 @@ impl BankAccountAggregate {
             timestamp: Utc::now(),
         };
 
-        // Validation happens automatically via ApplyEvent trait
-        event.validate(self)?;
-
-        // Apply the event (updates state and tracks event)
-        self.apply(event);
-
-        Ok(())
+        // apply() handles the full lifecycle:
+        // validate -> apply state -> post_validate -> increment version -> record event
+        self.apply(event)
     }
 }
 ```
@@ -421,7 +427,7 @@ impl BankAccountAggregate {
 
 ## Event Replay
 
-Event replay reconstructs aggregate state from historical events. The new system supports optimized replay.
+Event replay reconstructs aggregate state from historical events. The system supports optimized replay.
 
 ### Replay Methods
 
@@ -436,8 +442,7 @@ let event = AccountWithdrawnEvent {
 };
 
 // Validates via ApplyEvent::validate() then applies
-event.validate(&account)?;
-account.apply(event);
+account_root.apply(event)?;
 ```
 
 #### 2. Unchecked Apply (without validation)
@@ -446,8 +451,8 @@ Used when replaying historical events from the event store:
 
 ```rust
 // Replay events from event store
-for event in historical_events {
-    account.apply_unchecked(&event);  // Fast replay, skips validation
+for event in &historical_events {
+    account_root.apply_unchecked(event);  // Fast replay, skips validation
 }
 ```
 
@@ -461,18 +466,12 @@ for event in historical_events {
 ### Complete Replay Example
 
 ```rust
-impl BankAccountAggregate {
-    /// Reconstruct aggregate from event history
-    fn from_events(id: AccountId, events: Vec<AccountEvent>) -> Self {
-        let mut account = Self::from_state(BankAccountState::new(id));
+// Reconstruct aggregate from event history
+let mut account = AggregateRoot::<BankAccount>::new(id);
 
-        // Replay all events without validation
-        for event in events {
-            account.apply_unchecked(&event);
-        }
-
-        account
-    }
+// Replay all events without validation
+for event in &events {
+    account.apply_unchecked(event);
 }
 ```
 
@@ -485,12 +484,12 @@ impl BankAccountAggregate {
 Use past tense to indicate events are facts:
 
 ```rust
-✅ Good:
+// Good:
 - AccountOpened
 - MoneyDeposited
 - OrderShipped
 
-❌ Bad:
+// Bad:
 - OpenAccount
 - DepositMoney
 - ShipOrder
@@ -501,12 +500,12 @@ Use past tense to indicate events are facts:
 Events should represent single, atomic changes:
 
 ```rust
-✅ Good:
+// Good:
 - UserRegistered
 - EmailVerified
 - ProfileUpdated
 
-❌ Bad:
+// Bad:
 - UserRegisteredAndEmailVerifiedAndProfileUpdated
 ```
 
@@ -515,14 +514,13 @@ Events should represent single, atomic changes:
 Include all data needed to understand what happened:
 
 ```rust
-✅ Good:
+// Good:
 Withdrawn {
     amount: i64,
-    account_id: String,
     timestamp: DateTime<Utc>,
 }
 
-❌ Bad:
+// Bad:
 Withdrawn { amount: i64 }  // Missing context
 ```
 
@@ -550,9 +548,9 @@ enum BankAccountEvent {
 With the ApplyEvent pattern, **validation lives in the event's `validate()` method**, NOT in `apply()`:
 
 ```rust
-✅ Good:
-impl ApplyEvent<BankAccountAggregate, AccountError> for AccountWithdrawnEvent {
-    fn validate(&self, account: &BankAccountAggregate) -> Result<(), AccountError> {
+// Good:
+impl ApplyEvent<BankAccount> for AccountWithdrawnEvent {
+    fn validate(&self, account: &BankAccount) -> Result<(), AccountError> {
         // Validation here!
         if self.amount <= 0 {
             return Err(AccountError::InvalidAmount(self.amount));
@@ -566,18 +564,18 @@ impl ApplyEvent<BankAccountAggregate, AccountError> for AccountWithdrawnEvent {
         Ok(())
     }
 
-    fn apply(&self, account: &mut BankAccountAggregate) {
+    fn apply(&self, account: &mut BankAccount) {
         // Pure state transformation - NO validation!
         account.balance -= self.amount;
     }
 }
 
-❌ Bad:
-impl ApplyEvent<BankAccountAggregate, AccountError> for AccountWithdrawnEvent {
-    fn apply(&self, account: &mut BankAccountAggregate) {
+// Bad:
+impl ApplyEvent<BankAccount> for AccountWithdrawnEvent {
+    fn apply(&self, account: &mut BankAccount) {
         // Don't validate in apply!
         if self.amount <= 0 {
-            panic!("Invalid amount");  // ❌ Never do this
+            panic!("Invalid amount");  // Never do this
         }
         account.balance -= self.amount;
     }
@@ -591,13 +589,13 @@ impl ApplyEvent<BankAccountAggregate, AccountError> for AccountWithdrawnEvent {
 Always use `Utc::now()` for consistency:
 
 ```rust
-✅ Good:
+// Good:
 let event = AccountOpened {
     timestamp: Utc::now(),
     ...
 };
 
-❌ Bad:
+// Bad:
 let event = AccountOpened {
     timestamp: Local::now().into(),  // Timezone issues!
     ...
@@ -606,16 +604,18 @@ let event = AccountOpened {
 
 ### 7. Testing Events
 
-With the ApplyEvent pattern, test event logic independently from aggregates:
+With the ApplyEvent pattern, test event logic independently:
 
 ```rust
 #[test]
 fn test_withdrawn_event_reduces_balance() {
-    let mut account = BankAccountAggregate::open(
-        AccountId::new(),
-        "Test".to_string(),
-        1000,
-    ).unwrap();
+    // Create entity directly for testing
+    let mut account = BankAccount {
+        id: EntityId::new(),
+        owner: "Test".to_string(),
+        balance: 1000,
+        status: AccountStatus::Active,
+    };
 
     let event = AccountWithdrawnEvent {
         amount: 300,
@@ -625,18 +625,19 @@ fn test_withdrawn_event_reduces_balance() {
     // Test validation
     assert!(event.validate(&account).is_ok());
 
-    // Test application
+    // Test application (directly on entity)
     event.apply(&mut account);
     assert_eq!(account.balance, 700);
 }
 
 #[test]
 fn test_withdrawn_event_validates_insufficient_funds() {
-    let mut account = BankAccountAggregate::open(
-        AccountId::new(),
-        "Test".to_string(),
-        100,
-    ).unwrap();
+    let account = BankAccount {
+        id: EntityId::new(),
+        owner: "Test".to_string(),
+        balance: 100,
+        status: AccountStatus::Active,
+    };
 
     let event = AccountWithdrawnEvent {
         amount: 300,
@@ -683,7 +684,6 @@ Link related events using correlation IDs:
 
 ```rust
 struct OrderPlaced {
-    order_id: OrderId,
     correlation_id: Uuid,  // Links to parent process
     timestamp: DateTime<Utc>,
 }
@@ -695,7 +695,6 @@ Add contextual data to events:
 
 ```rust
 struct UserRegistered {
-    user_id: UserId,
     email: String,
     // Enrichment data
     ip_address: String,
@@ -724,7 +723,7 @@ The event-sauce event system provides:
 | 1 | Use define_events! macro | `define_events! { pub enum OrderEvent for Order { ... } }` |
 | 2 | Define event variants | `Created { order_id: String }` |
 | 3 | Add validation (optional) | `@validate { ... } @post_validate { ... }` |
-| 4 | Define apply logic | `=> \|order, event\| { order.state.value = ...; }` |
+| 4 | Define apply logic | `=> \|order, event\| { order.value = ...; }` |
 | 5 | Use in commands | `self.apply(CreatedEvent { ... })?;` |
 
 ### Quick Reference: Manual Event Pattern (Advanced)
@@ -736,23 +735,17 @@ For cases requiring more control, use the manual approach:
 | 1 | Define event structs | `struct AccountWithdrawnEvent { amount: i64, ... }` |
 | 2 | Wrap in enum | `enum AccountEvent { Withdrawn(AccountWithdrawnEvent), ... }` |
 | 3 | Derive DomainEvent | `#[derive(Event)]` on enum |
-| 4 | Implement ApplyEvent | `impl ApplyEvent<Aggregate> for Event { ... }` |
-| 5 | Use in commands | `event.validate(self)?; self.apply(event);` |
+| 4 | Implement ApplyEvent | `impl ApplyEvent<Entity> for Event { ... }` |
+| 5 | Use in commands | `self.apply(event)?;` on `AggregateRoot` |
 
 ### Key Patterns
 
 1. **Use `define_events!` macro** for declarative event definitions (recommended)
 2. **Inline validation** with `@validate` for pre-conditions and `@post_validate` for invariants
 3. **Automatic struct generation** with timestamp fields
-4. **Commands create event structs**, then call `apply()`
-5. **Replay uses `apply_unchecked()`** to skip validation for performance
-6. **Manual approach available** for complex scenarios requiring fine-grained control
+4. **Events apply to `&mut Entity` directly** (not through `AggregateRoot`)
+5. **Commands operate on `AggregateRoot<Entity>`** which orchestrates the lifecycle
+6. **Replay uses `apply_unchecked()`** to skip validation for performance
+7. **Manual approach available** for complex scenarios requiring fine-grained control
 
-### Working with AggregateState
-
-When using `#[derive(AggregateState)]`:
-- Implement `ApplyEvent` for the **generated aggregate** (e.g., `BankAccountAggregate`)
-- Use `Deref` to access state fields directly in `validate()` and `apply()`
-- Implement commands on the generated aggregate
-
-Next: [Aggregates Guide](aggregates.md) | [Event Stores Guide](event-stores.md)
+Next: [Aggregates Guide](aggregates.md) | [Event Stores Guide](event-store.md)

@@ -107,7 +107,7 @@ pub trait EventStore: Send + Sync {
     ) -> Result<impl Stream<Item = Result<EventEnvelope>> + Send>;
 
     /// Commit pending events from an aggregate (convenience method)
-    async fn commit<A>(&self, aggregate: &mut A) -> Result<()>
+    async fn commit<A>(&self, aggregate: &mut AggregateRoot<A>) -> Result<()>
     where
         A: Aggregate,
         A::Event: serde::Serialize;
@@ -119,7 +119,7 @@ pub trait EventStore: Send + Sync {
 The `commit()` method is the primary way to save events:
 
 ```rust
-async fn commit<A>(&self, aggregate: &mut A) -> Result<()>
+async fn commit<A>(&self, aggregate: &mut AggregateRoot<A>) -> Result<()>
 where
     A: Aggregate,
     A::Event: serde::Serialize;
@@ -136,7 +136,7 @@ where
 
 ```rust
 let store = InMemoryEventStore::new();
-let mut counter = CounterAggregate::create(CounterId::new());
+let mut counter = AggregateRoot::<Counter>::new(EntityId::new());
 
 // Execute commands (generates events)
 counter.increment(5)?;
@@ -167,7 +167,7 @@ match store.commit(&mut counter).await {
 The `load()` function reconstructs an aggregate from stored events:
 
 ```rust
-pub async fn load<S, A>(store: &S, aggregate_id: A::Id) -> Result<A>
+pub async fn load<S, A>(store: &S, aggregate_id: EntityId) -> Result<AggregateRoot<A>>
 where
     S: EventStore,
     A: Aggregate,
@@ -178,10 +178,10 @@ where
 
 **What it does:**
 
-1. Creates a new aggregate with `Aggregate::new(id)`
+1. Creates a new `AggregateRoot<A>` with `AggregateRoot::new(id)`
 2. Loads all events for that aggregate
 3. Replays events using `apply_unchecked()` (no validation)
-4. Returns the reconstructed aggregate
+4. Returns the reconstructed `AggregateRoot<A>`
 
 **Example:**
 
@@ -189,10 +189,10 @@ where
 use event_sauce_core::load;
 
 let store = InMemoryEventStore::new();
-let counter_id = CounterId::new();
+let counter_id = EntityId::new();
 
 // Later, load the aggregate
-let counter: CounterAggregate = load(&store, counter_id).await?;
+let counter: AggregateRoot<Counter> = load(&store, counter_id).await?;
 
 println!("Loaded counter value: {}", counter.value());
 println!("Loaded version: {}", counter.version());
@@ -271,10 +271,10 @@ use event_sauce_memory::InMemoryEventStore;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let store = InMemoryEventStore::new();
-    let counter_id = CounterId::new();
+    let counter_id = EntityId::new();
 
     // Create and modify aggregate
-    let mut counter = CounterAggregate::create(counter_id);
+    let mut counter = AggregateRoot::<Counter>::new(counter_id);
     counter.increment(5)?;
     counter.increment(3)?;
     counter.decrement(2)?;
@@ -284,7 +284,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Saved {} events", 3);
 
     // Load from store
-    let loaded: CounterAggregate = load(&store, counter_id).await?;
+    let loaded: AggregateRoot<Counter> = load(&store, counter_id).await?;
 
     assert_eq!(loaded.value(), counter.value());
     assert_eq!(loaded.version(), counter.version());
@@ -299,7 +299,7 @@ After loading, you can continue operations:
 
 ```rust
 // Load existing aggregate
-let mut counter: CounterAggregate = load(&store, counter_id).await?;
+let mut counter: AggregateRoot<Counter> = load(&store, counter_id).await?;
 
 // Continue operations
 counter.increment(10)?;
@@ -316,11 +316,11 @@ Typical command handling pattern:
 ```rust
 async fn handle_counter_command(
     store: &InMemoryEventStore,
-    counter_id: CounterId,
+    counter_id: EntityId,
     command: CounterCommand,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Load aggregate
-    let mut counter: CounterAggregate = load(store, counter_id).await?;
+    let mut counter: AggregateRoot<Counter> = load(store, counter_id).await?;
 
     // Execute command
     match command {
@@ -343,14 +343,14 @@ use event_sauce_core::Error;
 
 async fn safe_update(
     store: &InMemoryEventStore,
-    counter_id: CounterId,
-    operation: impl Fn(&mut CounterAggregate) -> Result<(), CounterError>,
+    counter_id: EntityId,
+    operation: impl Fn(&mut AggregateRoot<Counter>) -> Result<(), CounterError>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     const MAX_RETRIES: usize = 3;
 
     for attempt in 1..=MAX_RETRIES {
         // Load current state
-        let mut counter: CounterAggregate = load(store, counter_id).await?;
+        let mut counter: AggregateRoot<Counter> = load(store, counter_id).await?;
 
         // Execute operation
         operation(&mut counter)?;
@@ -375,8 +375,7 @@ async fn safe_update(
 Accumulate multiple changes before committing:
 
 ```rust
-let mut account = BankAccountAggregate::open(
-    account_id,
+let mut account = AggregateRoot::<BankAccount>::open(
     "Alice".to_string(),
     1000,
 )?;
@@ -431,7 +430,7 @@ store.commit(&mut aggregate).await.unwrap();
 Make commands safe to retry:
 
 ```rust
-impl OrderAggregate {
+impl AggregateRoot<Order> {
     pub fn cancel(&mut self, reason: String) -> Result<(), OrderError> {
         // Idempotent: safe to call multiple times
         if self.status == OrderStatus::Cancelled {
@@ -499,10 +498,10 @@ Always test that aggregates can be reconstructed:
 #[tokio::test]
 async fn test_counter_replay() {
     let store = InMemoryEventStore::new();
-    let counter_id = CounterId::new();
+    let counter_id = EntityId::new();
 
     // Create and modify
-    let mut counter = CounterAggregate::create(counter_id);
+    let mut counter = AggregateRoot::<Counter>::new(counter_id);
     counter.increment(10)?;
     counter.decrement(3)?;
 
@@ -513,7 +512,7 @@ async fn test_counter_replay() {
     store.commit(&mut counter).await?;
 
     // Load and verify
-    let loaded: CounterAggregate = load(&store, counter_id).await?;
+    let loaded: AggregateRoot<Counter> = load(&store, counter_id).await?;
     assert_eq!(loaded.value(), expected_value);
     assert_eq!(loaded.version(), expected_version);
 }
@@ -527,7 +526,7 @@ async fn test_counter_replay() {
 
 ```rust
 // Old: Manual envelope creation
-async fn save_counter(store: &InMemoryEventStore, counter: &mut Counter) {
+async fn save_counter(store: &InMemoryEventStore, counter: &mut AggregateRoot<Counter>) {
     let envelopes: Vec<EventEnvelope> = counter
         .pending_events()
         .iter()
@@ -535,16 +534,16 @@ async fn save_counter(store: &InMemoryEventStore, counter: &mut Counter) {
         .map(|(i, event)| {
             EventEnvelope::new(
                 Uuid::new_v4(),
-                counter.id().to_uuid(),
+                counter.entity_id().to_uuid(),
                 "Counter".to_string(),
                 event.event_type().to_string(),
-                counter.version() + Version::new(i as i32 + 1),
+                counter.version() + Version::new(i as u64 + 1),
                 serde_json::to_value(event).unwrap(),
             )
         })
         .collect();
 
-    let stream_id = StreamId::new("Counter", counter.id().to_uuid());
+    let stream_id = StreamId::new("Counter", counter.entity_id().to_uuid());
     store.append_events(stream_id, envelopes, counter.version()).await?;
     counter.clear_pending_events();
 }
@@ -563,7 +562,7 @@ store.commit(&mut counter).await?;
 
 ```rust
 impl Counter {
-    fn from_events(id: CounterId, events: Vec<CounterEvent>) -> Self {
+    fn from_events(id: EntityId, events: Vec<CounterEvent>) -> Self {
         let mut counter = Self {
             id,
             value: 0,
@@ -588,7 +587,7 @@ let counter = Counter::from_events(counter_id, events);
 
 ```rust
 // New: Simple load
-let counter: CounterAggregate = load(&store, counter_id).await?;
+let counter: AggregateRoot<Counter> = load(&store, counter_id).await?;
 ```
 
 ### From StreamId-based APIs
@@ -604,7 +603,7 @@ let stream = store.load_stream(stream_id, Version::initial()).await?;
 
 ```rust
 // The new API handles StreamId internally
-let counter: CounterAggregate = load(&store, counter_id).await?;
+let counter: AggregateRoot<Counter> = load(&store, counter_id).await?;
 ```
 
 ## Advanced Topics
@@ -681,13 +680,14 @@ pub struct SnapshotStore<S> {
 impl<S: EventStore> SnapshotStore<S> {
     pub async fn load_with_snapshot<A: Aggregate>(
         &self,
-        aggregate_id: A::Id,
-    ) -> Result<A> {
+        aggregate_id: EntityId,
+    ) -> Result<AggregateRoot<A>> {
         // Load snapshot if available
         if let Some((snapshot_version, snapshot_data)) =
             self.snapshots.get(&aggregate_id.to_uuid())
         {
-            let mut aggregate: A = bincode::deserialize(snapshot_data)?;
+            let entity: A = bincode::deserialize(snapshot_data)?;
+            let mut aggregate = AggregateRoot::from_snapshot(entity, *snapshot_version);
 
             // Load only events after snapshot
             let stream_id = StreamId::new(

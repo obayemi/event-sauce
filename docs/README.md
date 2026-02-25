@@ -77,17 +77,17 @@ We recommend following this path:
 // Command: Request to do something
 pub async fn handle_add_item_command(
     store: &impl EventStore,
-    cart_id: CartId,
+    cart_id: EntityId,
     product: Product,
 ) -> Result<(), CartError> {
     // 1. Load aggregate
-    let mut cart = load_cart(store, cart_id).await?;
+    let mut cart: AggregateRoot<ShoppingCart> = load(store, cart_id).await?;
 
     // 2. Execute command
     cart.add_item(product)?;
 
     // 3. Save events
-    save_cart(store, &cart).await?;
+    store.commit(&mut cart).await?;
 
     Ok(())
 }
@@ -101,12 +101,12 @@ pub struct CartRepository {
 }
 
 impl CartRepository {
-    pub async fn save(&self, cart: &Cart) -> Result<()> {
-        // Append events to store
+    pub async fn save(&self, cart: &mut AggregateRoot<ShoppingCart>) -> Result<()> {
+        self.store.commit(cart).await
     }
 
-    pub async fn load(&self, id: CartId) -> Result<Cart> {
-        // Load and replay events
+    pub async fn load(&self, id: EntityId) -> Result<AggregateRoot<ShoppingCart>> {
+        load(&*self.store, id).await
     }
 }
 ```
@@ -135,7 +135,7 @@ Event sourcing makes testing natural:
 #[test]
 fn test_business_rule() {
     // GIVEN: Initial state (events)
-    let mut cart = Cart::new(id);
+    let mut cart = AggregateRoot::<ShoppingCart>::new(EntityId::new());
     cart.add_item(product_a, 1).unwrap();
 
     // WHEN: Execute command

@@ -112,13 +112,13 @@ use std::collections::HashMap;
 define_events! {
     pub enum UserEvent for User {
         Registered { email: String } => |user, event| {
-            user.state.email = event.email.clone();
+            user.email = event.email.clone();
         },
         Activated { } => |user, _event| {
-            user.state.status = UserStatus::Active;
+            user.status = UserStatus::Active;
         },
         Suspended { } => |user, _event| {
-            user.state.status = UserStatus::Suspended;
+            user.status = UserStatus::Suspended;
         },
     }
 }

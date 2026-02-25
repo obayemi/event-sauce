@@ -56,8 +56,12 @@ event-sauce is organized as a workspace with focused crates:
 
 The foundation providing traits and types:
 
-- **Aggregate** - Root entity with identity and lifecycle
+- **Entity** - Domain object with identity (`EntityId`)
+- **Aggregate** - Entity with associated event and error types
+- **AggregateRoot** - Infrastructure wrapper for version tracking, pending events, and event application
 - **DomainEvent** - Something that happened in the domain
+- **ApplyEvent** - Trait for event validation and state mutation
+- **EventApplicator** - Dispatches event enum variants to individual `ApplyEvent` impls
 - **EventStore** - Persistence abstraction
 - **Subscription** - Durable event consumption with guaranteed delivery
 - **Version** - Optimistic concurrency control
@@ -110,10 +114,11 @@ CREATE INDEX idx_events_type ON events(event_type, created_at);
 
 Derive macros for reducing boilerplate (~40% less code):
 
-- **#[derive(AggregateId)]** - Auto-implements AggregateId trait + Display
-- **#[derive(AggregateError)]** - Auto-implements AggregateError marker trait
-- **#[derive(AggregateState)]** - Generates aggregate wrapper with infrastructure
-- **#[derive(Event)]** - Implements DomainEvent trait + auto-generates EventApplicator
+- **#[aggregate(...)]** - Generates `Entity` and `Aggregate` trait implementations
+- **#[derive(Entity)]** - Auto-implements `Entity` trait using `#[id]` field attribute
+- **#[derive(AggregateError)]** - Auto-implements `AggregateError` marker trait
+- **#[derive(Event)]** - Implements `DomainEvent` trait + auto-generates `EventApplicator`
+- **#[specification]** - Converts functions into `Specification` trait implementations
 - Compile-time code generation
 - Type-safe and zero-runtime cost
 - Clean separation between business logic and infrastructure
@@ -390,9 +395,9 @@ let store = PostgresEventStore::new(pool);
 ```rust
 #[test]
 fn test_business_logic() {
-    let mut counter = Counter::new(id);
+    let mut counter = AggregateRoot::<Counter>::new(EntityId::new());
     counter.increment(5).unwrap();
-    assert_eq!(counter.value(), 5);
+    assert_eq!(counter.value, 5);
 }
 ```
 
@@ -401,7 +406,7 @@ fn test_business_logic() {
 ```rust
 #[tokio::test]
 async fn test_with_store() {
-    let store = MemoryEventStore::new();
+    let store = InMemoryEventStore::new();
     // Test full flow
 }
 ```
@@ -455,7 +460,7 @@ impl Projection for MyProjection {
 
 ## Best Practices
 
-1. **Use derive macros** - #[derive(AggregateId)], #[derive(AggregateError)], #[derive(AggregateState)], #[derive(Event)]
+1. **Use derive macros** - `#[aggregate(...)]`, `#[derive(Entity)]`, `#[derive(AggregateError)]`, `#[derive(Event)]`
 2. **Keep aggregates small** - One consistency boundary
 3. **Events are immutable** - Never modify historical events
 4. **Version events** - Plan for schema evolution
