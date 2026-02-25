@@ -667,4 +667,411 @@ mod tests {
         let count = count_events(&store, stream_id).await.unwrap();
         assert_eq!(count, 0, "Nonexistent stream should have zero events");
     }
+
+    // === Tests for commit() and load() ===
+
+    use crate::test_fixtures::{SimpleTestEntity, SimpleTestEvent};
+    use crate::{AggregateRoot, SnapshotConfig};
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+
+    /// Mock event store that supports snapshots, tracks `append`/`save_snapshot` calls,
+    /// and can be configured to fail on `save_snapshot`.
+    struct CommitTestStore {
+        streams: Arc<Mutex<HashMap<StreamId, Vec<EventEnvelope>>>>,
+        snapshots: Arc<Mutex<HashMap<StreamId, Snapshot>>>,
+        config: SnapshotConfig,
+        append_count: Arc<Mutex<u32>>,
+        save_snapshot_count: Arc<Mutex<u32>>,
+        fail_save_snapshot: bool,
+    }
+
+    impl CommitTestStore {
+        fn new(config: SnapshotConfig) -> Self {
+            Self {
+                streams: Arc::new(Mutex::new(HashMap::new())),
+                snapshots: Arc::new(Mutex::new(HashMap::new())),
+                config,
+                append_count: Arc::new(Mutex::new(0)),
+                save_snapshot_count: Arc::new(Mutex::new(0)),
+                fail_save_snapshot: false,
+            }
+        }
+
+        fn with_fail_save_snapshot(mut self) -> Self {
+            self.fail_save_snapshot = true;
+            self
+        }
+
+        fn append_count(&self) -> u32 {
+            *self.append_count.lock().unwrap()
+        }
+
+        fn save_snapshot_count(&self) -> u32 {
+            *self.save_snapshot_count.lock().unwrap()
+        }
+    }
+
+    #[async_trait]
+    impl EventStore for CommitTestStore {
+        async fn append(
+            &self,
+            stream_id: StreamId,
+            events: Vec<EventEnvelope>,
+            _expected_version: Version,
+        ) -> Result<()> {
+            *self.append_count.lock().unwrap() += 1;
+            let mut streams = self.streams.lock().unwrap();
+            streams.entry(stream_id).or_default().extend(events);
+            Ok(())
+        }
+
+        async fn load_stream(
+            &self,
+            stream_id: StreamId,
+            from_version: Version,
+        ) -> Result<impl Stream<Item = Result<EventEnvelope>> + Send> {
+            let streams = self.streams.lock().unwrap();
+            let events = streams
+                .get(&stream_id)
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|e| e.event_version >= from_version)
+                .map(Ok)
+                .collect::<Vec<_>>();
+            Ok(stream::iter(events))
+        }
+
+        async fn stream_all(
+            &self,
+            _from_position: Position,
+        ) -> Result<impl Stream<Item = Result<EventEnvelope>> + Send> {
+            Ok(stream::empty())
+        }
+
+        async fn get_version(&self, stream_id: StreamId) -> Result<Version> {
+            let streams = self.streams.lock().unwrap();
+            let count = streams.get(&stream_id).map_or(0, Vec::len);
+            Ok(Version::new(count as u64))
+        }
+
+        async fn save_snapshot(&self, snapshot: Snapshot) -> Result<()> {
+            *self.save_snapshot_count.lock().unwrap() += 1;
+            if self.fail_save_snapshot {
+                return Err(crate::Error::custom("Snapshot save failed"));
+            }
+            let stream_id = StreamId::new(snapshot.aggregate_type.clone(), snapshot.aggregate_id);
+            self.snapshots.lock().unwrap().insert(stream_id, snapshot);
+            Ok(())
+        }
+
+        async fn load_snapshot(&self, stream_id: StreamId) -> Result<Option<Snapshot>> {
+            Ok(self.snapshots.lock().unwrap().get(&stream_id).cloned())
+        }
+
+        fn snapshot_config(&self) -> &SnapshotConfig {
+            &self.config
+        }
+    }
+
+    // -- commit() tests --
+
+    #[tokio::test]
+    async fn test_commit_with_pending_events() {
+        let store = CommitTestStore::new(SnapshotConfig::disabled());
+        let id = crate::EntityId::new();
+        let mut agg = AggregateRoot::<SimpleTestEntity>::new(id);
+
+        agg.apply(SimpleTestEvent::Created { value: 42 }).unwrap();
+        agg.apply(SimpleTestEvent::Updated { value: 99 }).unwrap();
+
+        assert_eq!(agg.pending_events().len(), 2);
+        assert_eq!(agg.version(), Version::new(2));
+
+        store.commit(&mut agg).await.unwrap();
+
+        assert_eq!(
+            agg.pending_events().len(),
+            0,
+            "Pending events should be cleared after commit"
+        );
+        assert_eq!(
+            store.append_count(),
+            1,
+            "Append should be called exactly once"
+        );
+
+        // Verify the events were stored
+        let stream_id = StreamId::new("SimpleTestEntity", id.as_uuid());
+        let streams = store.streams.lock().unwrap();
+        let stored = streams.get(&stream_id).unwrap();
+        assert_eq!(stored.len(), 2, "Two events should be stored");
+    }
+
+    #[tokio::test]
+    async fn test_commit_with_no_pending_events() {
+        let store = CommitTestStore::new(SnapshotConfig::disabled());
+        let id = crate::EntityId::new();
+        let mut agg = AggregateRoot::<SimpleTestEntity>::new(id);
+
+        // No events applied, so commit should be a no-op
+        store.commit(&mut agg).await.unwrap();
+
+        assert_eq!(
+            store.append_count(),
+            0,
+            "Append should not be called when there are no pending events"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_commit_triggers_snapshot_when_strategy_says_yes() {
+        let store = CommitTestStore::new(SnapshotConfig::always());
+        let id = crate::EntityId::new();
+        let mut agg = AggregateRoot::<SimpleTestEntity>::new(id);
+
+        agg.apply(SimpleTestEvent::Created { value: 10 }).unwrap();
+
+        store.commit(&mut agg).await.unwrap();
+
+        assert_eq!(
+            store.save_snapshot_count(),
+            1,
+            "save_snapshot should be called when strategy says yes"
+        );
+
+        // Verify snapshot was stored
+        let stream_id = StreamId::new("SimpleTestEntity", id.as_uuid());
+        let snapshots = store.snapshots.lock().unwrap();
+        let snapshot = snapshots.get(&stream_id).expect("Snapshot should exist");
+        assert_eq!(snapshot.snapshot_version, Version::new(1));
+        assert_eq!(snapshot.aggregate_type, "SimpleTestEntity");
+    }
+
+    #[tokio::test]
+    async fn test_commit_does_not_snapshot_when_strategy_says_no() {
+        let store = CommitTestStore::new(SnapshotConfig::disabled());
+        let id = crate::EntityId::new();
+        let mut agg = AggregateRoot::<SimpleTestEntity>::new(id);
+
+        agg.apply(SimpleTestEvent::Created { value: 10 }).unwrap();
+
+        store.commit(&mut agg).await.unwrap();
+
+        assert_eq!(
+            store.save_snapshot_count(),
+            0,
+            "save_snapshot should not be called when strategy says no"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_commit_handles_snapshot_save_failure_gracefully() {
+        let store = CommitTestStore::new(SnapshotConfig::always()).with_fail_save_snapshot();
+        let id = crate::EntityId::new();
+        let mut agg = AggregateRoot::<SimpleTestEntity>::new(id);
+
+        agg.apply(SimpleTestEvent::Created { value: 10 }).unwrap();
+
+        // commit should still succeed even when save_snapshot fails
+        let result = store.commit(&mut agg).await;
+        assert!(
+            result.is_ok(),
+            "Commit should succeed even if snapshot save fails"
+        );
+
+        assert_eq!(store.append_count(), 1, "Events should still be appended");
+        assert_eq!(
+            store.save_snapshot_count(),
+            1,
+            "save_snapshot should have been attempted"
+        );
+        assert!(
+            agg.pending_events().is_empty(),
+            "Pending events should still be cleared"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_commit_clears_pending_events_after_success() {
+        let store = CommitTestStore::new(SnapshotConfig::disabled());
+        let id = crate::EntityId::new();
+        let mut agg = AggregateRoot::<SimpleTestEntity>::new(id);
+
+        agg.apply(SimpleTestEvent::Created { value: 1 }).unwrap();
+        agg.apply(SimpleTestEvent::Updated { value: 2 }).unwrap();
+        agg.apply(SimpleTestEvent::Updated { value: 3 }).unwrap();
+
+        assert_eq!(agg.pending_events().len(), 3);
+
+        store.commit(&mut agg).await.unwrap();
+
+        assert!(
+            agg.pending_events().is_empty(),
+            "All pending events should be cleared after successful commit"
+        );
+        // Version should be preserved
+        assert_eq!(agg.version(), Version::new(3));
+    }
+
+    // -- load() tests --
+
+    #[tokio::test]
+    async fn test_load_with_no_snapshot_replays_from_beginning() {
+        let store = CommitTestStore::new(SnapshotConfig::disabled());
+        let id = crate::EntityId::new();
+
+        // First, commit some events
+        let mut agg = AggregateRoot::<SimpleTestEntity>::new(id);
+        agg.apply(SimpleTestEvent::Created { value: 10 }).unwrap();
+        agg.apply(SimpleTestEvent::Updated { value: 20 }).unwrap();
+        agg.apply(SimpleTestEvent::Updated { value: 30 }).unwrap();
+        store.commit(&mut agg).await.unwrap();
+
+        // Load from store
+        let loaded: AggregateRoot<SimpleTestEntity> = load(&store, id).await.unwrap();
+
+        assert_eq!(
+            loaded.value, 30,
+            "Entity state should reflect all replayed events"
+        );
+        assert_eq!(
+            loaded.version(),
+            Version::new(3),
+            "Version should match number of events"
+        );
+        assert!(
+            loaded.pending_events().is_empty(),
+            "Loaded aggregate should have no pending events"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_load_with_snapshot_resumes_from_snapshot_version() {
+        let config = SnapshotConfig::always();
+        let store = CommitTestStore::new(config);
+        let id = crate::EntityId::new();
+
+        // Pre-save a snapshot at version 2 with value=20
+        let snapshot_entity = SimpleTestEntity { id, value: 20 };
+        let snapshot_data = serde_json::to_value(&snapshot_entity).unwrap();
+        let stream_id = StreamId::new("SimpleTestEntity", id.as_uuid());
+        let snapshot = Snapshot::new(
+            id.as_uuid(),
+            "SimpleTestEntity".to_string(),
+            Version::new(2),
+            snapshot_data,
+        );
+        store
+            .snapshots
+            .lock()
+            .unwrap()
+            .insert(stream_id.clone(), snapshot);
+
+        // Add events after the snapshot version (version 3 and 4)
+        let envelope3 = EventEnvelope::new(
+            Uuid::new_v4(),
+            id.as_uuid(),
+            "SimpleTestEntity".to_string(),
+            "SimpleTestUpdated".to_string(),
+            Version::new(3),
+            serde_json::to_value(&SimpleTestEvent::Updated { value: 30 }).unwrap(),
+        );
+        let envelope4 = EventEnvelope::new(
+            Uuid::new_v4(),
+            id.as_uuid(),
+            "SimpleTestEntity".to_string(),
+            "SimpleTestUpdated".to_string(),
+            Version::new(4),
+            serde_json::to_value(&SimpleTestEvent::Updated { value: 40 }).unwrap(),
+        );
+        store
+            .streams
+            .lock()
+            .unwrap()
+            .insert(stream_id, vec![envelope3, envelope4]);
+
+        // Load from store — should start from snapshot and replay events 3 and 4
+        let loaded: AggregateRoot<SimpleTestEntity> = load(&store, id).await.unwrap();
+
+        assert_eq!(
+            loaded.value, 40,
+            "Entity should reflect snapshot + replayed events"
+        );
+        // Version should be snapshot (2) + replayed events (2) = 4
+        assert_eq!(loaded.version(), Version::new(4));
+    }
+
+    #[tokio::test]
+    async fn test_load_with_snapshots_disabled_ignores_snapshot() {
+        let config = SnapshotConfig::builder()
+            .default_strategy(crate::AlwaysSnapshot)
+            .use_snapshots_on_load(false)
+            .build();
+        let store = CommitTestStore::new(config);
+        let id = crate::EntityId::new();
+
+        // Save a snapshot that should be ignored
+        let snapshot_entity = SimpleTestEntity { id, value: 999 };
+        let snapshot_data = serde_json::to_value(&snapshot_entity).unwrap();
+        let stream_id = StreamId::new("SimpleTestEntity", id.as_uuid());
+        let snapshot = Snapshot::new(
+            id.as_uuid(),
+            "SimpleTestEntity".to_string(),
+            Version::new(5),
+            snapshot_data,
+        );
+        store
+            .snapshots
+            .lock()
+            .unwrap()
+            .insert(stream_id.clone(), snapshot);
+
+        // Add events from the beginning
+        let envelope1 = EventEnvelope::new(
+            Uuid::new_v4(),
+            id.as_uuid(),
+            "SimpleTestEntity".to_string(),
+            "SimpleTestCreated".to_string(),
+            Version::new(1),
+            serde_json::to_value(&SimpleTestEvent::Created { value: 10 }).unwrap(),
+        );
+        let envelope2 = EventEnvelope::new(
+            Uuid::new_v4(),
+            id.as_uuid(),
+            "SimpleTestEntity".to_string(),
+            "SimpleTestUpdated".to_string(),
+            Version::new(2),
+            serde_json::to_value(&SimpleTestEvent::Updated { value: 20 }).unwrap(),
+        );
+        store
+            .streams
+            .lock()
+            .unwrap()
+            .insert(stream_id, vec![envelope1, envelope2]);
+
+        // Load — should ignore snapshot and replay all events from beginning
+        let loaded: AggregateRoot<SimpleTestEntity> = load(&store, id).await.unwrap();
+
+        assert_eq!(
+            loaded.value, 20,
+            "Should reflect full replay, not snapshot value of 999"
+        );
+        assert_eq!(loaded.version(), Version::new(2));
+    }
+
+    #[tokio::test]
+    async fn test_load_with_no_events_returns_default() {
+        let store = CommitTestStore::new(SnapshotConfig::disabled());
+        let id = crate::EntityId::new();
+
+        // Load entity that has no events at all
+        let loaded: AggregateRoot<SimpleTestEntity> = load(&store, id).await.unwrap();
+
+        assert_eq!(loaded.value, 0, "Default entity should have value 0");
+        assert_eq!(loaded.version(), Version::initial());
+        assert!(loaded.pending_events().is_empty());
+        assert_eq!(loaded.entity_id(), id);
+    }
 }

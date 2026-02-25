@@ -456,14 +456,9 @@ mod tests {
         assert_eq!(counter.value, 0);
     }
 
-    #[test]
-    fn test_aggregate_root_no_deref_mut() {
-        // DerefMut is intentionally not implemented.
-        // State changes must go through apply().
-        // This is a compile-time guarantee, not a runtime test.
-        let counter = AggregateRoot::<CounterEntity>::new(EntityId::new());
-        assert_eq!(counter.value, 0);
-    }
+    // NOTE: DerefMut is intentionally not implemented for AggregateRoot.
+    // This is a compile-time guarantee enforced by the type system.
+    // See trybuild tests for compile-fail verification if needed.
 
     #[test]
     fn test_aggregate_root_apply() {
@@ -570,5 +565,48 @@ mod tests {
 
         let entity = counter.entity();
         assert_eq!(entity.value, 42);
+    }
+
+    #[test]
+    fn test_aggregate_root_serialize() {
+        let mut counter = AggregateRoot::<CounterEntity>::new(EntityId::new());
+        counter.increment(5).unwrap();
+        counter.increment(3).unwrap();
+
+        let json = serde_json::to_value(&counter).unwrap();
+
+        assert!(
+            json.get("entity").is_some(),
+            "JSON should have 'entity' field"
+        );
+        assert!(
+            json.get("version").is_some(),
+            "JSON should have 'version' field"
+        );
+        assert!(
+            json.get("pending_events").is_some(),
+            "JSON should have 'pending_events' field"
+        );
+
+        assert_eq!(json["entity"]["value"], 8);
+        assert_eq!(json["version"], 2);
+        assert_eq!(json["pending_events"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_aggregate_root_clone_preserves_all_fields() {
+        let mut counter = AggregateRoot::<CounterEntity>::new(EntityId::new());
+        counter.increment(7).unwrap();
+        counter.increment(3).unwrap();
+
+        let cloned = counter.clone();
+
+        assert_eq!(cloned.value, counter.value);
+        assert_eq!(cloned.entity_id(), counter.entity_id());
+        assert_eq!(cloned.version(), counter.version());
+        assert_eq!(
+            cloned.pending_events().len(),
+            counter.pending_events().len()
+        );
     }
 }

@@ -153,7 +153,7 @@ impl EventStore for MockEventStore {
     async fn load_stream(
         &self,
         stream_id: StreamId,
-        _from_version: Version,
+        from_version: Version,
     ) -> Result<impl futures::Stream<Item = Result<EventEnvelope>> + Send> {
         let streams = self.streams.lock().unwrap();
         let events = streams
@@ -161,6 +161,7 @@ impl EventStore for MockEventStore {
             .cloned()
             .unwrap_or_default()
             .into_iter()
+            .filter(|e| e.event_version >= from_version)
             .map(Ok)
             .collect::<Vec<_>>();
         Ok(stream::iter(events))

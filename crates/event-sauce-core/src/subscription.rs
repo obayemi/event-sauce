@@ -1081,4 +1081,123 @@ mod tests {
 
         assert_eq!(count, 0);
     }
+
+    #[tokio::test]
+    async fn test_subscription_error_policy_skip_continues_processing() {
+        let store = Arc::new(MockEventStore::new());
+        let checkpoint_store = Arc::new(MockCheckpointStore::new());
+
+        // Add 5 events
+        for i in 0..5 {
+            store.add_event(create_test_envelope(&format!("Event{i}"), "TestAggregate"));
+        }
+
+        let processed = Arc::new(Mutex::new(Vec::<String>::new()));
+        let processed_clone = processed.clone();
+        let call_count = Arc::new(Mutex::new(0usize));
+        let call_count_clone = call_count.clone();
+
+        let mut subscription = Subscription::builder("skip-test", store)
+            .checkpoint_store(checkpoint_store)
+            .error_policy(ErrorPolicy::Skip)
+            .build()
+            .unwrap();
+
+        // Handler fails on the 3rd event (index 2), succeeds on all others
+        let result = subscription
+            .run(|event| {
+                let mut count = call_count_clone.lock().unwrap();
+                *count += 1;
+                if *count == 3 {
+                    return Err(crate::Error::custom("handler error on 3rd event"));
+                }
+                processed_clone
+                    .lock()
+                    .unwrap()
+                    .push(event.event_type.clone());
+                Ok(())
+            })
+            .await;
+
+        // With Skip policy, the subscription should complete successfully
+        assert!(result.is_ok());
+        // Handler was called 5 times (all events)
+        assert_eq!(*call_count.lock().unwrap(), 5);
+        // But only 4 events were successfully processed (3rd was skipped)
+        assert_eq!(processed.lock().unwrap().len(), 4);
+    }
+
+    #[tokio::test]
+    async fn test_subscription_run_without_checkpoint_store() {
+        let store = Arc::new(MockEventStore::new());
+
+        // Add some events
+        for i in 0..3 {
+            store.add_event(create_test_envelope(&format!("Event{i}"), "TestAggregate"));
+        }
+
+        let processed = Arc::new(Mutex::new(Vec::<String>::new()));
+        let processed_clone = processed.clone();
+
+        // Build subscription without a checkpoint store
+        let mut subscription = Subscription::builder("no-checkpoint", store)
+            .build()
+            .unwrap();
+
+        subscription
+            .run(|event| {
+                processed_clone
+                    .lock()
+                    .unwrap()
+                    .push(event.event_type.clone());
+                Ok(())
+            })
+            .await
+            .unwrap();
+
+        // All events should be processed from the beginning
+        assert_eq!(processed.lock().unwrap().len(), 3);
+        assert_eq!(processed.lock().unwrap()[0], "Event0");
+        assert_eq!(processed.lock().unwrap()[1], "Event1");
+        assert_eq!(processed.lock().unwrap()[2], "Event2");
+    }
+
+    #[tokio::test]
+    async fn test_subscription_rebuild_without_checkpoint_store() {
+        let store = Arc::new(MockEventStore::new());
+
+        // Build subscription without a checkpoint store
+        let mut subscription = Subscription::builder("no-checkpoint-rebuild", store)
+            .build()
+            .unwrap();
+
+        // rebuild() should succeed without error when no checkpoint store is set
+        let result = subscription.rebuild().await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_subscription_builder_polling_interval() {
+        let store = Arc::new(MockEventStore::new());
+
+        let custom_interval = Duration::from_secs(5);
+        let subscription = Subscription::builder("polling-test", store)
+            .polling_interval(custom_interval)
+            .build()
+            .unwrap();
+
+        assert_eq!(subscription.config.polling_interval, custom_interval);
+    }
+
+    #[tokio::test]
+    async fn test_subscription_builder_error_policy() {
+        let store = Arc::new(MockEventStore::new());
+
+        let subscription = Subscription::builder("error-policy-test", store)
+            .error_policy(ErrorPolicy::Skip)
+            .build()
+            .unwrap();
+
+        assert_eq!(subscription.config.error_policy, ErrorPolicy::Skip);
+    }
 }

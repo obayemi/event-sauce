@@ -203,4 +203,24 @@ mod tests {
         let count = repo.count_events(test_id).await.unwrap();
         assert_eq!(count, 3);
     }
+
+    #[tokio::test]
+    async fn test_repository_clone_shares_arc_store() {
+        let store = Arc::new(MockEventStore::new());
+        let repo = Repository::<MockEventStore, SimpleTestEntity>::new(store);
+        let repo_clone = repo.clone();
+
+        let test_id = EntityId::new();
+        let mut aggregate = AggregateRoot::<SimpleTestEntity>::new(test_id);
+        aggregate
+            .apply(SimpleTestEvent::Created { value: 42 })
+            .unwrap();
+
+        // Save through the original repository
+        repo.save(&mut aggregate).await.unwrap();
+
+        // Load through the cloned repository — should see the same data
+        let loaded = repo_clone.load(test_id).await.unwrap();
+        assert_eq!(loaded.value, 42);
+    }
 }
