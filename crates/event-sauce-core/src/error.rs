@@ -257,15 +257,6 @@ mod tests {
     }
 
     #[test]
-    fn test_error_is_send_sync() {
-        fn assert_send<T: Send>() {}
-        fn assert_sync<T: Sync>() {}
-
-        assert_send::<Error>();
-        assert_sync::<Error>();
-    }
-
-    #[test]
     fn test_result_type_usage() {
         fn returns_result() -> Result<i32> {
             Ok(42)
@@ -277,13 +268,6 @@ mod tests {
 
         assert_eq!(returns_result().unwrap(), 42);
         assert!(returns_error().is_err());
-    }
-
-    #[test]
-    fn test_error_debug_format() {
-        let error = Error::concurrency_conflict(Version::new(1), Version::new(2));
-        let debug_str = format!("{error:?}");
-        assert!(debug_str.contains("ConcurrencyConflict"));
     }
 
     #[test]

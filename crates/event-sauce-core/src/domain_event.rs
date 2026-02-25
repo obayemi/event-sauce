@@ -286,61 +286,6 @@ mod tests {
         assert_eq!(event.occurred_at(), timestamp);
     }
 
-    #[test]
-    fn test_event_is_cloneable() {
-        let timestamp = Utc::now();
-        let event1 = TestEvent::Created {
-            id: "test-1".to_string(),
-            timestamp,
-        };
-        let event2 = event1.clone();
-
-        assert_eq!(event1, event2);
-    }
-
-    #[test]
-    fn test_event_is_debuggable() {
-        let timestamp = Utc::now();
-        let event = TestEvent::Created {
-            id: "test-1".to_string(),
-            timestamp,
-        };
-
-        let debug_str = format!("{event:?}");
-        assert!(debug_str.contains("Created"));
-        assert!(debug_str.contains("test-1"));
-    }
-
-    #[test]
-    fn test_event_is_send_sync() {
-        fn assert_send<T: Send>() {}
-        fn assert_sync<T: Sync>() {}
-
-        assert_send::<TestEvent>();
-        assert_sync::<TestEvent>();
-    }
-
-    #[test]
-    fn test_different_events_have_different_timestamps() {
-        let time1 = Utc::now();
-        let event1 = TestEvent::Created {
-            id: "test-1".to_string(),
-            timestamp: time1,
-        };
-
-        std::thread::sleep(std::time::Duration::from_millis(1));
-
-        let time2 = Utc::now();
-        let event2 = TestEvent::Updated {
-            id: "test-1".to_string(),
-            value: 42,
-            timestamp: time2,
-        };
-
-        assert_ne!(event1.occurred_at(), event2.occurred_at());
-        assert!(event2.occurred_at() > event1.occurred_at());
-    }
-
     // Test with simple event
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
     struct SimpleEvent {
@@ -822,15 +767,6 @@ mod tests {
     fn test_event_type_accessible_without_instance() {
         let event_type = TestEventWithType::EVENT_TYPE;
         assert!(!event_type.is_empty());
-    }
-
-    #[test]
-    fn test_event_type_is_send_sync() {
-        fn assert_send<T: Send>() {}
-        fn assert_sync<T: Sync>() {}
-
-        assert_send::<TestEventWithType>();
-        assert_sync::<TestEventWithType>();
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]

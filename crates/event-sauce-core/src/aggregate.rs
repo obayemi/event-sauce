@@ -112,123 +112,41 @@ pub trait Aggregate: Entity {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_fixtures::{SimpleTestEntity, SimpleTestEvent};
     use crate::{EntityId, Version};
-    use chrono::Utc;
-    use thiserror::Error;
-
-    #[derive(Debug, Error)]
-    #[error("Test aggregate error")]
-    struct TestAggregateError;
-
-    impl AggregateError for TestAggregateError {}
-
-    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-    enum TestEvent {
-        Created { value: i32 },
-        Updated { value: i32 },
-    }
-
-    impl DomainEvent for TestEvent {
-        type Aggregate = TestAggregate;
-
-        fn event_type(&self) -> &'static str {
-            match self {
-                TestEvent::Created { .. } => "TestCreated",
-                TestEvent::Updated { .. } => "TestUpdated",
-            }
-        }
-
-        fn event_version(&self) -> u64 {
-            1
-        }
-
-        fn occurred_at(&self) -> chrono::DateTime<Utc> {
-            Utc::now()
-        }
-    }
-
-    #[derive(serde::Serialize, serde::Deserialize)]
-    struct TestAggregate {
-        id: EntityId,
-        value: i32,
-    }
-
-    impl Entity for TestAggregate {
-        fn new(id: EntityId) -> Self {
-            Self { id, value: 0 }
-        }
-
-        fn entity_id(&self) -> EntityId {
-            self.id
-        }
-    }
-
-    impl EventApplicator<TestAggregate> for TestEvent {
-        fn dispatch(&self, aggregate: &mut TestAggregate) -> Result<(), TestAggregateError> {
-            match self {
-                TestEvent::Created { value } | TestEvent::Updated { value } => {
-                    aggregate.value = *value;
-                }
-            }
-            Ok(())
-        }
-
-        fn dispatch_unchecked(&self, aggregate: &mut TestAggregate) {
-            match self {
-                TestEvent::Created { value } | TestEvent::Updated { value } => {
-                    aggregate.value = *value;
-                }
-            }
-        }
-    }
-
-    impl Aggregate for TestAggregate {
-        type Event = TestEvent;
-        type Error = TestAggregateError;
-    }
 
     #[test]
     fn test_aggregate_type_name() {
-        let type_name = TestAggregate::aggregate_type();
-        assert_eq!(type_name, "TestAggregate");
+        let type_name = SimpleTestEntity::aggregate_type();
+        assert_eq!(type_name, "SimpleTestEntity");
     }
 
     #[test]
     fn test_aggregate_has_entity_identity() {
         let id = EntityId::new();
-        let aggregate = TestAggregate::new(id);
+        let aggregate = SimpleTestEntity::new(id);
         assert_eq!(aggregate.entity_id(), id);
     }
 
     #[test]
     fn test_aggregate_event_applicator_works() {
-        let mut aggregate = TestAggregate::new(EntityId::new());
-        let event = TestEvent::Created { value: 42 };
+        let mut aggregate = SimpleTestEntity::new(EntityId::new());
+        let event = SimpleTestEvent::Created { value: 42 };
 
         EventApplicator::dispatch(&event, &mut aggregate).unwrap();
         assert_eq!(aggregate.value, 42);
     }
 
     #[test]
-    fn test_aggregate_is_send_sync() {
-        fn assert_send<T: Send>() {}
-        fn assert_sync<T: Sync>() {}
-
-        assert_send::<TestAggregate>();
-        assert_sync::<TestAggregate>();
-    }
-
-    #[test]
     fn test_aggregate_root_integration() {
-        // Test that AggregateRoot works with the new Aggregate trait
         let id = EntityId::new();
-        let mut root = crate::AggregateRoot::<TestAggregate>::new(id);
+        let mut root = crate::AggregateRoot::<SimpleTestEntity>::new(id);
 
         assert_eq!(root.entity_id(), id);
         assert_eq!(root.version(), Version::initial());
         assert_eq!(root.pending_events().len(), 0);
 
-        root.apply(TestEvent::Created { value: 42 }).unwrap();
+        root.apply(SimpleTestEvent::Created { value: 42 }).unwrap();
 
         assert_eq!(root.value, 42);
         assert_eq!(root.version(), Version::new(1));

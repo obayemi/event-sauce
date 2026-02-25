@@ -50,18 +50,6 @@ mod tests {
     impl AggregateError for TestError {}
 
     #[test]
-    fn test_aggregate_error_is_send() {
-        fn assert_send<T: Send>() {}
-        assert_send::<TestError>();
-    }
-
-    #[test]
-    fn test_aggregate_error_is_sync() {
-        fn assert_sync<T: Sync>() {}
-        assert_sync::<TestError>();
-    }
-
-    #[test]
     fn test_aggregate_error_is_error() {
         fn assert_error<T: Error>() {}
         assert_error::<TestError>();

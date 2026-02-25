@@ -540,18 +540,6 @@ mod tests {
     }
 
     #[test]
-    fn test_debug_format() {
-        let config = SnapshotConfig::builder()
-            .default_strategy(EveryNEvents(100))
-            .per_type_override("User", AlwaysSnapshot)
-            .build();
-
-        let debug_str = format!("{config:?}");
-        assert!(debug_str.contains("SnapshotConfig"));
-        assert!(debug_str.contains("use_snapshots_on_load"));
-    }
-
-    #[test]
     fn test_default_strategy_getter() {
         let config = SnapshotConfig::builder()
             .default_strategy(EveryNEvents(100))

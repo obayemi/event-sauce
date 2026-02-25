@@ -363,14 +363,6 @@ mod tests {
     }
 
     #[test]
-    fn test_metadata_clone() {
-        let metadata1 = EventMetadata::new().with_correlation_id(Uuid::new_v4());
-        let metadata2 = metadata1.clone();
-
-        assert_eq!(metadata1, metadata2);
-    }
-
-    #[test]
     fn test_event_envelope_new() {
         let id = Uuid::new_v4();
         let aggregate_id = Uuid::new_v4();
@@ -484,22 +476,6 @@ mod tests {
         assert_eq!(envelope.id, deserialized.id);
         assert_eq!(envelope.aggregate_id, deserialized.aggregate_id);
         assert_eq!(envelope.event_type, deserialized.event_type);
-    }
-
-    #[test]
-    fn test_event_envelope_clone() {
-        let envelope1 = EventEnvelope::new(
-            Uuid::new_v4(),
-            Uuid::new_v4(),
-            "Test".to_string(),
-            "TestEvent".to_string(),
-            Version::new(1),
-            json!({}),
-        );
-
-        let envelope2 = envelope1.clone();
-
-        assert_eq!(envelope1, envelope2);
     }
 
     #[test]

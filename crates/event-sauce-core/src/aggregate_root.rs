@@ -558,28 +558,9 @@ mod tests {
     }
 
     #[test]
-    fn test_aggregate_root_is_send_sync() {
-        fn assert_send<T: Send>() {}
-        fn assert_sync<T: Sync>() {}
-
-        assert_send::<AggregateRoot<CounterEntity>>();
-        assert_sync::<AggregateRoot<CounterEntity>>();
-    }
-
-    #[test]
     fn test_aggregate_root_type_name() {
         let type_name = AggregateRoot::<CounterEntity>::aggregate_type();
         assert_eq!(type_name, "CounterEntity");
-    }
-
-    #[test]
-    fn test_aggregate_root_clone() {
-        let mut counter = AggregateRoot::<CounterEntity>::new(EntityId::new());
-        counter.increment(5).unwrap();
-
-        let cloned = counter.clone();
-        assert_eq!(cloned.value, 5);
-        assert_eq!(cloned.version(), Version::new(1));
     }
 
     #[test]

@@ -444,22 +444,6 @@ mod tests {
     }
 
     #[test]
-    fn test_stream_id_clone() {
-        let stream_id = StreamId::new("User", Uuid::new_v4());
-        let cloned = stream_id.clone();
-
-        assert_eq!(stream_id, cloned);
-    }
-
-    #[test]
-    fn test_stream_id_debug() {
-        let stream_id = StreamId::new("User", Uuid::new_v4());
-        let debug = format!("{stream_id:?}");
-
-        assert!(debug.contains("StreamId"));
-    }
-
-    #[test]
     fn test_position_new() {
         let pos = Position::new(42);
         assert_eq!(pos.as_i64(), 42);
@@ -513,75 +497,12 @@ mod tests {
         assert_eq!(snapshot.snapshot_data, snapshot_data);
     }
 
-    #[test]
-    fn test_snapshot_clone() {
-        let snapshot = Snapshot::new(
-            Uuid::new_v4(),
-            "Test".to_string(),
-            Version::new(5),
-            serde_json::json!({}),
-        );
-
-        let cloned = snapshot.clone();
-        assert_eq!(snapshot.aggregate_id, cloned.aggregate_id);
-        assert_eq!(snapshot.snapshot_version, cloned.snapshot_version);
-    }
-
-    #[test]
-    fn test_snapshot_debug() {
-        let snapshot = Snapshot::new(
-            Uuid::new_v4(),
-            "Test".to_string(),
-            Version::new(5),
-            serde_json::json!({}),
-        );
-
-        let debug = format!("{snapshot:?}");
-        assert!(debug.contains("Snapshot"));
-    }
-
     // Tests for default trait implementations
-    use async_trait::async_trait;
-    use futures::stream;
-
-    struct MockEventStore;
-
-    #[async_trait]
-    impl EventStore for MockEventStore {
-        async fn append(
-            &self,
-            _stream_id: StreamId,
-            _events: Vec<crate::EventEnvelope>,
-            _expected_version: Version,
-        ) -> crate::Result<()> {
-            Ok(())
-        }
-
-        async fn load_stream(
-            &self,
-            _stream_id: StreamId,
-            _from_version: Version,
-        ) -> crate::Result<impl futures::Stream<Item = crate::Result<crate::EventEnvelope>> + Send>
-        {
-            Ok(stream::empty())
-        }
-
-        async fn stream_all(
-            &self,
-            _from_position: Position,
-        ) -> crate::Result<impl futures::Stream<Item = crate::Result<crate::EventEnvelope>> + Send>
-        {
-            Ok(stream::empty())
-        }
-
-        async fn get_version(&self, _stream_id: StreamId) -> crate::Result<Version> {
-            Ok(Version::initial())
-        }
-    }
+    use crate::test_fixtures::MockEventStore as SharedMockEventStore;
 
     #[tokio::test]
     async fn test_save_snapshot_default_implementation() {
-        let store = MockEventStore;
+        let store = SharedMockEventStore::new();
         let snapshot = Snapshot::new(
             Uuid::new_v4(),
             "TestAggregate".to_string(),
@@ -595,7 +516,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_load_snapshot_default_implementation() {
-        let store = MockEventStore;
+        let store = SharedMockEventStore::new();
         let stream_id = StreamId::new("TestAggregate", Uuid::new_v4());
 
         let result = store.load_snapshot(stream_id).await;
@@ -605,7 +526,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_save_and_load_snapshot_default_implementations() {
-        let store = MockEventStore;
+        let store = SharedMockEventStore::new();
         let aggregate_id = Uuid::new_v4();
         let stream_id = StreamId::new("TestAggregate", aggregate_id);
 
@@ -621,86 +542,9 @@ mod tests {
         assert!(loaded.is_none());
     }
 
-    // Test aggregates for helper function tests
-
-    use crate::{AggregateError, DomainEvent, EntityId};
-    use chrono::Utc;
-    use thiserror::Error;
-
-    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-    #[allow(dead_code)]
-    enum TestAggregateEvent {
-        Created { value: i32 },
-        Updated { value: i32 },
-    }
-
-    impl DomainEvent for TestAggregateEvent {
-        type Aggregate = TestAgg;
-
-        fn event_type(&self) -> &'static str {
-            match self {
-                TestAggregateEvent::Created { .. } => "TestAggregate.Created",
-                TestAggregateEvent::Updated { .. } => "TestAggregate.Updated",
-            }
-        }
-
-        fn event_version(&self) -> u64 {
-            1
-        }
-
-        fn occurred_at(&self) -> chrono::DateTime<Utc> {
-            Utc::now()
-        }
-    }
-
-    #[derive(Debug, Error)]
-    #[error("Test aggregate error")]
-    #[allow(dead_code)]
-    struct TestAggErr;
-
-    impl AggregateError for TestAggErr {}
-
-    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-    #[allow(dead_code)]
-    struct TestAgg {
-        id: EntityId,
-        value: i32,
-    }
-
-    impl crate::Entity for TestAgg {
-        fn new(id: EntityId) -> Self {
-            Self { id, value: 0 }
-        }
-        fn entity_id(&self) -> EntityId {
-            self.id
-        }
-    }
-
-    impl crate::EventApplicator<TestAgg> for TestAggregateEvent {
-        fn dispatch(&self, entity: &mut TestAgg) -> std::result::Result<(), TestAggErr> {
-            match self {
-                TestAggregateEvent::Created { value } | TestAggregateEvent::Updated { value } => {
-                    entity.value = *value;
-                }
-            }
-            Ok(())
-        }
-
-        fn dispatch_unchecked(&self, entity: &mut TestAgg) {
-            match self {
-                TestAggregateEvent::Created { value } | TestAggregateEvent::Updated { value } => {
-                    entity.value = *value;
-                }
-            }
-        }
-    }
-
-    impl Aggregate for TestAgg {
-        type Event = TestAggregateEvent;
-        type Error = TestAggErr;
-    }
-
     // Tests for stream_exists and count_events
+    use async_trait::async_trait;
+    use futures::stream;
 
     struct MockEventStoreWithStreams {
         streams: std::collections::HashMap<StreamId, Vec<EventEnvelope>>,

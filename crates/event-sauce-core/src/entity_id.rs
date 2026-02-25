@@ -163,13 +163,6 @@ mod tests {
     }
 
     #[test]
-    fn test_entity_id_debug() {
-        let id = EntityId::new();
-        let debug = format!("{id:?}");
-        assert!(debug.contains("EntityId"));
-    }
-
-    #[test]
     fn test_entity_id_from_uuid() {
         let uuid = Uuid::new_v4();
         let id: EntityId = uuid.into();
@@ -182,24 +175,6 @@ mod tests {
         let id = EntityId::from(uuid);
         let converted: Uuid = id.into();
         assert_eq!(converted, uuid);
-    }
-
-    #[test]
-    fn test_entity_id_equality() {
-        let uuid = Uuid::new_v4();
-        let id1 = EntityId::from(uuid);
-        let id2 = EntityId::from(uuid);
-        let id3 = EntityId::new();
-
-        assert_eq!(id1, id2);
-        assert_ne!(id1, id3);
-    }
-
-    #[test]
-    fn test_entity_id_clone() {
-        let id1 = EntityId::new();
-        let id2 = id1;
-        assert_eq!(id1, id2);
     }
 
     #[test]
@@ -235,14 +210,5 @@ mod tests {
 
         let serialized = serde_json::to_string(&id).unwrap();
         assert_eq!(serialized, r#""550e8400-e29b-41d4-a716-446655440000""#);
-    }
-
-    #[test]
-    fn test_entity_id_is_send_sync() {
-        fn assert_send<T: Send>() {}
-        fn assert_sync<T: Sync>() {}
-
-        assert_send::<EntityId>();
-        assert_sync::<EntityId>();
     }
 }

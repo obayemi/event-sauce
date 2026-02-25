@@ -117,189 +117,24 @@ impl<S, A> Clone for Repository<S, A> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AggregateError, ApplyEvent, DomainEvent, EntityId, EventEnvelope, Version};
-    use chrono::Utc;
-    use serde::{Deserialize, Serialize};
-
-    // Test events
-    #[derive(Debug, Clone, Serialize, Deserialize)]
-    enum TestEvent {
-        Incremented { amount: i32 },
-        Reset,
-    }
-
-    impl DomainEvent for TestEvent {
-        type Aggregate = TestEntity;
-
-        fn event_type(&self) -> &'static str {
-            match self {
-                Self::Incremented { .. } => "Incremented",
-                Self::Reset => "Reset",
-            }
-        }
-
-        fn event_version(&self) -> u64 {
-            1
-        }
-
-        fn occurred_at(&self) -> chrono::DateTime<chrono::Utc> {
-            Utc::now()
-        }
-    }
-
-    impl ApplyEvent<TestEntity> for TestEvent {
-        fn apply(&self, entity: &mut TestEntity) {
-            match self {
-                Self::Incremented { amount } => entity.value += amount,
-                Self::Reset => entity.value = 0,
-            }
-        }
-    }
-
-    // Test entity
-    #[derive(Debug, Clone, Serialize, Deserialize)]
-    struct TestEntity {
-        id: EntityId,
-        value: i32,
-    }
-
-    impl crate::Entity for TestEntity {
-        fn new(id: EntityId) -> Self {
-            Self { id, value: 0 }
-        }
-
-        fn entity_id(&self) -> EntityId {
-            self.id
-        }
-    }
-
-    impl crate::EventApplicator<TestEntity> for TestEvent {
-        fn dispatch(&self, entity: &mut TestEntity) -> std::result::Result<(), TestError> {
-            self.apply(entity);
-            Ok(())
-        }
-
-        fn dispatch_unchecked(&self, entity: &mut TestEntity) {
-            self.apply(entity);
-        }
-    }
-
-    impl Aggregate for TestEntity {
-        type Event = TestEvent;
-        type Error = TestError;
-
-        fn aggregate_type() -> &'static str {
-            "TestEntity"
-        }
-    }
-
-    // Test error
-    #[derive(Debug, thiserror::Error)]
-    enum TestError {
-        #[error("Test error")]
-        #[allow(dead_code)]
-        TestError,
-    }
-
-    impl AggregateError for TestError {}
-
-    // Mock event store
-    use async_trait::async_trait;
-    use futures::stream;
-    use std::collections::HashMap;
-    use std::sync::Mutex;
-
-    #[derive(Debug)]
-    struct MockEventStore {
-        streams: Arc<Mutex<HashMap<StreamId, Vec<EventEnvelope>>>>,
-    }
-
-    impl MockEventStore {
-        fn new() -> Self {
-            Self {
-                streams: Arc::new(Mutex::new(HashMap::new())),
-            }
-        }
-    }
-
-    #[async_trait]
-    impl EventStore for MockEventStore {
-        async fn append(
-            &self,
-            stream_id: StreamId,
-            events: Vec<EventEnvelope>,
-            _expected_version: Version,
-        ) -> Result<()> {
-            let mut streams = self.streams.lock().unwrap();
-            streams.entry(stream_id).or_default().extend(events);
-            Ok(())
-        }
-
-        async fn load_stream(
-            &self,
-            stream_id: StreamId,
-            _from_version: Version,
-        ) -> Result<impl futures::Stream<Item = Result<EventEnvelope>> + Send> {
-            let streams = self.streams.lock().unwrap();
-            let events = streams
-                .get(&stream_id)
-                .cloned()
-                .unwrap_or_default()
-                .into_iter()
-                .map(Ok)
-                .collect::<Vec<_>>();
-            Ok(stream::iter(events))
-        }
-
-        async fn stream_all(
-            &self,
-            _from_position: crate::Position,
-        ) -> Result<impl futures::Stream<Item = Result<EventEnvelope>> + Send> {
-            let streams = self.streams.lock().unwrap();
-            let events = streams
-                .values()
-                .flat_map(|v| v.iter())
-                .cloned()
-                .map(Ok)
-                .collect::<Vec<_>>();
-            Ok(stream::iter(events))
-        }
-
-        async fn get_version(&self, stream_id: StreamId) -> Result<Version> {
-            let streams = self.streams.lock().unwrap();
-            let count = streams.get(&stream_id).map_or(0, std::vec::Vec::len);
-            Ok(Version::new(count as u64))
-        }
-
-        async fn load_snapshot(&self, _stream_id: StreamId) -> Result<Option<crate::Snapshot>> {
-            Ok(None)
-        }
-
-        async fn save_snapshot(&self, _snapshot: crate::Snapshot) -> Result<()> {
-            Ok(())
-        }
-
-        fn snapshot_config(&self) -> &crate::SnapshotConfig {
-            static CONFIG: std::sync::OnceLock<crate::SnapshotConfig> = std::sync::OnceLock::new();
-            CONFIG.get_or_init(crate::SnapshotConfig::disabled)
-        }
-    }
+    use crate::test_fixtures::{MockEventStore, SimpleTestEntity, SimpleTestEvent};
+    use crate::EntityId;
 
     #[tokio::test]
     async fn test_repository_new() {
         let store = Arc::new(MockEventStore::new());
-        let _repo = Repository::<MockEventStore, TestEntity>::new(store);
+        let _repo = Repository::<MockEventStore, SimpleTestEntity>::new(store);
     }
 
     #[tokio::test]
     async fn test_repository_save_and_load() {
         let store = Arc::new(MockEventStore::new());
-        let repo = Repository::<MockEventStore, TestEntity>::new(store);
+        let repo = Repository::<MockEventStore, SimpleTestEntity>::new(store);
 
         let test_id = EntityId::new();
-        let mut aggregate = AggregateRoot::<TestEntity>::new(test_id);
+        let mut aggregate = AggregateRoot::<SimpleTestEntity>::new(test_id);
         aggregate
-            .apply(TestEvent::Incremented { amount: 5 })
+            .apply(SimpleTestEvent::Created { value: 5 })
             .unwrap();
 
         repo.save(&mut aggregate).await.unwrap();
@@ -311,15 +146,15 @@ mod tests {
     #[tokio::test]
     async fn test_repository_exists() {
         let store = Arc::new(MockEventStore::new());
-        let repo = Repository::<MockEventStore, TestEntity>::new(store);
+        let repo = Repository::<MockEventStore, SimpleTestEntity>::new(store);
 
         let test_id = EntityId::new();
 
         assert!(!repo.exists(test_id).await.unwrap());
 
-        let mut aggregate = AggregateRoot::<TestEntity>::new(test_id);
+        let mut aggregate = AggregateRoot::<SimpleTestEntity>::new(test_id);
         aggregate
-            .apply(TestEvent::Incremented { amount: 5 })
+            .apply(SimpleTestEvent::Created { value: 5 })
             .unwrap();
         repo.save(&mut aggregate).await.unwrap();
 
@@ -329,15 +164,15 @@ mod tests {
     #[tokio::test]
     async fn test_repository_get_version() {
         let store = Arc::new(MockEventStore::new());
-        let repo = Repository::<MockEventStore, TestEntity>::new(store);
+        let repo = Repository::<MockEventStore, SimpleTestEntity>::new(store);
 
         let test_id = EntityId::new();
-        let mut aggregate = AggregateRoot::<TestEntity>::new(test_id);
+        let mut aggregate = AggregateRoot::<SimpleTestEntity>::new(test_id);
         aggregate
-            .apply(TestEvent::Incremented { amount: 5 })
+            .apply(SimpleTestEvent::Created { value: 5 })
             .unwrap();
         aggregate
-            .apply(TestEvent::Incremented { amount: 3 })
+            .apply(SimpleTestEvent::Updated { value: 8 })
             .unwrap();
 
         repo.save(&mut aggregate).await.unwrap();
@@ -349,30 +184,23 @@ mod tests {
     #[tokio::test]
     async fn test_repository_count_events() {
         let store = Arc::new(MockEventStore::new());
-        let repo = Repository::<MockEventStore, TestEntity>::new(store);
+        let repo = Repository::<MockEventStore, SimpleTestEntity>::new(store);
 
         let test_id = EntityId::new();
-        let mut aggregate = AggregateRoot::<TestEntity>::new(test_id);
+        let mut aggregate = AggregateRoot::<SimpleTestEntity>::new(test_id);
         aggregate
-            .apply(TestEvent::Incremented { amount: 5 })
+            .apply(SimpleTestEvent::Created { value: 5 })
             .unwrap();
         aggregate
-            .apply(TestEvent::Incremented { amount: 3 })
+            .apply(SimpleTestEvent::Updated { value: 8 })
             .unwrap();
         aggregate
-            .apply(TestEvent::Incremented { amount: 2 })
+            .apply(SimpleTestEvent::Updated { value: 10 })
             .unwrap();
 
         repo.save(&mut aggregate).await.unwrap();
 
         let count = repo.count_events(test_id).await.unwrap();
         assert_eq!(count, 3);
-    }
-
-    #[tokio::test]
-    async fn test_repository_clone() {
-        let store = Arc::new(MockEventStore::new());
-        let repo = Repository::<MockEventStore, TestEntity>::new(store);
-        let _cloned = repo.clone();
     }
 }

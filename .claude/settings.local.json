@@ -31,7 +31,8 @@
       "Bash(cargo --version:*)",
       "Bash(wc:*)",
       "Bash(jj new:*)",
-      "Bash(jj describe:*)"
+      "Bash(jj describe:*)",
+      "Bash(grep:*)"
     ],
     "deny": [],
     "ask": []

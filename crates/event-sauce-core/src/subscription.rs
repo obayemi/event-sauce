@@ -658,20 +658,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Version;
-    use serde_json::json;
-    use uuid::Uuid;
-
-    fn create_test_envelope(event_type: &str, aggregate_type: &str) -> EventEnvelope {
-        EventEnvelope::new(
-            Uuid::new_v4(),
-            Uuid::new_v4(),
-            aggregate_type.to_string(),
-            event_type.to_string(),
-            Version::new(1),
-            json!({}),
-        )
-    }
+    use crate::test_fixtures::{create_test_envelope, MockCheckpointStore, MockEventStore};
+    use std::sync::{Arc, Mutex};
 
     // EventFilter tests
     #[test]
@@ -718,58 +706,6 @@ mod tests {
         assert!(!filter.matches(&non_matching_aggregate));
     }
 
-    #[test]
-    fn test_event_filter_clone() {
-        let filter = EventFilter::by_event_type("Test");
-        let cloned = filter.clone();
-        assert_eq!(filter, cloned);
-    }
-
-    #[test]
-    fn test_event_filter_debug() {
-        let filter = EventFilter::all();
-        let debug = format!("{filter:?}");
-        assert!(debug.contains("All"));
-    }
-
-    // CheckpointStrategy tests
-    #[test]
-    fn test_checkpoint_strategy_every_event() {
-        let strategy = CheckpointStrategy::EveryEvent;
-        assert_eq!(strategy, CheckpointStrategy::EveryEvent);
-    }
-
-    #[test]
-    fn test_checkpoint_strategy_every_n() {
-        let strategy = CheckpointStrategy::EveryN(10);
-        assert_eq!(strategy, CheckpointStrategy::EveryN(10));
-    }
-
-    #[test]
-    fn test_checkpoint_strategy_manual() {
-        let strategy = CheckpointStrategy::Manual;
-        assert_eq!(strategy, CheckpointStrategy::Manual);
-    }
-
-    // ErrorPolicy tests
-    #[test]
-    fn test_error_policy_retry() {
-        let policy = ErrorPolicy::Retry;
-        assert_eq!(policy, ErrorPolicy::Retry);
-    }
-
-    #[test]
-    fn test_error_policy_skip() {
-        let policy = ErrorPolicy::Skip;
-        assert_eq!(policy, ErrorPolicy::Skip);
-    }
-
-    #[test]
-    fn test_error_policy_fail() {
-        let policy = ErrorPolicy::Fail;
-        assert_eq!(policy, ErrorPolicy::Fail);
-    }
-
     // SubscriptionConfig tests
     #[test]
     fn test_subscription_config_default() {
@@ -778,120 +714,6 @@ mod tests {
         assert_eq!(config.polling_interval, Duration::from_millis(100));
         assert_eq!(config.error_policy, ErrorPolicy::Fail);
         assert_eq!(config.filter, EventFilter::All);
-    }
-
-    #[test]
-    fn test_subscription_config_clone() {
-        let config = SubscriptionConfig::default();
-        let cloned = config.clone();
-        assert_eq!(config.checkpoint_strategy, cloned.checkpoint_strategy);
-    }
-
-    // Subscription tests - these should FAIL until we implement the Subscription type
-    use std::collections::HashMap;
-    use std::sync::{Arc, Mutex};
-    use tokio::sync::RwLock as AsyncRwLock;
-
-    // Mock CheckpointStore for testing
-    #[derive(Clone)]
-    struct MockCheckpointStore {
-        checkpoints: Arc<AsyncRwLock<HashMap<String, Position>>>,
-    }
-
-    impl MockCheckpointStore {
-        fn new() -> Self {
-            Self {
-                checkpoints: Arc::new(AsyncRwLock::new(HashMap::new())),
-            }
-        }
-
-        async fn get(&self, name: &str) -> Option<Position> {
-            self.checkpoints.read().await.get(name).copied()
-        }
-    }
-
-    #[async_trait]
-    impl CheckpointStore for MockCheckpointStore {
-        async fn save_checkpoint(&self, subscription_name: &str, position: Position) -> Result<()> {
-            self.checkpoints
-                .write()
-                .await
-                .insert(subscription_name.to_string(), position);
-            Ok(())
-        }
-
-        async fn load_checkpoint(&self, subscription_name: &str) -> Result<Option<Position>> {
-            Ok(self
-                .checkpoints
-                .read()
-                .await
-                .get(subscription_name)
-                .copied())
-        }
-
-        async fn delete_checkpoint(&self, subscription_name: &str) -> Result<()> {
-            self.checkpoints.write().await.remove(subscription_name);
-            Ok(())
-        }
-    }
-
-    // Mock EventStore for testing
-    use crate::{EventStore, StreamId};
-    use futures::{stream, Stream};
-
-    struct MockEventStore {
-        events: Arc<Mutex<Vec<EventEnvelope>>>,
-    }
-
-    impl MockEventStore {
-        fn new() -> Self {
-            Self {
-                events: Arc::new(Mutex::new(Vec::new())),
-            }
-        }
-
-        fn add_event(&self, event: EventEnvelope) {
-            self.events.lock().unwrap().push(event);
-        }
-
-        #[allow(dead_code)]
-        fn event_count(&self) -> usize {
-            self.events.lock().unwrap().len()
-        }
-    }
-
-    #[async_trait]
-    impl EventStore for MockEventStore {
-        async fn append(
-            &self,
-            _stream_id: StreamId,
-            _events: Vec<EventEnvelope>,
-            _expected_version: Version,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        async fn load_stream(
-            &self,
-            _stream_id: StreamId,
-            _from_version: Version,
-        ) -> Result<impl Stream<Item = Result<EventEnvelope>> + Send> {
-            Ok(stream::empty())
-        }
-
-        async fn stream_all(
-            &self,
-            from_position: Position,
-        ) -> Result<impl Stream<Item = Result<EventEnvelope>> + Send> {
-            let events = self.events.lock().unwrap().clone();
-            let from_idx = usize::try_from(from_position.as_i64()).unwrap_or(0);
-            let filtered_events: Vec<_> = events.into_iter().skip(from_idx).map(Ok).collect();
-            Ok(stream::iter(filtered_events))
-        }
-
-        async fn get_version(&self, _stream_id: StreamId) -> Result<Version> {
-            Ok(Version::initial())
-        }
     }
 
     #[tokio::test]

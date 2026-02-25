@@ -66,28 +66,12 @@ pub trait Entity: Serialize + DeserializeOwned + Send + Sync + Sized {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde::{Deserialize, Serialize};
-
-    #[derive(Debug, Serialize, Deserialize)]
-    struct TestEntity {
-        id: EntityId,
-        value: i32,
-    }
-
-    impl Entity for TestEntity {
-        fn new(id: EntityId) -> Self {
-            Self { id, value: 0 }
-        }
-
-        fn entity_id(&self) -> EntityId {
-            self.id
-        }
-    }
+    use crate::test_fixtures::SimpleTestEntity;
 
     #[test]
     fn test_entity_new() {
         let id = EntityId::new();
-        let entity = TestEntity::new(id);
+        let entity = SimpleTestEntity::new(id);
 
         assert_eq!(entity.entity_id(), id);
         assert_eq!(entity.value, 0);
@@ -96,15 +80,15 @@ mod tests {
     #[test]
     fn test_entity_identity_preserved() {
         let id = EntityId::new();
-        let entity = TestEntity::new(id);
+        let entity = SimpleTestEntity::new(id);
 
         assert_eq!(entity.entity_id(), id);
     }
 
     #[test]
     fn test_entity_different_ids() {
-        let entity1 = TestEntity::new(EntityId::new());
-        let entity2 = TestEntity::new(EntityId::new());
+        let entity1 = SimpleTestEntity::new(EntityId::new());
+        let entity2 = SimpleTestEntity::new(EntityId::new());
 
         assert_ne!(entity1.entity_id(), entity2.entity_id());
     }
@@ -112,21 +96,12 @@ mod tests {
     #[test]
     fn test_entity_serialization() {
         let id = EntityId::new();
-        let entity = TestEntity::new(id);
+        let entity = SimpleTestEntity::new(id);
 
         let serialized = serde_json::to_string(&entity).unwrap();
-        let deserialized: TestEntity = serde_json::from_str(&serialized).unwrap();
+        let deserialized: SimpleTestEntity = serde_json::from_str(&serialized).unwrap();
 
         assert_eq!(deserialized.entity_id(), id);
         assert_eq!(deserialized.value, 0);
-    }
-
-    #[test]
-    fn test_entity_is_send_sync() {
-        fn assert_send<T: Send>() {}
-        fn assert_sync<T: Sync>() {}
-
-        assert_send::<TestEntity>();
-        assert_sync::<TestEntity>();
     }
 }

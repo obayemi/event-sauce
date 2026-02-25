@@ -41,6 +41,9 @@ mod subscription;
 mod types;
 mod version;
 
+#[cfg(test)]
+pub(crate) mod test_fixtures;
+
 pub use aggregate::Aggregate;
 pub use aggregate_error::AggregateError;
 pub use aggregate_root::AggregateRoot;

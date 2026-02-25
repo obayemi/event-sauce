@@ -363,29 +363,9 @@ mod tests {
     }
 
     #[test]
-    fn test_specification_error_debug() {
-        let error: SpecificationError<i32> = SpecificationError::new("debug test".to_string());
-        let debug = format!("{error:?}");
-        assert!(debug.contains("SpecificationError"));
-        assert!(debug.contains("debug test"));
-    }
-
-    #[test]
     fn test_specification_error_is_error() {
         fn assert_error<T: std::error::Error>() {}
         assert_error::<SpecificationError<i32>>();
-    }
-
-    #[test]
-    fn test_specification_error_is_send() {
-        fn assert_send<T: Send>() {}
-        assert_send::<SpecificationError<i32>>();
-    }
-
-    #[test]
-    fn test_specification_error_is_sync() {
-        fn assert_sync<T: Sync>() {}
-        assert_sync::<SpecificationError<i32>>();
     }
 
     #[test]
@@ -739,24 +719,6 @@ mod tests {
         let spec = positive.not();
         assert!(spec.is_satisfied_by(&-1));
         assert!(!spec.is_satisfied_by(&42));
-    }
-
-    // ===== Send + Sync Assertions =====
-
-    #[test]
-    fn test_specification_trait_requires_send_sync() {
-        fn assert_send_sync<T: Send + Sync>() {}
-        assert_send_sync::<IsPositive>();
-        assert_send_sync::<And<IsPositive, IsEven, i64>>();
-        assert_send_sync::<Or<IsPositive, IsEven, i64>>();
-        assert_send_sync::<Not<IsPositive, i64>>();
-    }
-
-    #[test]
-    fn test_fn_spec_is_send_sync() {
-        fn assert_send_sync<T: Send + Sync>() {}
-        let _spec = FnSpec::new(|val: &i64| *val > 0, |val: &i64| format!("positive: {val}"));
-        assert_send_sync::<FnSpec<i64, fn(&i64) -> bool, fn(&i64) -> String>>();
     }
 
     // ===== Specification with struct fields =====

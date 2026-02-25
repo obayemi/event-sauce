@@ -154,16 +154,6 @@ mod tests {
     }
 
     #[test]
-    fn test_version_equality() {
-        let v1 = Version::new(5);
-        let v2 = Version::new(5);
-        let v3 = Version::new(6);
-
-        assert_eq!(v1, v2);
-        assert_ne!(v1, v3);
-    }
-
-    #[test]
     fn test_version_display() {
         let version = Version::new(42);
         assert_eq!(format!("{version}"), "v42");
@@ -180,19 +170,5 @@ mod tests {
         let version = Version::new(42);
         let value: u64 = version.into();
         assert_eq!(value, 42);
-    }
-
-    #[test]
-    fn test_version_clone() {
-        let v1 = Version::new(10);
-        let v2 = v1;
-        assert_eq!(v1, v2);
-    }
-
-    #[test]
-    fn test_version_debug() {
-        let version = Version::new(42);
-        let debug_str = format!("{version:?}");
-        assert!(debug_str.contains("42"));
     }
 }

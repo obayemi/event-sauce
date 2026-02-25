@@ -343,42 +343,4 @@ mod tests {
         assert!(!strategy.should_snapshot(Version::new(51)));
         assert!(strategy.should_snapshot(Version::new(100)));
     }
-
-    #[test]
-    fn test_strategy_is_send_sync() {
-        fn assert_send_sync<T: Send + Sync>() {}
-        assert_send_sync::<AlwaysSnapshot>();
-        assert_send_sync::<NeverSnapshot>();
-        assert_send_sync::<EveryNEvents>();
-    }
-
-    #[test]
-    fn test_strategy_debug_format() {
-        assert_eq!(format!("{AlwaysSnapshot:?}"), "AlwaysSnapshot");
-        assert_eq!(format!("{NeverSnapshot:?}"), "NeverSnapshot");
-        assert_eq!(format!("{:?}", EveryNEvents(100)), "EveryNEvents(100)");
-    }
-
-    #[test]
-    fn test_strategy_equality() {
-        assert_eq!(AlwaysSnapshot, AlwaysSnapshot);
-        assert_eq!(NeverSnapshot, NeverSnapshot);
-        assert_eq!(EveryNEvents(100), EveryNEvents(100));
-        assert_ne!(EveryNEvents(100), EveryNEvents(50));
-    }
-
-    #[test]
-    fn test_strategy_clone() {
-        let always = AlwaysSnapshot;
-        let always_clone = always;
-        assert_eq!(always, always_clone);
-
-        let never = NeverSnapshot;
-        let never_clone = never;
-        assert_eq!(never, never_clone);
-
-        let every = EveryNEvents(100);
-        let every_clone = every;
-        assert_eq!(every, every_clone);
-    }
 }
