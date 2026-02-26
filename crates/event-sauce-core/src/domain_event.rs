@@ -85,7 +85,7 @@ pub trait DomainEvent: Clone + Debug + Send + Sync + Serialize + DeserializeOwne
         Ok(EventEnvelope::new(
             Uuid::new_v4(),
             aggregate_id,
-            Self::Aggregate::aggregate_type().to_string(),
+            Self::Aggregate::aggregate_type(),
             self.event_type().to_string(),
             self.event_version(),
             event_data,

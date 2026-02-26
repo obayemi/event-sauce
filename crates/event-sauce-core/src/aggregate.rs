@@ -4,7 +4,7 @@
 //! specifying its event and error types. Infrastructure concerns (version,
 //! pending events) are handled by `AggregateRoot<A>`.
 
-use crate::{AggregateError, DomainEvent, Entity, EventApplicator};
+use crate::{AggregateError, AggregateType, DomainEvent, Entity, EventApplicator};
 
 /// Trait for event-sourced aggregates.
 ///
@@ -92,8 +92,10 @@ pub trait Aggregate: Entity {
 
     /// Returns the aggregate type name.
     ///
-    /// Defaults to the short type name (last segment of the full path).
-    /// Used for stream ID construction and envelope metadata.
+    /// Defaults to the short type name (last segment of the full path),
+    /// wrapped in an [`AggregateType`]. The `#[aggregate]` proc macro
+    /// overrides this with a `stringify!`-based implementation for
+    /// compiler-version stability.
     ///
     /// # Coverage Note
     ///
@@ -101,11 +103,14 @@ pub trait Aggregate: Entity {
     /// Rust's `type_name()` always returns a non-empty string, so `.last()`
     /// will always return `Some(_)`. The fallback cannot be reached in practice.
     #[must_use]
-    fn aggregate_type() -> &'static str {
-        std::any::type_name::<Self>()
-            .split("::")
-            .last()
-            .unwrap_or("Unknown")
+    fn aggregate_type() -> AggregateType {
+        AggregateType::from_owned(
+            std::any::type_name::<Self>()
+                .split("::")
+                .last()
+                .unwrap_or("Unknown")
+                .to_string(),
+        )
     }
 }
 

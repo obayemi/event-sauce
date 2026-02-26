@@ -503,7 +503,7 @@ impl EventStore for PostgresEventStore {
         );
         let current_version: Option<i64> = sqlx::query_scalar(&query)
             .bind(stream_id.aggregate_id())
-            .bind(stream_id.aggregate_type())
+            .bind(stream_id.aggregate_type().as_str())
             .fetch_one(&mut *tx)
             .await
             .map_err(|e| Error::custom(format!("Failed to check version: {e}")))?;
@@ -535,7 +535,7 @@ impl EventStore for PostgresEventStore {
             sqlx::query(&insert_query)
                 .bind(event.id)
                 .bind(event.aggregate_id)
-                .bind(&event.aggregate_type)
+                .bind(event.aggregate_type.as_str())
                 .bind(&event.event_type)
                 .bind(event_version_i64)
                 .bind(&event.event_data)
@@ -574,7 +574,7 @@ impl EventStore for PostgresEventStore {
         let from_version_i64 = from_version.as_u64() as i64;
         let events: Vec<EventEnvelope> = sqlx::query_as::<_, EventRow>(&query)
             .bind(stream_id.aggregate_id())
-            .bind(stream_id.aggregate_type())
+            .bind(stream_id.aggregate_type().as_str())
             .bind(from_version_i64)
             .fetch_all(&self.pool)
             .await
@@ -619,7 +619,7 @@ impl EventStore for PostgresEventStore {
 
         let version: Option<i64> = sqlx::query_scalar(&query)
             .bind(stream_id.aggregate_id())
-            .bind(stream_id.aggregate_type())
+            .bind(stream_id.aggregate_type().as_str())
             .fetch_one(&self.pool)
             .await
             .map_err(|e| Error::custom(format!("Failed to get version: {e}")))?;
@@ -642,7 +642,7 @@ impl EventStore for PostgresEventStore {
         let snapshot_version_i64 = snapshot.snapshot_version.as_u64() as i64;
         sqlx::query(&query)
             .bind(snapshot.aggregate_id)
-            .bind(&snapshot.aggregate_type)
+            .bind(snapshot.aggregate_type.as_str())
             .bind(snapshot_version_i64)
             .bind(&snapshot.snapshot_data)
             .execute(&self.pool)
@@ -662,7 +662,7 @@ impl EventStore for PostgresEventStore {
 
         let row: Option<SnapshotRow> = sqlx::query_as::<_, SnapshotRow>(&query)
             .bind(stream_id.aggregate_id())
-            .bind(stream_id.aggregate_type())
+            .bind(stream_id.aggregate_type().as_str())
             .fetch_optional(&self.pool)
             .await
             .map_err(|e| Error::custom(format!("Failed to load snapshot: {e}")))?;
@@ -706,7 +706,7 @@ impl PostgresEventStore {
 
         let count: i64 = sqlx::query_scalar(&query)
             .bind(stream_id.aggregate_id())
-            .bind(stream_id.aggregate_type())
+            .bind(stream_id.aggregate_type().as_str())
             .fetch_one(&self.pool)
             .await
             .map_err(|e| event_sauce_core::Error::custom(format!("Failed to count events: {e}")))?;
@@ -750,7 +750,7 @@ impl From<EventRow> for EventEnvelope {
         EventEnvelope {
             id: row.event_id,
             aggregate_id: row.aggregate_id,
-            aggregate_type: row.aggregate_type,
+            aggregate_type: event_sauce_core::AggregateType::from_owned(row.aggregate_type),
             event_type: row.event_type,
             #[allow(clippy::cast_sign_loss)]
             event_version: EventVersion::new(row.event_version as u64),
@@ -777,7 +777,7 @@ impl From<SnapshotRow> for Snapshot {
 
         Snapshot {
             aggregate_id: row.aggregate_id,
-            aggregate_type: row.aggregate_type,
+            aggregate_type: event_sauce_core::AggregateType::from_owned(row.aggregate_type),
             snapshot_version,
             snapshot_data: row.snapshot_data,
         }

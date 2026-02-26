@@ -226,7 +226,7 @@ impl<A: Aggregate> AggregateRoot<A> {
 
     /// Returns the aggregate type name.
     #[must_use]
-    pub fn aggregate_type() -> &'static str {
+    pub fn aggregate_type() -> crate::AggregateType {
         A::aggregate_type()
     }
 }

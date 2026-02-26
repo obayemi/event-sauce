@@ -5,8 +5,8 @@
 
 use chrono::{DateTime, Utc};
 use event_sauce_core::{
-    Aggregate, AggregateError, AggregateRoot, AggregateVersion, DomainEvent, Entity, EntityId,
-    EventApplicator,
+    Aggregate, AggregateError, AggregateRoot, AggregateType, AggregateVersion, DomainEvent, Entity,
+    EntityId, EventApplicator,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -191,6 +191,13 @@ fn test_aggregate_derive_aggregate_type() {
 }
 
 #[test]
+fn test_aggregate_derive_returns_aggregate_type_newtype() {
+    let type_name = TestCounter::aggregate_type();
+    // Should be an AggregateType, not a bare string
+    assert_eq!(type_name, AggregateType::new("TestCounter"));
+}
+
+#[test]
 fn test_no_state_struct_generated() {
     // In the new design, no separate State struct is generated.
     // The entity struct IS the domain type with direct field access.
@@ -239,6 +246,83 @@ fn test_entity_ref_access() {
     // Can get a reference to the entity
     let entity_ref = root.entity();
     assert_eq!(entity_ref.value, 5);
+}
+
+// ============================================================================
+// Tests for #[aggregate(type_name = "...")] — custom type name override
+// ============================================================================
+
+// Separate event type for the renamed counter (DomainEvent::Aggregate must match)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum RenamedCounterEvent {
+    Incremented {
+        amount: i32,
+        timestamp: DateTime<Utc>,
+    },
+}
+
+impl DomainEvent for RenamedCounterEvent {
+    type Aggregate = RenamedCounter;
+    fn event_type(&self) -> &'static str {
+        match self {
+            RenamedCounterEvent::Incremented { .. } => "RenamedCounter.Incremented",
+        }
+    }
+    fn event_version(&self) -> event_sauce_core::EventVersion {
+        event_sauce_core::EventVersion::new(1)
+    }
+    fn occurred_at(&self) -> DateTime<Utc> {
+        match self {
+            RenamedCounterEvent::Incremented { timestamp, .. } => *timestamp,
+        }
+    }
+}
+
+impl EventApplicator<RenamedCounter> for RenamedCounterEvent {
+    fn dispatch(&self, entity: &mut RenamedCounter) -> Result<(), RenamedCounterError> {
+        match self {
+            RenamedCounterEvent::Incremented { amount, .. } => entity.value += amount,
+        }
+        Ok(())
+    }
+
+    fn dispatch_unchecked(&self, entity: &mut RenamedCounter) {
+        match self {
+            RenamedCounterEvent::Incremented { amount, .. } => entity.value += amount,
+        }
+    }
+}
+
+#[derive(Debug, Error)]
+#[error("Renamed counter error")]
+struct RenamedCounterError;
+
+impl AggregateError for RenamedCounterError {}
+
+#[event_sauce_macros::aggregate(
+    event = "RenamedCounterEvent",
+    error = "RenamedCounterError",
+    type_name = "MyCustomCounter"
+)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct RenamedCounter {
+    #[id]
+    id: EntityId,
+    value: i32,
+}
+
+#[test]
+fn test_aggregate_custom_type_name_override() {
+    let type_name = RenamedCounter::aggregate_type();
+    assert_eq!(type_name, "MyCustomCounter");
+    assert_eq!(type_name, AggregateType::new("MyCustomCounter"));
+}
+
+#[test]
+fn test_aggregate_custom_type_name_not_struct_name() {
+    let type_name = RenamedCounter::aggregate_type();
+    // Should NOT be the struct name
+    assert_ne!(type_name, "RenamedCounter");
 }
 
 // ============================================================================

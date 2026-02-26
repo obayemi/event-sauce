@@ -992,7 +992,7 @@ macro_rules! define_events {
                     Ok($crate::EventEnvelope::new(
                         ::uuid::Uuid::new_v4(),
                         aggregate_id,
-                        <Self::Aggregate as $crate::Aggregate>::aggregate_type().to_string(),
+                        <Self::Aggregate as $crate::Aggregate>::aggregate_type(),
                         self.event_type().to_string(),
                         self.event_version(),
                         event_data,

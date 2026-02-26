@@ -25,6 +25,10 @@ struct AggregateAttrs {
     /// The aggregate must be constructed via init events.
     #[darling(default)]
     init: bool,
+    /// Optional custom type name override. When set, uses this literal
+    /// instead of `stringify!(StructName)` for `aggregate_type()`.
+    #[darling(default)]
+    type_name: Option<String>,
 }
 
 /// Attributes for the #[event(...)] container attribute
@@ -1017,6 +1021,7 @@ fn resolve_context_expr(
 /// - Not applied to a struct with named fields
 /// - No ID field is found
 #[proc_macro_attribute]
+#[allow(clippy::too_many_lines)]
 pub fn aggregate(attr: TokenStream, item: TokenStream) -> TokenStream {
     // Parse the attribute arguments
     let attr_tokens: proc_macro2::TokenStream = attr.into();
@@ -1124,6 +1129,22 @@ pub fn aggregate(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     };
 
+    // Generate aggregate_type() override using stringify! (stable, deterministic)
+    let aggregate_type_override = if let Some(custom_name) = &aggregate_attrs.type_name {
+        let name_lit = syn::LitStr::new(custom_name, proc_macro2::Span::call_site());
+        quote! {
+            fn aggregate_type() -> event_sauce_core::AggregateType {
+                event_sauce_core::AggregateType::new(#name_lit)
+            }
+        }
+    } else {
+        quote! {
+            fn aggregate_type() -> event_sauce_core::AggregateType {
+                event_sauce_core::AggregateType::new(stringify!(#aggregate_name))
+            }
+        }
+    };
+
     // Emit the cleaned struct + Entity impl + Aggregate impl
     let gen = quote! {
         #cleaned_input
@@ -1133,6 +1154,8 @@ pub fn aggregate(attr: TokenStream, item: TokenStream) -> TokenStream {
         impl event_sauce_core::Aggregate for #aggregate_name {
             type Event = #event_type;
             type Error = #error_type;
+
+            #aggregate_type_override
         }
     };
 

@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::EventVersion;
+use crate::{AggregateType, EventVersion};
 
 /// Optional metadata associated with an event.
 ///
@@ -151,7 +151,7 @@ impl Default for EventMetadata {
 /// # Examples
 ///
 /// ```
-/// use event_sauce_core::{EventEnvelope, EventMetadata, EventVersion};
+/// use event_sauce_core::{AggregateType, EventEnvelope, EventMetadata, EventVersion};
 /// use uuid::Uuid;
 /// use serde_json::json;
 /// use chrono::Utc;
@@ -159,7 +159,7 @@ impl Default for EventMetadata {
 /// let envelope = EventEnvelope::new(
 ///     Uuid::new_v4(),
 ///     Uuid::new_v4(),
-///     "User".to_string(),
+///     "User",
 ///     "User.Registered".to_string(),
 ///     EventVersion::new(1),
 ///     json!({"email": "user@example.com"}),
@@ -177,7 +177,7 @@ pub struct EventEnvelope {
     pub aggregate_id: Uuid,
 
     /// Aggregate type name.
-    pub aggregate_type: String,
+    pub aggregate_type: AggregateType,
 
     /// Event type name.
     pub event_type: String,
@@ -212,7 +212,7 @@ impl EventEnvelope {
     /// let envelope = EventEnvelope::new(
     ///     Uuid::new_v4(),
     ///     Uuid::new_v4(),
-    ///     "Order".to_string(),
+    ///     "Order",
     ///     "Order.Placed".to_string(),
     ///     EventVersion::new(1),
     ///     json!({"total": 99.99}),
@@ -222,7 +222,7 @@ impl EventEnvelope {
     pub fn new(
         id: Uuid,
         aggregate_id: Uuid,
-        aggregate_type: String,
+        aggregate_type: impl Into<AggregateType>,
         event_type: String,
         event_version: EventVersion,
         event_data: serde_json::Value,
@@ -230,7 +230,7 @@ impl EventEnvelope {
         Self {
             id,
             aggregate_id,
-            aggregate_type,
+            aggregate_type: aggregate_type.into(),
             event_type,
             event_version,
             event_data,

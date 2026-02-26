@@ -9,8 +9,8 @@ use futures::Stream;
 use uuid::Uuid;
 
 use crate::{
-    Aggregate, AggregateRoot, AggregateVersion, DomainEvent, EntityId, EventEnvelope, Repository,
-    Result, SnapshotConfig,
+    Aggregate, AggregateRoot, AggregateType, AggregateVersion, DomainEvent, EntityId,
+    EventEnvelope, Repository, Result, SnapshotConfig,
 };
 
 /// Stream ID uniquely identifying an event stream.
@@ -28,7 +28,7 @@ use crate::{
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct StreamId {
-    aggregate_type: String,
+    aggregate_type: AggregateType,
     aggregate_id: Uuid,
 }
 
@@ -44,7 +44,7 @@ impl StreamId {
     /// let stream_id = StreamId::new("Order", Uuid::new_v4());
     /// ```
     #[must_use]
-    pub fn new(aggregate_type: impl Into<String>, aggregate_id: Uuid) -> Self {
+    pub fn new(aggregate_type: impl Into<AggregateType>, aggregate_id: Uuid) -> Self {
         Self {
             aggregate_type: aggregate_type.into(),
             aggregate_id,
@@ -53,7 +53,7 @@ impl StreamId {
 
     /// Returns the aggregate type.
     #[must_use]
-    pub fn aggregate_type(&self) -> &str {
+    pub fn aggregate_type(&self) -> &AggregateType {
         &self.aggregate_type
     }
 
@@ -130,7 +130,7 @@ impl From<Position> for i64 {
 ///
 /// let snapshot = Snapshot::new(
 ///     Uuid::new_v4(),
-///     "User".to_string(),
+///     "User",
 ///     AggregateVersion::new(100),
 ///     json!({"email": "user@example.com", "status": "active"}),
 /// );
@@ -140,7 +140,7 @@ pub struct Snapshot {
     /// Aggregate ID.
     pub aggregate_id: Uuid,
     /// Aggregate type.
-    pub aggregate_type: String,
+    pub aggregate_type: AggregateType,
     /// [`AggregateVersion`] at which snapshot was taken.
     pub snapshot_version: AggregateVersion,
     /// Serialized entity state.
@@ -152,13 +152,13 @@ impl Snapshot {
     #[must_use]
     pub fn new(
         aggregate_id: Uuid,
-        aggregate_type: String,
+        aggregate_type: impl Into<AggregateType>,
         snapshot_version: AggregateVersion,
         snapshot_data: serde_json::Value,
     ) -> Self {
         Self {
             aggregate_id,
-            aggregate_type,
+            aggregate_type: aggregate_type.into(),
             snapshot_version,
             snapshot_data,
         }
@@ -326,7 +326,7 @@ pub trait EventStore: Send + Sync {
         let envelopes = envelopes?;
 
         self.append(
-            StreamId::new(aggregate_type, aggregate_id),
+            StreamId::new(aggregate_type.clone(), aggregate_id),
             envelopes.clone(),
             expected_version,
         )
@@ -334,7 +334,7 @@ pub trait EventStore: Send + Sync {
 
         // Create snapshot if strategy indicates we should
         let config = self.snapshot_config();
-        let strategy = config.strategy_for_type(aggregate_type);
+        let strategy = config.strategy_for_type(aggregate_type.as_str());
         let current_version = aggregate.version();
 
         if strategy.should_snapshot(current_version) {
@@ -342,7 +342,7 @@ pub trait EventStore: Send + Sync {
                 Ok(snapshot_data) => {
                     let snapshot = Snapshot::new(
                         aggregate_id,
-                        aggregate_type.to_string(),
+                        aggregate_type.clone(),
                         current_version,
                         snapshot_data,
                     );
