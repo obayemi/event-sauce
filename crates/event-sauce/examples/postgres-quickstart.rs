@@ -14,7 +14,9 @@
 
 use std::collections::HashMap;
 
-use event_sauce_core::{command_handler, define_events, spec, EntityId, EventStore, Specification};
+use event_sauce_core::{
+    command_handler, define_events, spec, DefaultEntity, EntityId, EventStore, Specification,
+};
 use event_sauce_macros::{aggregate, aggregate_error, AggregateError};
 use event_sauce_postgres::PostgresBackend;
 use serde::{Deserialize, Serialize};
@@ -83,6 +85,7 @@ struct User {
     name: String,
     status: UserStatus,
 }
+impl DefaultEntity for User {}
 
 // Use command_handler! macro for command methods
 command_handler! {
@@ -181,6 +184,7 @@ struct Order {
     total: i64,
     status: OrderStatus,
 }
+impl DefaultEntity for Order {}
 
 // Use command_handler! macro for command methods
 command_handler! {

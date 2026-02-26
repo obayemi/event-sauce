@@ -9,8 +9,8 @@
 
 use chrono::Utc;
 use event_sauce_core::{
-    Aggregate, AggregateRoot, AggregateVersion, DomainEvent, Entity, EntityId, EventApplicator,
-    EventVersion,
+    Aggregate, AggregateRoot, AggregateVersion, DefaultEntity, DomainEvent, Entity, EntityId,
+    EventApplicator, EventVersion,
 };
 use event_sauce_macros::AggregateError;
 use serde::{Deserialize, Serialize};
@@ -158,6 +158,8 @@ impl Entity for TestAccount {
         self.id
     }
 }
+
+impl DefaultEntity for TestAccount {}
 
 impl Aggregate for TestAccount {
     type Event = TestAccountEvent;

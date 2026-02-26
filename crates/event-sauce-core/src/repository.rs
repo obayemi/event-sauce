@@ -7,7 +7,8 @@ use std::sync::Arc;
 
 use crate::{
     event_store::{count_events, load},
-    Aggregate, AggregateRoot, AggregateVersion, EntityId, EventStore, Result, StreamId,
+    Aggregate, AggregateRoot, AggregateVersion, DefaultEntity, EntityId, EventStore, InitEvent,
+    Result, StreamId, UninitAggregateRoot,
 };
 
 /// Repository provides a high-level API for aggregate persistence.
@@ -56,18 +57,6 @@ where
         }
     }
 
-    /// Creates a new aggregate root with a random `EntityId`.
-    #[must_use]
-    pub fn create(&self) -> AggregateRoot<A> {
-        AggregateRoot::new(EntityId::new())
-    }
-
-    /// Creates a new aggregate root with the given `EntityId`.
-    #[must_use]
-    pub fn create_with_id(&self, id: EntityId) -> AggregateRoot<A> {
-        AggregateRoot::new(id)
-    }
-
     /// Saves an aggregate root to the event store.
     ///
     /// Commits all pending events and clears them on success.
@@ -83,7 +72,8 @@ where
     /// Loads an aggregate from the event store.
     ///
     /// Reconstructs the aggregate by replaying all its events,
-    /// potentially using a snapshot for optimization.
+    /// potentially using a snapshot for optimization. Works for both
+    /// `DefaultEntity` aggregates and init-event aggregates.
     ///
     /// # Errors
     ///
@@ -120,6 +110,76 @@ where
     pub async fn count_events(&self, id: EntityId) -> Result<usize> {
         let stream_id = StreamId::new(A::aggregate_type(), id.as_uuid());
         count_events(&*self.store, stream_id).await
+    }
+
+    /// Creates an uninitialized aggregate root with a random `EntityId`.
+    ///
+    /// Use with aggregates that require init events.
+    #[must_use]
+    pub fn create_uninit(&self) -> UninitAggregateRoot<A> {
+        UninitAggregateRoot::new(EntityId::new())
+    }
+
+    /// Creates an uninitialized aggregate root with the given `EntityId`.
+    ///
+    /// Use with aggregates that require init events.
+    #[must_use]
+    pub fn create_uninit_with_id(&self, id: EntityId) -> UninitAggregateRoot<A> {
+        UninitAggregateRoot::new(id)
+    }
+
+    /// Creates and immediately initializes an aggregate with an init event.
+    ///
+    /// Convenience for `create_uninit()` + `apply_init()` in one step.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if init event validation fails.
+    pub fn create_with<E: InitEvent<A> + Into<A::Event>>(
+        &self,
+        event: E,
+    ) -> std::result::Result<AggregateRoot<A>, A::Error> {
+        UninitAggregateRoot::new(EntityId::new()).apply_init(event)
+    }
+
+    /// Creates and immediately initializes an aggregate with a given ID and init event.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if init event validation fails.
+    pub fn create_with_id_and<E: InitEvent<A> + Into<A::Event>>(
+        &self,
+        id: EntityId,
+        event: E,
+    ) -> std::result::Result<AggregateRoot<A>, A::Error> {
+        UninitAggregateRoot::new(id).apply_init(event)
+    }
+}
+
+/// Methods that require `DefaultEntity` (old-style aggregates).
+impl<S, A> Repository<S, A>
+where
+    S: EventStore + 'static,
+    A: Aggregate + DefaultEntity + serde::Serialize + serde::de::DeserializeOwned,
+    A::Event: serde::Serialize + serde::de::DeserializeOwned,
+{
+    /// Creates a new aggregate root with a random `EntityId`.
+    ///
+    /// Requires `DefaultEntity`. For init-event aggregates, use
+    /// [`create_uninit()`](Self::create_uninit) or [`create_with()`](Self::create_with).
+    #[must_use]
+    pub fn create(&self) -> AggregateRoot<A> {
+        AggregateRoot::new(EntityId::new())
+    }
+
+    /// Creates a new aggregate root with the given `EntityId`.
+    ///
+    /// Requires `DefaultEntity`. For init-event aggregates, use
+    /// [`create_uninit_with_id()`](Self::create_uninit_with_id) or
+    /// [`create_with_id_and()`](Self::create_with_id_and).
+    #[must_use]
+    pub fn create_with_id(&self, id: EntityId) -> AggregateRoot<A> {
+        AggregateRoot::new(id)
     }
 }
 

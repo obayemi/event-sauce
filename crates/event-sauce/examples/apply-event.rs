@@ -32,7 +32,7 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use event_sauce_core::{
-    Aggregate, AggregateRoot, ApplyEvent, DomainEvent, Entity, EntityId, EventStore,
+    Aggregate, AggregateRoot, ApplyEvent, DefaultEntity, DomainEvent, Entity, EntityId, EventStore,
 };
 use event_sauce_macros::AggregateError;
 use event_sauce_memory::InMemoryEventStore;
@@ -258,6 +258,8 @@ impl Entity for BankAccount {
         self.id
     }
 }
+
+impl DefaultEntity for BankAccount {}
 
 impl Aggregate for BankAccount {
     type Event = BankAccountEvent;

@@ -9,7 +9,9 @@
 
 use chrono::Utc;
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use event_sauce_core::{Aggregate, AggregateRoot, DomainEvent, Entity, EntityId, EventApplicator};
+use event_sauce_core::{
+    Aggregate, AggregateRoot, DefaultEntity, DomainEvent, Entity, EntityId, EventApplicator,
+};
 use event_sauce_macros::AggregateError;
 
 // ============================================================================
@@ -99,6 +101,8 @@ impl Entity for BenchAccount {
         self.id
     }
 }
+
+impl DefaultEntity for BenchAccount {}
 
 impl Aggregate for BenchAccount {
     type Event = BenchAccountEvent;

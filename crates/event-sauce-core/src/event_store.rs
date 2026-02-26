@@ -378,6 +378,10 @@ pub trait EventStore: Send + Sync {
 /// Returns an `AggregateRoot<A>` reconstructed by replaying events,
 /// optionally using a snapshot for optimization.
 ///
+/// This function handles both `DefaultEntity` aggregates (legacy) and
+/// init-event aggregates. It detects which pattern is used by checking
+/// `is_init()` on the first event.
+///
 /// # Errors
 ///
 /// Returns an error if events cannot be deserialized or replay fails.
@@ -387,6 +391,7 @@ where
     A: Aggregate + serde::de::DeserializeOwned,
     A::Event: serde::de::DeserializeOwned,
 {
+    use crate::{EventApplicator, UninitAggregateRoot};
     use futures::StreamExt;
 
     let uuid = id.as_uuid();
@@ -395,28 +400,53 @@ where
 
     // Try to load snapshot if enabled
     let config = store.snapshot_config();
-    let (mut aggregate, from_version) = if config.use_snapshots_on_load() {
-        match store.load_snapshot(stream_id.clone()).await? {
-            Some(snapshot) => {
-                let entity: A = serde_json::from_value(snapshot.snapshot_data).map_err(|e| {
-                    crate::Error::custom(format!("Failed to deserialize snapshot entity: {e}"))
-                })?;
+    if config.use_snapshots_on_load() {
+        if let Some(snapshot) = store.load_snapshot(stream_id.clone()).await? {
+            let entity: A = serde_json::from_value(snapshot.snapshot_data).map_err(|e| {
+                crate::Error::custom(format!("Failed to deserialize snapshot entity: {e}"))
+            })?;
 
-                let aggregate = AggregateRoot::from_snapshot(snapshot.snapshot_version, entity);
+            let mut aggregate = AggregateRoot::from_snapshot(snapshot.snapshot_version, entity);
+            let from_version = snapshot.snapshot_version;
 
-                (aggregate, snapshot.snapshot_version)
+            let event_stream = store.load_stream(stream_id, from_version).await?;
+            futures::pin_mut!(event_stream);
+
+            while let Some(envelope) = event_stream.next().await {
+                let envelope = envelope?;
+                let event = A::Event::from_envelope(&envelope)?;
+                aggregate.apply_unchecked(&event);
             }
-            None => (AggregateRoot::new(id), AggregateVersion::initial()),
-        }
-    } else {
-        (AggregateRoot::new(id), AggregateVersion::initial())
-    };
 
-    // Load events from the appropriate version
-    let event_stream = store.load_stream(stream_id, from_version).await?;
+            return Ok(aggregate);
+        }
+    }
+
+    // No snapshot: load all events
+    let event_stream = store
+        .load_stream(stream_id, AggregateVersion::initial())
+        .await?;
     futures::pin_mut!(event_stream);
 
-    // Replay events
+    let Some(first_envelope) = event_stream.next().await else {
+        // No events: backward compat — returns default-state aggregate.
+        // For init-event aggregates, Entity::new panics (data integrity issue).
+        return Ok(AggregateRoot::new_for_replay(id));
+    };
+    let first_event = A::Event::from_envelope(&first_envelope?)?;
+
+    // Detect init vs legacy from first event
+    let mut aggregate = if EventApplicator::is_init(&first_event) {
+        // Init-event aggregate: type-state transition
+        UninitAggregateRoot::<A>::new(id).apply_init_unchecked(&first_event)
+    } else {
+        // Legacy aggregate: Entity::new(id) + apply first event
+        let mut agg = AggregateRoot::<A>::new_for_replay(id);
+        agg.apply_unchecked(&first_event);
+        agg
+    };
+
+    // Replay remaining events (all regular)
     while let Some(envelope) = event_stream.next().await {
         let envelope = envelope?;
         let event = A::Event::from_envelope(&envelope)?;

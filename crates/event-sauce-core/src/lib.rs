@@ -31,6 +31,7 @@ mod error;
 mod event_applicator;
 mod event_envelope;
 mod event_store;
+mod init_event;
 mod macros;
 mod projection;
 mod repository;
@@ -40,6 +41,7 @@ mod snapshot_strategy;
 pub mod specification;
 mod subscription;
 mod types;
+mod uninit_aggregate_root;
 mod version;
 
 #[doc(hidden)]
@@ -56,6 +58,7 @@ pub use error::{Error, Result};
 pub use event_applicator::EventApplicator;
 pub use event_envelope::{EventEnvelope, EventMetadata};
 pub use event_store::{EventStore, Position, Snapshot, StreamId};
+pub use init_event::InitEvent;
 pub use projection::Projection;
 pub use repository::Repository;
 pub use snapshot_config::{SnapshotConfig, SnapshotConfigBuilder};
@@ -66,4 +69,5 @@ pub use subscription::{
     SubscriptionBuilder, SubscriptionConfig,
 };
 pub use types::CheckpointStoreRef;
+pub use uninit_aggregate_root::UninitAggregateRoot;
 pub use version::{AggregateVersion, EventVersion};

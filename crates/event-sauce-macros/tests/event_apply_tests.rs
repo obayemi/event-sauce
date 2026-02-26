@@ -101,6 +101,7 @@ struct TestAgg {
     id: EntityId,
     value: i32,
 }
+impl event_sauce_core::DefaultEntity for TestAgg {}
 
 // ============================================================================
 // Tests

@@ -88,6 +88,7 @@ struct TestCounter {
     id: EntityId,
     value: i32,
 }
+impl event_sauce_core::DefaultEntity for TestCounter {}
 
 #[test]
 fn test_aggregate_derive_generates_entity_trait() {

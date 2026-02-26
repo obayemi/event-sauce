@@ -63,6 +63,42 @@ pub trait EventApplicator<A: Aggregate> {
     /// Only applies state changes, skipping validation. Used for event replay
     /// from the event store, where events are historical facts.
     fn dispatch_unchecked(&self, aggregate: &mut A);
+
+    /// Returns whether this event variant is an init event.
+    ///
+    /// Only returns true for events that construct the aggregate from scratch.
+    /// The default returns false (regular events).
+    fn is_init(&self) -> bool {
+        false
+    }
+
+    /// Dispatches an init event with full validation, constructing a new entity.
+    ///
+    /// Called by the framework after checking `is_init()`. The default panics
+    /// because regular events should never reach this path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if validation fails.
+    ///
+    /// # Panics
+    ///
+    /// The default implementation panics. Only init event variants override this.
+    fn dispatch_init(&self, _id: crate::EntityId) -> Result<A, A::Error> {
+        unreachable!("dispatch_init called on non-init event")
+    }
+
+    /// Dispatches an init event without validation (for replay).
+    ///
+    /// Called by the framework after checking `is_init()`. The default panics
+    /// because regular events should never reach this path.
+    ///
+    /// # Panics
+    ///
+    /// The default implementation panics. Only init event variants override this.
+    fn dispatch_init_unchecked(&self, _id: crate::EntityId) -> A {
+        unreachable!("dispatch_init_unchecked called on non-init event")
+    }
 }
 
 #[cfg(test)]

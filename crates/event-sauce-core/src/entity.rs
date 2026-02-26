@@ -79,6 +79,7 @@ pub trait Entity: Serialize + DeserializeOwned + Send + Sync + Sized {
     /// The default implementation panics. Aggregates using init events
     /// rely on this default; the panic is a safety net that should never
     /// be reached in correct usage.
+    #[must_use]
     fn new(id: EntityId) -> Self {
         let _ = id;
         panic!(

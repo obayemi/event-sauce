@@ -4,7 +4,7 @@
 //! for any type implementing `Aggregate`. Access entity fields via `Deref`
 //! (read-only); state changes must go through `apply()`.
 
-use crate::{Aggregate, AggregateVersion, EntityId, EventApplicator};
+use crate::{Aggregate, AggregateVersion, DefaultEntity, EntityId, EventApplicator};
 
 /// Infrastructure wrapper for event-sourced aggregates.
 ///
@@ -21,7 +21,7 @@ use crate::{Aggregate, AggregateVersion, EntityId, EventApplicator};
 /// # Examples
 ///
 /// ```
-/// use event_sauce_core::{Aggregate, AggregateRoot, AggregateError, Entity, EntityId, DomainEvent, EventApplicator, AggregateVersion, EventVersion};
+/// use event_sauce_core::{Aggregate, AggregateRoot, AggregateError, DefaultEntity, Entity, EntityId, DomainEvent, EventApplicator, AggregateVersion, EventVersion};
 /// use serde::{Serialize, Deserialize};
 /// use thiserror::Error;
 /// use chrono::Utc;
@@ -36,6 +36,7 @@ use crate::{Aggregate, AggregateVersion, EntityId, EventApplicator};
 ///     fn new(id: EntityId) -> Self { Self { id, value: 0 } }
 ///     fn entity_id(&self) -> EntityId { self.id }
 /// }
+/// impl DefaultEntity for Counter {}
 ///
 /// #[derive(Debug, Clone, Serialize, Deserialize)]
 /// enum CounterEvent {
@@ -90,11 +91,15 @@ impl<A: Aggregate> std::ops::Deref for AggregateRoot<A> {
 
 // No DerefMut — state changes must go through apply()
 
-impl<A: Aggregate> AggregateRoot<A> {
+impl<A: Aggregate + DefaultEntity> AggregateRoot<A> {
     /// Creates a new aggregate root with the given ID.
     ///
     /// The entity is initialized via `Entity::new(id)`, version starts at 0,
     /// and there are no pending events.
+    ///
+    /// Requires `DefaultEntity` to guarantee that `Entity::new(id)` is safe.
+    /// For aggregates using init events, use
+    /// [`UninitAggregateRoot::apply_init()`](crate::UninitAggregateRoot::apply_init) instead.
     ///
     /// # Examples
     ///
@@ -111,7 +116,9 @@ impl<A: Aggregate> AggregateRoot<A> {
             pending_events: Vec::new(),
         }
     }
+}
 
+impl<A: Aggregate> AggregateRoot<A> {
     /// Returns the entity's unique identifier.
     #[must_use]
     pub fn entity_id(&self) -> EntityId {
@@ -179,6 +186,40 @@ impl<A: Aggregate> AggregateRoot<A> {
         Self {
             entity,
             version,
+            pending_events: Vec::new(),
+        }
+    }
+
+    /// Creates an aggregate root from an init event (includes the pending event).
+    ///
+    /// Used by `UninitAggregateRoot::apply_init()`.
+    pub(crate) fn from_init(entity: A, event: A::Event) -> Self {
+        Self {
+            entity,
+            version: AggregateVersion::new(1),
+            pending_events: vec![event],
+        }
+    }
+
+    /// Creates an aggregate root from an init event replay (no pending events).
+    ///
+    /// Used by `UninitAggregateRoot::apply_init_unchecked()`.
+    pub(crate) fn from_init_replay(entity: A) -> Self {
+        Self {
+            entity,
+            version: AggregateVersion::new(1),
+            pending_events: vec![],
+        }
+    }
+
+    /// Creates an aggregate root for replay using `Entity::new(id)`.
+    ///
+    /// Used by `load()` for legacy aggregates. For init-event aggregates,
+    /// the first event is always an init event, so this path is never reached.
+    pub(crate) fn new_for_replay(id: EntityId) -> Self {
+        Self {
+            entity: A::new(id),
+            version: AggregateVersion::initial(),
             pending_events: Vec::new(),
         }
     }
