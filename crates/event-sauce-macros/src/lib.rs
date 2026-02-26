@@ -21,6 +21,10 @@ struct AggregateAttrs {
     event: String,
     #[darling(default)]
     error: Option<String>,
+    /// When true, skip generating `DefaultEntity` and `Entity::new()`.
+    /// The aggregate must be constructed via init events.
+    #[darling(default)]
+    init: bool,
 }
 
 /// Attributes for the #[event(...)] container attribute
@@ -446,6 +450,8 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
                 self.#id_field_name
             }
         }
+
+        impl event_sauce_core::DefaultEntity for #name {}
     };
 
     gen.into()
@@ -962,10 +968,12 @@ fn resolve_context_expr(
 
 /// Attribute macro for aggregate transformation.
 ///
-/// This macro generates both `Entity` and `Aggregate` trait implementations
-/// for a struct. The struct retains its original form (no wrapper or state struct).
+/// This macro generates `Entity`, `Aggregate`, and optionally `DefaultEntity` trait
+/// implementations for a struct. The struct retains its original form.
 ///
 /// # Usage
+///
+/// ## Standard aggregate (with `DefaultEntity`)
 ///
 /// ```ignore
 /// #[aggregate(event = "ProductEvent", error = "ProductError")]
@@ -977,15 +985,31 @@ fn resolve_context_expr(
 /// }
 /// ```
 ///
+/// ## Init-event aggregate (without `DefaultEntity`)
+///
+/// ```ignore
+/// #[aggregate(event = "OrderEvent", error = "OrderError", init)]
+/// struct Order {
+///     #[id]
+///     id: EntityId,
+///     user_id: EntityId,  // no Option needed — set by init event
+/// }
+/// ```
+///
 /// This generates:
 /// - `Entity` trait implementation (using `#[id]` field)
 /// - `Aggregate` trait implementation (with Event + Error types)
+/// - `DefaultEntity` marker (unless `init` is set)
+///
+/// When `init` is set, `Entity::new()` uses the default panicking implementation.
+/// The aggregate must be constructed via `UninitAggregateRoot::apply_init()`.
 ///
 /// # Attributes
 ///
 /// - `#[id]` - Marks the field containing the entity ID (type must be `EntityId`)
 /// - `event = "..."` - The event enum type name
 /// - `error = "..."` - The error type name (optional, defaults to `()`)
+/// - `init` - Skip `DefaultEntity` and `Entity::new()`; aggregate uses init events
 ///
 /// # Panics
 ///
@@ -1061,31 +1085,50 @@ pub fn aggregate(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     }
 
-    // Generate Entity::new() field initializers
-    let field_inits = named_fields.iter().map(|f| {
-        let fname = f.ident.as_ref().expect("Named field should have ident");
-        if fname == &id_field_name {
-            quote! { #fname: id }
-        } else {
-            quote! { #fname: Default::default() }
+    let is_init = aggregate_attrs.init;
+
+    // Generate Entity impl — for init aggregates, only entity_id (default panicking new())
+    // For DefaultEntity aggregates, also override new() with field defaults
+    let entity_impl = if is_init {
+        quote! {
+            impl event_sauce_core::Entity for #aggregate_name {
+                fn entity_id(&self) -> event_sauce_core::EntityId {
+                    self.#id_field_name
+                }
+            }
         }
-    });
+    } else {
+        let field_inits = named_fields.iter().map(|f| {
+            let fname = f.ident.as_ref().expect("Named field should have ident");
+            if fname == &id_field_name {
+                quote! { #fname: id }
+            } else {
+                quote! { #fname: Default::default() }
+            }
+        });
+
+        quote! {
+            impl event_sauce_core::Entity for #aggregate_name {
+                fn new(id: event_sauce_core::EntityId) -> Self {
+                    Self {
+                        #(#field_inits),*
+                    }
+                }
+
+                fn entity_id(&self) -> event_sauce_core::EntityId {
+                    self.#id_field_name
+                }
+            }
+
+            impl event_sauce_core::DefaultEntity for #aggregate_name {}
+        }
+    };
 
     // Emit the cleaned struct + Entity impl + Aggregate impl
     let gen = quote! {
         #cleaned_input
 
-        impl event_sauce_core::Entity for #aggregate_name {
-            fn new(id: event_sauce_core::EntityId) -> Self {
-                Self {
-                    #(#field_inits),*
-                }
-            }
-
-            fn entity_id(&self) -> event_sauce_core::EntityId {
-                self.#id_field_name
-            }
-        }
+        #entity_impl
 
         impl event_sauce_core::Aggregate for #aggregate_name {
             type Event = #event_type;
