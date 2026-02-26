@@ -213,16 +213,16 @@ macro_rules! command_handler {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __command_handler_init_internal {
-    // ---- TT muncher: parse @init command ----
+    // ---- TT muncher: parse @init command (attrs before @init) ----
     (
         @munch [$aggregate:ty]
         // accumulated
         init_commands: [ $({ attrs: [$($i_attr:meta),*] cmd: $i_cmd:ident ($($i_param:ident: $i_param_ty:ty),*) -> $i_evt:ident { $($i_field:ident),* } })* ]
         regular_commands: [ $({ attrs: [$($r_attr:meta),*] cmd: $r_cmd:ident ($($r_param:ident: $r_param_ty:ty),*) -> $r_evt:ident { $($r_field:ident),* } })* ]
 
-        // next command is @init
-        @init
+        // next command is @init (attributes come before @init)
         $(#[$attr:meta])*
+        @init
         fn $command:ident($($param:ident: $param_ty:ty),* $(,)?)
             -> $event_struct:ident { $($field:ident),* $(,)? }
         $(; $($rest:tt)*)?
