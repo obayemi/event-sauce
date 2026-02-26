@@ -246,6 +246,29 @@ pub trait EventStore: Send + Sync {
         builder
     }
 
+    /// Creates a subscription builder pre-configured for a projection type.
+    ///
+    /// Uses `P::NAME` as the subscription name and `P::event_filter()` as the filter.
+    /// The checkpoint store is auto-wired if available.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let mut sub = store
+    ///     .projection_subscription::<OrderSummaryProjection>()
+    ///     .build()?;
+    /// sub.run_projection(&mut projection).await?;
+    /// ```
+    fn projection_subscription<P: crate::Projection>(
+        self: &std::sync::Arc<Self>,
+    ) -> crate::SubscriptionBuilder<Self>
+    where
+        Self: Sized + 'static,
+    {
+        self.subscription_builder(P::NAME)
+            .filter_for_projection::<P>()
+    }
+
     /// Creates a [`Repository`] for the given aggregate type, wrapping this event store.
     ///
     /// This is a convenience method that avoids verbose turbofish syntax.
@@ -1134,5 +1157,56 @@ mod tests {
         repo.save(&mut aggregate).await.unwrap();
         let loaded = repo.load(test_id).await.unwrap();
         assert_eq!(loaded.value, 42);
+    }
+
+    // -- projection_subscription() convenience method tests --
+
+    struct TestProjection {
+        count: u64,
+    }
+
+    #[async_trait]
+    impl crate::Projection for TestProjection {
+        type State = u64;
+        const NAME: &'static str = "TestProjection";
+
+        fn handled_event_types() -> Option<Vec<&'static str>> {
+            Some(vec!["UserCreated"])
+        }
+
+        async fn handle(&mut self, _envelope: &crate::EventEnvelope) -> crate::Result<()> {
+            self.count += 1;
+            Ok(())
+        }
+
+        fn state(&self) -> &u64 {
+            &self.count
+        }
+
+        fn state_mut(&mut self) -> &mut u64 {
+            &mut self.count
+        }
+    }
+
+    #[tokio::test]
+    async fn test_projection_subscription_convenience_method() {
+        use crate::test_fixtures::create_test_envelope;
+
+        let store = Arc::new(SharedMockEventStore::new());
+
+        // Add events — one matching, one not
+        store.add_event(create_test_envelope("UserCreated", "User"));
+        store.add_event(create_test_envelope("OrderCreated", "Order"));
+
+        let mut subscription = store
+            .projection_subscription::<TestProjection>()
+            .build()
+            .unwrap();
+
+        let mut projection = TestProjection { count: 0 };
+        subscription.run_projection(&mut projection).await.unwrap();
+
+        // Only "UserCreated" should be processed (filter from Projection)
+        assert_eq!(projection.count, 1);
     }
 }
