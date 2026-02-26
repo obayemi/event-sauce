@@ -51,6 +51,18 @@ where
         }
     }
 
+    /// Creates a new aggregate root with a random `EntityId`.
+    #[must_use]
+    pub fn create(&self) -> AggregateRoot<A> {
+        AggregateRoot::new(EntityId::new())
+    }
+
+    /// Creates a new aggregate root with the given `EntityId`.
+    #[must_use]
+    pub fn create_with_id(&self, id: EntityId) -> AggregateRoot<A> {
+        AggregateRoot::new(id)
+    }
+
     /// Saves an aggregate root to the event store.
     ///
     /// Commits all pending events and clears them on success.
@@ -220,6 +232,39 @@ mod tests {
         repo.save(&mut aggregate).await.unwrap();
         let loaded = repo.load(test_id).await.unwrap();
         assert_eq!(loaded.value, 7);
+    }
+
+    #[tokio::test]
+    async fn test_repository_create() {
+        let store = Arc::new(MockEventStore::new());
+        let repo = store.repository::<SimpleTestEntity>();
+
+        let mut aggregate = repo.create();
+        aggregate
+            .apply(SimpleTestEvent::Created { value: 99 })
+            .unwrap();
+
+        repo.save(&mut aggregate).await.unwrap();
+        let loaded = repo.load(aggregate.entity_id()).await.unwrap();
+        assert_eq!(loaded.value, 99);
+    }
+
+    #[tokio::test]
+    async fn test_repository_create_with_id() {
+        let store = Arc::new(MockEventStore::new());
+        let repo = store.repository::<SimpleTestEntity>();
+
+        let id = EntityId::new();
+        let mut aggregate = repo.create_with_id(id);
+        assert_eq!(aggregate.entity_id(), id);
+
+        aggregate
+            .apply(SimpleTestEvent::Created { value: 42 })
+            .unwrap();
+
+        repo.save(&mut aggregate).await.unwrap();
+        let loaded = repo.load(id).await.unwrap();
+        assert_eq!(loaded.value, 42);
     }
 
     #[tokio::test]
