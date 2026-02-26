@@ -100,6 +100,8 @@ mod tests {
         }
     }
 
+    impl crate::DefaultEntity for TestEntity {}
+
     impl EventApplicator<TestEntity> for TestEvent {
         fn dispatch(&self, entity: &mut TestEntity) -> Result<(), TestError> {
             match self {

@@ -339,6 +339,8 @@ mod tests {
         }
     }
 
+    impl crate::DefaultEntity for CounterEntity {}
+
     impl Aggregate for CounterEntity {
         type Event = CounterEvent;
         type Error = TestError;

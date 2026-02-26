@@ -930,6 +930,8 @@ mod tests {
         }
     }
 
+    impl crate::DefaultEntity for TestAggregate {}
+
     impl crate::EventApplicator<TestAggregate> for TestEvent {
         fn dispatch(&self, aggregate: &mut TestAggregate) -> Result<(), TestError> {
             match self {
@@ -1463,6 +1465,8 @@ mod tests {
         }
     }
 
+    impl crate::DefaultEntity for Product {}
+
     impl Aggregate for Product {
         type Event = ProductEvent;
         type Error = ProductError;
@@ -1944,6 +1948,8 @@ mod tests {
             self.id
         }
     }
+
+    impl crate::DefaultEntity for Order {}
 
     impl Aggregate for Order {
         type Event = OrderEvent;
@@ -2659,6 +2665,8 @@ mod tests {
             self.id
         }
     }
+
+    impl crate::DefaultEntity for Warehouse {}
 
     impl Aggregate for Warehouse {
         type Event = WarehouseEvent;

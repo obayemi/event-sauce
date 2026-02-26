@@ -165,6 +165,8 @@ mod tests {
         }
     }
 
+    impl crate::DefaultEntity for TestAggregate {}
+
     impl crate::EventApplicator<TestAggregate> for TestEvent {
         fn dispatch(
             &self,
@@ -306,6 +308,8 @@ mod tests {
         }
     }
 
+    impl crate::DefaultEntity for SimpleEntity {}
+
     impl crate::EventApplicator<SimpleEntity> for SimpleEvent {
         fn dispatch(
             &self,
@@ -367,6 +371,8 @@ mod tests {
             self.id
         }
     }
+
+    impl crate::DefaultEntity for VersionedEntity {}
 
     impl crate::EventApplicator<VersionedEntity> for VersionedEvent {
         fn dispatch(

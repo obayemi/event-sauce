@@ -50,7 +50,7 @@ pub use aggregate_error::AggregateError;
 pub use aggregate_root::AggregateRoot;
 pub use apply_event::ApplyEvent;
 pub use domain_event::{DomainEvent, EventType};
-pub use entity::Entity;
+pub use entity::{DefaultEntity, Entity};
 pub use entity_id::EntityId;
 pub use error::{Error, Result};
 pub use event_applicator::EventApplicator;

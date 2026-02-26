@@ -41,6 +41,8 @@ impl crate::Entity for SimpleTestEntity {
     }
 }
 
+impl crate::DefaultEntity for SimpleTestEntity {}
+
 /// Events for the simple test entity.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SimpleTestEvent {
@@ -287,6 +289,8 @@ impl crate::Entity for TestCounter {
         self.id
     }
 }
+
+impl crate::DefaultEntity for TestCounter {}
 
 /// Events for the test counter.
 #[derive(Debug, Clone, Serialize, Deserialize)]
