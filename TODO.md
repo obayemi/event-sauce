@@ -15,4 +15,4 @@
 
 - [.] Aggregate / uninitialized aggregate system to have one or many "initialization" events, and allow stricter Entity design without needing to accomodate uninitialized states at aggregate creation. add "init" flag to those events in the macro to allow them to take an emptyaggregate and  return a full aggregate
 
-- [ ] update postgres-quickstart to use commands instead of apply and generating events manually
+- [ ] update postgres-quickstart main to use commands instead of apply and generating events manually

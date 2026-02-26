@@ -534,7 +534,12 @@ macro_rules! projection {
 /// - Full integration with `ApplyEvent` trait
 #[macro_export]
 macro_rules! define_events {
-    // Main entry point - parse the full event definition
+    // =========================================================================
+    // Main entry point — backward-compatible, all-regular-events form
+    // =========================================================================
+    //
+    // This arm matches when ALL events are regular (no @init).
+    // Delegates to the internal @build rule with `regular` classification.
     (
         $vis:vis enum $event_enum:ident for $aggregate:ty {
             $(
@@ -550,7 +555,174 @@ macro_rules! define_events {
             ),* $(,)?
         }
     ) => {
-        // Generate individual event structs
+        define_events! {
+            @build
+            [$vis] [$event_enum] [$aggregate]
+            variants: [
+                $(
+                    {
+                        variant: $variant,
+                        fields: { $($field: $field_ty),* },
+                        kind: regular,
+                        version: [$([$version])?],
+                        validate: [$([$val_agg, $val_evt, $val_body])?],
+                        validate_spec: [$([$val_spec])?],
+                        post_validate: [$([$post_val_agg, $post_val_evt, $post_val_body])?],
+                        post_validate_spec: [$([$post_val_spec])?],
+                        apply: $apply,
+                    }
+                )*
+            ]
+        }
+    };
+
+    // =========================================================================
+    // Init-aware entry point — supports @init flag on individual variants
+    // =========================================================================
+    //
+    // Usage: define_events! { @with_init pub enum E for A { ... } }
+    //
+    // Init event differences:
+    // - `@init` flag after fields
+    // - `@validate |event| { ... }` — one arg (no aggregate exists yet)
+    // - `=> |id, event| -> A { ... }` — constructs aggregate
+    // - Implements `InitEvent<A>` instead of `ApplyEvent<A>`
+    (
+        @with_init
+        $vis:vis enum $event_enum:ident for $aggregate:ty {
+            $($rest:tt)*
+        }
+    ) => {
+        define_events! {
+            @munch
+            [$vis] [$event_enum] [$aggregate]
+            accumulated: []
+            rest: [$($rest)*]
+        }
+    };
+
+    // =========================================================================
+    // TT muncher: parse one REGULAR variant (no @init after fields)
+    // =========================================================================
+    (
+        @munch
+        [$vis:vis] [$event_enum:ident] [$aggregate:ty]
+        accumulated: [$($acc:tt)*]
+        rest: [
+            $variant:ident {
+                $($field:ident: $field_ty:ty),* $(,)?
+            }
+            $(@version($version:literal))?
+            $(@validate |$val_agg:ident, $val_evt:ident| $val_body:block)?
+            $(@validate_spec($val_spec:expr))?
+            $(@post_validate |$post_val_agg:ident, $post_val_evt:ident| $post_val_body:block)?
+            $(@post_validate_spec($post_val_spec:expr))?
+            => $apply:expr,
+            $($rest:tt)*
+        ]
+    ) => {
+        define_events! {
+            @munch
+            [$vis] [$event_enum] [$aggregate]
+            accumulated: [
+                $($acc)*
+                {
+                    variant: $variant,
+                    fields: { $($field: $field_ty),* },
+                    kind: regular,
+                    version: [$([$version])?],
+                    validate: [$([$val_agg, $val_evt, $val_body])?],
+                    validate_spec: [$([$val_spec])?],
+                    post_validate: [$([$post_val_agg, $post_val_evt, $post_val_body])?],
+                    post_validate_spec: [$([$post_val_spec])?],
+                    apply: $apply,
+                }
+            ]
+            rest: [$($rest)*]
+        }
+    };
+
+    // =========================================================================
+    // TT muncher: parse one INIT variant (@init after fields)
+    // =========================================================================
+    (
+        @munch
+        [$vis:vis] [$event_enum:ident] [$aggregate:ty]
+        accumulated: [$($acc:tt)*]
+        rest: [
+            $variant:ident {
+                $($field:ident: $field_ty:ty),* $(,)?
+            }
+            @init
+            $(@version($version:literal))?
+            $(@validate |$val_evt:ident| $val_body:block)?
+            $(@validate_spec($val_spec:expr))?
+            $(@post_validate |$post_val_agg:ident, $post_val_evt:ident| $post_val_body:block)?
+            $(@post_validate_spec($post_val_spec:expr))?
+            => $apply:expr,
+            $($rest:tt)*
+        ]
+    ) => {
+        define_events! {
+            @munch
+            [$vis] [$event_enum] [$aggregate]
+            accumulated: [
+                $($acc)*
+                {
+                    variant: $variant,
+                    fields: { $($field: $field_ty),* },
+                    kind: init,
+                    version: [$([$version])?],
+                    validate: [$([$val_evt, $val_body])?],
+                    validate_spec: [$([$val_spec])?],
+                    post_validate: [$([$post_val_agg, $post_val_evt, $post_val_body])?],
+                    post_validate_spec: [$([$post_val_spec])?],
+                    apply: $apply,
+                }
+            ]
+            rest: [$($rest)*]
+        }
+    };
+
+    // =========================================================================
+    // TT muncher: done (rest is empty) — forward to @build
+    // =========================================================================
+    (
+        @munch
+        [$vis:vis] [$event_enum:ident] [$aggregate:ty]
+        accumulated: [$($acc:tt)*]
+        rest: []
+    ) => {
+        define_events! {
+            @build
+            [$vis] [$event_enum] [$aggregate]
+            variants: [$($acc)*]
+        }
+    };
+
+    // =========================================================================
+    // @build: generate all code from classified variants
+    // =========================================================================
+    (
+        @build
+        [$vis:vis] [$event_enum:ident] [$aggregate:ty]
+        variants: [
+            $(
+                {
+                    variant: $variant:ident,
+                    fields: { $($field:ident: $field_ty:ty),* },
+                    kind: $kind:ident,
+                    version: [$($version:tt)*],
+                    validate: [$($validate:tt)*],
+                    validate_spec: [$($validate_spec:tt)*],
+                    post_validate: [$($post_validate:tt)*],
+                    post_validate_spec: [$($post_validate_spec:tt)*],
+                    apply: $apply:expr,
+                }
+            )*
+        ]
+    ) => {
+        // ---- Per-variant: struct, From, EventType, trait impl ----
         $(
             paste::paste! {
                 #[derive(Debug, Clone, ::serde::Serialize, ::serde::Deserialize)]
@@ -559,48 +731,6 @@ macro_rules! define_events {
                     pub timestamp: ::chrono::DateTime<::chrono::Utc>,
                 }
 
-                // Implement ApplyEvent for each event struct
-                impl $crate::ApplyEvent<$aggregate> for [<$variant Event>] {
-                    // Validate method (if provided via closure or spec)
-                    #[allow(unused_variables, unreachable_code, clippy::redundant_closure_call)]
-                    fn validate(&self, aggregate: &$aggregate)
-                        -> ::std::result::Result<(), <$aggregate as $crate::Aggregate>::Error>
-                    {
-                        $(
-                            // Call the validation closure provided by the user
-                            return (|$val_agg: &$aggregate, $val_evt: &Self| $val_body)(aggregate, self);
-                        )?
-                        $(
-                            // Run the specification check (uses From conversion for error)
-                            $crate::Specification::check(&$val_spec, aggregate)?;
-                        )?
-                        ::std::result::Result::Ok(())
-                    }
-
-                    // Apply method (always required)
-                    fn apply(&self, aggregate: &mut $aggregate) {
-                        let apply_fn: fn(&mut $aggregate, &Self) = $apply;
-                        apply_fn(aggregate, self);
-                    }
-
-                    // Post-validate method (if provided via closure or spec)
-                    #[allow(unused_variables, unreachable_code, clippy::redundant_closure_call)]
-                    fn post_validate(&self, aggregate: &$aggregate)
-                        -> ::std::result::Result<(), <$aggregate as $crate::Aggregate>::Error>
-                    {
-                        $(
-                            // Call the post-validation closure provided by the user
-                            return (|$post_val_agg: &$aggregate, $post_val_evt: &Self| $post_val_body)(aggregate, self);
-                        )?
-                        $(
-                            // Run the specification check (uses From conversion for error)
-                            $crate::Specification::check(&$post_val_spec, aggregate)?;
-                        )?
-                        ::std::result::Result::Ok(())
-                    }
-                }
-
-                // Implement From<EventStruct> for EventEnum
                 impl ::std::convert::From<[<$variant Event>]> for $event_enum {
                     fn from(event: [<$variant Event>]) -> Self {
                         $event_enum::$variant {
@@ -610,7 +740,6 @@ macro_rules! define_events {
                     }
                 }
 
-                // Implement EventType for each event struct
                 impl $crate::EventType for [<$variant Event>] {
                     const EVENT_TYPE: &'static str = concat!(
                         stringify!($aggregate),
@@ -619,9 +748,22 @@ macro_rules! define_events {
                     );
                 }
             }
+
+            // Emit ApplyEvent or InitEvent based on kind
+            define_events! {
+                @emit_trait
+                [$vis] [$aggregate] [$event_enum] [$variant]
+                [{ $($field: $field_ty,)* }]
+                kind: $kind,
+                validate: [$($validate)*],
+                validate_spec: [$($validate_spec)*],
+                post_validate: [$($post_validate)*],
+                post_validate_spec: [$($post_validate_spec)*],
+                apply: $apply,
+            }
         )*
 
-        // Generate the event enum
+        // ---- Shared: event enum ----
         #[derive(Debug, Clone, ::serde::Serialize, ::serde::Deserialize)]
         $vis enum $event_enum {
             $(
@@ -632,7 +774,7 @@ macro_rules! define_events {
             ),*
         }
 
-        // Implement DomainEvent for the enum
+        // ---- Shared: DomainEvent ----
         impl $crate::DomainEvent for $event_enum {
             type Aggregate = $aggregate;
 
@@ -640,11 +782,7 @@ macro_rules! define_events {
                 match self {
                     $(
                         $event_enum::$variant { .. } => {
-                            concat!(
-                                stringify!($aggregate),
-                                ".",
-                                stringify!($variant)
-                            )
+                            concat!(stringify!($aggregate), ".", stringify!($variant))
                         }
                     ),*
                 }
@@ -654,7 +792,7 @@ macro_rules! define_events {
                 match self {
                     $(
                         $event_enum::$variant { .. } => {
-                            $crate::EventVersion::new(define_events!(@version $($version)?))
+                            $crate::EventVersion::new(define_events!(@version_from [$($version)*]))
                         }
                     ),*
                 }
@@ -669,48 +807,248 @@ macro_rules! define_events {
             }
         }
 
-        // Generate EventApplicator impl for the event enum
-        impl $crate::EventApplicator<$aggregate> for $event_enum {
-            fn dispatch(&self, aggregate: &mut $aggregate) -> ::std::result::Result<(), <$aggregate as $crate::Aggregate>::Error> {
-                match self {
-                    $(
-                        $event_enum::$variant { $($field,)* timestamp } => {
-                            paste::paste! {
-                                use $crate::ApplyEvent;
-                                let evt = [<$variant Event>] {
-                                    $($field: $field.clone(),)*
-                                    timestamp: *timestamp,
-                                };
-                                evt.validate(aggregate)?;
-                                evt.apply(aggregate);
-                                evt.post_validate(aggregate)?;
+        // ---- Shared: EventApplicator ----
+        // Wrapped in paste::paste! so [<$variant Event>] is available
+        paste::paste! {
+            #[allow(unused_variables, unused_assignments)]
+            impl $crate::EventApplicator<$aggregate> for $event_enum {
+                fn dispatch(&self, aggregate: &mut $aggregate) -> ::std::result::Result<(), <$aggregate as $crate::Aggregate>::Error> {
+                    match self {
+                        $(
+                            $event_enum::$variant { $($field,)* timestamp } => {
+                                define_events!(@dispatch_arm $kind [$aggregate] [[<$variant Event>]] [$($field),*] [timestamp] [aggregate])
                             }
-                        }
-                    ),*
+                        ),*
+                    }
+                    ::std::result::Result::Ok(())
                 }
-                ::std::result::Result::Ok(())
-            }
 
-            fn dispatch_unchecked(&self, aggregate: &mut $aggregate) {
-                match self {
-                    $(
-                        $event_enum::$variant { $($field,)* timestamp } => {
-                            paste::paste! {
-                                use $crate::ApplyEvent;
-                                let evt = [<$variant Event>] {
-                                    $($field: $field.clone(),)*
-                                    timestamp: *timestamp,
-                                };
-                                evt.apply(aggregate);
+                fn dispatch_unchecked(&self, aggregate: &mut $aggregate) {
+                    match self {
+                        $(
+                            $event_enum::$variant { $($field,)* timestamp } => {
+                                define_events!(@dispatch_unchecked_arm $kind [$aggregate] [[<$variant Event>]] [$($field),*] [timestamp] [aggregate])
                             }
-                        }
-                    ),*
+                        ),*
+                    }
+                }
+
+                fn is_init(&self) -> bool {
+                    match self {
+                        $(
+                            $event_enum::$variant { .. } => {
+                                define_events!(@is_init $kind)
+                            }
+                        ),*
+                    }
+                }
+
+                fn dispatch_init(&self, id: $crate::EntityId) -> ::std::result::Result<$aggregate, <$aggregate as $crate::Aggregate>::Error> {
+                    match self {
+                        $(
+                            $event_enum::$variant { $($field,)* timestamp } => {
+                                define_events!(@dispatch_init_arm $kind [$aggregate] [[<$variant Event>]] [$($field),*] [timestamp] [id])
+                            }
+                        ),*
+                    }
+                }
+
+                fn dispatch_init_unchecked(&self, id: $crate::EntityId) -> $aggregate {
+                    match self {
+                        $(
+                            $event_enum::$variant { $($field,)* timestamp } => {
+                                define_events!(@dispatch_init_unchecked_arm $kind [$aggregate] [[<$variant Event>]] [$($field),*] [timestamp] [id])
+                            }
+                        ),*
+                    }
                 }
             }
         }
     };
 
-    // Helper: Extract version number (default to 1)
+    // =========================================================================
+    // Helper: Emit ApplyEvent impl for REGULAR events
+    // =========================================================================
+    (
+        @emit_trait
+        [$vis:vis] [$aggregate:ty] [$event_enum:ident] [$variant:ident]
+        [{ $($field:ident: $field_ty:ty,)* }]
+        kind: regular,
+        validate: [$([$val_agg:ident, $val_evt:ident, $val_body:block])?],
+        validate_spec: [$([$val_spec:expr])?],
+        post_validate: [$([$post_val_agg:ident, $post_val_evt:ident, $post_val_body:block])?],
+        post_validate_spec: [$([$post_val_spec:expr])?],
+        apply: $apply:expr,
+    ) => {
+        paste::paste! {
+            impl $crate::ApplyEvent<$aggregate> for [<$variant Event>] {
+                #[allow(unused_variables, unreachable_code, clippy::redundant_closure_call)]
+                fn validate(&self, aggregate: &$aggregate)
+                    -> ::std::result::Result<(), <$aggregate as $crate::Aggregate>::Error>
+                {
+                    $(
+                        return (|$val_agg: &$aggregate, $val_evt: &Self| $val_body)(aggregate, self);
+                    )?
+                    $(
+                        $crate::Specification::check(&$val_spec, aggregate)?;
+                    )?
+                    ::std::result::Result::Ok(())
+                }
+
+                fn apply(&self, aggregate: &mut $aggregate) {
+                    let apply_fn: fn(&mut $aggregate, &Self) = $apply;
+                    apply_fn(aggregate, self);
+                }
+
+                #[allow(unused_variables, unreachable_code, clippy::redundant_closure_call)]
+                fn post_validate(&self, aggregate: &$aggregate)
+                    -> ::std::result::Result<(), <$aggregate as $crate::Aggregate>::Error>
+                {
+                    $(
+                        return (|$post_val_agg: &$aggregate, $post_val_evt: &Self| $post_val_body)(aggregate, self);
+                    )?
+                    $(
+                        $crate::Specification::check(&$post_val_spec, aggregate)?;
+                    )?
+                    ::std::result::Result::Ok(())
+                }
+            }
+        }
+    };
+
+    // =========================================================================
+    // Helper: Emit InitEvent impl for @init events
+    // =========================================================================
+    (
+        @emit_trait
+        [$vis:vis] [$aggregate:ty] [$event_enum:ident] [$variant:ident]
+        [{ $($field:ident: $field_ty:ty,)* }]
+        kind: init,
+        validate: [$([$val_evt:ident, $val_body:block])?],
+        validate_spec: [$([$val_spec:expr])?],
+        post_validate: [$([$post_val_agg:ident, $post_val_evt:ident, $post_val_body:block])?],
+        post_validate_spec: [$([$post_val_spec:expr])?],
+        apply: $apply:expr,
+    ) => {
+        paste::paste! {
+            impl $crate::InitEvent<$aggregate> for [<$variant Event>] {
+                #[allow(unused_variables, unreachable_code, clippy::redundant_closure_call)]
+                fn validate_init(&self) -> ::std::result::Result<(), <$aggregate as $crate::Aggregate>::Error> {
+                    $(
+                        return (|$val_evt: &Self| $val_body)(self);
+                    )?
+                    $(
+                        $crate::Specification::check(&$val_spec, self)?;
+                    )?
+                    ::std::result::Result::Ok(())
+                }
+
+                fn init(&self, id: $crate::EntityId) -> $aggregate {
+                    let init_fn: fn($crate::EntityId, &Self) -> $aggregate = $apply;
+                    init_fn(id, self)
+                }
+
+                #[allow(unused_variables, unreachable_code, clippy::redundant_closure_call)]
+                fn post_validate_init(&self, aggregate: &$aggregate) -> ::std::result::Result<(), <$aggregate as $crate::Aggregate>::Error> {
+                    $(
+                        return (|$post_val_agg: &$aggregate, $post_val_evt: &Self| $post_val_body)(aggregate, self);
+                    )?
+                    $(
+                        $crate::Specification::check(&$post_val_spec, aggregate)?;
+                    )?
+                    ::std::result::Result::Ok(())
+                }
+            }
+        }
+    };
+
+    // =========================================================================
+    // Helper: dispatch arm — called from within paste::paste! so $evt_type
+    // is already resolved (e.g. CreatedEvent). No inner paste needed.
+    // =========================================================================
+    (@dispatch_arm regular [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
+        {
+            use $crate::ApplyEvent;
+            let evt = $evt_type {
+                $($field: $field.clone(),)*
+                $timestamp: *$timestamp,
+            };
+            evt.validate($aggregate_var)?;
+            evt.apply($aggregate_var);
+            evt.post_validate($aggregate_var)?;
+        }
+    };
+    (@dispatch_arm init [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
+        unreachable!("dispatch() called on init event; use dispatch_init()")
+    };
+
+    // =========================================================================
+    // Helper: dispatch_unchecked arm
+    // =========================================================================
+    (@dispatch_unchecked_arm regular [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
+        {
+            use $crate::ApplyEvent;
+            let evt = $evt_type {
+                $($field: $field.clone(),)*
+                $timestamp: *$timestamp,
+            };
+            evt.apply($aggregate_var);
+        }
+    };
+    (@dispatch_unchecked_arm init [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
+        unreachable!("dispatch_unchecked() called on init event; use dispatch_init_unchecked()")
+    };
+
+    // =========================================================================
+    // Helper: dispatch_init arm
+    // =========================================================================
+    (@dispatch_init_arm init [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$id_var:ident]) => {
+        {
+            use $crate::InitEvent;
+            let evt = $evt_type {
+                $($field: $field.clone(),)*
+                $timestamp: *$timestamp,
+            };
+            evt.validate_init()?;
+            let entity = evt.init($id_var);
+            evt.post_validate_init(&entity)?;
+            ::std::result::Result::Ok(entity)
+        }
+    };
+    (@dispatch_init_arm regular [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$id_var:ident]) => {
+        unreachable!("dispatch_init() called on non-init event")
+    };
+
+    // =========================================================================
+    // Helper: dispatch_init_unchecked arm
+    // =========================================================================
+    (@dispatch_init_unchecked_arm init [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$id_var:ident]) => {
+        {
+            use $crate::InitEvent;
+            let evt = $evt_type {
+                $($field: $field.clone(),)*
+                $timestamp: *$timestamp,
+            };
+            evt.init($id_var)
+        }
+    };
+    (@dispatch_init_unchecked_arm regular [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$id_var:ident]) => {
+        unreachable!("dispatch_init_unchecked() called on non-init event")
+    };
+
+    // =========================================================================
+    // Helper: is_init
+    // =========================================================================
+    (@is_init init) => { true };
+    (@is_init regular) => { false };
+
+    // =========================================================================
+    // Helper: extract version (default to 1)
+    // =========================================================================
+    (@version_from [[$version:literal]]) => { $version };
+    (@version_from []) => { 1 };
+
+    // Legacy version helper
     (@version $version:literal) => { $version };
     (@version) => { 1 };
 }
@@ -2889,5 +3227,280 @@ mod tests {
                 panic!("Expected SpecificationFailed, got: {other}")
             }
         }
+    }
+
+    // ===== @init define_events! macro tests =====
+
+    #[derive(Debug, thiserror::Error)]
+    pub enum AccountError {
+        #[error("Empty name")]
+        EmptyName,
+        #[error("Negative balance")]
+        NegativeBalance,
+    }
+
+    impl AggregateError for AccountError {}
+
+    #[derive(Debug, Serialize, Deserialize)]
+    pub struct Account {
+        id: EntityId,
+        name: String,
+        balance: i64,
+    }
+
+    impl Entity for Account {
+        fn entity_id(&self) -> EntityId {
+            self.id
+        }
+    }
+
+    impl Aggregate for Account {
+        type Event = AccountEvent;
+        type Error = AccountError;
+    }
+
+    define_events! {
+        @with_init
+        pub enum AccountEvent for Account {
+            AccountOpened {
+                name: String,
+                initial_balance: i64,
+            }
+            @init
+            @validate |event| {
+                if event.name.is_empty() {
+                    return Err(AccountError::EmptyName);
+                }
+                return Ok(());
+            }
+            => |id, event| {
+                Account {
+                    id,
+                    name: event.name.clone(),
+                    balance: event.initial_balance,
+                }
+            },
+
+            Deposited {
+                amount: i64,
+            }
+            => |account, event| {
+                account.balance += event.amount;
+            },
+
+            Withdrawn {
+                amount: i64,
+            }
+            @post_validate |account, _event| {
+                if account.balance < 0 {
+                    return Err(AccountError::NegativeBalance);
+                }
+                return Ok(());
+            }
+            => |account, event| {
+                account.balance -= event.amount;
+            },
+        }
+    }
+
+    #[test]
+    fn test_init_event_macro_creates_init_event_struct() {
+        let _event = AccountOpenedEvent {
+            name: "Alice".to_string(),
+            initial_balance: 100,
+            timestamp: Utc::now(),
+        };
+    }
+
+    #[test]
+    fn test_init_event_macro_init_trait_impl() {
+        use crate::InitEvent;
+        let event = AccountOpenedEvent {
+            name: "Alice".to_string(),
+            initial_balance: 100,
+            timestamp: Utc::now(),
+        };
+        let id = EntityId::new();
+        let account = event.init(id);
+        assert_eq!(account.entity_id(), id);
+        assert_eq!(account.name, "Alice");
+        assert_eq!(account.balance, 100);
+    }
+
+    #[test]
+    fn test_init_event_macro_validate_init() {
+        use crate::InitEvent;
+        let event = AccountOpenedEvent {
+            name: String::new(),
+            initial_balance: 0,
+            timestamp: Utc::now(),
+        };
+        let result = event.validate_init();
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().to_string(), "Empty name");
+    }
+
+    #[test]
+    fn test_init_event_macro_from_conversion() {
+        let event = AccountOpenedEvent {
+            name: "Bob".to_string(),
+            initial_balance: 50,
+            timestamp: Utc::now(),
+        };
+        let enum_event: AccountEvent = event.into();
+        assert!(matches!(enum_event, AccountEvent::AccountOpened { .. }));
+    }
+
+    #[test]
+    fn test_init_event_macro_event_applicator_is_init() {
+        use crate::EventApplicator;
+        let init_event = AccountEvent::AccountOpened {
+            name: "Alice".to_string(),
+            initial_balance: 100,
+            timestamp: Utc::now(),
+        };
+        assert!(EventApplicator::is_init(&init_event));
+
+        let regular_event = AccountEvent::Deposited {
+            amount: 50,
+            timestamp: Utc::now(),
+        };
+        assert!(!EventApplicator::is_init(&regular_event));
+    }
+
+    #[test]
+    fn test_init_event_macro_dispatch_init() {
+        use crate::EventApplicator;
+        let event = AccountEvent::AccountOpened {
+            name: "Alice".to_string(),
+            initial_balance: 100,
+            timestamp: Utc::now(),
+        };
+        let id = EntityId::new();
+        let account = EventApplicator::dispatch_init(&event, id).unwrap();
+        assert_eq!(account.entity_id(), id);
+        assert_eq!(account.name, "Alice");
+        assert_eq!(account.balance, 100);
+    }
+
+    #[test]
+    fn test_init_event_macro_dispatch_init_unchecked() {
+        use crate::EventApplicator;
+        let event = AccountEvent::AccountOpened {
+            name: "Alice".to_string(),
+            initial_balance: 100,
+            timestamp: Utc::now(),
+        };
+        let id = EntityId::new();
+        let account = EventApplicator::dispatch_init_unchecked(&event, id);
+        assert_eq!(account.entity_id(), id);
+        assert_eq!(account.balance, 100);
+    }
+
+    #[test]
+    fn test_init_event_macro_regular_dispatch() {
+        use crate::ApplyEvent;
+        let mut account = Account {
+            id: EntityId::new(),
+            name: "Alice".to_string(),
+            balance: 100,
+        };
+        let event = DepositedEvent {
+            amount: 50,
+            timestamp: Utc::now(),
+        };
+        event.apply(&mut account);
+        assert_eq!(account.balance, 150);
+    }
+
+    #[test]
+    fn test_init_event_macro_regular_post_validate() {
+        use crate::ApplyEvent;
+        let account = Account {
+            id: EntityId::new(),
+            name: "Alice".to_string(),
+            balance: 10,
+        };
+        let event = WithdrawnEvent {
+            amount: 20,
+            timestamp: Utc::now(),
+        };
+        // Balance would go to -10
+        let mut account_clone = Account {
+            id: account.id,
+            name: account.name.clone(),
+            balance: account.balance,
+        };
+        event.apply(&mut account_clone);
+        let result = event.post_validate(&account_clone);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().to_string(), "Negative balance");
+    }
+
+    #[test]
+    fn test_init_event_macro_uninit_aggregate_full_lifecycle() {
+        let uninit = crate::UninitAggregateRoot::<Account>::new(EntityId::new());
+        let id = uninit.entity_id();
+
+        let event = AccountOpenedEvent {
+            name: "Alice".to_string(),
+            initial_balance: 100,
+            timestamp: Utc::now(),
+        };
+        let mut agg = uninit.apply_init(event).unwrap();
+        assert_eq!(agg.entity_id(), id);
+        assert_eq!(agg.name, "Alice");
+        assert_eq!(agg.balance, 100);
+        assert_eq!(agg.version(), AggregateVersion::new(1));
+        assert_eq!(agg.pending_events().len(), 1);
+
+        // Apply regular events
+        agg.apply(DepositedEvent {
+            amount: 50,
+            timestamp: Utc::now(),
+        })
+        .unwrap();
+        assert_eq!(agg.balance, 150);
+        assert_eq!(agg.version(), AggregateVersion::new(2));
+
+        agg.apply(WithdrawnEvent {
+            amount: 30,
+            timestamp: Utc::now(),
+        })
+        .unwrap();
+        assert_eq!(agg.balance, 120);
+        assert_eq!(agg.version(), AggregateVersion::new(3));
+        assert_eq!(agg.pending_events().len(), 3);
+    }
+
+    #[test]
+    fn test_init_event_macro_uninit_validation_fails() {
+        let uninit = crate::UninitAggregateRoot::<Account>::new(EntityId::new());
+        let event = AccountOpenedEvent {
+            name: String::new(),
+            initial_balance: 0,
+            timestamp: Utc::now(),
+        };
+        let result = uninit.apply_init(event);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().to_string(), "Empty name");
+    }
+
+    #[test]
+    fn test_init_event_macro_domain_event() {
+        use crate::DomainEvent;
+        let event = AccountEvent::AccountOpened {
+            name: "Alice".to_string(),
+            initial_balance: 100,
+            timestamp: Utc::now(),
+        };
+        assert_eq!(event.event_type(), "Account.AccountOpened");
+        assert_eq!(event.event_version(), crate::EventVersion::new(1));
+
+        let deposit = AccountEvent::Deposited {
+            amount: 50,
+            timestamp: Utc::now(),
+        };
+        assert_eq!(deposit.event_type(), "Account.Deposited");
     }
 }

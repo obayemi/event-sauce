@@ -38,7 +38,8 @@
       "Bash(git ls-tree:*)",
       "Bash(for type in \"Entity\" \"Aggregate\" \"AggregateRoot\" \"EntityId\" \"Version\" \"StreamId\" \"Position\" \"EventEnvelope\" \"EventMetadata\" \"DomainEvent\" \"EventType\" \"EventStore\" \"Snapshot\" \"SnapshotConfig\" \"SnapshotStrategy\" \"Repository\" \"Subscription\" \"CheckpointStore\" \"Error\" \"Result\" \"ApplyEvent\" \"EventApplicator\" \"Specification\" \"SpecificationError\")",
       "Bash(do echo \"=== $type ===\")",
-      "Bash(done)"
+      "Bash(done)",
+      "Bash(RUSTFLAGS=\"-Z macro-backtrace\" cargo test:*)"
     ],
     "deny": [],
     "ask": []
