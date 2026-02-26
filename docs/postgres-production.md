@@ -19,26 +19,21 @@ Complete guide to deploying event-sauce with PostgreSQL in production environmen
 
 ### Basic Setup (Recommended)
 
-The simplest production-ready setup with schema isolation:
+The simplest production-ready setup uses `PostgresBackend` — a single entry point
+that creates the connection pool, event store, checkpoint store, and runs all migrations:
 
 ```rust
-use event_sauce_postgres::PostgresEventStore;
-use sqlx::PgPool;
+use event_sauce_postgres::PostgresBackend;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Connect to your PostgreSQL database
-    let pool = PgPool::connect(&std::env::var("DATABASE_URL")?).await?;
+    let backend = PostgresBackend::setup(&std::env::var("DATABASE_URL")?, "event_sauce").await?;
 
-    // Create store with default settings
-    // - Schema: "event_sauce" (isolated from your app)
-    // - Snapshots: Every 100 events
-    let store = PostgresEventStore::new(pool);
+    // Everything is ready to use
+    let event_store = backend.event_store();
+    let checkpoint_store = backend.checkpoint_store();
+    let pool = backend.pool();
 
-    // Run migrations (idempotent - safe to call multiple times)
-    store.migrate().await?;
-
-    // Store is ready to use!
     Ok(())
 }
 ```
@@ -46,47 +41,70 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 This creates:
 - `event_sauce.events` - Event storage table
 - `event_sauce.snapshots` - Snapshot storage table
+- `event_sauce.checkpoints` - Checkpoint tracking table
 - `event_sauce._event_sauce_migrations` - Migration tracking
+- `event_sauce._checkpoint_migrations` - Checkpoint migration tracking
 
 Your application's tables remain in the `public` schema with separate migrations.
 
 ### Custom Configuration
 
-For production environments with specific requirements:
+For production environments with specific requirements, use the builder:
 
 ```rust
-use event_sauce_postgres::PostgresEventStore;
+use event_sauce_postgres::PostgresBackend;
+use event_sauce_core::SnapshotConfig;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let backend = PostgresBackend::builder()
+        .database_url(&std::env::var("DATABASE_URL")?)
+        .schema("event_sauce")
+        .snapshot_config(SnapshotConfig::disabled()) // Custom snapshot config
+        .build()
+        .await?;
+
+    Ok(())
+}
+```
+
+### Individual Store Setup
+
+For fine-grained control (e.g., separate connection pools per store), create stores individually:
+
+```rust
+use event_sauce_postgres::{PostgresEventStore, PostgresCheckpointStore};
 use event_sauce_core::{SnapshotConfig, EveryNEvents};
 use sqlx::postgres::{PgPool, PgPoolOptions};
+use std::sync::Arc;
 use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Configure connection pool for production
     let pool = PgPoolOptions::new()
-        .max_connections(50)                    // Connection pool size
-        .min_connections(5)                     // Keep minimum connections alive
+        .max_connections(50)
+        .min_connections(5)
         .acquire_timeout(Duration::from_secs(30))
         .idle_timeout(Duration::from_secs(600))
         .max_lifetime(Duration::from_secs(1800))
         .connect(&std::env::var("DATABASE_URL")?)
         .await?;
 
-    // Configure snapshots for performance
-    let snapshot_config = SnapshotConfig::builder()
-        .default_strategy(EveryNEvents(50))     // Snapshot every 50 events
-        .load_from_snapshot(true)               // Use snapshots on load
+    let checkpoint_store = PostgresCheckpointStore::builder()
+        .pool(pool.clone())
+        .schema("event_sauce")
         .build();
+    checkpoint_store.migrate().await?;
 
-    // Build store with custom configuration
-    let store = PostgresEventStore::builder()
+    let event_store = PostgresEventStore::builder()
         .pool(pool)
-        .schema("event_sauce")                   // Custom schema name
-        .snapshot_config(snapshot_config)
+        .schema("event_sauce")
+        .snapshot_config(SnapshotConfig::builder()
+            .default_strategy(EveryNEvents(50))
+            .build())
+        .checkpoint_store(Arc::new(checkpoint_store))
         .build();
-
-    // Run migrations
-    store.migrate().await?;
+    event_store.migrate().await?;
 
     Ok(())
 }
@@ -773,60 +791,23 @@ Before going live, ensure:
 Complete production-ready setup:
 
 ```rust
-use event_sauce_postgres::PostgresEventStore;
-use event_sauce_core::{SnapshotConfig, EveryNEvents};
-use sqlx::postgres::PgPoolOptions;
-use std::time::Duration;
-use tracing::{info, error};
+use event_sauce_postgres::PostgresBackend;
+use tracing::info;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize tracing
     tracing_subscriber::fmt::init();
 
-    // Load configuration from environment
     let database_url = std::env::var("DATABASE_URL")?;
-    let max_connections: u32 = std::env::var("POOL_MAX_CONNECTIONS")
-        .unwrap_or_else(|_| "50".to_string())
-        .parse()?;
 
-    info!("Connecting to PostgreSQL...");
+    info!("Setting up PostgreSQL backend...");
+    let backend = PostgresBackend::setup(&database_url, "event_sauce").await?;
+    info!("Backend ready — event store, checkpoint store, and migrations complete");
 
-    // Configure production connection pool
-    let pool = PgPoolOptions::new()
-        .max_connections(max_connections)
-        .min_connections(5)
-        .acquire_timeout(Duration::from_secs(30))
-        .idle_timeout(Duration::from_secs(600))
-        .max_lifetime(Duration::from_secs(1800))
-        .test_before_acquire(true)
-        .connect(&database_url)
-        .await
-        .map_err(|e| {
-            error!("Failed to connect to database: {}", e);
-            e
-        })?;
-
-    info!("Database connected successfully");
-
-    // Configure snapshots for performance
-    let snapshot_config = SnapshotConfig::builder()
-        .default_strategy(EveryNEvents(100))
-        .load_from_snapshot(true)
-        .build();
-
-    // Create event store with production settings
-    let store = PostgresEventStore::builder()
-        .pool(pool)
-        .schema("event_sauce")
-        .snapshot_config(snapshot_config)
-        .build();
-
-    info!("Running database migrations...");
-    store.migrate().await?;
-    info!("Migrations complete");
-
-    info!("Event store initialized and ready");
+    // Access components as needed
+    let _event_store = backend.event_store();
+    let _checkpoint_store = backend.checkpoint_store();
+    let _pool = backend.pool();
 
     // Your application logic here
     // ...

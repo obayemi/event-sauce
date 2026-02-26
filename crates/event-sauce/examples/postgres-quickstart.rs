@@ -20,7 +20,7 @@ use event_sauce_core::{
     EventFilter, EventStore, Repository, Specification,
 };
 use event_sauce_macros::{aggregate, aggregate_error, AggregateError};
-use event_sauce_postgres::{PostgresCheckpointStore, PostgresEventStore};
+use event_sauce_postgres::{PostgresBackend, PostgresEventStore};
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use testcontainers_modules::postgres::Postgres;
@@ -301,31 +301,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  - Projection combining data from both");
     println!("  - PostgreSQL backend with testcontainers\n");
 
-    // Setup PostgreSQL
+    // Setup PostgreSQL using PostgresBackend (handles pool, stores, and migrations)
     println!("  Starting PostgreSQL container...");
     let postgres = Postgres::default().start().await?;
     let port = postgres.get_host_port_ipv4(5432).await?;
-
     let database_url = format!("postgres://postgres:postgres@localhost:{port}/postgres");
-    let pool = sqlx::postgres::PgPool::connect(&database_url).await?;
 
-    // Setup stores using builder pattern
-    println!("  Initializing event store...");
-    let event_store = PostgresEventStore::builder()
-        .pool(pool.clone())
-        .schema("event_sauce") // Use custom schema for isolation
-        .build();
-    event_store.migrate().await?;
+    println!("  Initializing backend (event store + checkpoint store + migrations)...");
+    let backend = PostgresBackend::setup(&database_url, "event_sauce").await?;
 
-    println!("  Initializing checkpoint store...");
-    let checkpoint_store = PostgresCheckpointStore::builder()
-        .pool(pool.clone())
-        .schema("event_sauce") // Use same schema as event store
-        .build();
-    checkpoint_store.migrate().await?;
-
-    let store = Arc::new(event_store);
-    let checkpoint_ref = Arc::new(checkpoint_store);
+    let store = Arc::new(backend.event_store().clone());
+    let checkpoint_ref: Arc<dyn event_sauce_core::CheckpointStore> =
+        Arc::new(backend.checkpoint_store().clone());
 
     // Create repositories for type-safe aggregate persistence
     println!("  Creating repositories...");

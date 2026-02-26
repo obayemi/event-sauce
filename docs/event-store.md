@@ -237,11 +237,22 @@ let store = InMemoryEventStore::new();
 Production-ready with full ACID guarantees:
 
 ```rust
+use event_sauce_postgres::PostgresBackend;
+
+// Simplest setup — creates pool, event store, checkpoint store, runs migrations
+let backend = PostgresBackend::setup("postgresql://localhost/eventstore", "event_sauce").await?;
+let store = backend.event_store();
+```
+
+Or create individual stores for more control:
+
+```rust
 use event_sauce_postgres::PostgresEventStore;
 use sqlx::PgPool;
 
 let pool = PgPool::connect("postgresql://localhost/eventstore").await?;
 let store = PostgresEventStore::new(pool);
+store.migrate().await?;
 ```
 
 **Features:**
@@ -252,7 +263,7 @@ let store = PostgresEventStore::new(pool);
 
 **Requirements:**
 - PostgreSQL 12+
-- Run migrations (see setup guide)
+- Run migrations (automatic with `PostgresBackend`, or call `store.migrate()`)
 
 **When to use:**
 - Production applications

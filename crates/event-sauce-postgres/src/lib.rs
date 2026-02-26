@@ -17,28 +17,20 @@
 //!
 //! # Quick Start (Recommended)
 //!
-//! By default, event-sauce uses the `"event_sauce"` schema to isolate its tables
-//! and migrations from your application:
+//! Use [`PostgresBackend`] for the simplest setup — it creates both event store
+//! and checkpoint store, runs migrations, and wires everything together:
 //!
 //! ```ignore
-//! use event_sauce_postgres::PostgresEventStore;
-//! use sqlx::PgPool;
+//! use event_sauce_postgres::PostgresBackend;
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     let pool = PgPool::connect("postgresql://localhost/events").await?;
+//!     let backend = PostgresBackend::setup("postgresql://localhost/events", "event_sauce").await?;
 //!
-//!     // Simple constructor - uses "event_sauce" schema by default
-//!     let store = PostgresEventStore::new(pool);
-//!
-//!     // Run migrations - creates event_sauce schema and tables
-//!     store.migrate().await?;
-//!
-//!     // Now you have:
-//!     // - event_sauce.events table
-//!     // - event_sauce.snapshots table
-//!     // - event_sauce._event_sauce_migrations table
-//!     // Your application's public._sqlx_migrations remains separate!
+//!     // Ready to use — event store, checkpoint store, and migrations all handled
+//!     let event_store = backend.event_store();
+//!     let checkpoint_store = backend.checkpoint_store();
+//!     let pool = backend.pool();
 //!
 //!     Ok(())
 //! }
@@ -49,30 +41,28 @@
 //! For custom configuration:
 //!
 //! ```ignore
-//! use event_sauce_postgres::PostgresEventStore;
-//! use sqlx::PgPool;
+//! use event_sauce_postgres::PostgresBackend;
+//! use event_sauce_core::SnapshotConfig;
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     let pool = PgPool::connect("postgresql://localhost/events").await?;
-//!
-//!     // Customize schema name, snapshot config, etc.
-//!     let store = PostgresEventStore::builder()
-//!         .pool(pool)
-//!         .schema("my_custom_schema")  // Or use "public" for default schema
-//!         .build();
-//!
-//!     store.migrate().await?;
+//!     let backend = PostgresBackend::builder()
+//!         .database_url("postgresql://localhost/events")
+//!         .schema("my_custom_schema")
+//!         .snapshot_config(SnapshotConfig::disabled())
+//!         .build()
+//!         .await?;
 //!
 //!     Ok(())
 //! }
 //! ```
 //!
-//! ## Custom Configuration
+//! ## Individual Stores
+//!
+//! For fine-grained control, create stores individually:
 //!
 //! ```ignore
 //! use event_sauce_postgres::PostgresEventStore;
-//! use event_sauce_core::SnapshotConfig;
 //! use sqlx::PgPool;
 //!
 //! #[tokio::main]
@@ -80,9 +70,8 @@
 //!     let pool = PgPool::connect("postgresql://localhost/events").await?;
 //!
 //!     let store = PostgresEventStore::builder()
-//!         .pool(pool.clone())
+//!         .pool(pool)
 //!         .schema("event_sauce")
-//!         .snapshot_config(SnapshotConfig::disabled())
 //!         .build();
 //!
 //!     store.migrate().await?;
@@ -95,8 +84,10 @@
 #![deny(clippy::all)]
 #![warn(clippy::pedantic)]
 
+mod backend;
 mod checkpoint_store;
 mod event_store;
 
+pub use backend::{PostgresBackend, PostgresBackendBuilder};
 pub use checkpoint_store::{PostgresCheckpointStore, PostgresCheckpointStoreBuilder};
 pub use event_store::{PostgresEventStore, PostgresEventStoreBuilder};

@@ -375,7 +375,7 @@ Now that you understand the basics, explore:
 
 1. **[Architecture](architecture.md)** - Learn about the overall design
 2. **[TDD Workflow](tdd-workflow.md)** - Follow test-driven development
-3. **[PostgreSQL Backend](postgres.md)** - Use a production-ready store
+3. **[PostgreSQL Backend](postgres-production.md)** - Use a production-ready store (see `PostgresBackend` for easy setup)
 4. **[Projections Guide](projections.md)** - Build read models
 5. **Complete Examples** - See real-world applications:
    - **[postgres-quickstart.rs](../crates/event-sauce/examples/postgres-quickstart.rs)** - User and Order aggregates with projections using `define_events!` macro (recommended approach)
