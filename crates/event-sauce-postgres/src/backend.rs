@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use event_sauce_core::SnapshotConfig;
+use event_sauce_core::{EventStore, SnapshotConfig};
 use sqlx::PgPool;
 
 use crate::{PostgresCheckpointStore, PostgresEventStore};
@@ -100,6 +100,46 @@ impl PostgresBackend {
     #[must_use]
     pub fn checkpoint_store(&self) -> Arc<PostgresCheckpointStore> {
         Arc::clone(&self.checkpoint_store)
+    }
+
+    /// Creates a subscription builder with the event store and checkpoint store pre-wired.
+    ///
+    /// This is a convenience method that avoids extracting the event store and checkpoint
+    /// store separately.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let subscription = backend
+    ///     .subscription_builder("my-projection")
+    ///     .filter(EventFilter::by_aggregate_type("User"))
+    ///     .build()?;
+    /// ```
+    pub fn subscription_builder(
+        &self,
+        name: impl Into<String>,
+    ) -> event_sauce_core::SubscriptionBuilder<PostgresEventStore> {
+        self.event_store.subscription_builder(name)
+    }
+
+    /// Creates a subscription builder pre-configured for a projection type.
+    ///
+    /// Uses `P::NAME` as the subscription name. The event store, checkpoint store,
+    /// and event filter are all auto-wired from the backend and projection.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let mut sub = backend
+    ///     .projection_subscription::<OrderSummaryProjection>()
+    ///     .build()?;
+    /// sub.run_projection(&mut projection).await?;
+    /// ```
+    #[must_use]
+    pub fn projection_subscription<P: event_sauce_core::Projection>(
+        &self,
+    ) -> event_sauce_core::SubscriptionBuilder<PostgresEventStore> {
+        self.event_store.projection_subscription::<P>()
     }
 }
 
@@ -422,5 +462,104 @@ mod tests {
     #[should_panic(expected = "database_url is required")]
     async fn test_builder_panics_without_url() {
         let _ = PostgresBackend::builder().build().await;
+    }
+
+    #[tokio::test]
+    async fn test_subscription_builder_convenience() {
+        let (url, _container) = start_postgres().await;
+
+        let backend = PostgresBackend::setup(&url, "event_sauce")
+            .await
+            .expect("setup should succeed");
+
+        let aggregate_id = Uuid::new_v4();
+        let stream_id = StreamId::new("TestAggregate", aggregate_id);
+        let event = create_test_envelope(aggregate_id);
+
+        let store = backend.event_store();
+        store
+            .append(stream_id, vec![event], AggregateVersion::initial())
+            .await
+            .expect("append should succeed");
+
+        // Use the convenience method
+        let mut subscription = backend
+            .subscription_builder("test-sub")
+            .build()
+            .expect("build should succeed");
+
+        let mut count = 0;
+        subscription
+            .run(|_event| {
+                count += 1;
+                Ok(())
+            })
+            .await
+            .expect("run should succeed");
+
+        assert_eq!(count, 1);
+    }
+
+    struct TestBackendProjection {
+        count: u64,
+    }
+
+    #[async_trait::async_trait]
+    impl event_sauce_core::Projection for TestBackendProjection {
+        type State = u64;
+        const NAME: &'static str = "TestBackendProjection";
+
+        fn handled_event_types() -> Option<Vec<&'static str>> {
+            Some(vec!["TestEvent"])
+        }
+
+        async fn handle(
+            &mut self,
+            _envelope: &event_sauce_core::EventEnvelope,
+        ) -> event_sauce_core::Result<()> {
+            self.count += 1;
+            Ok(())
+        }
+
+        fn state(&self) -> &u64 {
+            &self.count
+        }
+
+        fn state_mut(&mut self) -> &mut u64 {
+            &mut self.count
+        }
+    }
+
+    #[tokio::test]
+    async fn test_projection_subscription_convenience() {
+        let (url, _container) = start_postgres().await;
+
+        let backend = PostgresBackend::setup(&url, "event_sauce")
+            .await
+            .expect("setup should succeed");
+
+        let aggregate_id = Uuid::new_v4();
+        let stream_id = StreamId::new("TestAggregate", aggregate_id);
+        let event = create_test_envelope(aggregate_id);
+
+        let store = backend.event_store();
+        store
+            .append(stream_id, vec![event], AggregateVersion::initial())
+            .await
+            .expect("append should succeed");
+
+        // Use projection_subscription convenience method
+        let mut subscription = backend
+            .projection_subscription::<TestBackendProjection>()
+            .build()
+            .expect("build should succeed");
+
+        let mut projection = TestBackendProjection { count: 0 };
+        subscription
+            .run_projection(&mut projection)
+            .await
+            .expect("run_projection should succeed");
+
+        assert_eq!(projection.count, 1);
     }
 }
