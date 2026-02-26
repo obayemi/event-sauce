@@ -273,141 +273,65 @@ macro_rules! command_handler {
 /// - Optionally exposes `aggregate_id` from envelope in handler
 #[macro_export]
 macro_rules! projection {
-    // Support for enum variant syntax with aggregate_id: on EnumName::Variant |proj, evt, agg_id| { ... }
+    // Outer arm 1: Enum variant syntax — on EnumName::Variant |proj, evt(, agg_id)?| { ... }
     (
         $vis:vis struct $name:ident {
             state: $state:ty,
 
             $(
-                on $event_enum:ident::$variant:ident |$proj:ident, $evt:ident, $agg_id:ident| $handler:block
+                on $event_enum:ident::$variant:ident
+                    |$proj:ident, $evt:ident $(, $agg_id:ident)?| $handler:block
             ),* $(,)?
         }
     ) => {
         paste::paste! {
-            $vis struct $name {
-                state: $state,
-            }
+            $crate::projection! {
+                @impl
+                $vis struct $name {
+                    state: $state,
 
-            #[allow(private_interfaces)]
-            impl $name {
-                /// Creates a new projection with the given initial state.
-                #[allow(missing_docs)]
-                pub fn new(state: $state) -> Self {
-                    Self { state }
-                }
-
-                /// Returns an immutable reference to the projection state.
-                #[allow(missing_docs)]
-                pub fn state(&self) -> &$state {
-                    &self.state
-                }
-
-                /// Returns a mutable reference to the projection state.
-                #[allow(missing_docs)]
-                pub fn state_mut(&mut self) -> &mut $state {
-                    &mut self.state
-                }
-
-                /// Handles an event envelope by deserializing and applying it.
-                ///
-                /// Returns `Ok(())` if the event was handled or ignored (unknown event type).
-                /// Returns `Err` only if deserialization or handler logic fails.
-                #[allow(missing_docs)]
-                pub async fn handle(&mut self, envelope: &$crate::EventEnvelope)
-                    -> $crate::Result<()>
-                {
                     $(
-                        // Construct event struct name from variant (e.g., Registered -> RegisteredEvent)
-                        type [<$variant EventType>] = [<$variant Event>];
-
-                        // Check event type using EventType trait, then deserialize
-                        if envelope.event_type == <[<$variant EventType>] as $crate::EventType>::EVENT_TYPE {
-                            if let Ok($evt) = ::serde_json::from_value::<[<$variant EventType>]>(envelope.event_data.clone()) {
-                                let $proj = self;
-                                let $agg_id = envelope.aggregate_id;
-                                $handler
-                                return Ok(());
-                            }
-                        }
-                    )*
-                    // Ignore unknown events
-                    Ok(())
+                        on [<$variant Event>]
+                            |$proj, $evt $(, $agg_id)?| $handler
+                    ),*
                 }
             }
         }
     };
 
-    // Support for enum variant syntax: on EnumName::Variant |proj, evt| { ... }
+    // Outer arm 2: Direct struct name syntax — on EventStruct |proj, evt(, agg_id)?| { ... }
     (
         $vis:vis struct $name:ident {
             state: $state:ty,
 
             $(
-                on $event_enum:ident::$variant:ident |$proj:ident, $evt:ident| $handler:block
+                on $event:ty |$proj:ident, $evt:ident $(, $agg_id:ident)?| $handler:block
             ),* $(,)?
         }
     ) => {
-        paste::paste! {
+        $crate::projection! {
+            @impl
             $vis struct $name {
                 state: $state,
-            }
 
-            #[allow(private_interfaces)]
-            impl $name {
-                /// Creates a new projection with the given initial state.
-                #[allow(missing_docs)]
-                pub fn new(state: $state) -> Self {
-                    Self { state }
-                }
-
-                /// Returns an immutable reference to the projection state.
-                #[allow(missing_docs)]
-                pub fn state(&self) -> &$state {
-                    &self.state
-                }
-
-                /// Returns a mutable reference to the projection state.
-                #[allow(missing_docs)]
-                pub fn state_mut(&mut self) -> &mut $state {
-                    &mut self.state
-                }
-
-                /// Handles an event envelope by deserializing and applying it.
-                ///
-                /// Returns `Ok(())` if the event was handled or ignored (unknown event type).
-                /// Returns `Err` only if deserialization or handler logic fails.
-                #[allow(missing_docs)]
-                pub async fn handle(&mut self, envelope: &$crate::EventEnvelope)
-                    -> $crate::Result<()>
-                {
-                    $(
-                        // Construct event struct name from variant (e.g., Registered -> RegisteredEvent)
-                        type [<$variant EventType>] = [<$variant Event>];
-
-                        // Check event type using EventType trait, then deserialize
-                        if envelope.event_type == <[<$variant EventType>] as $crate::EventType>::EVENT_TYPE {
-                            if let Ok($evt) = ::serde_json::from_value::<[<$variant EventType>]>(envelope.event_data.clone()) {
-                                let $proj = self;
-                                $handler
-                                return Ok(());
-                            }
-                        }
-                    )*
-                    // Ignore unknown events
-                    Ok(())
-                }
+                $(
+                    on $event
+                        |$proj, $evt $(, $agg_id)?| $handler
+                ),*
             }
         }
     };
 
-    // Support for direct struct name syntax with aggregate_id: on EventStruct |proj, evt, agg_id| { ... }
+    // Internal rule: single codegen for struct, new(), Projection trait impl
     (
+        @impl
         $vis:vis struct $name:ident {
             state: $state:ty,
 
             $(
-                on $event:ty |$proj:ident, $evt:ident, $agg_id:ident| $handler:block
-            ),* $(,)?
+                on $event:ty
+                    |$proj:ident, $evt:ident $(, $agg_id:ident)?| $handler:block
+            ),*
         }
     ) => {
         $vis struct $name {
@@ -422,97 +346,54 @@ macro_rules! projection {
                 Self { state }
             }
 
-            /// Returns an immutable reference to the projection state.
-            #[allow(missing_docs)]
-            pub fn state(&self) -> &$state {
-                &self.state
-            }
-
-            /// Returns a mutable reference to the projection state.
-            #[allow(missing_docs)]
-            pub fn state_mut(&mut self) -> &mut $state {
-                &mut self.state
-            }
-
             /// Handles an event envelope by deserializing and applying it.
-            ///
-            /// Returns `Ok(())` if the event was handled or ignored (unknown event type).
-            /// Returns `Err` only if deserialization or handler logic fails.
             #[allow(missing_docs)]
             pub async fn handle(&mut self, envelope: &$crate::EventEnvelope)
                 -> $crate::Result<()>
             {
                 $(
-                    // Check event type using EventType trait, then deserialize
                     if envelope.event_type == <$event as $crate::EventType>::EVENT_TYPE {
-                        if let Ok($evt) = ::serde_json::from_value::<$event>(envelope.event_data.clone()) {
-                            let $proj = self;
-                            let $agg_id = envelope.aggregate_id;
-                            $handler
-                            return Ok(());
-                        }
+                        let $evt = ::serde_json::from_value::<$event>(envelope.event_data.clone())
+                            .map_err(|e| $crate::Error::custom(
+                                format!("Failed to deserialize {}: {e}", <$event as $crate::EventType>::EVENT_TYPE)
+                            ))?;
+                        let $proj = self;
+                        $( let $agg_id = envelope.aggregate_id; )?
+                        $handler
+                        return Ok(());
                     }
                 )*
                 // Ignore unknown events
                 Ok(())
             }
         }
-    };
 
-    // Support for direct struct name syntax: on EventStruct |proj, evt| { ... }
-    (
-        $vis:vis struct $name:ident {
-            state: $state:ty,
+        #[::async_trait::async_trait]
+        #[allow(private_interfaces, private_bounds)]
+        impl $crate::Projection for $name {
+            type State = $state;
 
-            $(
-                on $event:ty |$proj:ident, $evt:ident| $handler:block
-            ),* $(,)?
-        }
-    ) => {
-        $vis struct $name {
-            state: $state,
-        }
+            const NAME: &'static str = stringify!($name);
 
-        #[allow(private_interfaces)]
-        impl $name {
-            /// Creates a new projection with the given initial state.
-            #[allow(missing_docs)]
-            pub fn new(state: $state) -> Self {
-                Self { state }
+            fn handled_event_types() -> Option<Vec<&'static str>> {
+                Some(vec![
+                    $( <$event as $crate::EventType>::EVENT_TYPE ),*
+                ])
             }
 
-            /// Returns an immutable reference to the projection state.
-            #[allow(missing_docs)]
-            pub fn state(&self) -> &$state {
+            async fn handle(&mut self, envelope: &$crate::EventEnvelope)
+                -> $crate::Result<()>
+            {
+                // Delegate to the inherent method
+                $name::handle(self, envelope).await
+            }
+
+            fn state(&self) -> &$state {
                 &self.state
             }
 
-            /// Returns a mutable reference to the projection state.
-            #[allow(missing_docs)]
-            pub fn state_mut(&mut self) -> &mut $state {
+            fn state_mut(&mut self) -> &mut $state {
                 &mut self.state
-            }
-
-            /// Handles an event envelope by deserializing and applying it.
-            ///
-            /// Returns `Ok(())` if the event was handled or ignored (unknown event type).
-            /// Returns `Err` only if deserialization or handler logic fails.
-            #[allow(missing_docs)]
-            pub async fn handle(&mut self, envelope: &$crate::EventEnvelope)
-                -> $crate::Result<()>
-            {
-                $(
-                    // Check event type using EventType trait, then deserialize
-                    if envelope.event_type == <$event as $crate::EventType>::EVENT_TYPE {
-                        if let Ok($evt) = ::serde_json::from_value::<$event>(envelope.event_data.clone()) {
-                            let $proj = self;
-                            $handler
-                            return Ok(());
-                        }
-                    }
-                )*
-                // Ignore unknown events
-                Ok(())
             }
         }
     };
@@ -923,7 +804,7 @@ macro_rules! spec {
 mod tests {
     use crate::{
         Aggregate, AggregateError, AggregateRoot, AggregateVersion, ApplyEvent, DomainEvent,
-        Entity, EntityId, Specification, SpecificationError,
+        Entity, EntityId, Projection, Specification, SpecificationError,
     };
     use chrono::{DateTime, Utc};
     use serde::{Deserialize, Serialize};
@@ -1233,8 +1114,7 @@ mod tests {
 
     // Test projection state
     #[derive(Debug, Clone, Default)]
-    #[allow(private_interfaces)]
-    struct CounterView {
+    pub struct CounterView {
         value: i32,
         increment_count: usize,
         decrement_count: usize,
@@ -1427,8 +1307,7 @@ mod tests {
 
     // Test with HashMap state (more realistic projection)
     #[derive(Debug, Clone)]
-    #[allow(private_interfaces)]
-    struct UserView {
+    pub struct UserView {
         name: String,
         email: String,
     }
@@ -1608,8 +1487,7 @@ mod tests {
 
     // Projection state
     #[derive(Debug, Clone, Default)]
-    #[allow(private_interfaces)]
-    struct ProductInventoryState {
+    pub struct ProductInventoryState {
         total_products: usize,
         total_stock: i32,
         total_value: i64,
@@ -1758,8 +1636,7 @@ mod tests {
 
     // Test projection with aggregate_id parameter
     #[derive(Debug, Clone, Default)]
-    #[allow(private_interfaces)]
-    struct CounterIdState {
+    pub struct CounterIdState {
         counter_ids: Vec<uuid::Uuid>,
     }
 
@@ -1833,23 +1710,23 @@ mod tests {
         assert_eq!(projection.state().counter_ids.len(), 2); // Still 2, not 3
     }
 
+    #[derive(Debug, Clone, Default)]
+    pub struct ProductIdMapState {
+        products: std::collections::HashMap<uuid::Uuid, i32>,
+    }
+
+    projection! {
+        pub struct ProductIdMapProjection {
+            state: ProductIdMapState,
+
+            on ProductEvent::ProductCreated |proj, event, aggregate_id| {
+                proj.state.products.insert(aggregate_id, i32::try_from(event.price).unwrap_or(i32::MAX));
+            },
+        }
+    }
+
     #[tokio::test]
     async fn test_projection_enum_variant_with_aggregate_id() {
-        #[derive(Debug, Clone, Default)]
-        struct ProductIdMapState {
-            products: std::collections::HashMap<uuid::Uuid, i32>,
-        }
-
-        projection! {
-            pub struct ProductIdMapProjection {
-                state: ProductIdMapState,
-
-                on ProductEvent::ProductCreated |proj, event, aggregate_id| {
-                    proj.state.products.insert(aggregate_id, i32::try_from(event.price).unwrap_or(i32::MAX));
-                },
-            }
-        }
-
         let mut projection = ProductIdMapProjection::new(ProductIdMapState::default());
 
         let product_id = uuid::Uuid::new_v4();
@@ -1869,6 +1746,125 @@ mod tests {
         projection.handle(&envelope).await.unwrap();
         assert_eq!(projection.state().products.len(), 1);
         assert_eq!(projection.state().products.get(&product_id), Some(&1000));
+    }
+
+    // ===== Projection Trait Integration Tests =====
+
+    #[test]
+    fn test_projection_macro_generates_projection_name() {
+        assert_eq!(CounterProjection::NAME, "CounterProjection");
+        assert_eq!(
+            ProductInventoryProjection::NAME,
+            "ProductInventoryProjection"
+        );
+    }
+
+    #[test]
+    fn test_projection_macro_generates_handled_event_types() {
+        let types = CounterProjection::handled_event_types().unwrap();
+        assert_eq!(types.len(), 3);
+        assert!(types.contains(&"Test.Incremented"));
+        assert!(types.contains(&"Test.Decremented"));
+        assert!(types.contains(&"Test.Reset"));
+    }
+
+    #[test]
+    fn test_projection_macro_event_filter() {
+        let filter = ProductInventoryProjection::event_filter();
+
+        let matching =
+            crate::test_fixtures::create_test_envelope("Product.ProductCreated", "Product");
+        let non_matching = crate::test_fixtures::create_test_envelope("Order.Created", "Order");
+
+        assert!(filter.matches(&matching));
+        assert!(!filter.matches(&non_matching));
+    }
+
+    #[tokio::test]
+    async fn test_projection_deserialization_error_is_reported() {
+        let state = CounterView::default();
+        let mut projection = CounterProjection::new(state);
+
+        // Create an envelope with matching event type but invalid data
+        let envelope = crate::EventEnvelope::new(
+            uuid::Uuid::new_v4(),
+            uuid::Uuid::new_v4(),
+            "Test".to_string(),
+            "Test.Incremented".to_string(),
+            crate::EventVersion::from(1),
+            serde_json::json!({"wrong_field": "not_a_number"}),
+        );
+
+        // Should now return an error instead of silently ignoring
+        let result = projection.handle(&envelope).await;
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("Failed to deserialize"),
+            "Error should mention deserialization: {err_msg}"
+        );
+    }
+
+    // Test mixed handler signatures (some with aggregate_id, some without)
+    #[derive(Debug, Clone, Default)]
+    pub struct MixedState {
+        increments: Vec<i32>,
+        resets_with_id: Vec<uuid::Uuid>,
+    }
+
+    projection! {
+        pub struct MixedProjection {
+            state: MixedState,
+
+            on IncrementedEvent |proj, event| {
+                proj.state.increments.push(event.amount);
+            },
+
+            on ResetEvent |proj, _event, aggregate_id| {
+                proj.state.resets_with_id.push(aggregate_id);
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn test_projection_mixed_handler_signatures() {
+        let mut projection = MixedProjection::new(MixedState::default());
+
+        // Increment (without aggregate_id)
+        let envelope = crate::EventEnvelope::new(
+            uuid::Uuid::new_v4(),
+            uuid::Uuid::new_v4(),
+            "Test".to_string(),
+            "Test.Incremented".to_string(),
+            crate::EventVersion::from(1),
+            serde_json::json!({ "amount": 5, "timestamp": "2025-01-01T00:00:00Z" }),
+        );
+        projection.handle(&envelope).await.unwrap();
+
+        // Reset (with aggregate_id)
+        let reset_agg_id = uuid::Uuid::new_v4();
+        let envelope = crate::EventEnvelope::new(
+            uuid::Uuid::new_v4(),
+            reset_agg_id,
+            "Test".to_string(),
+            "Test.Reset".to_string(),
+            crate::EventVersion::from(2),
+            serde_json::json!({ "timestamp": "2025-01-01T00:00:00Z" }),
+        );
+        projection.handle(&envelope).await.unwrap();
+
+        assert_eq!(projection.state().increments, vec![5]);
+        assert_eq!(projection.state().resets_with_id, vec![reset_agg_id]);
+    }
+
+    #[test]
+    fn test_projection_trait_is_implemented() {
+        // Verify the projection implements the Projection trait
+        fn assert_projection<P: Projection>() {}
+        assert_projection::<CounterProjection>();
+        assert_projection::<UserListProjection>();
+        assert_projection::<ProductInventoryProjection>();
+        assert_projection::<MixedProjection>();
     }
 
     // ===== define_events! Macro Tests =====

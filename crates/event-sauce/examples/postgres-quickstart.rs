@@ -225,7 +225,7 @@ struct ProjectionState {
 
 // Order summary projection using the projection! macro with aggregate_id
 event_sauce_core::projection! {
-    pub struct OrderSummaryProjection {
+    struct OrderSummaryProjection {
         state: ProjectionState,
 
         on UserEvent::Created |proj, event, aggregate_id| {
@@ -311,8 +311,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let backend = PostgresBackend::setup(&database_url, "event_sauce").await?;
 
     let store = backend.event_store();
-    let checkpoint_ref: Arc<dyn event_sauce_core::CheckpointStore> =
-        backend.checkpoint_store();
+    let checkpoint_ref: Arc<dyn event_sauce_core::CheckpointStore> = backend.checkpoint_store();
 
     // Create repositories for type-safe aggregate persistence
     println!("  Creating repositories...");

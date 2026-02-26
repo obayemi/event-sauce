@@ -758,8 +758,7 @@ mod tests {
 
     #[test]
     fn test_event_filter_any_of_event_types() {
-        let filter =
-            EventFilter::any_of_event_types(["UserCreated", "UserUpdated", "UserDeleted"]);
+        let filter = EventFilter::any_of_event_types(["UserCreated", "UserUpdated", "UserDeleted"]);
 
         let matching1 = create_test_envelope("UserCreated", "User");
         let matching2 = create_test_envelope("UserUpdated", "User");
