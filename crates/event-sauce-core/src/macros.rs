@@ -754,11 +754,11 @@ macro_rules! define_events {
                 }
             }
 
-            fn event_version(&self) -> u64 {
+            fn event_version(&self) -> $crate::EventVersion {
                 match self {
                     $(
                         $event_enum::$variant { .. } => {
-                            define_events!(@version $($version)?)
+                            $crate::EventVersion::new(define_events!(@version $($version)?))
                         }
                     ),*
                 }
@@ -922,8 +922,8 @@ macro_rules! spec {
 #[allow(clippy::default_trait_access)]
 mod tests {
     use crate::{
-        Aggregate, AggregateError, AggregateRoot, ApplyEvent, DomainEvent, Entity, EntityId,
-        Specification, SpecificationError, Version,
+        Aggregate, AggregateError, AggregateRoot, AggregateVersion, ApplyEvent, DomainEvent,
+        Entity, EntityId, Specification, SpecificationError,
     };
     use chrono::{DateTime, Utc};
     use serde::{Deserialize, Serialize};
@@ -976,8 +976,8 @@ mod tests {
             }
         }
 
-        fn event_version(&self) -> u64 {
-            1
+        fn event_version(&self) -> crate::EventVersion {
+            crate::EventVersion::new(1)
         }
 
         fn occurred_at(&self) -> DateTime<Utc> {
@@ -1134,7 +1134,7 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(root.value(), 5);
         assert_eq!(root.pending_events().len(), 1);
-        assert_eq!(root.version(), Version::from(1));
+        assert_eq!(root.version(), AggregateVersion::from(1));
     }
 
     #[test]
@@ -1205,7 +1205,7 @@ mod tests {
 
         assert_eq!(root.value(), 10);
         assert_eq!(root.pending_events().len(), 5);
-        assert_eq!(root.version(), Version::from(5));
+        assert_eq!(root.version(), AggregateVersion::from(5));
     }
 
     #[test]
@@ -1303,7 +1303,7 @@ mod tests {
             uuid::Uuid::new_v4(),
             "Test".to_string(),
             "Test.Incremented".to_string(),
-            crate::Version::from(1),
+            crate::EventVersion::from(1),
             serde_json::to_value(&event).unwrap(),
         );
 
@@ -1334,7 +1334,7 @@ mod tests {
             uuid::Uuid::new_v4(),
             "Test".to_string(),
             "Test.Decremented".to_string(),
-            crate::Version::from(1),
+            crate::EventVersion::from(1),
             serde_json::to_value(&event).unwrap(),
         );
 
@@ -1364,7 +1364,7 @@ mod tests {
             uuid::Uuid::new_v4(),
             "Test".to_string(),
             "Test.Reset".to_string(),
-            crate::Version::from(1),
+            crate::EventVersion::from(1),
             serde_json::to_value(&event).unwrap(),
         );
 
@@ -1386,7 +1386,7 @@ mod tests {
             uuid::Uuid::new_v4(),
             "Test".to_string(),
             "UnknownEvent".to_string(),
-            crate::Version::from(1),
+            crate::EventVersion::from(1),
             serde_json::json!({"unknown": "data"}),
         );
 
@@ -1414,7 +1414,7 @@ mod tests {
                 uuid::Uuid::new_v4(),
                 "Test".to_string(),
                 "Test.Incremented".to_string(),
-                crate::Version::new(u64::try_from(i).unwrap()),
+                crate::EventVersion::new(u64::try_from(i).unwrap()),
                 serde_json::to_value(&event).unwrap(),
             );
             projection.handle(&envelope).await.unwrap();
@@ -1493,7 +1493,7 @@ mod tests {
             uuid::Uuid::new_v4(),
             "User".to_string(),
             "User.Created".to_string(),
-            crate::Version::from(1),
+            crate::EventVersion::from(1),
             serde_json::to_value(&event).unwrap(),
         );
         projection.handle(&envelope).await.unwrap();
@@ -1517,7 +1517,7 @@ mod tests {
             uuid::Uuid::new_v4(),
             "User".to_string(),
             "User.Updated".to_string(),
-            crate::Version::from(2),
+            crate::EventVersion::from(2),
             serde_json::to_value(&event).unwrap(),
         );
         projection.handle(&envelope).await.unwrap();
@@ -1650,7 +1650,7 @@ mod tests {
             uuid::Uuid::new_v4(),
             "Product".to_string(),
             "Product.ProductCreated".to_string(),
-            crate::Version::from(1),
+            crate::EventVersion::from(1),
             serde_json::to_value(&event).unwrap(),
         );
         projection.handle(&envelope).await.unwrap();
@@ -1673,7 +1673,7 @@ mod tests {
             uuid::Uuid::new_v4(),
             "Product".to_string(),
             "Product.ProductStockAdded".to_string(),
-            crate::Version::from(1),
+            crate::EventVersion::from(1),
             serde_json::to_value(&event).unwrap(),
         );
         projection.handle(&envelope).await.unwrap();
@@ -1696,7 +1696,7 @@ mod tests {
             uuid::Uuid::new_v4(),
             "Product".to_string(),
             "Product.ProductCreated".to_string(),
-            crate::Version::from(1),
+            crate::EventVersion::from(1),
             serde_json::to_value(&event).unwrap(),
         );
         projection.handle(&envelope).await.unwrap();
@@ -1711,7 +1711,7 @@ mod tests {
             uuid::Uuid::new_v4(),
             "Product".to_string(),
             "Product.ProductStockAdded".to_string(),
-            crate::Version::from(2),
+            crate::EventVersion::from(2),
             serde_json::to_value(&event).unwrap(),
         );
         projection.handle(&envelope).await.unwrap();
@@ -1726,7 +1726,7 @@ mod tests {
             uuid::Uuid::new_v4(),
             "Product".to_string(),
             "Product.ProductPriceChanged".to_string(),
-            crate::Version::from(3),
+            crate::EventVersion::from(3),
             serde_json::to_value(&event).unwrap(),
         );
         projection.handle(&envelope).await.unwrap();
@@ -1746,7 +1746,7 @@ mod tests {
             uuid::Uuid::new_v4(),
             "Product".to_string(),
             "Product.Unknown".to_string(),
-            crate::Version::from(1),
+            crate::EventVersion::from(1),
             serde_json::json!({"foo": "bar"}),
         );
 
@@ -1788,7 +1788,7 @@ mod tests {
             counter_id1,
             "Test".to_string(),
             "Test.Incremented".to_string(),
-            crate::Version::from(1),
+            crate::EventVersion::from(1),
             serde_json::json!({
                 "amount": 5,
                 "timestamp": "2025-01-01T00:00:00Z"
@@ -1805,7 +1805,7 @@ mod tests {
             counter_id2,
             "Test".to_string(),
             "Test.Incremented".to_string(),
-            crate::Version::from(1),
+            crate::EventVersion::from(1),
             serde_json::json!({
                 "amount": 10,
                 "timestamp": "2025-01-01T00:00:00Z"
@@ -1822,7 +1822,7 @@ mod tests {
             counter_id1,
             "Test".to_string(),
             "Test.Incremented".to_string(),
-            crate::Version::from(2),
+            crate::EventVersion::from(2),
             serde_json::json!({
                 "amount": 3,
                 "timestamp": "2025-01-01T00:00:00Z"
@@ -1858,7 +1858,7 @@ mod tests {
             product_id,
             "Product".to_string(),
             "Product.ProductCreated".to_string(),
-            crate::Version::from(1),
+            crate::EventVersion::from(1),
             serde_json::json!({
                 "name": "Laptop",
                 "price": 1000,
@@ -2030,7 +2030,7 @@ mod tests {
         };
 
         assert_eq!(event.event_type(), "Order.Created");
-        assert_eq!(event.event_version(), 1); // default version
+        assert_eq!(event.event_version(), crate::EventVersion::new(1)); // default version
     }
 
     #[test]
@@ -2040,7 +2040,7 @@ mod tests {
             timestamp: Utc::now(),
         };
 
-        assert_eq!(event.event_version(), 2); // explicit @version(2)
+        assert_eq!(event.event_version(), crate::EventVersion::new(2)); // explicit @version(2)
     }
 
     #[test]

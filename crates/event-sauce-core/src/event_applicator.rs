@@ -68,7 +68,7 @@ pub trait EventApplicator<A: Aggregate> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AggregateError, DomainEvent, Entity, EntityId, Version};
+    use crate::{AggregateError, AggregateVersion, DomainEvent, Entity, EntityId, EventVersion};
     use chrono::Utc;
     use thiserror::Error;
 
@@ -135,8 +135,8 @@ mod tests {
             }
         }
 
-        fn event_version(&self) -> u64 {
-            1
+        fn event_version(&self) -> EventVersion {
+            EventVersion::new(1)
         }
 
         fn occurred_at(&self) -> chrono::DateTime<Utc> {
@@ -212,7 +212,7 @@ mod tests {
         root.apply(TestEvent::Added { amount: 5 }).unwrap();
 
         assert_eq!(root.value, 5);
-        assert_eq!(root.version(), Version::new(1));
+        assert_eq!(root.version(), AggregateVersion::new(1));
         assert_eq!(root.pending_events().len(), 1);
     }
 
@@ -224,7 +224,7 @@ mod tests {
 
         assert!(result.is_err());
         assert_eq!(root.value, 0); // State unchanged
-        assert_eq!(root.version(), Version::initial()); // Version unchanged
+        assert_eq!(root.version(), AggregateVersion::initial()); // Version unchanged
         assert_eq!(root.pending_events().len(), 0); // No pending events
     }
 }

@@ -11,8 +11,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
 use crate::{
-    AggregateError, ApplyEvent, CheckpointStore, EntityId, EventApplicator, EventEnvelope,
-    EventStore, Position, Result, StreamId, Version,
+    AggregateError, AggregateVersion, ApplyEvent, CheckpointStore, EntityId, EventApplicator,
+    EventEnvelope, EventStore, EventVersion, Position, Result, StreamId,
 };
 
 /// Simple error type for test aggregates.
@@ -66,8 +66,8 @@ impl crate::DomainEvent for SimpleTestEvent {
         }
     }
 
-    fn event_version(&self) -> u64 {
-        1
+    fn event_version(&self) -> EventVersion {
+        EventVersion::new(1)
     }
 
     fn occurred_at(&self) -> chrono::DateTime<Utc> {
@@ -148,7 +148,7 @@ impl EventStore for MockEventStore {
         &self,
         stream_id: StreamId,
         events: Vec<EventEnvelope>,
-        _expected_version: Version,
+        _expected_version: AggregateVersion,
     ) -> Result<()> {
         self.global_log.lock().unwrap().extend(events.clone());
         let mut streams = self.streams.lock().unwrap();
@@ -159,15 +159,16 @@ impl EventStore for MockEventStore {
     async fn load_stream(
         &self,
         stream_id: StreamId,
-        from_version: Version,
+        from_version: AggregateVersion,
     ) -> Result<impl futures::Stream<Item = Result<EventEnvelope>> + Send> {
         let streams = self.streams.lock().unwrap();
+        #[allow(clippy::cast_possible_truncation)]
         let events = streams
             .get(&stream_id)
             .cloned()
             .unwrap_or_default()
             .into_iter()
-            .filter(|e| e.event_version >= from_version)
+            .skip(from_version.as_u64() as usize)
             .map(Ok)
             .collect::<Vec<_>>();
         Ok(stream::iter(events))
@@ -183,10 +184,10 @@ impl EventStore for MockEventStore {
         Ok(stream::iter(filtered_events))
     }
 
-    async fn get_version(&self, stream_id: StreamId) -> Result<Version> {
+    async fn get_version(&self, stream_id: StreamId) -> Result<AggregateVersion> {
         let streams = self.streams.lock().unwrap();
         let count = streams.get(&stream_id).map_or(0, std::vec::Vec::len);
-        Ok(Version::new(count as u64))
+        Ok(AggregateVersion::new(count as u64))
     }
 
     async fn load_snapshot(&self, _stream_id: StreamId) -> Result<Option<crate::Snapshot>> {
@@ -264,7 +265,7 @@ pub fn create_test_envelope(event_type: &str, aggregate_type: &str) -> EventEnve
         uuid::Uuid::new_v4(),
         aggregate_type.to_string(),
         event_type.to_string(),
-        Version::new(1),
+        EventVersion::new(1),
         serde_json::json!({}),
     )
 }
@@ -302,8 +303,8 @@ impl crate::DomainEvent for TestCounterEvent {
     fn event_type(&self) -> &'static str {
         "TestCounter.Incremented"
     }
-    fn event_version(&self) -> u64 {
-        1
+    fn event_version(&self) -> EventVersion {
+        EventVersion::new(1)
     }
     fn occurred_at(&self) -> chrono::DateTime<Utc> {
         Utc::now()

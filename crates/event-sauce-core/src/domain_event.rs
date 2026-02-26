@@ -8,7 +8,7 @@ use serde::Serialize;
 use std::fmt::Debug;
 use uuid::Uuid;
 
-use crate::{Aggregate, Error, EventEnvelope, Result, Version};
+use crate::{Aggregate, Error, EventEnvelope, EventVersion, Result};
 
 /// Trait for domain events.
 ///
@@ -47,7 +47,7 @@ use crate::{Aggregate, Error, EventEnvelope, Result, Version};
 ///         }
 ///     }
 ///
-///     fn event_version(&self) -> u64 { 1 }
+///     fn event_version(&self) -> EventVersion { EventVersion::new(1) }
 ///
 ///     fn occurred_at(&self) -> DateTime<Utc> {
 ///         match self {
@@ -65,7 +65,7 @@ pub trait DomainEvent: Clone + Debug + Send + Sync + Serialize + DeserializeOwne
     fn event_type(&self) -> &'static str;
 
     /// Returns the event schema version.
-    fn event_version(&self) -> u64;
+    fn event_version(&self) -> EventVersion;
 
     /// Returns when this event occurred.
     fn occurred_at(&self) -> DateTime<Utc>;
@@ -87,7 +87,7 @@ pub trait DomainEvent: Clone + Debug + Send + Sync + Serialize + DeserializeOwne
             aggregate_id,
             Self::Aggregate::aggregate_type().to_string(),
             self.event_type().to_string(),
-            Version::new(self.event_version()),
+            self.event_version(),
             event_data,
         )
         .with_created_at(self.occurred_at()))
@@ -229,8 +229,8 @@ mod tests {
             }
         }
 
-        fn event_version(&self) -> u64 {
-            1
+        fn event_version(&self) -> EventVersion {
+            EventVersion::new(1)
         }
 
         fn occurred_at(&self) -> DateTime<Utc> {
@@ -272,7 +272,7 @@ mod tests {
             timestamp,
         };
 
-        assert_eq!(event.event_version(), 1);
+        assert_eq!(event.event_version(), EventVersion::new(1));
     }
 
     #[test]
@@ -328,8 +328,8 @@ mod tests {
             "SimpleEvent"
         }
 
-        fn event_version(&self) -> u64 {
-            1
+        fn event_version(&self) -> EventVersion {
+            EventVersion::new(1)
         }
 
         fn occurred_at(&self) -> DateTime<Utc> {
@@ -343,7 +343,7 @@ mod tests {
         let event = SimpleEvent { timestamp };
 
         assert_eq!(event.event_type(), "SimpleEvent");
-        assert_eq!(event.event_version(), 1);
+        assert_eq!(event.event_version(), EventVersion::new(1));
         assert_eq!(event.occurred_at(), timestamp);
     }
 
@@ -390,8 +390,8 @@ mod tests {
             "VersionedEvent"
         }
 
-        fn event_version(&self) -> u64 {
-            self.version
+        fn event_version(&self) -> EventVersion {
+            EventVersion::new(self.version)
         }
 
         fn occurred_at(&self) -> DateTime<Utc> {
@@ -411,8 +411,8 @@ mod tests {
             timestamp,
         };
 
-        assert_eq!(v1.event_version(), 1);
-        assert_eq!(v2.event_version(), 2);
+        assert_eq!(v1.event_version(), EventVersion::new(1));
+        assert_eq!(v2.event_version(), EventVersion::new(2));
     }
 
     // Tests for to_envelope()
@@ -430,7 +430,7 @@ mod tests {
         assert_eq!(envelope.aggregate_id, aggregate_id);
         assert_eq!(envelope.aggregate_type, "TestAggregate");
         assert_eq!(envelope.event_type, "TestCreated");
-        assert_eq!(envelope.event_version, crate::Version::new(1));
+        assert_eq!(envelope.event_version, crate::EventVersion::new(1));
         assert_eq!(envelope.created_at, timestamp);
     }
 
@@ -485,7 +485,7 @@ mod tests {
     // Tests for from_envelope()
     #[test]
     fn test_from_envelope_basic() {
-        use crate::{EventEnvelope, Version};
+        use crate::{EventEnvelope, EventVersion};
         use serde_json::json;
 
         let timestamp = Utc::now();
@@ -501,7 +501,7 @@ mod tests {
             Uuid::new_v4(),
             "TestAggregate".to_string(),
             "TestCreated".to_string(),
-            Version::new(1),
+            EventVersion::new(1),
             event_data,
         );
 
@@ -518,7 +518,7 @@ mod tests {
 
     #[test]
     fn test_from_envelope_with_complex_event() {
-        use crate::{EventEnvelope, Version};
+        use crate::{EventEnvelope, EventVersion};
         use serde_json::json;
 
         let timestamp = Utc::now();
@@ -535,7 +535,7 @@ mod tests {
             Uuid::new_v4(),
             "TestAggregate".to_string(),
             "TestUpdated".to_string(),
-            Version::new(1),
+            EventVersion::new(1),
             event_data,
         );
 
@@ -552,7 +552,7 @@ mod tests {
 
     #[test]
     fn test_from_envelope_with_invalid_data() {
-        use crate::{EventEnvelope, Version};
+        use crate::{EventEnvelope, EventVersion};
         use serde_json::json;
 
         let event_data = json!({
@@ -564,7 +564,7 @@ mod tests {
             Uuid::new_v4(),
             "TestAggregate".to_string(),
             "TestCreated".to_string(),
-            Version::new(1),
+            EventVersion::new(1),
             event_data,
         );
 

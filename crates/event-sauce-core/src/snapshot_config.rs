@@ -43,7 +43,7 @@ use crate::snapshot_strategy::{AlwaysSnapshot, EveryNEvents, NeverSnapshot, Snap
 /// # Examples
 ///
 /// ```
-/// use event_sauce_core::{SnapshotConfig, EveryNEvents, AlwaysSnapshot, Version};
+/// use event_sauce_core::{SnapshotConfig, EveryNEvents, AlwaysSnapshot, AggregateVersion};
 ///
 /// let config = SnapshotConfig::builder()
 ///     .default_strategy(EveryNEvents(100))
@@ -52,11 +52,11 @@ use crate::snapshot_strategy::{AlwaysSnapshot, EveryNEvents, NeverSnapshot, Snap
 ///
 /// // Get strategy for a specific aggregate type
 /// let user_strategy = config.strategy_for_type("User");
-/// assert!(user_strategy.should_snapshot(Version::new(1)));
+/// assert!(user_strategy.should_snapshot(AggregateVersion::new(1)));
 ///
 /// let order_strategy = config.strategy_for_type("Order");
-/// assert!(!order_strategy.should_snapshot(Version::new(1)));
-/// assert!(order_strategy.should_snapshot(Version::new(100)));
+/// assert!(!order_strategy.should_snapshot(AggregateVersion::new(1)));
+/// assert!(order_strategy.should_snapshot(AggregateVersion::new(100)));
 /// ```
 #[derive(Clone)]
 pub struct SnapshotConfig {
@@ -92,13 +92,13 @@ impl SnapshotConfig {
     /// # Examples
     ///
     /// ```
-    /// use event_sauce_core::{SnapshotConfig, Version};
+    /// use event_sauce_core::{SnapshotConfig, AggregateVersion};
     ///
     /// let config = SnapshotConfig::disabled();
     ///
     /// assert!(!config.use_snapshots_on_load());
     /// let strategy = config.strategy_for_type("User");
-    /// assert!(!strategy.should_snapshot(Version::new(100)));
+    /// assert!(!strategy.should_snapshot(AggregateVersion::new(100)));
     /// ```
     #[must_use]
     pub fn disabled() -> Self {
@@ -119,14 +119,14 @@ impl SnapshotConfig {
     /// # Examples
     ///
     /// ```
-    /// use event_sauce_core::{SnapshotConfig, Version};
+    /// use event_sauce_core::{SnapshotConfig, AggregateVersion};
     ///
     /// let config = SnapshotConfig::always();
     ///
     /// assert!(config.use_snapshots_on_load());
     /// let strategy = config.strategy_for_type("User");
-    /// assert!(strategy.should_snapshot(Version::new(1)));
-    /// assert!(strategy.should_snapshot(Version::new(100)));
+    /// assert!(strategy.should_snapshot(AggregateVersion::new(1)));
+    /// assert!(strategy.should_snapshot(AggregateVersion::new(100)));
     /// ```
     #[must_use]
     pub fn always() -> Self {
@@ -149,7 +149,7 @@ impl SnapshotConfig {
     /// # Examples
     ///
     /// ```
-    /// use event_sauce_core::{SnapshotConfig, EveryNEvents, AlwaysSnapshot, Version};
+    /// use event_sauce_core::{SnapshotConfig, EveryNEvents, AlwaysSnapshot, AggregateVersion};
     ///
     /// let config = SnapshotConfig::builder()
     ///     .default_strategy(EveryNEvents(100))
@@ -158,12 +158,12 @@ impl SnapshotConfig {
     ///
     /// // User has override
     /// let user_strategy = config.strategy_for_type("User");
-    /// assert!(user_strategy.should_snapshot(Version::new(1)));
+    /// assert!(user_strategy.should_snapshot(AggregateVersion::new(1)));
     ///
     /// // Order uses default
     /// let order_strategy = config.strategy_for_type("Order");
-    /// assert!(!order_strategy.should_snapshot(Version::new(1)));
-    /// assert!(order_strategy.should_snapshot(Version::new(100)));
+    /// assert!(!order_strategy.should_snapshot(AggregateVersion::new(1)));
+    /// assert!(order_strategy.should_snapshot(AggregateVersion::new(100)));
     /// ```
     #[must_use]
     pub fn strategy_for_type(&self, aggregate_type: &str) -> &dyn SnapshotStrategy {
@@ -197,14 +197,14 @@ impl SnapshotConfig {
     /// # Examples
     ///
     /// ```
-    /// use event_sauce_core::{SnapshotConfig, EveryNEvents, Version};
+    /// use event_sauce_core::{SnapshotConfig, EveryNEvents, AggregateVersion};
     ///
     /// let config = SnapshotConfig::builder()
     ///     .default_strategy(EveryNEvents(100))
     ///     .build();
     ///
     /// let strategy = config.default_strategy();
-    /// assert!(strategy.should_snapshot(Version::new(100)));
+    /// assert!(strategy.should_snapshot(AggregateVersion::new(100)));
     /// ```
     #[must_use]
     pub fn default_strategy(&self) -> &dyn SnapshotStrategy {
@@ -375,7 +375,7 @@ impl Default for SnapshotConfigBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{EveryNEvents, Version};
+    use crate::{AggregateVersion, EveryNEvents};
 
     #[test]
     fn test_builder_default_settings() {
@@ -384,10 +384,10 @@ mod tests {
         assert!(config.use_snapshots_on_load());
         let strategy = config.default_strategy();
         // Default is EveryNEvents(100)
-        assert!(!strategy.should_snapshot(Version::new(1)));
-        assert!(strategy.should_snapshot(Version::new(100)));
-        assert!(!strategy.should_snapshot(Version::new(101)));
-        assert!(strategy.should_snapshot(Version::new(200)));
+        assert!(!strategy.should_snapshot(AggregateVersion::new(1)));
+        assert!(strategy.should_snapshot(AggregateVersion::new(100)));
+        assert!(!strategy.should_snapshot(AggregateVersion::new(101)));
+        assert!(strategy.should_snapshot(AggregateVersion::new(200)));
     }
 
     #[test]
@@ -397,8 +397,8 @@ mod tests {
             .build();
 
         let strategy = config.strategy_for_type("User");
-        assert!(!strategy.should_snapshot(Version::new(99)));
-        assert!(strategy.should_snapshot(Version::new(100)));
+        assert!(!strategy.should_snapshot(AggregateVersion::new(99)));
+        assert!(strategy.should_snapshot(AggregateVersion::new(100)));
     }
 
     #[test]
@@ -410,12 +410,12 @@ mod tests {
 
         // User has override
         let user_strategy = config.strategy_for_type("User");
-        assert!(user_strategy.should_snapshot(Version::new(1)));
+        assert!(user_strategy.should_snapshot(AggregateVersion::new(1)));
 
         // Order uses default
         let order_strategy = config.strategy_for_type("Order");
-        assert!(!order_strategy.should_snapshot(Version::new(1)));
-        assert!(order_strategy.should_snapshot(Version::new(100)));
+        assert!(!order_strategy.should_snapshot(AggregateVersion::new(1)));
+        assert!(order_strategy.should_snapshot(AggregateVersion::new(100)));
     }
 
     #[test]
@@ -428,17 +428,17 @@ mod tests {
             .build();
 
         let user_strategy = config.strategy_for_type("User");
-        assert!(user_strategy.should_snapshot(Version::new(1)));
+        assert!(user_strategy.should_snapshot(AggregateVersion::new(1)));
 
         let order_strategy = config.strategy_for_type("Order");
-        assert!(!order_strategy.should_snapshot(Version::new(100)));
+        assert!(!order_strategy.should_snapshot(AggregateVersion::new(100)));
 
         let product_strategy = config.strategy_for_type("Product");
-        assert!(product_strategy.should_snapshot(Version::new(50)));
-        assert!(!product_strategy.should_snapshot(Version::new(51)));
+        assert!(product_strategy.should_snapshot(AggregateVersion::new(50)));
+        assert!(!product_strategy.should_snapshot(AggregateVersion::new(51)));
 
         let invoice_strategy = config.strategy_for_type("Invoice");
-        assert!(invoice_strategy.should_snapshot(Version::new(100)));
+        assert!(invoice_strategy.should_snapshot(AggregateVersion::new(100)));
     }
 
     #[test]
@@ -465,8 +465,8 @@ mod tests {
 
         assert!(!config.use_snapshots_on_load());
         let strategy = config.strategy_for_type("User");
-        assert!(!strategy.should_snapshot(Version::new(1)));
-        assert!(!strategy.should_snapshot(Version::new(100)));
+        assert!(!strategy.should_snapshot(AggregateVersion::new(1)));
+        assert!(!strategy.should_snapshot(AggregateVersion::new(100)));
     }
 
     #[test]
@@ -475,8 +475,8 @@ mod tests {
 
         assert!(config.use_snapshots_on_load());
         let strategy = config.strategy_for_type("User");
-        assert!(strategy.should_snapshot(Version::new(1)));
-        assert!(strategy.should_snapshot(Version::new(100)));
+        assert!(strategy.should_snapshot(AggregateVersion::new(1)));
+        assert!(strategy.should_snapshot(AggregateVersion::new(100)));
     }
 
     #[test]
@@ -487,10 +487,10 @@ mod tests {
             .build();
 
         let user_strategy = config.strategy_for_type("User");
-        assert!(user_strategy.should_snapshot(Version::new(1)));
+        assert!(user_strategy.should_snapshot(AggregateVersion::new(1)));
 
         let order_strategy = config.strategy_for_type("Order");
-        assert!(!order_strategy.should_snapshot(Version::new(1)));
+        assert!(!order_strategy.should_snapshot(AggregateVersion::new(1)));
     }
 
     #[test]
@@ -500,8 +500,8 @@ mod tests {
             .build();
 
         let strategy = config.strategy_for_type("User");
-        assert!(strategy.should_snapshot(Version::new(100)));
-        assert!(!strategy.should_snapshot(Version::new(99)));
+        assert!(strategy.should_snapshot(AggregateVersion::new(100)));
+        assert!(!strategy.should_snapshot(AggregateVersion::new(99)));
     }
 
     #[test]
@@ -521,8 +521,8 @@ mod tests {
         let config_strategy = config.strategy_for_type("User");
         let cloned_strategy = cloned.strategy_for_type("User");
         assert_eq!(
-            config_strategy.should_snapshot(Version::new(1)),
-            cloned_strategy.should_snapshot(Version::new(1))
+            config_strategy.should_snapshot(AggregateVersion::new(1)),
+            cloned_strategy.should_snapshot(AggregateVersion::new(1))
         );
     }
 
@@ -535,8 +535,8 @@ mod tests {
             .build();
 
         let strategy = config.strategy_for_type("User");
-        assert!(!strategy.should_snapshot(Version::new(1)));
-        assert!(strategy.should_snapshot(Version::new(100)));
+        assert!(!strategy.should_snapshot(AggregateVersion::new(1)));
+        assert!(strategy.should_snapshot(AggregateVersion::new(100)));
     }
 
     #[test]
@@ -546,8 +546,8 @@ mod tests {
             .build();
 
         let strategy = config.default_strategy();
-        assert!(strategy.should_snapshot(Version::new(100)));
-        assert!(!strategy.should_snapshot(Version::new(99)));
+        assert!(strategy.should_snapshot(AggregateVersion::new(100)));
+        assert!(!strategy.should_snapshot(AggregateVersion::new(99)));
     }
 
     #[test]
@@ -557,7 +557,11 @@ mod tests {
 
         assert!(config.use_snapshots_on_load());
         // Default is EveryNEvents(100)
-        assert!(config.default_strategy().should_snapshot(Version::new(100)));
-        assert!(!config.default_strategy().should_snapshot(Version::new(99)));
+        assert!(config
+            .default_strategy()
+            .should_snapshot(AggregateVersion::new(100)));
+        assert!(!config
+            .default_strategy()
+            .should_snapshot(AggregateVersion::new(99)));
     }
 }

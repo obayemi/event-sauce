@@ -2,7 +2,7 @@
 //!
 //! Provides comprehensive error types for event sourcing operations.
 
-use crate::Version;
+use crate::AggregateVersion;
 use thiserror::Error;
 
 /// Result type for event sourcing operations.
@@ -19,9 +19,9 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// # Examples
 ///
 /// ```
-/// use event_sauce_core::{Error, Version};
+/// use event_sauce_core::{Error, AggregateVersion};
 ///
-/// let error = Error::concurrency_conflict(Version::new(5), Version::new(3));
+/// let error = Error::concurrency_conflict(AggregateVersion::new(5), AggregateVersion::new(3));
 /// assert!(matches!(error, Error::ConcurrencyConflict { .. }));
 ///
 /// let error = Error::not_found("User", "user-123");
@@ -36,9 +36,9 @@ pub enum Error {
     #[error("Concurrency conflict: expected version {expected}, but current version is {actual}")]
     ConcurrencyConflict {
         /// The expected version.
-        expected: Version,
+        expected: AggregateVersion,
         /// The actual current version.
-        actual: Version,
+        actual: AggregateVersion,
     },
 
     /// Aggregate or event not found.
@@ -69,12 +69,12 @@ impl Error {
     /// # Examples
     ///
     /// ```
-    /// use event_sauce_core::{Error, Version};
+    /// use event_sauce_core::{Error, AggregateVersion};
     ///
-    /// let error = Error::concurrency_conflict(Version::new(5), Version::new(3));
+    /// let error = Error::concurrency_conflict(AggregateVersion::new(5), AggregateVersion::new(3));
     /// ```
     #[must_use]
-    pub fn concurrency_conflict(expected: Version, actual: Version) -> Self {
+    pub fn concurrency_conflict(expected: AggregateVersion, actual: AggregateVersion) -> Self {
         Self::ConcurrencyConflict { expected, actual }
     }
 
@@ -128,9 +128,9 @@ impl Error {
     /// # Examples
     ///
     /// ```
-    /// use event_sauce_core::{Error, Version};
+    /// use event_sauce_core::{Error, AggregateVersion};
     ///
-    /// let error = Error::concurrency_conflict(Version::new(1), Version::new(2));
+    /// let error = Error::concurrency_conflict(AggregateVersion::new(1), AggregateVersion::new(2));
     /// assert!(error.is_concurrency_conflict());
     /// ```
     #[must_use]
@@ -178,7 +178,7 @@ mod tests {
 
     #[test]
     fn test_concurrency_conflict_error() {
-        let error = Error::concurrency_conflict(Version::new(5), Version::new(3));
+        let error = Error::concurrency_conflict(AggregateVersion::new(5), AggregateVersion::new(3));
 
         assert!(error.is_concurrency_conflict());
         assert!(!error.is_not_found());
@@ -240,7 +240,7 @@ mod tests {
 
     #[test]
     fn test_concurrency_conflict_with_matching_version() {
-        let version = Version::new(10);
+        let version = AggregateVersion::new(10);
         let error = Error::concurrency_conflict(version, version);
 
         // Even with matching versions, it should still be a concurrency error
@@ -281,13 +281,13 @@ mod tests {
     #[test]
     fn test_concurrency_conflict_versions() {
         let error = Error::ConcurrencyConflict {
-            expected: Version::new(5),
-            actual: Version::new(3),
+            expected: AggregateVersion::new(5),
+            actual: AggregateVersion::new(3),
         };
 
         if let Error::ConcurrencyConflict { expected, actual } = error {
-            assert_eq!(expected, Version::new(5));
-            assert_eq!(actual, Version::new(3));
+            assert_eq!(expected, AggregateVersion::new(5));
+            assert_eq!(actual, AggregateVersion::new(3));
         } else {
             panic!("Expected ConcurrencyConflict variant");
         }

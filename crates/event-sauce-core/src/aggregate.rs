@@ -22,7 +22,7 @@ use crate::{AggregateError, DomainEvent, Entity, EventApplicator};
 /// # Examples
 ///
 /// ```
-/// use event_sauce_core::{Aggregate, AggregateError, Entity, EntityId, DomainEvent, EventApplicator};
+/// use event_sauce_core::{Aggregate, AggregateError, Entity, EntityId, DomainEvent, EventApplicator, EventVersion};
 /// use serde::{Serialize, Deserialize};
 /// use thiserror::Error;
 /// use chrono::Utc;
@@ -48,7 +48,7 @@ use crate::{AggregateError, DomainEvent, Entity, EventApplicator};
 /// impl DomainEvent for CounterEvent {
 ///     type Aggregate = Counter;
 ///     fn event_type(&self) -> &'static str { "Incremented" }
-///     fn event_version(&self) -> u64 { 1 }
+///     fn event_version(&self) -> EventVersion { EventVersion::new(1) }
 ///     fn occurred_at(&self) -> chrono::DateTime<Utc> {
 ///         match self {
 ///             CounterEvent::Incremented { timestamp, .. } => *timestamp,
@@ -113,7 +113,7 @@ pub trait Aggregate: Entity {
 mod tests {
     use super::*;
     use crate::test_fixtures::{SimpleTestEntity, SimpleTestEvent};
-    use crate::{EntityId, Version};
+    use crate::{AggregateVersion, EntityId};
 
     #[test]
     fn test_aggregate_type_name() {
@@ -143,13 +143,13 @@ mod tests {
         let mut root = crate::AggregateRoot::<SimpleTestEntity>::new(id);
 
         assert_eq!(root.entity_id(), id);
-        assert_eq!(root.version(), Version::initial());
+        assert_eq!(root.version(), AggregateVersion::initial());
         assert_eq!(root.pending_events().len(), 0);
 
         root.apply(SimpleTestEvent::Created { value: 42 }).unwrap();
 
         assert_eq!(root.value, 42);
-        assert_eq!(root.version(), Version::new(1));
+        assert_eq!(root.version(), AggregateVersion::new(1));
         assert_eq!(root.pending_events().len(), 1);
     }
 }

@@ -174,7 +174,7 @@ impl EventFilter {
     /// # Examples
     ///
     /// ```
-    /// use event_sauce_core::{EventFilter, EventEnvelope, Version};
+    /// use event_sauce_core::{EventFilter, EventEnvelope, EventVersion};
     /// use uuid::Uuid;
     /// use serde_json::json;
     ///
@@ -184,7 +184,7 @@ impl EventFilter {
     ///     Uuid::new_v4(),
     ///     "User".to_string(),
     ///     "User.Registered".to_string(),
-    ///     Version::new(1),
+    ///     EventVersion::new(1),
     ///     json!({}),
     /// );
     ///

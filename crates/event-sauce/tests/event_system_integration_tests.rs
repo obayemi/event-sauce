@@ -9,7 +9,8 @@
 
 use chrono::Utc;
 use event_sauce_core::{
-    Aggregate, AggregateRoot, DomainEvent, Entity, EntityId, EventApplicator, Version,
+    Aggregate, AggregateRoot, AggregateVersion, DomainEvent, Entity, EntityId, EventApplicator,
+    EventVersion,
 };
 use event_sauce_macros::AggregateError;
 use serde::{Deserialize, Serialize};
@@ -72,8 +73,8 @@ impl DomainEvent for TestAccountEvent {
         }
     }
 
-    fn event_version(&self) -> u64 {
-        1
+    fn event_version(&self) -> EventVersion {
+        EventVersion::new(1)
     }
 
     fn occurred_at(&self) -> chrono::DateTime<Utc> {
@@ -257,7 +258,7 @@ fn test_create_account_with_validation() {
     assert_eq!(account.owner, "Alice");
     assert_eq!(account.balance, 1000);
     assert_eq!(account.status, AccountStatus::Active);
-    assert_eq!(account.version(), Version::new(1));
+    assert_eq!(account.version(), AggregateVersion::new(1));
     assert_eq!(account.pending_events().len(), 1);
 }
 
@@ -348,11 +349,11 @@ fn test_successful_transactions_update_state() {
 
     deposit(&mut account, 500).unwrap();
     assert_eq!(account.balance, 1500);
-    assert_eq!(account.version(), Version::new(2));
+    assert_eq!(account.version(), AggregateVersion::new(2));
 
     withdraw(&mut account, 300).unwrap();
     assert_eq!(account.balance, 1200);
-    assert_eq!(account.version(), Version::new(3));
+    assert_eq!(account.version(), AggregateVersion::new(3));
 
     assert_eq!(account.pending_events().len(), 3);
 }
@@ -435,7 +436,7 @@ fn test_domain_event_trait_implementation() {
     assert_eq!(event.event_type(), "TestAccountDeposited");
 
     // Should have correct version
-    assert_eq!(event.event_version(), 1);
+    assert_eq!(event.event_version(), EventVersion::new(1));
 
     // Should have timestamp
     let _timestamp = event.occurred_at();
@@ -448,7 +449,7 @@ fn test_aggregate_type_safety() {
 
     // Verify types are correct
     let _id: EntityId = account.entity_id();
-    let _version: Version = account.version();
+    let _version: AggregateVersion = account.version();
     let _events: &[TestAccountEvent] = account.pending_events();
 }
 
@@ -477,16 +478,16 @@ fn test_version_increments_correctly() {
     let id = EntityId::new();
     let mut account = open_account(id, "Alice".to_string(), 1000).unwrap();
 
-    assert_eq!(account.version(), Version::new(1));
+    assert_eq!(account.version(), AggregateVersion::new(1));
 
     deposit(&mut account, 100).unwrap();
-    assert_eq!(account.version(), Version::new(2));
+    assert_eq!(account.version(), AggregateVersion::new(2));
 
     withdraw(&mut account, 50).unwrap();
-    assert_eq!(account.version(), Version::new(3));
+    assert_eq!(account.version(), AggregateVersion::new(3));
 
     freeze(&mut account).unwrap();
-    assert_eq!(account.version(), Version::new(4));
+    assert_eq!(account.version(), AggregateVersion::new(4));
 }
 
 #[test]

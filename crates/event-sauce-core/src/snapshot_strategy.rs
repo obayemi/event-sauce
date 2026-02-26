@@ -13,27 +13,27 @@
 //! # Examples
 //!
 //! ```
-//! use event_sauce_core::{SnapshotStrategy, AlwaysSnapshot, NeverSnapshot, EveryNEvents, Version};
+//! use event_sauce_core::{SnapshotStrategy, AlwaysSnapshot, NeverSnapshot, EveryNEvents, AggregateVersion};
 //!
 //! // Strategy that always snapshots
 //! let always = AlwaysSnapshot;
-//! assert!(always.should_snapshot(Version::new(1)));
-//! assert!(always.should_snapshot(Version::new(100)));
+//! assert!(always.should_snapshot(AggregateVersion::new(1)));
+//! assert!(always.should_snapshot(AggregateVersion::new(100)));
 //!
 //! // Strategy that never snapshots
 //! let never = NeverSnapshot;
-//! assert!(!never.should_snapshot(Version::new(1)));
-//! assert!(!never.should_snapshot(Version::new(100)));
+//! assert!(!never.should_snapshot(AggregateVersion::new(1)));
+//! assert!(!never.should_snapshot(AggregateVersion::new(100)));
 //!
 //! // Strategy that snapshots every 100 events
 //! let every_100 = EveryNEvents(100);
-//! assert!(!every_100.should_snapshot(Version::new(99)));
-//! assert!(every_100.should_snapshot(Version::new(100)));
-//! assert!(!every_100.should_snapshot(Version::new(101)));
-//! assert!(every_100.should_snapshot(Version::new(200)));
+//! assert!(!every_100.should_snapshot(AggregateVersion::new(99)));
+//! assert!(every_100.should_snapshot(AggregateVersion::new(100)));
+//! assert!(!every_100.should_snapshot(AggregateVersion::new(101)));
+//! assert!(every_100.should_snapshot(AggregateVersion::new(200)));
 //! ```
 
-use crate::Version;
+use crate::AggregateVersion;
 
 /// Trait for determining when snapshots should be created.
 ///
@@ -53,14 +53,14 @@ pub trait SnapshotStrategy: Send + Sync {
     /// # Examples
     ///
     /// ```
-    /// use event_sauce_core::{SnapshotStrategy, EveryNEvents, Version};
+    /// use event_sauce_core::{SnapshotStrategy, EveryNEvents, AggregateVersion};
     ///
     /// let strategy = EveryNEvents(50);
-    /// assert!(!strategy.should_snapshot(Version::new(49)));
-    /// assert!(strategy.should_snapshot(Version::new(50)));
-    /// assert!(strategy.should_snapshot(Version::new(100)));
+    /// assert!(!strategy.should_snapshot(AggregateVersion::new(49)));
+    /// assert!(strategy.should_snapshot(AggregateVersion::new(50)));
+    /// assert!(strategy.should_snapshot(AggregateVersion::new(100)));
     /// ```
-    fn should_snapshot(&self, current_version: Version) -> bool;
+    fn should_snapshot(&self, current_version: AggregateVersion) -> bool;
 }
 
 /// Snapshot strategy that creates a snapshot on every commit.
@@ -78,18 +78,18 @@ pub trait SnapshotStrategy: Send + Sync {
 /// # Examples
 ///
 /// ```
-/// use event_sauce_core::{SnapshotStrategy, AlwaysSnapshot, Version};
+/// use event_sauce_core::{SnapshotStrategy, AlwaysSnapshot, AggregateVersion};
 ///
 /// let strategy = AlwaysSnapshot;
-/// assert!(strategy.should_snapshot(Version::new(1)));
-/// assert!(strategy.should_snapshot(Version::new(2)));
-/// assert!(strategy.should_snapshot(Version::new(1000)));
+/// assert!(strategy.should_snapshot(AggregateVersion::new(1)));
+/// assert!(strategy.should_snapshot(AggregateVersion::new(2)));
+/// assert!(strategy.should_snapshot(AggregateVersion::new(1000)));
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AlwaysSnapshot;
 
 impl SnapshotStrategy for AlwaysSnapshot {
-    fn should_snapshot(&self, _current_version: Version) -> bool {
+    fn should_snapshot(&self, _current_version: AggregateVersion) -> bool {
         true
     }
 }
@@ -109,18 +109,18 @@ impl SnapshotStrategy for AlwaysSnapshot {
 /// # Examples
 ///
 /// ```
-/// use event_sauce_core::{SnapshotStrategy, NeverSnapshot, Version};
+/// use event_sauce_core::{SnapshotStrategy, NeverSnapshot, AggregateVersion};
 ///
 /// let strategy = NeverSnapshot;
-/// assert!(!strategy.should_snapshot(Version::new(1)));
-/// assert!(!strategy.should_snapshot(Version::new(100)));
-/// assert!(!strategy.should_snapshot(Version::new(10000)));
+/// assert!(!strategy.should_snapshot(AggregateVersion::new(1)));
+/// assert!(!strategy.should_snapshot(AggregateVersion::new(100)));
+/// assert!(!strategy.should_snapshot(AggregateVersion::new(10000)));
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NeverSnapshot;
 
 impl SnapshotStrategy for NeverSnapshot {
-    fn should_snapshot(&self, _current_version: Version) -> bool {
+    fn should_snapshot(&self, _current_version: AggregateVersion) -> bool {
         false
     }
 }
@@ -144,23 +144,23 @@ impl SnapshotStrategy for NeverSnapshot {
 /// # Examples
 ///
 /// ```
-/// use event_sauce_core::{SnapshotStrategy, EveryNEvents, Version};
+/// use event_sauce_core::{SnapshotStrategy, EveryNEvents, AggregateVersion};
 ///
 /// let strategy = EveryNEvents(100);
 ///
 /// // No snapshot at versions before the interval
-/// assert!(!strategy.should_snapshot(Version::new(1)));
-/// assert!(!strategy.should_snapshot(Version::new(50)));
-/// assert!(!strategy.should_snapshot(Version::new(99)));
+/// assert!(!strategy.should_snapshot(AggregateVersion::new(1)));
+/// assert!(!strategy.should_snapshot(AggregateVersion::new(50)));
+/// assert!(!strategy.should_snapshot(AggregateVersion::new(99)));
 ///
 /// // Snapshot at exact intervals
-/// assert!(strategy.should_snapshot(Version::new(100)));
-/// assert!(strategy.should_snapshot(Version::new(200)));
-/// assert!(strategy.should_snapshot(Version::new(300)));
+/// assert!(strategy.should_snapshot(AggregateVersion::new(100)));
+/// assert!(strategy.should_snapshot(AggregateVersion::new(200)));
+/// assert!(strategy.should_snapshot(AggregateVersion::new(300)));
 ///
 /// // No snapshot between intervals
-/// assert!(!strategy.should_snapshot(Version::new(101)));
-/// assert!(!strategy.should_snapshot(Version::new(250)));
+/// assert!(!strategy.should_snapshot(AggregateVersion::new(101)));
+/// assert!(!strategy.should_snapshot(AggregateVersion::new(250)));
 /// ```
 ///
 /// # Panics
@@ -211,7 +211,7 @@ impl EveryNEvents {
 }
 
 impl SnapshotStrategy for EveryNEvents {
-    fn should_snapshot(&self, current_version: Version) -> bool {
+    fn should_snapshot(&self, current_version: AggregateVersion) -> bool {
         if current_version.as_u64() == 0 {
             return false;
         }
@@ -227,24 +227,24 @@ mod tests {
     fn test_always_snapshot_returns_true_for_all_versions() {
         let strategy = AlwaysSnapshot;
 
-        assert!(strategy.should_snapshot(Version::new(0)));
-        assert!(strategy.should_snapshot(Version::new(1)));
-        assert!(strategy.should_snapshot(Version::new(10)));
-        assert!(strategy.should_snapshot(Version::new(100)));
-        assert!(strategy.should_snapshot(Version::new(1000)));
-        assert!(strategy.should_snapshot(Version::new(u64::MAX)));
+        assert!(strategy.should_snapshot(AggregateVersion::new(0)));
+        assert!(strategy.should_snapshot(AggregateVersion::new(1)));
+        assert!(strategy.should_snapshot(AggregateVersion::new(10)));
+        assert!(strategy.should_snapshot(AggregateVersion::new(100)));
+        assert!(strategy.should_snapshot(AggregateVersion::new(1000)));
+        assert!(strategy.should_snapshot(AggregateVersion::new(u64::MAX)));
     }
 
     #[test]
     fn test_never_snapshot_returns_false_for_all_versions() {
         let strategy = NeverSnapshot;
 
-        assert!(!strategy.should_snapshot(Version::new(0)));
-        assert!(!strategy.should_snapshot(Version::new(1)));
-        assert!(!strategy.should_snapshot(Version::new(10)));
-        assert!(!strategy.should_snapshot(Version::new(100)));
-        assert!(!strategy.should_snapshot(Version::new(1000)));
-        assert!(!strategy.should_snapshot(Version::new(u64::MAX)));
+        assert!(!strategy.should_snapshot(AggregateVersion::new(0)));
+        assert!(!strategy.should_snapshot(AggregateVersion::new(1)));
+        assert!(!strategy.should_snapshot(AggregateVersion::new(10)));
+        assert!(!strategy.should_snapshot(AggregateVersion::new(100)));
+        assert!(!strategy.should_snapshot(AggregateVersion::new(1000)));
+        assert!(!strategy.should_snapshot(AggregateVersion::new(u64::MAX)));
     }
 
     #[test]
@@ -252,11 +252,11 @@ mod tests {
         let strategy = EveryNEvents(100);
 
         // Should snapshot at exact multiples of 100
-        assert!(strategy.should_snapshot(Version::new(100)));
-        assert!(strategy.should_snapshot(Version::new(200)));
-        assert!(strategy.should_snapshot(Version::new(300)));
-        assert!(strategy.should_snapshot(Version::new(1000)));
-        assert!(strategy.should_snapshot(Version::new(10000)));
+        assert!(strategy.should_snapshot(AggregateVersion::new(100)));
+        assert!(strategy.should_snapshot(AggregateVersion::new(200)));
+        assert!(strategy.should_snapshot(AggregateVersion::new(300)));
+        assert!(strategy.should_snapshot(AggregateVersion::new(1000)));
+        assert!(strategy.should_snapshot(AggregateVersion::new(10000)));
     }
 
     #[test]
@@ -264,48 +264,48 @@ mod tests {
         let strategy = EveryNEvents(100);
 
         // Should not snapshot before first interval
-        assert!(!strategy.should_snapshot(Version::new(0)));
-        assert!(!strategy.should_snapshot(Version::new(1)));
-        assert!(!strategy.should_snapshot(Version::new(50)));
-        assert!(!strategy.should_snapshot(Version::new(99)));
+        assert!(!strategy.should_snapshot(AggregateVersion::new(0)));
+        assert!(!strategy.should_snapshot(AggregateVersion::new(1)));
+        assert!(!strategy.should_snapshot(AggregateVersion::new(50)));
+        assert!(!strategy.should_snapshot(AggregateVersion::new(99)));
 
         // Should not snapshot between intervals
-        assert!(!strategy.should_snapshot(Version::new(101)));
-        assert!(!strategy.should_snapshot(Version::new(150)));
-        assert!(!strategy.should_snapshot(Version::new(199)));
-        assert!(!strategy.should_snapshot(Version::new(201)));
+        assert!(!strategy.should_snapshot(AggregateVersion::new(101)));
+        assert!(!strategy.should_snapshot(AggregateVersion::new(150)));
+        assert!(!strategy.should_snapshot(AggregateVersion::new(199)));
+        assert!(!strategy.should_snapshot(AggregateVersion::new(201)));
     }
 
     #[test]
     fn test_every_n_events_with_small_interval() {
         let strategy = EveryNEvents(5);
 
-        assert!(!strategy.should_snapshot(Version::new(0)));
-        assert!(!strategy.should_snapshot(Version::new(1)));
-        assert!(!strategy.should_snapshot(Version::new(4)));
-        assert!(strategy.should_snapshot(Version::new(5)));
-        assert!(!strategy.should_snapshot(Version::new(6)));
-        assert!(strategy.should_snapshot(Version::new(10)));
-        assert!(strategy.should_snapshot(Version::new(15)));
-        assert!(!strategy.should_snapshot(Version::new(16)));
+        assert!(!strategy.should_snapshot(AggregateVersion::new(0)));
+        assert!(!strategy.should_snapshot(AggregateVersion::new(1)));
+        assert!(!strategy.should_snapshot(AggregateVersion::new(4)));
+        assert!(strategy.should_snapshot(AggregateVersion::new(5)));
+        assert!(!strategy.should_snapshot(AggregateVersion::new(6)));
+        assert!(strategy.should_snapshot(AggregateVersion::new(10)));
+        assert!(strategy.should_snapshot(AggregateVersion::new(15)));
+        assert!(!strategy.should_snapshot(AggregateVersion::new(16)));
     }
 
     #[test]
     fn test_every_n_events_with_large_interval() {
         let strategy = EveryNEvents(10000);
 
-        assert!(!strategy.should_snapshot(Version::new(9999)));
-        assert!(strategy.should_snapshot(Version::new(10000)));
-        assert!(!strategy.should_snapshot(Version::new(10001)));
-        assert!(strategy.should_snapshot(Version::new(20000)));
+        assert!(!strategy.should_snapshot(AggregateVersion::new(9999)));
+        assert!(strategy.should_snapshot(AggregateVersion::new(10000)));
+        assert!(!strategy.should_snapshot(AggregateVersion::new(10001)));
+        assert!(strategy.should_snapshot(AggregateVersion::new(20000)));
     }
 
     #[test]
     fn test_every_n_events_new_constructor() {
         let strategy = EveryNEvents::new(50);
         assert_eq!(strategy.interval(), 50);
-        assert!(strategy.should_snapshot(Version::new(50)));
-        assert!(!strategy.should_snapshot(Version::new(49)));
+        assert!(strategy.should_snapshot(AggregateVersion::new(50)));
+        assert!(!strategy.should_snapshot(AggregateVersion::new(49)));
     }
 
     #[test]
@@ -324,23 +324,23 @@ mod tests {
     #[test]
     fn test_strategy_trait_object_always() {
         let strategy: &dyn SnapshotStrategy = &AlwaysSnapshot;
-        assert!(strategy.should_snapshot(Version::new(1)));
-        assert!(strategy.should_snapshot(Version::new(100)));
+        assert!(strategy.should_snapshot(AggregateVersion::new(1)));
+        assert!(strategy.should_snapshot(AggregateVersion::new(100)));
     }
 
     #[test]
     fn test_strategy_trait_object_never() {
         let strategy: &dyn SnapshotStrategy = &NeverSnapshot;
-        assert!(!strategy.should_snapshot(Version::new(1)));
-        assert!(!strategy.should_snapshot(Version::new(100)));
+        assert!(!strategy.should_snapshot(AggregateVersion::new(1)));
+        assert!(!strategy.should_snapshot(AggregateVersion::new(100)));
     }
 
     #[test]
     fn test_strategy_trait_object_every_n() {
         let strategy: &dyn SnapshotStrategy = &EveryNEvents(50);
-        assert!(!strategy.should_snapshot(Version::new(49)));
-        assert!(strategy.should_snapshot(Version::new(50)));
-        assert!(!strategy.should_snapshot(Version::new(51)));
-        assert!(strategy.should_snapshot(Version::new(100)));
+        assert!(!strategy.should_snapshot(AggregateVersion::new(49)));
+        assert!(strategy.should_snapshot(AggregateVersion::new(50)));
+        assert!(!strategy.should_snapshot(AggregateVersion::new(51)));
+        assert!(strategy.should_snapshot(AggregateVersion::new(100)));
     }
 }

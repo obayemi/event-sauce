@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use crate::{
     event_store::{count_events, load},
-    Aggregate, AggregateRoot, EntityId, EventStore, Result, StreamId, Version,
+    Aggregate, AggregateRoot, AggregateVersion, EntityId, EventStore, Result, StreamId,
 };
 
 /// Repository provides a high-level API for aggregate persistence.
@@ -90,7 +90,7 @@ where
     /// # Errors
     ///
     /// Returns an error if the event store operation fails.
-    pub async fn get_version(&self, id: EntityId) -> Result<Version> {
+    pub async fn get_version(&self, id: EntityId) -> Result<AggregateVersion> {
         let stream_id = StreamId::new(A::aggregate_type(), id.as_uuid());
         self.store.get_version(stream_id).await
     }

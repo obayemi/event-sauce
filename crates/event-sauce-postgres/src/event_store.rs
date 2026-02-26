@@ -4,7 +4,8 @@
 
 use async_trait::async_trait;
 use event_sauce_core::{
-    Error, EventEnvelope, EventStore, Position, Result, Snapshot, SnapshotConfig, StreamId, Version,
+    AggregateVersion, Error, EventEnvelope, EventStore, EventVersion, Position, Result, Snapshot,
+    SnapshotConfig, StreamId,
 };
 use futures::stream::{self, Stream};
 use sqlx::PgPool;
@@ -483,7 +484,7 @@ impl EventStore for PostgresEventStore {
         &self,
         stream_id: StreamId,
         events: Vec<EventEnvelope>,
-        expected_version: Version,
+        expected_version: AggregateVersion,
     ) -> Result<()> {
         if events.is_empty() {
             return Ok(());
@@ -508,7 +509,7 @@ impl EventStore for PostgresEventStore {
             .map_err(|e| Error::custom(format!("Failed to check version: {e}")))?;
 
         #[allow(clippy::cast_sign_loss)]
-        let current_version = Version::new((current_version.unwrap_or(-1) + 1) as u64);
+        let current_version = AggregateVersion::new((current_version.unwrap_or(-1) + 1) as u64);
 
         if current_version != expected_version {
             return Err(Error::concurrency_conflict(
@@ -558,7 +559,7 @@ impl EventStore for PostgresEventStore {
     async fn load_stream(
         &self,
         stream_id: StreamId,
-        from_version: Version,
+        from_version: AggregateVersion,
     ) -> Result<impl Stream<Item = Result<EventEnvelope>> + Send> {
         let events_table = self.qualify_table("events");
         let query = format!(
@@ -610,7 +611,7 @@ impl EventStore for PostgresEventStore {
         Ok(stream::iter(events.into_iter().map(Ok)))
     }
 
-    async fn get_version(&self, stream_id: StreamId) -> Result<Version> {
+    async fn get_version(&self, stream_id: StreamId) -> Result<AggregateVersion> {
         let events_table = self.qualify_table("events");
         let query = format!(
             "SELECT MAX(stream_version) FROM {events_table} WHERE aggregate_id = $1 AND aggregate_type = $2"
@@ -625,7 +626,7 @@ impl EventStore for PostgresEventStore {
 
         #[allow(clippy::cast_sign_loss)]
         let next_version = version.map_or(0, |v| v + 1) as u64;
-        Ok(Version::new(next_version))
+        Ok(AggregateVersion::new(next_version))
     }
 
     async fn save_snapshot(&self, snapshot: Snapshot) -> Result<()> {
@@ -752,7 +753,7 @@ impl From<EventRow> for EventEnvelope {
             aggregate_type: row.aggregate_type,
             event_type: row.event_type,
             #[allow(clippy::cast_sign_loss)]
-            event_version: Version::new(row.event_version as u64),
+            event_version: EventVersion::new(row.event_version as u64),
             event_data: row.event_data,
             created_by: row.created_by,
             created_at: row.created_at,
@@ -772,7 +773,7 @@ struct SnapshotRow {
 impl From<SnapshotRow> for Snapshot {
     fn from(row: SnapshotRow) -> Self {
         #[allow(clippy::cast_sign_loss)]
-        let snapshot_version = Version::new(row.snapshot_version as u64);
+        let snapshot_version = AggregateVersion::new(row.snapshot_version as u64);
 
         Snapshot {
             aggregate_id: row.aggregate_id,
@@ -786,7 +787,9 @@ impl From<SnapshotRow> for Snapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use event_sauce_core::{EventEnvelope, EventStore, Position, Snapshot, StreamId, Version};
+    use event_sauce_core::{
+        AggregateVersion, EventEnvelope, EventStore, EventVersion, Position, Snapshot, StreamId,
+    };
     use futures::StreamExt;
     use serde_json::json;
     use sqlx::PgPool;
@@ -865,7 +868,7 @@ mod tests {
             aggregate_id,
             aggregate_type.to_string(),
             event_type.to_string(),
-            Version::new(1),
+            EventVersion::new(1),
             json!({"data": "test"}),
         )
     }
@@ -884,7 +887,7 @@ mod tests {
         let event = create_test_envelope("UserCreated", stream_id.aggregate_id());
 
         let result = store
-            .append(stream_id, vec![event], Version::initial())
+            .append(stream_id, vec![event], AggregateVersion::initial())
             .await;
         assert!(result.is_ok());
     }
@@ -898,12 +901,16 @@ mod tests {
         let event = create_test_envelope("UserCreated", aggregate_id);
 
         store
-            .append(stream_id.clone(), vec![event.clone()], Version::initial())
+            .append(
+                stream_id.clone(),
+                vec![event.clone()],
+                AggregateVersion::initial(),
+            )
             .await
             .unwrap();
 
         let mut stream = store
-            .load_stream(stream_id, Version::initial())
+            .load_stream(stream_id, AggregateVersion::initial())
             .await
             .unwrap();
         let loaded = stream.next().await.unwrap().unwrap();
@@ -919,7 +926,7 @@ mod tests {
 
         // New stream should have initial version
         let version = store.get_version(stream_id.clone()).await.unwrap();
-        assert_eq!(version, Version::initial());
+        assert_eq!(version, AggregateVersion::initial());
     }
 
     #[tokio::test]
@@ -933,13 +940,13 @@ mod tests {
 
         // Append first event
         store
-            .append(stream_id.clone(), vec![event1], Version::initial())
+            .append(stream_id.clone(), vec![event1], AggregateVersion::initial())
             .await
             .unwrap();
 
         // Try to append with wrong version - should fail
         let result = store
-            .append(stream_id, vec![event2], Version::initial())
+            .append(stream_id, vec![event2], AggregateVersion::initial())
             .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().is_concurrency_conflict());
@@ -958,7 +965,7 @@ mod tests {
             .append(
                 stream1,
                 vec![create_test_envelope("UserCreated", id1)],
-                Version::initial(),
+                AggregateVersion::initial(),
             )
             .await
             .unwrap();
@@ -966,7 +973,7 @@ mod tests {
             .append(
                 stream2,
                 vec![create_test_envelope_with_type("OrderPlaced", "Order", id2)],
-                Version::initial(),
+                AggregateVersion::initial(),
             )
             .await
             .unwrap();
@@ -987,7 +994,7 @@ mod tests {
         let snapshot = Snapshot::new(
             aggregate_id,
             "User".to_string(),
-            Version::new(10),
+            AggregateVersion::new(10),
             json!({"name": "Alice"}),
         );
 
@@ -995,7 +1002,7 @@ mod tests {
         let loaded = store.load_snapshot(stream_id).await.unwrap();
 
         assert!(loaded.is_some());
-        assert_eq!(loaded.unwrap().snapshot_version, Version::new(10));
+        assert_eq!(loaded.unwrap().snapshot_version, AggregateVersion::new(10));
     }
 
     #[tokio::test]
@@ -1012,12 +1019,12 @@ mod tests {
         ];
 
         store
-            .append(stream_id.clone(), events, Version::initial())
+            .append(stream_id.clone(), events, AggregateVersion::initial())
             .await
             .unwrap();
 
         let version = store.get_version(stream_id).await.unwrap();
-        assert_eq!(version, Version::new(3));
+        assert_eq!(version, AggregateVersion::new(3));
     }
 
     #[tokio::test]
@@ -1031,13 +1038,16 @@ mod tests {
         for i in 0..5 {
             let event = create_test_envelope(&format!("Event{i}"), aggregate_id);
             store
-                .append(stream_id.clone(), vec![event], Version::new(i))
+                .append(stream_id.clone(), vec![event], AggregateVersion::new(i))
                 .await
                 .unwrap();
         }
 
         // Load from version 2
-        let stream = store.load_stream(stream_id, Version::new(2)).await.unwrap();
+        let stream = store
+            .load_stream(stream_id, AggregateVersion::new(2))
+            .await
+            .unwrap();
         let events: Vec<_> = stream.collect::<Vec<_>>().await;
 
         assert_eq!(events.len(), 3); // Should get events 2, 3, 4
@@ -1054,7 +1064,7 @@ mod tests {
             let event = create_test_envelope(&format!("Event{i}"), aggregate_id);
 
             store
-                .append(stream_id, vec![event], Version::initial())
+                .append(stream_id, vec![event], AggregateVersion::initial())
                 .await
                 .unwrap();
         }
@@ -1073,7 +1083,7 @@ mod tests {
         let stream_id = StreamId::new("User", Uuid::new_v4());
 
         let stream = store
-            .load_stream(stream_id, Version::initial())
+            .load_stream(stream_id, AggregateVersion::initial())
             .await
             .unwrap();
         let events: Vec<_> = stream.collect::<Vec<_>>().await;
@@ -1103,13 +1113,13 @@ mod tests {
 
         // Append via original store
         store
-            .append(stream_id.clone(), vec![event], Version::initial())
+            .append(stream_id.clone(), vec![event], AggregateVersion::initial())
             .await
             .unwrap();
 
         // Read via clone - should see the same data (same database)
         let version = store_clone.get_version(stream_id).await.unwrap();
-        assert_eq!(version, Version::new(1));
+        assert_eq!(version, AggregateVersion::new(1));
     }
 
     #[tokio::test]
@@ -1121,31 +1131,31 @@ mod tests {
 
         // Initial version
         let v0 = store.get_version(stream_id.clone()).await.unwrap();
-        assert_eq!(v0, Version::initial());
+        assert_eq!(v0, AggregateVersion::initial());
 
         // After first append
         store
             .append(
                 stream_id.clone(),
                 vec![create_test_envelope("Event1", aggregate_id)],
-                Version::initial(),
+                AggregateVersion::initial(),
             )
             .await
             .unwrap();
         let v1 = store.get_version(stream_id.clone()).await.unwrap();
-        assert_eq!(v1, Version::new(1));
+        assert_eq!(v1, AggregateVersion::new(1));
 
         // After second append
         store
             .append(
                 stream_id.clone(),
                 vec![create_test_envelope("Event2", aggregate_id)],
-                Version::new(1),
+                AggregateVersion::new(1),
             )
             .await
             .unwrap();
         let v2 = store.get_version(stream_id).await.unwrap();
-        assert_eq!(v2, Version::new(2));
+        assert_eq!(v2, AggregateVersion::new(2));
     }
 
     #[tokio::test]
@@ -1159,7 +1169,7 @@ mod tests {
         let snapshot1 = Snapshot::new(
             aggregate_id,
             "User".to_string(),
-            Version::new(5),
+            AggregateVersion::new(5),
             json!({"version": 1}),
         );
         store.save_snapshot(snapshot1).await.unwrap();
@@ -1168,14 +1178,14 @@ mod tests {
         let snapshot2 = Snapshot::new(
             aggregate_id,
             "User".to_string(),
-            Version::new(10),
+            AggregateVersion::new(10),
             json!({"version": 2}),
         );
         store.save_snapshot(snapshot2).await.unwrap();
 
         // Should get the latest snapshot
         let loaded = store.load_snapshot(stream_id).await.unwrap().unwrap();
-        assert_eq!(loaded.snapshot_version, Version::new(10));
+        assert_eq!(loaded.snapshot_version, AggregateVersion::new(10));
     }
 
     #[tokio::test]
@@ -1185,7 +1195,9 @@ mod tests {
         let stream_id = StreamId::new("User", Uuid::new_v4());
 
         // Appending empty events should succeed (no-op)
-        let result = store.append(stream_id, vec![], Version::initial()).await;
+        let result = store
+            .append(stream_id, vec![], AggregateVersion::initial())
+            .await;
         assert!(result.is_ok());
     }
 
@@ -1203,12 +1215,12 @@ mod tests {
         let result1 = store.append(
             stream1.clone(),
             vec![create_test_envelope("Event1", id1)],
-            Version::initial(),
+            AggregateVersion::initial(),
         );
         let result2 = store.append(
             stream2.clone(),
             vec![create_test_envelope("Event2", id2)],
-            Version::initial(),
+            AggregateVersion::initial(),
         );
 
         let (r1, r2) = tokio::join!(result1, result2);
@@ -1286,7 +1298,7 @@ mod tests {
         let event = create_test_envelope("UserCreated", aggregate_id);
 
         let result = store
-            .append(stream_id, vec![event], Version::initial())
+            .append(stream_id, vec![event], AggregateVersion::initial())
             .await;
         assert!(result.is_ok());
     }
@@ -1312,12 +1324,12 @@ mod tests {
         let event = create_test_envelope("UserCreated", aggregate_id);
 
         store
-            .append(stream_id.clone(), vec![event], Version::initial())
+            .append(stream_id.clone(), vec![event], AggregateVersion::initial())
             .await
             .unwrap();
 
         let version = store.get_version(stream_id).await.unwrap();
-        assert_eq!(version, Version::new(1));
+        assert_eq!(version, AggregateVersion::new(1));
     }
 
     #[tokio::test]
@@ -1445,7 +1457,7 @@ mod tests {
         let event = create_test_envelope("UserCreated", aggregate_id);
 
         store
-            .append(stream_id.clone(), vec![event], Version::initial())
+            .append(stream_id.clone(), vec![event], AggregateVersion::initial())
             .await
             .unwrap();
 
@@ -1481,7 +1493,7 @@ mod tests {
         for i in 0..5 {
             let event = create_test_envelope(&format!("Event{i}"), aggregate_id);
             store
-                .append(stream_id.clone(), vec![event], Version::new(i))
+                .append(stream_id.clone(), vec![event], AggregateVersion::new(i))
                 .await
                 .unwrap();
         }
@@ -1512,7 +1524,7 @@ mod tests {
         for i in 0..10 {
             let event = create_test_envelope(&format!("Event{i}"), aggregate_id);
             store
-                .append(stream_id.clone(), vec![event], Version::new(i))
+                .append(stream_id.clone(), vec![event], AggregateVersion::new(i))
                 .await
                 .unwrap();
         }
@@ -1521,7 +1533,7 @@ mod tests {
         let fast_count = store.count_events_fast(stream_id.clone()).await.unwrap();
 
         let event_stream = store
-            .load_stream(stream_id, Version::initial())
+            .load_stream(stream_id, AggregateVersion::initial())
             .await
             .unwrap();
         futures::pin_mut!(event_stream);

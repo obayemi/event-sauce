@@ -64,8 +64,8 @@ impl DomainEvent for BenchAccountEvent {
         }
     }
 
-    fn event_version(&self) -> u64 {
-        1
+    fn event_version(&self) -> event_sauce_core::EventVersion {
+        event_sauce_core::EventVersion::new(1)
     }
 
     fn occurred_at(&self) -> chrono::DateTime<Utc> {

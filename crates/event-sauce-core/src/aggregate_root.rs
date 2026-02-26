@@ -4,7 +4,7 @@
 //! for any type implementing `Aggregate`. Access entity fields via `Deref`
 //! (read-only); state changes must go through `apply()`.
 
-use crate::{Aggregate, EntityId, EventApplicator, Version};
+use crate::{Aggregate, AggregateVersion, EntityId, EventApplicator};
 
 /// Infrastructure wrapper for event-sourced aggregates.
 ///
@@ -21,7 +21,7 @@ use crate::{Aggregate, EntityId, EventApplicator, Version};
 /// # Examples
 ///
 /// ```
-/// use event_sauce_core::{Aggregate, AggregateRoot, AggregateError, Entity, EntityId, DomainEvent, EventApplicator, Version};
+/// use event_sauce_core::{Aggregate, AggregateRoot, AggregateError, Entity, EntityId, DomainEvent, EventApplicator, AggregateVersion, EventVersion};
 /// use serde::{Serialize, Deserialize};
 /// use thiserror::Error;
 /// use chrono::Utc;
@@ -45,7 +45,7 @@ use crate::{Aggregate, EntityId, EventApplicator, Version};
 /// impl DomainEvent for CounterEvent {
 ///     type Aggregate = Counter;
 ///     fn event_type(&self) -> &'static str { "Incremented" }
-///     fn event_version(&self) -> u64 { 1 }
+///     fn event_version(&self) -> EventVersion { EventVersion::new(1) }
 ///     fn occurred_at(&self) -> chrono::DateTime<Utc> { Utc::now() }
 /// }
 ///
@@ -76,7 +76,7 @@ use crate::{Aggregate, EntityId, EventApplicator, Version};
 #[derive(Debug)]
 pub struct AggregateRoot<A: Aggregate> {
     entity: A,
-    version: Version,
+    version: AggregateVersion,
     pending_events: Vec<A::Event>,
 }
 
@@ -107,7 +107,7 @@ impl<A: Aggregate> AggregateRoot<A> {
     pub fn new(id: EntityId) -> Self {
         Self {
             entity: A::new(id),
-            version: Version::initial(),
+            version: AggregateVersion::initial(),
             pending_events: Vec::new(),
         }
     }
@@ -120,7 +120,7 @@ impl<A: Aggregate> AggregateRoot<A> {
 
     /// Returns the current version of the aggregate.
     #[must_use]
-    pub fn version(&self) -> Version {
+    pub fn version(&self) -> AggregateVersion {
         self.version
     }
 
@@ -175,7 +175,7 @@ impl<A: Aggregate> AggregateRoot<A> {
     ///
     /// Used when loading from the event store with snapshot support.
     #[must_use]
-    pub fn from_snapshot(version: Version, entity: A) -> Self {
+    pub fn from_snapshot(version: AggregateVersion, entity: A) -> Self {
         Self {
             entity,
             version,
@@ -261,8 +261,8 @@ mod tests {
             }
         }
 
-        fn event_version(&self) -> u64 {
-            1
+        fn event_version(&self) -> crate::EventVersion {
+            crate::EventVersion::new(1)
         }
 
         fn occurred_at(&self) -> chrono::DateTime<Utc> {
@@ -366,7 +366,7 @@ mod tests {
         let counter = AggregateRoot::<CounterEntity>::new(id);
 
         assert_eq!(counter.entity_id(), id);
-        assert_eq!(counter.version(), Version::initial());
+        assert_eq!(counter.version(), AggregateVersion::initial());
         assert_eq!(counter.pending_events().len(), 0);
         assert_eq!(counter.value, 0);
     }
@@ -390,7 +390,7 @@ mod tests {
         counter.increment(5).unwrap();
 
         assert_eq!(counter.value, 5);
-        assert_eq!(counter.version(), Version::new(1));
+        assert_eq!(counter.version(), AggregateVersion::new(1));
         assert_eq!(counter.pending_events().len(), 1);
     }
 
@@ -403,7 +403,7 @@ mod tests {
         counter.increment(2).unwrap();
 
         assert_eq!(counter.value, 10);
-        assert_eq!(counter.version(), Version::new(3));
+        assert_eq!(counter.version(), AggregateVersion::new(3));
         assert_eq!(counter.pending_events().len(), 3);
     }
 
@@ -415,7 +415,7 @@ mod tests {
         counter.reset().unwrap();
 
         assert_eq!(counter.value, 0);
-        assert_eq!(counter.version(), Version::new(2));
+        assert_eq!(counter.version(), AggregateVersion::new(2));
     }
 
     #[test]
@@ -446,7 +446,7 @@ mod tests {
         }
 
         assert_eq!(counter.value, 3);
-        assert_eq!(counter.version(), Version::new(4));
+        assert_eq!(counter.version(), AggregateVersion::new(4));
         assert_eq!(counter.pending_events().len(), 0);
     }
 
@@ -457,10 +457,11 @@ mod tests {
             value: 42,
         };
 
-        let counter = AggregateRoot::<CounterEntity>::from_snapshot(Version::new(5), entity);
+        let counter =
+            AggregateRoot::<CounterEntity>::from_snapshot(AggregateVersion::new(5), entity);
 
         assert_eq!(counter.value, 42);
-        assert_eq!(counter.version(), Version::new(5));
+        assert_eq!(counter.version(), AggregateVersion::new(5));
     }
 
     #[test]

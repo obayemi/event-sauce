@@ -31,7 +31,7 @@ use crate::Aggregate;
 /// ## Simple Event Without Validation
 ///
 /// ```
-/// use event_sauce_core::{Aggregate, ApplyEvent, AggregateError, Entity, EntityId, DomainEvent, EventApplicator, Version};
+/// use event_sauce_core::{Aggregate, ApplyEvent, AggregateError, Entity, EntityId, DomainEvent, EventApplicator, EventVersion};
 /// use thiserror::Error;
 /// use chrono::Utc;
 /// use serde::{Serialize, Deserialize};
@@ -55,7 +55,7 @@ use crate::Aggregate;
 /// impl DomainEvent for CounterEvent {
 ///     type Aggregate = Counter;
 ///     fn event_type(&self) -> &'static str { "Incremented" }
-///     fn event_version(&self) -> u64 { 1 }
+///     fn event_version(&self) -> EventVersion { EventVersion::new(1) }
 ///     fn occurred_at(&self) -> chrono::DateTime<Utc> { Utc::now() }
 /// }
 ///
@@ -152,8 +152,8 @@ mod tests {
             }
         }
 
-        fn event_version(&self) -> u64 {
-            1
+        fn event_version(&self) -> crate::EventVersion {
+            crate::EventVersion::new(1)
         }
 
         fn occurred_at(&self) -> chrono::DateTime<Utc> {

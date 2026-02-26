@@ -4,7 +4,7 @@
 //! the DomainEvent trait implementation.
 
 use chrono::{DateTime, Utc};
-use event_sauce_core::{DomainEvent, EventApplicator, EventEnvelope, Version};
+use event_sauce_core::{DomainEvent, EventApplicator, EventEnvelope, EventVersion};
 use serde::{Deserialize, Serialize};
 
 // Note: serde_json is only used in TryFrom tests
@@ -79,7 +79,10 @@ fn test_event_derive_implements_domain_event() {
 
     // The DomainEvent trait should be implemented
     assert_eq!(event.event_type(), "Test.Created");
-    assert_eq!(event.event_version(), 1);
+    assert_eq!(
+        event.event_version(),
+        event_sauce_core::EventVersion::new(1)
+    );
     assert_eq!(event.occurred_at(), timestamp);
 }
 
@@ -113,7 +116,10 @@ fn test_event_derive_event_version() {
         timestamp,
     };
 
-    assert_eq!(event.event_version(), 1);
+    assert_eq!(
+        event.event_version(),
+        event_sauce_core::EventVersion::new(1)
+    );
 }
 
 #[test]
@@ -207,7 +213,10 @@ fn test_event_derive_different_version() {
         timestamp,
     };
 
-    assert_eq!(event.event_version(), 2);
+    assert_eq!(
+        event.event_version(),
+        event_sauce_core::EventVersion::new(2)
+    );
 }
 
 // Test: Event with custom type name prefix
@@ -314,7 +323,10 @@ fn test_event_derive_single_variant() {
     let event = SimpleEvent::Occurred { timestamp };
 
     assert_eq!(event.event_type(), "Simple.Occurred");
-    assert_eq!(event.event_version(), 1);
+    assert_eq!(
+        event.event_version(),
+        event_sauce_core::EventVersion::new(1)
+    );
     assert_eq!(event.occurred_at(), timestamp);
 }
 
@@ -337,7 +349,7 @@ fn test_try_from_event_envelope_owned() {
         Uuid::new_v4(),
         "TestAggregate".to_string(),
         "Test.Created".to_string(),
-        Version::new(1),
+        EventVersion::new(1),
         event_data,
     );
 
@@ -368,7 +380,7 @@ fn test_try_from_event_envelope_reference() {
         Uuid::new_v4(),
         "TestAggregate".to_string(),
         "Test.Updated".to_string(),
-        Version::new(1),
+        EventVersion::new(1),
         event_data,
     );
 
@@ -397,7 +409,7 @@ fn test_try_from_with_invalid_data() {
         Uuid::new_v4(),
         "TestAggregate".to_string(),
         "Test.Created".to_string(),
-        Version::new(1),
+        EventVersion::new(1),
         event_data,
     );
 
@@ -430,7 +442,7 @@ fn test_try_from_in_function_with_question_mark() {
         Uuid::new_v4(),
         "TestAggregate".to_string(),
         "Test.Created".to_string(),
-        Version::new(1),
+        EventVersion::new(1),
         event_data,
     );
 

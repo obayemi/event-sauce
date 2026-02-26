@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::Version;
+use crate::EventVersion;
 
 /// Optional metadata associated with an event.
 ///
@@ -151,7 +151,7 @@ impl Default for EventMetadata {
 /// # Examples
 ///
 /// ```
-/// use event_sauce_core::{EventEnvelope, EventMetadata, Version};
+/// use event_sauce_core::{EventEnvelope, EventMetadata, EventVersion};
 /// use uuid::Uuid;
 /// use serde_json::json;
 /// use chrono::Utc;
@@ -161,7 +161,7 @@ impl Default for EventMetadata {
 ///     Uuid::new_v4(),
 ///     "User".to_string(),
 ///     "User.Registered".to_string(),
-///     Version::new(1),
+///     EventVersion::new(1),
 ///     json!({"email": "user@example.com"}),
 /// );
 ///
@@ -183,7 +183,7 @@ pub struct EventEnvelope {
     pub event_type: String,
 
     /// Event schema version.
-    pub event_version: Version,
+    pub event_version: EventVersion,
 
     /// Serialized event data.
     pub event_data: serde_json::Value,
@@ -205,7 +205,7 @@ impl EventEnvelope {
     /// # Examples
     ///
     /// ```
-    /// use event_sauce_core::{EventEnvelope, Version};
+    /// use event_sauce_core::{EventEnvelope, EventVersion};
     /// use uuid::Uuid;
     /// use serde_json::json;
     ///
@@ -214,7 +214,7 @@ impl EventEnvelope {
     ///     Uuid::new_v4(),
     ///     "Order".to_string(),
     ///     "Order.Placed".to_string(),
-    ///     Version::new(1),
+    ///     EventVersion::new(1),
     ///     json!({"total": 99.99}),
     /// );
     /// ```
@@ -224,7 +224,7 @@ impl EventEnvelope {
         aggregate_id: Uuid,
         aggregate_type: String,
         event_type: String,
-        event_version: Version,
+        event_version: EventVersion,
         event_data: serde_json::Value,
     ) -> Self {
         Self {
@@ -348,7 +348,7 @@ mod tests {
             aggregate_id,
             "TestAggregate".to_string(),
             "TestEvent".to_string(),
-            Version::new(1),
+            EventVersion::new(1),
             event_data.clone(),
         );
 
@@ -356,7 +356,7 @@ mod tests {
         assert_eq!(envelope.aggregate_id, aggregate_id);
         assert_eq!(envelope.aggregate_type, "TestAggregate");
         assert_eq!(envelope.event_type, "TestEvent");
-        assert_eq!(envelope.event_version, Version::new(1));
+        assert_eq!(envelope.event_version, EventVersion::new(1));
         assert_eq!(envelope.event_data, event_data);
         assert!(envelope.created_by.is_none());
         assert!(envelope.metadata.is_none());
@@ -370,7 +370,7 @@ mod tests {
             Uuid::new_v4(),
             "Test".to_string(),
             "TestEvent".to_string(),
-            Version::new(1),
+            EventVersion::new(1),
             json!({}),
         )
         .with_created_by(user_id);
@@ -387,7 +387,7 @@ mod tests {
             Uuid::new_v4(),
             "Test".to_string(),
             "TestEvent".to_string(),
-            Version::new(1),
+            EventVersion::new(1),
             json!({}),
         )
         .with_metadata(metadata.clone());
@@ -403,7 +403,7 @@ mod tests {
             Uuid::new_v4(),
             "Test".to_string(),
             "TestEvent".to_string(),
-            Version::new(1),
+            EventVersion::new(1),
             json!({}),
         )
         .with_created_at(timestamp);
@@ -422,7 +422,7 @@ mod tests {
             Uuid::new_v4(),
             "Test".to_string(),
             "TestEvent".to_string(),
-            Version::new(1),
+            EventVersion::new(1),
             json!({}),
         )
         .with_created_by(user_id)
@@ -441,7 +441,7 @@ mod tests {
             Uuid::nil(),
             "Test".to_string(),
             "TestEvent".to_string(),
-            Version::new(1),
+            EventVersion::new(1),
             json!({"key": "value"}),
         );
 
@@ -472,7 +472,7 @@ mod tests {
             Uuid::new_v4(),
             "User".to_string(),
             "UserUpdated".to_string(),
-            Version::new(2),
+            EventVersion::new(2),
             complex_data.clone(),
         );
 
@@ -486,7 +486,7 @@ mod tests {
             Uuid::new_v4(),
             "Test".to_string(),
             "TestEvent".to_string(),
-            Version::new(1),
+            EventVersion::new(1),
             json!({}),
         );
 
@@ -495,12 +495,12 @@ mod tests {
             Uuid::new_v4(),
             "Test".to_string(),
             "TestEvent".to_string(),
-            Version::new(2),
+            EventVersion::new(2),
             json!({}),
         );
 
-        assert_eq!(v1_envelope.event_version, Version::new(1));
-        assert_eq!(v2_envelope.event_version, Version::new(2));
+        assert_eq!(v1_envelope.event_version, EventVersion::new(1));
+        assert_eq!(v2_envelope.event_version, EventVersion::new(2));
         assert!(v2_envelope.event_version > v1_envelope.event_version);
     }
 }

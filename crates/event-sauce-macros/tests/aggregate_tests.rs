@@ -5,8 +5,8 @@
 
 use chrono::{DateTime, Utc};
 use event_sauce_core::{
-    Aggregate, AggregateError, AggregateRoot, DomainEvent, Entity, EntityId, EventApplicator,
-    Version,
+    Aggregate, AggregateError, AggregateRoot, AggregateVersion, DomainEvent, Entity, EntityId,
+    EventApplicator,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -41,8 +41,8 @@ impl DomainEvent for TestCounterEvent {
         }
     }
 
-    fn event_version(&self) -> u64 {
-        1
+    fn event_version(&self) -> event_sauce_core::EventVersion {
+        event_sauce_core::EventVersion::new(1)
     }
 
     fn occurred_at(&self) -> DateTime<Utc> {
@@ -113,7 +113,7 @@ fn test_aggregate_root_new() {
     let root = AggregateRoot::<TestCounter>::new(id);
 
     assert_eq!(root.entity_id(), id);
-    assert_eq!(root.version(), Version::initial());
+    assert_eq!(root.version(), AggregateVersion::initial());
     assert_eq!(root.pending_events().len(), 0);
 }
 
@@ -130,7 +130,7 @@ fn test_aggregate_root_apply() {
     root.apply(event).unwrap();
 
     // Version should be incremented
-    assert_eq!(root.version(), Version::new(1));
+    assert_eq!(root.version(), AggregateVersion::new(1));
     // Value should be updated - accessible via Deref
     assert_eq!(root.value, 10);
     // Pending events recorded
@@ -155,7 +155,7 @@ fn test_aggregate_root_multiple_events() {
 
     assert_eq!(root.pending_events().len(), 2);
     assert_eq!(root.value, 8);
-    assert_eq!(root.version(), Version::new(2));
+    assert_eq!(root.version(), AggregateVersion::new(2));
 }
 
 #[test]
@@ -202,10 +202,10 @@ fn test_from_snapshot() {
     let id = EntityId::new();
     let entity = TestCounter { id, value: 100 };
 
-    let root = AggregateRoot::<TestCounter>::from_snapshot(Version::new(5), entity);
+    let root = AggregateRoot::<TestCounter>::from_snapshot(AggregateVersion::new(5), entity);
 
     assert_eq!(root.value, 100);
-    assert_eq!(root.version(), Version::new(5));
+    assert_eq!(root.version(), AggregateVersion::new(5));
     assert_eq!(root.entity_id(), id);
 }
 

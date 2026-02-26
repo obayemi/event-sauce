@@ -5,7 +5,7 @@
 
 use chrono::{DateTime, Utc};
 use event_sauce_core::{
-    Aggregate, AggregateRoot, ApplyEvent, DomainEvent, Entity, EntityId, Version,
+    Aggregate, AggregateRoot, AggregateVersion, ApplyEvent, DomainEvent, Entity, EntityId,
 };
 use event_sauce_macros::{aggregate, AggregateError, Event as DeriveEvent};
 use serde::{Deserialize, Serialize};
@@ -189,7 +189,7 @@ fn test_aggregate_root_apply_with_generated_event_applicator() {
     .unwrap();
 
     assert_eq!(root.value, 100);
-    assert_eq!(root.version(), Version::new(1));
+    assert_eq!(root.version(), AggregateVersion::new(1));
     assert_eq!(root.pending_events().len(), 1);
 }
 
@@ -230,7 +230,7 @@ fn test_aggregate_root_integration_lifecycle() {
 
     // Check state
     assert_eq!(root.value, 15);
-    assert_eq!(root.version(), Version::new(2));
+    assert_eq!(root.version(), AggregateVersion::new(2));
     assert_eq!(root.pending_events().len(), 2);
 
     // Replay events using dispatch_unchecked on a fresh entity
@@ -294,7 +294,10 @@ fn test_without_tuple_variants_no_auto_event_applicator() {
 
     // We can still use the DomainEvent trait
     assert_eq!(event.event_type(), "Basic.Happened");
-    assert_eq!(event.event_version(), 1);
+    assert_eq!(
+        event.event_version(),
+        event_sauce_core::EventVersion::new(1)
+    );
 }
 
 // ============================================================================
@@ -376,6 +379,6 @@ fn test_validation_failure_via_aggregate_root() {
 
     assert!(result.is_err());
     assert_eq!(root.value, 0); // State unchanged
-    assert_eq!(root.version(), Version::initial()); // Version unchanged
+    assert_eq!(root.version(), AggregateVersion::initial()); // Version unchanged
     assert_eq!(root.pending_events().len(), 0); // No pending events
 }

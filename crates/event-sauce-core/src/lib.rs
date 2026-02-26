@@ -8,7 +8,7 @@
 //! - `AggregateRoot<A>` wrapper for infrastructure concerns
 //! - `DomainEvent` trait for events
 //! - `EventStore` trait for event persistence
-//! - Core types like `EventEnvelope`, `StreamId`, `Version`, `EntityId`
+//! - Core types like `EventEnvelope`, `StreamId`, `AggregateVersion`, `EventVersion`, `EntityId`
 //! - Helper macros like `command_handler!` for reducing boilerplate
 //!
 //! ## TDD Approach
@@ -64,4 +64,4 @@ pub use subscription::{
     SubscriptionBuilder, SubscriptionConfig,
 };
 pub use types::CheckpointStoreRef;
-pub use version::Version;
+pub use version::{AggregateVersion, EventVersion};

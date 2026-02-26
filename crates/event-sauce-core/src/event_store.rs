@@ -7,7 +7,8 @@ use futures::Stream;
 use uuid::Uuid;
 
 use crate::{
-    Aggregate, AggregateRoot, DomainEvent, EntityId, EventEnvelope, Result, SnapshotConfig, Version,
+    Aggregate, AggregateRoot, AggregateVersion, DomainEvent, EntityId, EventEnvelope, Result,
+    SnapshotConfig,
 };
 
 /// Stream ID uniquely identifying an event stream.
@@ -121,14 +122,14 @@ impl From<Position> for i64 {
 /// # Examples
 ///
 /// ```
-/// use event_sauce_core::{Snapshot, Version};
+/// use event_sauce_core::{Snapshot, AggregateVersion};
 /// use uuid::Uuid;
 /// use serde_json::json;
 ///
 /// let snapshot = Snapshot::new(
 ///     Uuid::new_v4(),
 ///     "User".to_string(),
-///     Version::new(100),
+///     AggregateVersion::new(100),
 ///     json!({"email": "user@example.com", "status": "active"}),
 /// );
 /// ```
@@ -138,8 +139,8 @@ pub struct Snapshot {
     pub aggregate_id: Uuid,
     /// Aggregate type.
     pub aggregate_type: String,
-    /// Version at which snapshot was taken.
-    pub snapshot_version: Version,
+    /// [`AggregateVersion`] at which snapshot was taken.
+    pub snapshot_version: AggregateVersion,
     /// Serialized entity state.
     pub snapshot_data: serde_json::Value,
 }
@@ -150,7 +151,7 @@ impl Snapshot {
     pub fn new(
         aggregate_id: Uuid,
         aggregate_type: String,
-        snapshot_version: Version,
+        snapshot_version: AggregateVersion,
         snapshot_data: serde_json::Value,
     ) -> Self {
         Self {
@@ -177,14 +178,14 @@ pub trait EventStore: Send + Sync {
         &self,
         stream_id: StreamId,
         events: Vec<EventEnvelope>,
-        expected_version: Version,
+        expected_version: AggregateVersion,
     ) -> Result<()>;
 
     /// Loads events from a stream starting at a specific version.
     async fn load_stream(
         &self,
         stream_id: StreamId,
-        from_version: Version,
+        from_version: AggregateVersion,
     ) -> Result<impl Stream<Item = Result<EventEnvelope>> + Send>;
 
     /// Streams all events from the store.
@@ -194,12 +195,12 @@ pub trait EventStore: Send + Sync {
     ) -> Result<impl Stream<Item = Result<EventEnvelope>> + Send>;
 
     /// Gets the current version of a stream.
-    async fn get_version(&self, stream_id: StreamId) -> Result<Version>;
+    async fn get_version(&self, stream_id: StreamId) -> Result<AggregateVersion>;
 
     /// Checks if a stream exists.
     async fn stream_exists(&self, stream_id: StreamId) -> Result<bool> {
         let version = self.get_version(stream_id).await?;
-        Ok(version != Version::initial())
+        Ok(version != AggregateVersion::initial())
     }
 
     /// Saves a snapshot.
@@ -267,7 +268,7 @@ pub trait EventStore: Send + Sync {
 
         let aggregate_id = aggregate.entity_id().as_uuid();
         let aggregate_type = AggregateRoot::<A>::aggregate_type();
-        let expected_version = Version::new(
+        let expected_version = AggregateVersion::new(
             aggregate
                 .version()
                 .as_u64()
@@ -359,12 +360,12 @@ where
 
                 let aggregate = AggregateRoot::from_snapshot(snapshot.snapshot_version, entity);
 
-                (aggregate, snapshot.snapshot_version.next())
+                (aggregate, snapshot.snapshot_version)
             }
-            None => (AggregateRoot::new(id), Version::initial()),
+            None => (AggregateRoot::new(id), AggregateVersion::initial()),
         }
     } else {
-        (AggregateRoot::new(id), Version::initial())
+        (AggregateRoot::new(id), AggregateVersion::initial())
     };
 
     // Load events from the appropriate version
@@ -392,7 +393,9 @@ where
 {
     use futures::StreamExt;
 
-    let event_stream = store.load_stream(stream_id, Version::initial()).await?;
+    let event_stream = store
+        .load_stream(stream_id, AggregateVersion::initial())
+        .await?;
     futures::pin_mut!(event_stream);
 
     let mut count = 0;
@@ -487,13 +490,13 @@ mod tests {
         let snapshot = Snapshot::new(
             aggregate_id,
             "Counter".to_string(),
-            Version::new(10),
+            AggregateVersion::new(10),
             snapshot_data.clone(),
         );
 
         assert_eq!(snapshot.aggregate_id, aggregate_id);
         assert_eq!(snapshot.aggregate_type, "Counter");
-        assert_eq!(snapshot.snapshot_version, Version::new(10));
+        assert_eq!(snapshot.snapshot_version, AggregateVersion::new(10));
         assert_eq!(snapshot.snapshot_data, snapshot_data);
     }
 
@@ -506,7 +509,7 @@ mod tests {
         let snapshot = Snapshot::new(
             Uuid::new_v4(),
             "TestAggregate".to_string(),
-            Version::new(10),
+            AggregateVersion::new(10),
             serde_json::json!({"value": 42}),
         );
 
@@ -533,7 +536,7 @@ mod tests {
         let snapshot = Snapshot::new(
             aggregate_id,
             "TestAggregate".to_string(),
-            Version::new(100),
+            AggregateVersion::new(100),
             serde_json::json!({"state": "active"}),
         );
         store.save_snapshot(snapshot).await.unwrap();
@@ -565,7 +568,7 @@ mod tests {
                     stream_id.aggregate_id(),
                     stream_id.aggregate_type().to_string(),
                     "TestEvent".to_string(),
-                    Version::new(i as u64 + 1),
+                    crate::EventVersion::new(i as u64 + 1),
                     serde_json::json!({"index": i}),
                 );
                 events.push(envelope);
@@ -581,7 +584,7 @@ mod tests {
             &self,
             _stream_id: StreamId,
             _events: Vec<EventEnvelope>,
-            _expected_version: Version,
+            _expected_version: AggregateVersion,
         ) -> Result<()> {
             Ok(())
         }
@@ -589,15 +592,16 @@ mod tests {
         async fn load_stream(
             &self,
             stream_id: StreamId,
-            from_version: Version,
+            from_version: AggregateVersion,
         ) -> Result<impl Stream<Item = Result<EventEnvelope>> + Send> {
+            #[allow(clippy::cast_possible_truncation)]
             let events = self
                 .streams
                 .get(&stream_id)
                 .map(|events| {
                     events
                         .iter()
-                        .filter(|e| e.event_version >= from_version)
+                        .skip(from_version.as_u64() as usize)
                         .cloned()
                         .collect::<Vec<_>>()
                 })
@@ -613,13 +617,13 @@ mod tests {
             Ok(stream::empty())
         }
 
-        async fn get_version(&self, stream_id: StreamId) -> Result<Version> {
+        async fn get_version(&self, stream_id: StreamId) -> Result<AggregateVersion> {
             Ok(self
                 .streams
                 .get(&stream_id)
-                .and_then(|events| events.last())
-                .map(|e| e.event_version)
-                .unwrap_or_else(Version::initial))
+                .map_or(AggregateVersion::initial(), |events| {
+                    AggregateVersion::new(events.len() as u64)
+                }))
         }
     }
 
@@ -718,7 +722,7 @@ mod tests {
             &self,
             stream_id: StreamId,
             events: Vec<EventEnvelope>,
-            _expected_version: Version,
+            _expected_version: AggregateVersion,
         ) -> Result<()> {
             *self.append_count.lock().unwrap() += 1;
             let mut streams = self.streams.lock().unwrap();
@@ -729,15 +733,16 @@ mod tests {
         async fn load_stream(
             &self,
             stream_id: StreamId,
-            from_version: Version,
+            from_version: AggregateVersion,
         ) -> Result<impl Stream<Item = Result<EventEnvelope>> + Send> {
             let streams = self.streams.lock().unwrap();
+            #[allow(clippy::cast_possible_truncation)]
             let events = streams
                 .get(&stream_id)
                 .cloned()
                 .unwrap_or_default()
                 .into_iter()
-                .filter(|e| e.event_version >= from_version)
+                .skip(from_version.as_u64() as usize)
                 .map(Ok)
                 .collect::<Vec<_>>();
             Ok(stream::iter(events))
@@ -750,10 +755,10 @@ mod tests {
             Ok(stream::empty())
         }
 
-        async fn get_version(&self, stream_id: StreamId) -> Result<Version> {
+        async fn get_version(&self, stream_id: StreamId) -> Result<AggregateVersion> {
             let streams = self.streams.lock().unwrap();
             let count = streams.get(&stream_id).map_or(0, Vec::len);
-            Ok(Version::new(count as u64))
+            Ok(AggregateVersion::new(count as u64))
         }
 
         async fn save_snapshot(&self, snapshot: Snapshot) -> Result<()> {
@@ -787,7 +792,7 @@ mod tests {
         agg.apply(SimpleTestEvent::Updated { value: 99 }).unwrap();
 
         assert_eq!(agg.pending_events().len(), 2);
-        assert_eq!(agg.version(), Version::new(2));
+        assert_eq!(agg.version(), AggregateVersion::new(2));
 
         store.commit(&mut agg).await.unwrap();
 
@@ -845,7 +850,7 @@ mod tests {
         let stream_id = StreamId::new("SimpleTestEntity", id.as_uuid());
         let snapshots = store.snapshots.lock().unwrap();
         let snapshot = snapshots.get(&stream_id).expect("Snapshot should exist");
-        assert_eq!(snapshot.snapshot_version, Version::new(1));
+        assert_eq!(snapshot.snapshot_version, AggregateVersion::new(1));
         assert_eq!(snapshot.aggregate_type, "SimpleTestEntity");
     }
 
@@ -911,8 +916,8 @@ mod tests {
             agg.pending_events().is_empty(),
             "All pending events should be cleared after successful commit"
         );
-        // Version should be preserved
-        assert_eq!(agg.version(), Version::new(3));
+        // AggregateVersion should be preserved
+        assert_eq!(agg.version(), AggregateVersion::new(3));
     }
 
     // -- load() tests --
@@ -938,8 +943,8 @@ mod tests {
         );
         assert_eq!(
             loaded.version(),
-            Version::new(3),
-            "Version should match number of events"
+            AggregateVersion::new(3),
+            "AggregateVersion should match number of events"
         );
         assert!(
             loaded.pending_events().is_empty(),
@@ -960,7 +965,7 @@ mod tests {
         let snapshot = Snapshot::new(
             id.as_uuid(),
             "SimpleTestEntity".to_string(),
-            Version::new(2),
+            AggregateVersion::new(2),
             snapshot_data,
         );
         store
@@ -969,13 +974,30 @@ mod tests {
             .unwrap()
             .insert(stream_id.clone(), snapshot);
 
-        // Add events after the snapshot version (version 3 and 4)
+        // Add all events (skip-based filtering requires full stream).
+        // Events at index 0 and 1 are pre-snapshot, 2 and 3 are post-snapshot.
+        let envelope1 = EventEnvelope::new(
+            Uuid::new_v4(),
+            id.as_uuid(),
+            "SimpleTestEntity".to_string(),
+            "SimpleTestCreated".to_string(),
+            crate::EventVersion::new(1),
+            serde_json::to_value(&SimpleTestEvent::Created { value: 10 }).unwrap(),
+        );
+        let envelope2 = EventEnvelope::new(
+            Uuid::new_v4(),
+            id.as_uuid(),
+            "SimpleTestEntity".to_string(),
+            "SimpleTestUpdated".to_string(),
+            crate::EventVersion::new(1),
+            serde_json::to_value(&SimpleTestEvent::Updated { value: 20 }).unwrap(),
+        );
         let envelope3 = EventEnvelope::new(
             Uuid::new_v4(),
             id.as_uuid(),
             "SimpleTestEntity".to_string(),
             "SimpleTestUpdated".to_string(),
-            Version::new(3),
+            crate::EventVersion::new(1),
             serde_json::to_value(&SimpleTestEvent::Updated { value: 30 }).unwrap(),
         );
         let envelope4 = EventEnvelope::new(
@@ -983,14 +1005,14 @@ mod tests {
             id.as_uuid(),
             "SimpleTestEntity".to_string(),
             "SimpleTestUpdated".to_string(),
-            Version::new(4),
+            crate::EventVersion::new(1),
             serde_json::to_value(&SimpleTestEvent::Updated { value: 40 }).unwrap(),
         );
         store
             .streams
             .lock()
             .unwrap()
-            .insert(stream_id, vec![envelope3, envelope4]);
+            .insert(stream_id, vec![envelope1, envelope2, envelope3, envelope4]);
 
         // Load from store — should start from snapshot and replay events 3 and 4
         let loaded: AggregateRoot<SimpleTestEntity> = load(&store, id).await.unwrap();
@@ -999,8 +1021,8 @@ mod tests {
             loaded.value, 40,
             "Entity should reflect snapshot + replayed events"
         );
-        // Version should be snapshot (2) + replayed events (2) = 4
-        assert_eq!(loaded.version(), Version::new(4));
+        // AggregateVersion should be snapshot (2) + replayed events (2) = 4
+        assert_eq!(loaded.version(), AggregateVersion::new(4));
     }
 
     #[tokio::test]
@@ -1019,7 +1041,7 @@ mod tests {
         let snapshot = Snapshot::new(
             id.as_uuid(),
             "SimpleTestEntity".to_string(),
-            Version::new(5),
+            AggregateVersion::new(5),
             snapshot_data,
         );
         store
@@ -1034,7 +1056,7 @@ mod tests {
             id.as_uuid(),
             "SimpleTestEntity".to_string(),
             "SimpleTestCreated".to_string(),
-            Version::new(1),
+            crate::EventVersion::new(1),
             serde_json::to_value(&SimpleTestEvent::Created { value: 10 }).unwrap(),
         );
         let envelope2 = EventEnvelope::new(
@@ -1042,7 +1064,7 @@ mod tests {
             id.as_uuid(),
             "SimpleTestEntity".to_string(),
             "SimpleTestUpdated".to_string(),
-            Version::new(2),
+            crate::EventVersion::new(1),
             serde_json::to_value(&SimpleTestEvent::Updated { value: 20 }).unwrap(),
         );
         store
@@ -1058,7 +1080,7 @@ mod tests {
             loaded.value, 20,
             "Should reflect full replay, not snapshot value of 999"
         );
-        assert_eq!(loaded.version(), Version::new(2));
+        assert_eq!(loaded.version(), AggregateVersion::new(2));
     }
 
     #[tokio::test]
@@ -1070,7 +1092,7 @@ mod tests {
         let loaded: AggregateRoot<SimpleTestEntity> = load(&store, id).await.unwrap();
 
         assert_eq!(loaded.value, 0, "Default entity should have value 0");
-        assert_eq!(loaded.version(), Version::initial());
+        assert_eq!(loaded.version(), AggregateVersion::initial());
         assert!(loaded.pending_events().is_empty());
         assert_eq!(loaded.entity_id(), id);
     }

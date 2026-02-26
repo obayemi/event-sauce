@@ -271,8 +271,8 @@ pub fn derive_event(input: TokenStream) -> TokenStream {
                 }
             }
 
-            fn event_version(&self) -> u64 {
-                #version
+            fn event_version(&self) -> event_sauce_core::EventVersion {
+                event_sauce_core::EventVersion::new(#version)
             }
 
             fn occurred_at(&self) -> chrono::DateTime<chrono::Utc> {
