@@ -221,13 +221,16 @@ macro_rules! command_handler {
 /// }
 /// ```
 ///
-/// # Generated Methods
+/// # Generated Code
 ///
-/// The macro generates:
-/// - `new(state: StateType) -> Self` - Constructor
-/// - `state(&self) -> &StateType` - Immutable state access
-/// - `state_mut(&mut self) -> &mut StateType` - Mutable state access
-/// - `handle(&mut self, envelope: &EventEnvelope) -> Result<()>` - Event handler
+/// The macro generates a struct implementing the [`Projection`](crate::Projection) trait:
+/// - `new(state: StateType) -> Self` - Constructor (inherent method)
+/// - `state(&self) -> &StateType` - Immutable state access (via `Projection` trait)
+/// - `state_mut(&mut self) -> &mut StateType` - Mutable state access (via `Projection` trait)
+/// - `handle(&mut self, envelope: &EventEnvelope) -> Result<()>` - Event handler (via `Projection` trait)
+/// - `NAME` - Projection name constant (the struct name as a string)
+/// - `handled_event_types()` - Returns the event types this projection handles
+/// - `event_filter()` - Returns an `EventFilter` matching only handled events
 ///
 /// # Examples
 ///
@@ -261,16 +264,28 @@ macro_rules! command_handler {
 /// }
 /// ```
 ///
+/// # Projection Trait Integration
+///
+/// The generated struct automatically implements the [`Projection`](crate::Projection) trait,
+/// enabling integration with the subscription system:
+///
+/// ```ignore
+/// // Auto-configured subscription using Projection trait
+/// let mut sub = store.projection_subscription::<UserListProjection>().build()?;
+/// sub.run_projection(&mut projection).await?;
+/// ```
+///
 /// # Benefits
 ///
 /// - Declarative event handling
 /// - Type-safe event deserialization
-/// - Automatic pattern matching
+/// - Automatic [`Projection`](crate::Projection) trait implementation
+/// - Automatic `EventFilter` generation from handled event types
 /// - Clean, readable projection definitions
-/// - Ignores unknown events automatically
+/// - Deserialization errors propagated (not silently ignored)
 /// - No string literals needed (uses `EventType` trait)
 /// - Supports both struct names (`RegisteredEvent`) and enum paths (`UserEvent::Registered`)
-/// - Optionally exposes `aggregate_id` from envelope in handler
+/// - Mixed handler signatures: per-handler choice of `aggregate_id` access
 #[macro_export]
 macro_rules! projection {
     // Outer arm 1: Enum variant syntax — on EnumName::Variant |proj, evt(, agg_id)?| { ... }

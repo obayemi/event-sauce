@@ -131,7 +131,7 @@ Read model building via durable subscriptions:
 - **EventFilter** - Filter events by type or aggregate
 - **CheckpointStore** - Track progress for resumability
 - **CheckpointStrategy** - Configure checkpoint frequency
-- No separate projection trait needed - use simple handler functions
+- **Projection** trait - Polymorphic projections with auto-configured subscriptions
 
 ### event-sauce (facade)
 
@@ -452,9 +452,20 @@ impl DomainEvent for MyEvent {
 ```rust
 #[async_trait]
 impl Projection for MyProjection {
-    async fn handle_event(&mut self, event: &EventEnvelope) -> Result<()> {
-        // Custom projection logic
+    type State = MyState;
+    const NAME: &'static str = "MyProjection";
+
+    fn handled_event_types() -> Option<Vec<&'static str>> {
+        Some(vec!["MyEvent"])
     }
+
+    async fn handle(&mut self, envelope: &EventEnvelope) -> Result<()> {
+        // Custom projection logic
+        Ok(())
+    }
+
+    fn state(&self) -> &MyState { &self.state }
+    fn state_mut(&mut self) -> &mut MyState { &mut self.state }
 }
 ```
 

@@ -42,6 +42,17 @@
 //! - **Familiar**: Standard async iterator pattern
 //! - **Flexible**: Use with `filter_map`, `take_while`, etc.
 //!
+//! # Projection Integration
+//!
+//! For projections implementing the [`Projection`](crate::Projection) trait (e.g., via the
+//! `projection!` macro), subscriptions can be auto-configured and run with zero boilerplate:
+//!
+//! ```ignore
+//! // Auto-configured: name, event filter, and checkpoint store from Projection trait
+//! let mut sub = store.projection_subscription::<OrderSummaryProjection>().build()?;
+//! sub.run_projection(&mut projection).await?;
+//! ```
+//!
 //! # Alternative: Callback API
 //!
 //! For simpler cases, the callback API (`run()`) is also available:
@@ -75,6 +86,9 @@ use crate::{EventEnvelope, Position, Result};
 ///
 /// // Match all events
 /// let filter = EventFilter::all();
+///
+/// // Match any of several event types
+/// let filter = EventFilter::any_of_event_types(vec!["UserRegistered", "UserActivated"]);
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EventFilter {

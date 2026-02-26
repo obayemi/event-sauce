@@ -6,8 +6,10 @@ Projections are read models built from event streams. They enable efficient quer
 
 - [What are Projections?](#what-are-projections)
 - [Subscription System](#subscription-system)
+- [The Projection Trait](#the-projection-trait)
 - [Building Projections](#building-projections)
 - [Using Subscriptions](#using-subscriptions)
+- [Convenience API](#convenience-api)
 - [Checkpoint Management](#checkpoint-management)
 - [Real-World Example](#real-world-example)
 - [Production Patterns](#production-patterns)
@@ -83,8 +85,19 @@ use event_sauce_core::EventFilter;
 // Match all events
 let filter = EventFilter::all();
 
-// Match specific event type
+// Match specific event type (string-based)
 let filter = EventFilter::by_event_type("UserRegistered");
+
+// Match specific event type (type-safe, recommended)
+let filter = EventFilter::by_event::<UserRegisteredEvent>();
+
+// Match any of several event types (type-safe, chainable)
+let filter = EventFilter::by_event::<UserRegisteredEvent>()
+    .or_event::<UserActivatedEvent>()
+    .or_event::<OrderCreatedEvent>();
+
+// Match any of several event types (string-based)
+let filter = EventFilter::any_of_event_types(vec!["UserRegistered", "UserActivated"]);
 
 // Match specific aggregate type
 let filter = EventFilter::by_aggregate_type("User");
@@ -93,12 +106,49 @@ let filter = EventFilter::by_aggregate_type("User");
 let filter = EventFilter::both("UserRegistered", "User");
 ```
 
+## The Projection Trait
+
+event-sauce provides a `Projection` trait that enables polymorphic projections and seamless subscription integration:
+
+```rust
+#[async_trait]
+pub trait Projection: Send {
+    /// The projection state type.
+    type State;
+
+    /// The projection name (used as default subscription name).
+    const NAME: &'static str;
+
+    /// Returns event types this projection handles. `None` means all events.
+    fn handled_event_types() -> Option<Vec<&'static str>>;
+
+    /// Returns an EventFilter matching only handled events.
+    fn event_filter() -> EventFilter;
+
+    /// Handle an event envelope, updating projection state.
+    async fn handle(&mut self, envelope: &EventEnvelope) -> Result<()>;
+
+    /// Immutable state access.
+    fn state(&self) -> &Self::State;
+
+    /// Mutable state access.
+    fn state_mut(&mut self) -> &mut Self::State;
+}
+```
+
+The `projection!` macro automatically implements this trait. You can also implement it manually for complex scenarios.
+
+**Key benefits of the trait:**
+- **Auto-configured subscriptions** — `projection_subscription::<P>()` derives the subscription name and event filter from the trait
+- **`run_projection()`** — Process events through a projection with one call
+- **Polymorphism** — Use `dyn Projection` for heterogeneous projection collections
+
 ## Building Projections
 
 event-sauce provides two approaches for building projections:
 
-1. **Using the `projection!` macro** (recommended) - Declarative, less boilerplate
-2. **Manual implementation** - Full control, useful for complex scenarios
+1. **Using the `projection!` macro** (recommended) - Declarative, less boilerplate, auto-implements `Projection` trait
+2. **Manual `Projection` trait implementation** - Full control, useful for complex scenarios
 
 ### Using the `projection!` Macro (Recommended)
 
@@ -201,8 +251,9 @@ let active_users = projection.state().counts.get(&UserStatus::Active);
 - ✅ **Type-safe** - Compile-time verification of event types
 - ✅ **Less boilerplate** - ~60% less code than manual implementation
 - ✅ **Declarative** - Clear per-event handlers
-- ✅ **Auto-generated methods** - `new()`, `state()`, `state_mut()`, `handle()`
-- ✅ **Optional aggregate_id access** - Add third parameter when needed
+- ✅ **Auto-implements `Projection` trait** - `new()`, `state()`, `state_mut()`, `handle()`, `NAME`, `handled_event_types()`, `event_filter()`
+- ✅ **Optional aggregate_id access** - Add third parameter when needed (per-handler choice)
+- ✅ **Deserialization errors propagated** - Errors are returned, not silently ignored
 
 **Handler Signatures:**
 - Two parameters: `|proj, event|` - Standard usage, no aggregate_id needed
@@ -214,9 +265,9 @@ let active_users = projection.state().counts.get(&UserStatus::Active);
 - Custom error handling beyond the default
 - Performance-critical code paths requiring fine-grained control
 
-### Projection Pattern
+### Manual Projection Trait Implementation
 
-Projections in event-sauce are simple structs with handler methods. No trait implementation required - just define your state and a method to process events.
+For complex scenarios, implement the `Projection` trait manually:
 
 ### Manual Implementation Example: User Count
 
@@ -487,6 +538,77 @@ async fn main() -> Result<()> {
 
     Ok(())
 }
+```
+
+## Convenience API
+
+When using the `projection!` macro (or a manual `Projection` trait impl), the subscription system provides several convenience methods that eliminate boilerplate.
+
+### `projection_subscription()` — Zero-Config Setup
+
+The `projection_subscription::<P>()` method auto-derives the subscription name and event filter from the `Projection` trait:
+
+```rust
+// BEFORE: manual wiring (name, filter, checkpoint store all separate)
+let store = backend.event_store();
+let checkpoint_ref: Arc<dyn CheckpointStore> = backend.checkpoint_store();
+let subscription = store
+    .subscription_builder("order-summary")
+    .checkpoint_store(checkpoint_ref)
+    .filter(EventFilter::all())
+    .build()?;
+
+// AFTER: zero-config — name, filter, and stores auto-wired
+let mut sub = backend
+    .projection_subscription::<OrderSummaryProjection>()
+    .build()?;
+```
+
+### `run_projection()` — One-Call Event Processing
+
+Instead of a manual stream loop, `run_projection()` processes all available events through a projection:
+
+```rust
+// BEFORE: manual stream loop
+let stream = subscription.into_stream().await?;
+tokio::pin!(stream);
+while let Some(result) = stream.next().await {
+    let envelope = result?;
+    projection.handle(&envelope).await?;
+}
+
+// AFTER: one call
+sub.run_projection(&mut projection).await?;
+```
+
+### `filter_for_projection()` — Auto-Derive Event Filter
+
+When building a subscription manually but wanting the projection's event filter:
+
+```rust
+let sub = store
+    .subscription_builder("custom-name")
+    .filter_for_projection::<OrderSummaryProjection>()
+    .build()?;
+```
+
+### Full Before/After Comparison
+
+```rust
+// BEFORE (7+ lines of manual wiring):
+let store = backend.event_store();
+let checkpoint_ref: Arc<dyn CheckpointStore> = backend.checkpoint_store();
+let subscription = store.subscription_builder("order-summary")
+    .checkpoint_store(checkpoint_ref).filter(EventFilter::all()).build()?;
+let stream = subscription.into_stream().await?;
+tokio::pin!(stream);
+while let Some(result) = stream.next().await {
+    projection.handle(&result?).await?;
+}
+
+// AFTER (2 lines):
+let mut sub = backend.projection_subscription::<OrderSummaryProjection>().build()?;
+sub.run_projection(&mut projection).await?;
 ```
 
 ## Checkpoint Management

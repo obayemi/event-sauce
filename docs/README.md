@@ -114,17 +114,24 @@ impl CartRepository {
 ### The Projection Pattern
 
 ```rust
-#[async_trait]
-impl Projection for CartSummary {
-    async fn handle_event(&mut self, event: &EventEnvelope) -> Result<()> {
-        match event.event_type.as_str() {
-            "Cart.ItemAdded" => { /* update read model */ }
-            "Cart.CheckedOut" => { /* update read model */ }
-            _ => {}
-        }
-        Ok(())
+// Using the projection! macro (recommended):
+projection! {
+    struct CartSummaryProjection {
+        state: CartSummaryState,
+
+        on CartEvent::ItemAdded |proj, event| {
+            // update read model
+        },
+
+        on CartEvent::CheckedOut |proj, event| {
+            // update read model
+        },
     }
 }
+
+// Auto-configured subscription:
+let mut sub = store.projection_subscription::<CartSummaryProjection>().build()?;
+sub.run_projection(&mut projection).await?;
 ```
 
 ## Testing Strategies

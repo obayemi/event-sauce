@@ -13,15 +13,10 @@
 //! ```
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
-use event_sauce_core::{
-    command_handler, define_events, spec, CheckpointStrategy, EntityId, ErrorPolicy, EventFilter,
-    EventStore, Specification,
-};
+use event_sauce_core::{command_handler, define_events, spec, EntityId, EventStore, Specification};
 use event_sauce_macros::{aggregate, aggregate_error, AggregateError};
 use event_sauce_postgres::PostgresBackend;
-use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
@@ -311,7 +306,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let backend = PostgresBackend::setup(&database_url, "event_sauce").await?;
 
     let store = backend.event_store();
-    let checkpoint_ref: Arc<dyn event_sauce_core::CheckpointStore> = backend.checkpoint_store();
 
     // Create repositories for type-safe aggregate persistence
     println!("  Creating repositories...");
@@ -385,25 +379,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut projection = OrderSummaryProjection::new(ProjectionState::default());
 
-    let subscription = store
-        .subscription_builder("order-summary")
-        .checkpoint_store(checkpoint_ref)
-        .checkpoint_strategy(CheckpointStrategy::EveryN(10))
-        .error_policy(ErrorPolicy::Fail)
-        .filter(EventFilter::all())
+    // Use projection_subscription convenience — name, filter, and checkpoint store are auto-wired
+    let mut subscription = backend
+        .projection_subscription::<OrderSummaryProjection>()
         .build()?;
+    subscription.run_projection(&mut projection).await?;
 
-    let stream = subscription.into_stream().await?;
-    tokio::pin!(stream);
-
-    let mut event_count = 0;
-    while let Some(result) = stream.next().await {
-        let envelope = result?;
-        projection.handle(&envelope).await?;
-        event_count += 1;
-    }
-
-    println!("  Processed {event_count} events");
+    println!("  Processed events via run_projection");
     println!("\n=== Projection Results ===\n");
 
     for order_view in projection.get_all_orders() {
