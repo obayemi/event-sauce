@@ -159,70 +159,66 @@ impl From<CompletedEvent> for OrderEvent { /* ... */ }
 ```rust
 use event_sauce::command_handler;
 
-impl Order {
-    fn create(order_id: String) -> AggregateRoot<Self> {
-        let mut order = AggregateRoot::<Self>::new(EntityId::new());
-        let event = CreatedEvent { order_id, timestamp: Utc::now() };
-        order.apply(event).expect("Creation should never fail");
-        order
-    }
-}
-
-// Auto-generate command methods as OrderCommands trait on AggregateRoot<Order>
+// Auto-generate command methods — supports both regular and @init commands
 command_handler! {
     impl Order {
+        // @init commands generate creation functions + UninitAggregateRoot methods
+        @init fn create_order(order_id: String) -> CreatedEvent { order_id };
+
+        // Regular commands generate methods on AggregateRoot<Order>
         fn add_item(item_id: String, quantity: u32, price: i64) -> ItemAddedEvent {
             item_id, quantity, price
         };
         fn complete() -> CompletedEvent { };
     }
 }
+
+// Usage with creation functions (for @init commands):
+let mut order = Order::create_order("order-123".to_string())?;  // Random ID
+let mut order = Order::create_order_with_id(id, "order-123".to_string())?;  // Explicit ID
+
+// Usage with regular commands:
+order.add_item("item-1".to_string(), 2, 500)?;
+order.complete()?;
 ```
 
-**What `command_handler!` generates:**
+**What `command_handler!` generates for `@init` commands:**
+
+```rust
+// Event helper associated function (no &self — aggregate doesn't exist yet)
+impl Order {
+    pub fn create_order_event(order_id: String) -> CreatedEvent { /* ... */ }
+}
+
+// Init commands trait on UninitAggregateRoot
+pub trait OrderInitCommands {
+    fn create_order(self, order_id: String) -> Result<AggregateRoot<Order>, OrderError>;
+}
+impl OrderInitCommands for UninitAggregateRoot<Order> { /* ... */ }
+
+// Creation functions as associated functions on the aggregate
+impl Order {
+    pub fn create_order(order_id: String) -> Result<AggregateRoot<Order>, OrderError> { /* ... */ }
+    pub fn create_order_with_id(id: EntityId, order_id: String) -> Result<AggregateRoot<Order>, OrderError> { /* ... */ }
+}
+```
+
+**What `command_handler!` generates for regular commands:**
 
 ```rust
 // Event helper functions on Order (the entity)
 impl Order {
     pub fn add_item_event(&self, item_id: String, quantity: u32, price: i64)
-        -> ItemAddedEvent
-    {
-        ItemAddedEvent {
-            item_id,
-            quantity,
-            price,
-            timestamp: Utc::now(),  // Automatic timestamp
-        }
-    }
-
-    pub fn complete_event(&self) -> CompletedEvent {
-        CompletedEvent {
-            timestamp: Utc::now(),
-        }
-    }
+        -> ItemAddedEvent { /* ... */ }
+    pub fn complete_event(&self) -> CompletedEvent { /* ... */ }
 }
 
 // Commands trait on AggregateRoot<Order>
 pub trait OrderCommands {
-    fn add_item(&mut self, item_id: String, quantity: u32, price: i64)
-        -> Result<(), OrderError>;
-    fn complete(&mut self)
-        -> Result<(), OrderError>;
+    fn add_item(&mut self, item_id: String, quantity: u32, price: i64) -> Result<(), OrderError>;
+    fn complete(&mut self) -> Result<(), OrderError>;
 }
-
-impl OrderCommands for AggregateRoot<Order> {
-    fn add_item(&mut self, item_id: String, quantity: u32, price: i64)
-        -> Result<(), OrderError>
-    {
-        let event = self.add_item_event(item_id, quantity, price);
-        self.apply(event)  // Validation happens automatically via define_events!
-    }
-
-    fn complete(&mut self) -> Result<(), OrderError> {
-        let event = self.complete_event();
-        self.apply(event)
-    }
-}
+impl OrderCommands for AggregateRoot<Order> { /* ... */ }
 ```
 
 **Benefits of using both macros together:**
@@ -231,6 +227,71 @@ impl OrderCommands for AggregateRoot<Order> {
 - Automatic timestamp handling - No need to manually add `Utc::now()`
 - Type-safe - Compile-time validation of parameters
 - Self-documenting - Clear command structure
+- Init creation functions for ergonomic aggregate construction
+
+### Init Events with define_events!
+
+For aggregates that shouldn't have a default/empty state, mark creation events with `@init`. Init events construct the aggregate instead of mutating it:
+
+```rust
+define_events! {
+    pub enum OrderEvent for Order {
+        // @init event — constructs the aggregate
+        Created {
+            order_id: String,
+        }
+        @init
+        @validate |evt| {
+            if evt.order_id.is_empty() {
+                return Err(OrderError::EmptyOrderId);
+            }
+            Ok(())
+        }
+        => |id, event| {
+            // Return a new aggregate — not &mut, but construction
+            Order {
+                id,
+                order_id: event.order_id.clone(),
+                status: OrderStatus::Pending,
+            }
+        },
+
+        // Regular events — mutate existing aggregate
+        Completed {} => |order, _event| {
+            order.status = OrderStatus::Completed;
+        },
+    }
+}
+```
+
+Key differences for `@init` events:
+- `@validate` takes one argument (the event) — no aggregate exists yet
+- Apply closure uses `|id, event|` and returns the aggregate
+- Generates `InitEvent<A>` instead of `ApplyEvent<A>`
+- `@post_validate` still takes `|aggregate, event|` (runs after construction)
+
+### Manual Event Creation
+
+For complex scenarios requiring fine-grained control (conditional events, saga orchestration, multi-event transactions), you can bypass `command_handler!` and create events manually:
+
+```rust
+// Advanced escape hatch — use when command_handler! isn't flexible enough
+impl AggregateRoot<Order> {
+    fn complex_operation(&mut self, input: ComplexInput) -> Result<(), OrderError> {
+        // Conditional event creation
+        if input.needs_discount {
+            self.apply(DiscountAppliedEvent { ... })?;
+        }
+        // Multiple events in one operation
+        for item in input.items {
+            self.apply(ItemAddedEvent { ... })?;
+        }
+        Ok(())
+    }
+}
+```
+
+Prefer `command_handler!` for standard patterns; use manual event creation for complex cases.
 
 ### Manual Event Definition
 

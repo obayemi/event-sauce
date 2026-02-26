@@ -63,7 +63,7 @@ That's it! You now have a fully functional event-sourced aggregate with validati
 
 Want to see full working examples? Check out:
 
-- **[postgres-quickstart.rs](../crates/event-sauce/examples/postgres-quickstart.rs)** - Demonstrates User and Order aggregates with projections, PostgreSQL backend, and the subscription system. Uses `define_events!` macro (recommended for most use cases).
+- **[postgres-quickstart.rs](../crates/event-sauce/examples/postgres-quickstart.rs)** - Demonstrates User and Order aggregates (both with init events), creation functions, commands, projections, PostgreSQL backend, and the subscription system. Uses `define_events!` and `command_handler!` macros.
   ```bash
   cargo run --example postgres-quickstart --all-features
   ```
@@ -378,8 +378,60 @@ Now that you understand the basics, explore:
 3. **[PostgreSQL Backend](postgres-production.md)** - Use a production-ready store (see `PostgresBackend` for easy setup)
 4. **[Projections Guide](projections.md)** - Build read models
 5. **Complete Examples** - See real-world applications:
-   - **[postgres-quickstart.rs](../crates/event-sauce/examples/postgres-quickstart.rs)** - User and Order aggregates with projections using `define_events!` macro (recommended approach)
+   - **[postgres-quickstart.rs](../crates/event-sauce/examples/postgres-quickstart.rs)** - User and Order aggregates with init events, creation functions, and projections (recommended approach)
    - **[apply-event.rs](../crates/event-sauce/examples/apply-event.rs)** - Bank account with manual `ApplyEvent` trait implementation (for complex validation scenarios)
+
+## Init Aggregates
+
+Some aggregates have required fields that can't have meaningful defaults. Use **init events** to construct the aggregate from its first event, eliminating `Option` fields and `Default` implementations:
+
+```rust
+// 1. Define events — mark creation event with @init
+define_events! {
+    pub enum OrderEvent for Order {
+        Created {
+            user_id: EntityId,
+        }
+        @init
+        => |id, event| {
+            Order { id, user_id: event.user_id, status: OrderStatus::Pending }
+        },
+
+        Completed {} => |order, _event| {
+            order.status = OrderStatus::Completed;
+        },
+    }
+}
+
+// 2. Define aggregate with init flag (no Default needed!)
+#[aggregate(event = "OrderEvent", error = "OrderError", init)]
+#[derive(Serialize, Deserialize)]
+struct Order {
+    #[id]
+    id: EntityId,
+    user_id: EntityId,  // Always valid — no Option needed!
+    status: OrderStatus,
+}
+
+// 3. Define commands — @init commands generate creation functions
+command_handler! {
+    impl Order {
+        @init fn create_order(user_id: EntityId) -> CreatedEvent { user_id };
+        fn complete() -> CompletedEvent { };
+    }
+}
+
+// 4. Use creation functions for ergonomic aggregate construction
+let mut order = Order::create_order(user_id)?;           // Random ID
+let mut order = Order::create_order_with_id(id, user_id)?; // Explicit ID
+order.complete()?;
+```
+
+**Benefits:**
+- No `Option` fields — all fields are always valid after construction
+- No `Default` implementation needed
+- Compile-time lifecycle safety — can't call regular commands before init
+- Ergonomic creation functions generated automatically
 
 ## Common Patterns
 

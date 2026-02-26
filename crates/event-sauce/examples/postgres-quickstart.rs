@@ -1,9 +1,10 @@
 //! # PostgreSQL Quick Start Example
 //!
 //! This example demonstrates:
-//! - Two aggregates: User (DefaultEntity) and Order (init events)
+//! - Two aggregates: User and Order (both using init events)
+//! - Init creation functions for ergonomic aggregate construction
 //! - Repository pattern for type-safe aggregate persistence
-//! - Init events for Order — no Option fields, compile-time lifecycle safety
+//! - Commands for all mutations — no manual event application
 //! - A projection that combines data from both aggregates
 //! - PostgreSQL backend for events, snapshots, and projections
 //! - Subscription system for real-time projection updates
@@ -23,7 +24,7 @@ use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
 
 // ============================================================================
-// User Aggregate (DefaultEntity — traditional pattern)
+// User Aggregate (Init Event — type-state pattern)
 // ============================================================================
 
 /// User domain errors - auto-implements AggregateError trait
@@ -31,32 +32,40 @@ use testcontainers_modules::testcontainers::runners::AsyncRunner;
 enum UserError {
     #[error("Invalid email: {0}")]
     InvalidEmail(String),
+    #[error("Empty name")]
+    EmptyName,
 }
 
 /// User status
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 enum UserStatus {
-    #[default]
     Active,
 }
 
-// User events with define_events! macro (defined BEFORE aggregate)
+// User events with define_events! macro — Created is an @init event
 define_events! {
     enum UserEvent for User {
         Created {
             email: String,
             name: String,
         }
-        @validate |_agg, evt| {
+        @init
+        @validate |evt| {
             if !evt.email.contains('@') {
                 return Err(UserError::InvalidEmail(evt.email.clone()));
             }
+            if evt.name.is_empty() {
+                return Err(UserError::EmptyName);
+            }
             Ok(())
         }
-        => |user, event| {
-            user.email = event.email.clone();
-            user.name = event.name.clone();
-            user.status = UserStatus::Active;
+        => |id, event| {
+            User {
+                id,
+                email: event.email.clone(),
+                name: event.name.clone(),
+                status: UserStatus::Active,
+            }
         },
 
         EmailChanged {
@@ -74,9 +83,10 @@ define_events! {
     }
 }
 
-/// User aggregate with #[aggregate] macro (DefaultEntity auto-generated)
-#[aggregate(event = "UserEvent", error = "UserError")]
-#[derive(Default, Serialize, Deserialize)]
+/// User aggregate with init — no Default needed, no Option fields!
+/// The `init` flag skips DefaultEntity; aggregate is constructed via init events.
+#[aggregate(event = "UserEvent", error = "UserError", init)]
+#[derive(Serialize, Deserialize)]
 struct User {
     #[id]
     id: EntityId,
@@ -88,6 +98,9 @@ struct User {
 // Use command_handler! macro for command methods
 command_handler! {
     impl User {
+        /// Create a new user (init command)
+        @init fn create_user(email: String, name: String) -> CreatedEvent { email, name };
+
         /// Change user's email address
         fn change_email(new_email: String) -> EmailChangedEvent { new_email };
     }
@@ -131,7 +144,6 @@ spec!(OrderIsPending for Order, "Order must be pending", |o| {
 
 // Order events with @init — OrderCreated constructs the aggregate
 define_events! {
-    @with_init
     enum OrderEvent for Order {
         OrderCreated {
             user_id: EntityId,
@@ -192,7 +204,6 @@ struct Order {
 
 // Use command_handler! with @init for type-safe lifecycle
 command_handler! {
-    @with_init
     impl Order {
         /// Create a new order (init command — on UninitAggregateRoot)
         @init fn create_order(user_id: EntityId) -> OrderCreatedEvent { user_id };
@@ -302,8 +313,9 @@ impl OrderSummaryProjection {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Event Sauce - PostgreSQL Quick Start\n");
     println!("This example demonstrates:");
-    println!("  - Two aggregates: User (DefaultEntity) and Order (init events)");
-    println!("  - Init events: Order has no Option fields, compile-time lifecycle safety");
+    println!("  - Two aggregates: User and Order (both init events)");
+    println!("  - Init creation functions: User::create_user(), Order::create_order()");
+    println!("  - Commands for all mutations — no manual event application");
     println!("  - Repository pattern for type-safe persistence");
     println!("  - Projection combining data from both");
     println!("  - PostgreSQL backend with testcontainers\n");
@@ -324,34 +336,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let user_repo = store.repository::<User>();
     let order_repo = store.repository::<Order>();
 
-    println!("\n=== Creating Users ===\n");
+    println!("\n=== Creating Users (Init Events) ===\n");
 
-    // Create users (DefaultEntity pattern — repo.create() returns AggregateRoot)
-    let mut alice = user_repo.create();
-    alice.apply(CreatedEvent {
-        email: "alice@example.com".to_string(),
-        name: "Alice Smith".to_string(),
-        timestamp: chrono::Utc::now(),
-    })?;
+    // Create users using init creation functions — ergonomic one-liner!
+    let mut alice = User::create_user("alice@example.com".to_string(), "Alice Smith".to_string())?;
     println!("  Created user: {} ({})", alice.name, alice.email);
     user_repo.save(&mut alice).await?;
 
-    let mut bob = user_repo.create();
-    bob.apply(CreatedEvent {
-        email: "bob@example.com".to_string(),
-        name: "Bob Jones".to_string(),
-        timestamp: chrono::Utc::now(),
-    })?;
+    let mut bob = User::create_user("bob@example.com".to_string(), "Bob Jones".to_string())?;
     println!("  Created user: {} ({})", bob.name, bob.email);
     user_repo.save(&mut bob).await?;
 
     println!("\n=== Creating Orders (Init Events) ===\n");
 
-    // Create orders using init events — type-state transition!
-    // create_uninit() returns UninitAggregateRoot, create_order() consumes it
-    // and returns AggregateRoot (compile-time lifecycle enforcement)
-    let uninit1 = order_repo.create_uninit();
-    let mut order1 = uninit1.create_order(alice.entity_id())?;
+    // Create orders using init creation functions — ergonomic one-liner!
+    let mut order1 = Order::create_order(alice.entity_id())?;
     order1.add_item("laptop".to_string(), 1, 120_000)?;
     order1.add_item("mouse".to_string(), 2, 2500)?;
     println!(
@@ -363,11 +362,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Order user_id: {} (no Option!)", order1.user_id);
     order_repo.save(&mut order1).await?;
 
-    // Alternative: create_with() for one-liner init
-    let mut order2 = order_repo.create_with(OrderCreatedEvent {
-        user_id: bob.entity_id(),
-        timestamp: chrono::Utc::now(),
-    })?;
+    // Alternative: create with explicit ID
+    let order2_id = EntityId::new();
+    let mut order2 = Order::create_order_with_id(order2_id, bob.entity_id())?;
     order2.add_item("keyboard".to_string(), 1, 8500)?;
     println!(
         "  Order {} created for Bob (${:.2})",

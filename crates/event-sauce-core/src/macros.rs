@@ -12,24 +12,28 @@
 ///
 /// 1. **Event helper functions** on the entity type (for creating events)
 /// 2. **A commands trait** implemented on `AggregateRoot<Entity>` (for applying them)
+/// 3. **Init commands trait** (if any `@init` commands) on `UninitAggregateRoot<Entity>`
+/// 4. **Init creation functions** (if any `@init` commands) as associated functions on the entity
 ///
 /// # Syntax
 ///
 /// ```ignore
 /// command_handler! {
 ///     impl AggregateType {
+///         // Regular commands (on AggregateRoot)
 ///         fn command_name(param1: Type1, param2: Type2)
 ///             -> EventStruct { field1, field2 };
 ///
-///         fn another_command()
-///             -> AnotherEventStruct { };
+///         // Init commands (on UninitAggregateRoot + creation functions)
+///         @init fn create(param1: Type1)
+///             -> CreatedEventStruct { field1 };
 ///     }
 /// }
 /// ```
 ///
 /// # Generated Code
 ///
-/// For each command, the macro generates:
+/// For each **regular** command, the macro generates:
 ///
 /// 1. **Event helper function** on entity: `<command>_event(&self, params) -> EventStruct`
 ///    - Creates the event struct with provided parameters
@@ -40,78 +44,35 @@
 ///    - `<command>(&mut self, params) -> Result<(), Error>`
 ///    - Applies the event through `AggregateRoot::apply()`
 ///
+/// For each **`@init`** command, the macro generates:
+///
+/// 1. **Event helper associated function**: `Aggregate::cmd_event(params) -> EventStruct` (no `&self`)
+/// 2. **Init commands trait + impl on `UninitAggregateRoot`**:
+///    - `<command>(self, params) -> Result<AggregateRoot<A>, Error>`
+/// 3. **Creation functions** as associated functions on the entity:
+///    - `Aggregate::cmd(params) -> Result<AggregateRoot<A>, Error>` (random ID)
+///    - `Aggregate::cmd_with_id(id, params) -> Result<AggregateRoot<A>, Error>` (explicit ID)
+///
 /// # Examples
 ///
 /// ```ignore
 /// use event_sauce_core::command_handler;
 ///
 /// command_handler! {
-///     impl Counter {
-///         fn increment(amount: i32) -> CounterIncrementedEvent { amount };
-///         fn reset() -> CounterResetEvent { };
-///     }
-/// }
-/// ```
-///
-/// This expands to:
-///
-/// ```ignore
-/// impl Counter {
-///     pub fn increment_event(&self, amount: i32) -> CounterIncrementedEvent {
-///         CounterIncrementedEvent {
-///             amount,
-///             timestamp: ::chrono::Utc::now(),
-///         }
-///     }
-///
-///     pub fn reset_event(&self) -> CounterResetEvent {
-///         CounterResetEvent {
-///             timestamp: ::chrono::Utc::now(),
-///         }
+///     impl Order {
+///         @init fn create_order(user_id: EntityId) -> OrderCreatedEvent { user_id };
+///         fn add_item(item: String, qty: u32) -> ItemAddedEvent { item, qty };
 ///     }
 /// }
 ///
-/// pub trait CounterCommands {
-///     fn increment(&mut self, amount: i32)
-///         -> Result<(), <Counter as Aggregate>::Error>;
-///     fn reset(&mut self)
-///         -> Result<(), <Counter as Aggregate>::Error>;
-/// }
+/// // Creation functions (random ID):
+/// let mut order = Order::create_order(user_id)?;
 ///
-/// impl CounterCommands for AggregateRoot<Counter> {
-///     fn increment(&mut self, amount: i32)
-///         -> Result<(), <Counter as Aggregate>::Error>
-///     {
-///         let event = self.increment_event(amount);
-///         self.apply(event)
-///     }
-///     fn reset(&mut self)
-///         -> Result<(), <Counter as Aggregate>::Error>
-///     {
-///         let event = self.reset_event();
-///         self.apply(event)
-///     }
-/// }
-/// ```
+/// // Creation functions (explicit ID):
+/// let mut order = Order::create_order_with_id(id, user_id)?;
 ///
-/// # Using Event Helper Functions
-///
-/// The event helper functions are useful for:
-///
-/// - **Conditional application**: Create events and apply only if conditions are met
-/// - **Batch operations**: Create multiple events before applying them
-/// - **Testing**: Create events without modifying aggregate state
-/// - **Custom workflows**: Full control over when events are applied
-///
-/// ```ignore
-/// // Use command methods on AggregateRoot
-/// let mut root = AggregateRoot::<Counter>::new(EntityId::new());
-/// root.increment(5)?;
-/// root.reset()?;
-///
-/// // Or use event helpers for fine-grained control
-/// let event = root.increment_event(5);
-/// root.apply(event)?;
+/// // Regular commands (on AggregateRoot):
+/// order.add_item("laptop".to_string(), 1)?;
 /// ```
 ///
 /// # Benefits
@@ -121,62 +82,12 @@
 /// - Automatic timestamp handling
 /// - Type-safe command parameters
 /// - Commands operate through `AggregateRoot` (events are the only mutation path)
+/// - Init creation functions provide ergonomic aggregate construction
 #[macro_export]
 macro_rules! command_handler {
+    // Single entry point — always delegates to TT muncher.
+    // Supports both `@init` and regular commands without needing `@with_init`.
     (
-        impl $aggregate:ty {
-            $(
-                $(#[$attr:meta])*
-                fn $command:ident($($param:ident: $param_ty:ty),* $(,)?)
-                    -> $event_struct:ident { $($field:ident),* $(,)? }
-            );* $(;)?
-        }
-    ) => {
-        // Generate event helper functions on the entity type
-        impl $aggregate {
-            $(
-                paste::paste! {
-                    $(#[$attr])*
-                    #[allow(missing_docs)]
-                    pub fn [<$command _event>](&self, $($param: $param_ty),*) -> $event_struct {
-                        $event_struct {
-                            $($field: $param,)*
-                            timestamp: ::chrono::Utc::now(),
-                        }
-                    }
-                }
-            )*
-        }
-
-        // Generate commands trait
-        paste::paste! {
-            #[allow(missing_docs, private_interfaces)]
-            pub trait [<$aggregate Commands>] {
-                $(
-                    $(#[$attr])*
-                    fn $command(&mut self, $($param: $param_ty),*)
-                        -> ::std::result::Result<(), <$aggregate as $crate::Aggregate>::Error>;
-                )*
-            }
-
-            // Implement commands trait on AggregateRoot<Entity>
-            impl [<$aggregate Commands>] for $crate::AggregateRoot<$aggregate> {
-                $(
-                    $(#[$attr])*
-                    fn $command(&mut self, $($param: $param_ty),*)
-                        -> ::std::result::Result<(), <$aggregate as $crate::Aggregate>::Error>
-                    {
-                        let event = self.[<$command _event>]($($param),*);
-                        self.apply(event)
-                    }
-                )*
-            }
-        }
-    };
-
-    // Init-aware entry point — delegates to __command_handler_init_internal TT muncher
-    (
-        @with_init
         impl $aggregate:ty {
             $($rest:tt)*
         }
@@ -190,26 +101,16 @@ macro_rules! command_handler {
     };
 }
 
-/// Init-aware command_handler! — supports @init flag on individual commands.
+/// Internal TT muncher for command_handler! — supports @init flag on individual commands.
 ///
 /// When `@init` is present on a command:
 /// - Event helper is an **associated function** (no `&self`): `Aggregate::cmd_event(params) -> Event`
 /// - Command method is on `UninitAggregateRoot<Aggregate>`, consuming `self` and returning
 ///   `Result<AggregateRoot<Aggregate>, Error>`
+/// - Creation functions are generated: `Aggregate::cmd(params) -> Result<AggregateRoot<A>, Error>`
+///   and `Aggregate::cmd_with_id(id, params) -> Result<AggregateRoot<A>, Error>`
 ///
-/// Regular commands (no `@init`) generate the same code as the standard `command_handler!`.
-///
-/// # Syntax
-///
-/// ```ignore
-/// command_handler! {
-///     @with_init
-///     impl Order {
-///         @init fn create(user_id: EntityId) -> OrderCreatedEvent { user_id };
-///         fn add_item(item: String, qty: u32) -> ItemAddedEvent { item, qty };
-///     }
-/// }
-/// ```
+/// Regular commands (no `@init`) generate the same code as before.
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __command_handler_init_internal {
@@ -316,6 +217,39 @@ macro_rules! __command_handler_init_internal {
                 )*
             }
         }
+
+        // --- Init creation functions: associated functions returning AggregateRoot ---
+        $(
+            paste::paste! {
+                impl $aggregate {
+                    $(#[$i_attr])*
+                    #[allow(missing_docs)]
+                    pub fn $i_cmd($($i_param: $i_param_ty),*)
+                        -> ::std::result::Result<
+                            $crate::AggregateRoot<$aggregate>,
+                            <$aggregate as $crate::Aggregate>::Error,
+                        >
+                    {
+                        let event = $aggregate::[<$i_cmd _event>]($($i_param),*);
+                        $crate::UninitAggregateRoot::<$aggregate>::new(
+                            $crate::EntityId::new()
+                        ).apply_init(event)
+                    }
+
+                    $(#[$i_attr])*
+                    #[allow(missing_docs)]
+                    pub fn [<$i_cmd _with_id>](id: $crate::EntityId, $($i_param: $i_param_ty),*)
+                        -> ::std::result::Result<
+                            $crate::AggregateRoot<$aggregate>,
+                            <$aggregate as $crate::Aggregate>::Error,
+                        >
+                    {
+                        let event = $aggregate::[<$i_cmd _event>]($($i_param),*);
+                        $crate::UninitAggregateRoot::<$aggregate>::new(id).apply_init(event)
+                    }
+                }
+            }
+        )*
 
         // --- Regular commands trait + impl on AggregateRoot ---
         paste::paste! {
@@ -703,60 +637,10 @@ macro_rules! projection {
 #[macro_export]
 macro_rules! define_events {
     // =========================================================================
-    // Main entry point — backward-compatible, all-regular-events form
+    // Single entry point — always uses TT muncher.
+    // Supports both `@init` and regular variants without needing `@with_init`.
     // =========================================================================
-    //
-    // This arm matches when ALL events are regular (no @init).
-    // Delegates to the internal @build rule with `regular` classification.
     (
-        $vis:vis enum $event_enum:ident for $aggregate:ty {
-            $(
-                $variant:ident {
-                    $($field:ident: $field_ty:ty),* $(,)?
-                }
-                $(@version($version:literal))?
-                $(@validate |$val_agg:ident, $val_evt:ident| $val_body:block)?
-                $(@validate_spec($val_spec:expr))?
-                $(@post_validate |$post_val_agg:ident, $post_val_evt:ident| $post_val_body:block)?
-                $(@post_validate_spec($post_val_spec:expr))?
-                => $apply:expr
-            ),* $(,)?
-        }
-    ) => {
-        define_events! {
-            @build
-            [$vis] [$event_enum] [$aggregate]
-            variants: [
-                $(
-                    {
-                        variant: $variant,
-                        fields: { $($field: $field_ty),* },
-                        kind: regular,
-                        version: [$([$version])?],
-                        validate: [$([$val_agg, $val_evt, $val_body])?],
-                        validate_spec: [$([$val_spec])?],
-                        post_validate: [$([$post_val_agg, $post_val_evt, $post_val_body])?],
-                        post_validate_spec: [$([$post_val_spec])?],
-                        apply: $apply,
-                    }
-                )*
-            ]
-        }
-    };
-
-    // =========================================================================
-    // Init-aware entry point — supports @init flag on individual variants
-    // =========================================================================
-    //
-    // Usage: define_events! { @with_init pub enum E for A { ... } }
-    //
-    // Init event differences:
-    // - `@init` flag after fields
-    // - `@validate |event| { ... }` — one arg (no aggregate exists yet)
-    // - `=> |id, event| -> A { ... }` — constructs aggregate
-    // - Implements `InitEvent<A>` instead of `ApplyEvent<A>`
-    (
-        @with_init
         $vis:vis enum $event_enum:ident for $aggregate:ty {
             $($rest:tt)*
         }
@@ -3562,7 +3446,6 @@ mod tests {
     }
 
     define_events! {
-        @with_init
         pub enum AccountEvent for Account {
             AccountOpened {
                 name: String,
@@ -3809,7 +3692,6 @@ mod tests {
     // ===== @init command_handler! macro tests =====
 
     command_handler! {
-        @with_init
         impl Account {
             @init fn open_account(name: String, initial_balance: i64)
                 -> AccountOpenedEvent { name, initial_balance };
@@ -3956,5 +3838,58 @@ mod tests {
         } else {
             panic!("Expected Deposited variant");
         }
+    }
+
+    // ===== Init creation function tests =====
+
+    #[test]
+    fn test_init_creation_fn_creates_aggregate() {
+        let agg = Account::open_account("Alice".to_string(), 100).unwrap();
+        assert_eq!(agg.name, "Alice");
+        assert_eq!(agg.balance, 100);
+        assert_eq!(agg.version(), AggregateVersion::new(1));
+        assert_eq!(agg.pending_events().len(), 1);
+    }
+
+    #[test]
+    fn test_init_creation_fn_with_id() {
+        let id = EntityId::new();
+        let agg = Account::open_account_with_id(id, "Bob".to_string(), 200).unwrap();
+        assert_eq!(agg.entity_id(), id);
+        assert_eq!(agg.name, "Bob");
+        assert_eq!(agg.balance, 200);
+    }
+
+    #[test]
+    fn test_init_creation_fn_validation_fails() {
+        let result = Account::open_account(String::new(), 100);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().to_string(), "Empty name");
+    }
+
+    #[test]
+    fn test_init_creation_fn_with_id_validation_fails() {
+        let id = EntityId::new();
+        let result = Account::open_account_with_id(id, String::new(), 100);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().to_string(), "Empty name");
+    }
+
+    #[test]
+    fn test_init_creation_fn_then_regular_commands() {
+        let mut agg = Account::open_account("Alice".to_string(), 100).unwrap();
+        agg.deposit(50).unwrap();
+        agg.withdraw(30).unwrap();
+
+        assert_eq!(agg.balance, 120);
+        assert_eq!(agg.version(), AggregateVersion::new(3));
+        assert_eq!(agg.pending_events().len(), 3);
+    }
+
+    #[test]
+    fn test_init_creation_fn_generates_unique_ids() {
+        let agg1 = Account::open_account("Alice".to_string(), 100).unwrap();
+        let agg2 = Account::open_account("Bob".to_string(), 200).unwrap();
+        assert_ne!(agg1.entity_id(), agg2.entity_id());
     }
 }

@@ -2,8 +2,6 @@
 
 - [ ] add the snapshot store as optional attribute to the event store to allow not requiring it when building subscription
 
-- [ ] update examples to use projection! macro
-
 - [ ] investigate if it would be possible to implement a version of the projection macro that would not require to write the event twice
 
 - [ ] make EventStore object safe by using pin<box<dyn Stream>> instead of "impl stream" to allow Arc<dyn EventStore>
@@ -16,5 +14,7 @@
   - [x] base implementation
   - [x] fix projections
 
-- [ ] update postgres-quickstart main to use commands instead of apply and generating events manually
-        (do keep 
+- [x] design an api to add @init commands that will be defined on the repository
+  - [x] init creation functions: `Aggregate::cmd()` and `Aggregate::cmd_with_id()`
+  - [x] remove @with_init — unified entry points for command_handler! and define_events!
+  - [x] update postgres-quickstart to use commands everywhere
