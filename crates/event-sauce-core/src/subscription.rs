@@ -91,6 +91,8 @@ pub enum EventFilter {
         /// Aggregate type to match.
         aggregate_type: String,
     },
+    /// Match any of the given event types.
+    AnyOfEventTypes(Vec<String>),
 }
 
 impl EventFilter {
@@ -169,6 +171,53 @@ impl EventFilter {
         }
     }
 
+    /// Creates a filter matching any of the given event type strings.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use event_sauce_core::EventFilter;
+    ///
+    /// let filter = EventFilter::any_of_event_types(["User.Created", "User.Updated"]);
+    /// ```
+    #[must_use]
+    pub fn any_of_event_types(types: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        let mut types: Vec<String> = types.into_iter().map(Into::into).collect();
+        if types.len() == 1 {
+            Self::EventType(types.swap_remove(0))
+        } else {
+            Self::AnyOfEventTypes(types)
+        }
+    }
+
+    /// Extends this filter to also match another event type.
+    ///
+    /// Promotes `EventType` to `AnyOfEventTypes` automatically.
+    /// Only works on `EventType` and `AnyOfEventTypes` variants;
+    /// other variants are returned unchanged.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use event_sauce_core::EventFilter;
+    ///
+    /// let filter = EventFilter::by_event::<UserCreatedEvent>()
+    ///     .or_event::<UserUpdatedEvent>();
+    /// ```
+    #[must_use]
+    pub fn or_event<T: crate::EventType>(self) -> Self {
+        match self {
+            Self::EventType(existing) => {
+                Self::AnyOfEventTypes(vec![existing, T::EVENT_TYPE.to_string()])
+            }
+            Self::AnyOfEventTypes(mut types) => {
+                types.push(T::EVENT_TYPE.to_string());
+                Self::AnyOfEventTypes(types)
+            }
+            other => other,
+        }
+    }
+
     /// Checks if an event matches this filter.
     ///
     /// # Examples
@@ -200,6 +249,7 @@ impl EventFilter {
                 event_type,
                 aggregate_type,
             } => &event.event_type == event_type && &event.aggregate_type == aggregate_type,
+            Self::AnyOfEventTypes(types) => types.iter().any(|t| t == &event.event_type),
         }
     }
 }
@@ -704,6 +754,105 @@ mod tests {
 
         assert!(filter.matches(&matching));
         assert!(!filter.matches(&non_matching));
+    }
+
+    #[test]
+    fn test_event_filter_any_of_event_types() {
+        let filter =
+            EventFilter::any_of_event_types(["UserCreated", "UserUpdated", "UserDeleted"]);
+
+        let matching1 = create_test_envelope("UserCreated", "User");
+        let matching2 = create_test_envelope("UserUpdated", "User");
+        let matching3 = create_test_envelope("UserDeleted", "User");
+        let non_matching = create_test_envelope("OrderCreated", "Order");
+
+        assert!(filter.matches(&matching1));
+        assert!(filter.matches(&matching2));
+        assert!(filter.matches(&matching3));
+        assert!(!filter.matches(&non_matching));
+    }
+
+    #[test]
+    fn test_event_filter_any_of_event_types_single_element_optimization() {
+        let filter = EventFilter::any_of_event_types(["UserCreated"]);
+        // Single element should be optimized to EventType variant
+        assert_eq!(filter, EventFilter::EventType("UserCreated".to_string()));
+    }
+
+    #[test]
+    fn test_event_filter_any_of_event_types_empty() {
+        let filter = EventFilter::any_of_event_types(std::iter::empty::<String>());
+        // Empty matches nothing
+        let envelope = create_test_envelope("UserCreated", "User");
+        assert!(!filter.matches(&envelope));
+    }
+
+    #[test]
+    fn test_event_filter_or_event_from_event_type() {
+        // Helper types for type-safe or_event
+        struct EventA;
+        impl crate::EventType for EventA {
+            const EVENT_TYPE: &'static str = "EventA";
+        }
+        struct EventB;
+        impl crate::EventType for EventB {
+            const EVENT_TYPE: &'static str = "EventB";
+        }
+
+        let filter = EventFilter::by_event::<EventA>().or_event::<EventB>();
+
+        let matching_a = create_test_envelope("EventA", "Test");
+        let matching_b = create_test_envelope("EventB", "Test");
+        let non_matching = create_test_envelope("EventC", "Test");
+
+        assert!(filter.matches(&matching_a));
+        assert!(filter.matches(&matching_b));
+        assert!(!filter.matches(&non_matching));
+    }
+
+    #[test]
+    fn test_event_filter_or_event_chaining() {
+        struct EventA;
+        impl crate::EventType for EventA {
+            const EVENT_TYPE: &'static str = "EventA";
+        }
+        struct EventB;
+        impl crate::EventType for EventB {
+            const EVENT_TYPE: &'static str = "EventB";
+        }
+        struct EventC;
+        impl crate::EventType for EventC {
+            const EVENT_TYPE: &'static str = "EventC";
+        }
+
+        let filter = EventFilter::by_event::<EventA>()
+            .or_event::<EventB>()
+            .or_event::<EventC>();
+
+        assert!(filter.matches(&create_test_envelope("EventA", "Test")));
+        assert!(filter.matches(&create_test_envelope("EventB", "Test")));
+        assert!(filter.matches(&create_test_envelope("EventC", "Test")));
+        assert!(!filter.matches(&create_test_envelope("EventD", "Test")));
+    }
+
+    #[test]
+    fn test_event_filter_or_event_on_non_event_type_is_noop() {
+        struct EventA;
+        impl crate::EventType for EventA {
+            const EVENT_TYPE: &'static str = "EventA";
+        }
+
+        // or_event on All should be a no-op
+        let filter = EventFilter::all().or_event::<EventA>();
+        assert_eq!(filter, EventFilter::All);
+
+        // or_event on AggregateType should be a no-op
+        let filter = EventFilter::by_aggregate_type("User").or_event::<EventA>();
+        assert_eq!(filter, EventFilter::by_aggregate_type("User"));
+
+        // or_event on Both should be a no-op
+        let filter = EventFilter::both("Event", "Type").or_event::<EventA>();
+        assert_eq!(filter, EventFilter::both("Event", "Type"));
     }
 
     #[test]
