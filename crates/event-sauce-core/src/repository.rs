@@ -206,6 +206,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_repository_from_store_convenience() {
+        let store = Arc::new(MockEventStore::new());
+        // Use the convenience method instead of Repository::<S, A>::new()
+        let repo = store.repository::<SimpleTestEntity>();
+
+        let test_id = EntityId::new();
+        let mut aggregate = AggregateRoot::<SimpleTestEntity>::new(test_id);
+        aggregate
+            .apply(SimpleTestEvent::Created { value: 7 })
+            .unwrap();
+
+        repo.save(&mut aggregate).await.unwrap();
+        let loaded = repo.load(test_id).await.unwrap();
+        assert_eq!(loaded.value, 7);
+    }
+
+    #[tokio::test]
     async fn test_repository_clone_shares_arc_store() {
         let store = Arc::new(MockEventStore::new());
         let repo = Repository::<MockEventStore, SimpleTestEntity>::new(store);

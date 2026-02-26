@@ -17,10 +17,10 @@ use std::sync::Arc;
 
 use event_sauce_core::{
     command_handler, define_events, spec, AggregateRoot, CheckpointStrategy, EntityId, ErrorPolicy,
-    EventFilter, EventStore, Repository, Specification,
+    EventFilter, EventStore, Specification,
 };
 use event_sauce_macros::{aggregate, aggregate_error, AggregateError};
-use event_sauce_postgres::{PostgresBackend, PostgresEventStore};
+use event_sauce_postgres::PostgresBackend;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use testcontainers_modules::postgres::Postgres;
@@ -316,8 +316,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create repositories for type-safe aggregate persistence
     println!("  Creating repositories...");
-    let user_repo = Repository::<PostgresEventStore, User>::new(Arc::clone(&store));
-    let order_repo = Repository::<PostgresEventStore, Order>::new(Arc::clone(&store));
+    let user_repo = store.repository::<User>();
+    let order_repo = store.repository::<Order>();
 
     println!("\n=== Creating Users ===\n");
 

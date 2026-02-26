@@ -32,7 +32,7 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use event_sauce_core::{
-    Aggregate, AggregateRoot, ApplyEvent, DomainEvent, Entity, EntityId, Repository,
+    Aggregate, AggregateRoot, ApplyEvent, DomainEvent, Entity, EntityId, EventStore,
 };
 use event_sauce_macros::AggregateError;
 use event_sauce_memory::InMemoryEventStore;
@@ -306,7 +306,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create repository for type-safe aggregate persistence
     println!("  Creating repository...\n");
-    let repo = Repository::<InMemoryEventStore, BankAccount>::new(Arc::clone(&store));
+    let repo = store.repository::<BankAccount>();
 
     println!("=== Opening Account ===\n");
 

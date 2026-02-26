@@ -2,13 +2,15 @@
 //!
 //! Defines the `EventStore` trait for persisting and retrieving events with streaming support.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use futures::Stream;
 use uuid::Uuid;
 
 use crate::{
-    Aggregate, AggregateRoot, AggregateVersion, DomainEvent, EntityId, EventEnvelope, Result,
-    SnapshotConfig,
+    Aggregate, AggregateRoot, AggregateVersion, DomainEvent, EntityId, EventEnvelope, Repository,
+    Result, SnapshotConfig,
 };
 
 /// Stream ID uniquely identifying an event stream.
@@ -242,6 +244,25 @@ pub trait EventStore: Send + Sync {
         }
 
         builder
+    }
+
+    /// Creates a [`Repository`] for the given aggregate type, wrapping this event store.
+    ///
+    /// This is a convenience method that avoids verbose turbofish syntax.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let store = Arc::new(MyEventStore::new());
+    /// let user_repo = store.repository::<User>();
+    /// ```
+    fn repository<A>(self: &Arc<Self>) -> Repository<Self, A>
+    where
+        Self: Sized + 'static,
+        A: Aggregate + serde::Serialize + serde::de::DeserializeOwned,
+        A::Event: serde::Serialize + serde::de::DeserializeOwned,
+    {
+        Repository::new(Arc::clone(self))
     }
 
     /// Commits pending events from an aggregate root to the event store.
@@ -1095,5 +1116,23 @@ mod tests {
         assert_eq!(loaded.version(), AggregateVersion::initial());
         assert!(loaded.pending_events().is_empty());
         assert_eq!(loaded.entity_id(), id);
+    }
+
+    // -- repository() convenience method tests --
+
+    #[tokio::test]
+    async fn test_repository_convenience_method() {
+        let store = Arc::new(SharedMockEventStore::new());
+        let repo = store.repository::<SimpleTestEntity>();
+
+        let test_id = crate::EntityId::new();
+        let mut aggregate = AggregateRoot::<SimpleTestEntity>::new(test_id);
+        aggregate
+            .apply(SimpleTestEvent::Created { value: 42 })
+            .unwrap();
+
+        repo.save(&mut aggregate).await.unwrap();
+        let loaded = repo.load(test_id).await.unwrap();
+        assert_eq!(loaded.value, 42);
     }
 }
