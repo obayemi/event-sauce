@@ -270,6 +270,89 @@ Key differences for `@init` events:
 - Generates `InitEvent<A>` instead of `ApplyEvent<A>`
 - `@post_validate` still takes `|aggregate, event|` (runs after construction)
 
+### Multiple Init Events
+
+Aggregates can have **multiple `@init` events** for different creation paths. This is common when an entity can be created in different ways, each producing different initial state:
+
+```rust
+define_events! {
+    pub enum MemberEvent for Member {
+        // Admin creation — immediate full access
+        AdminCreated {
+            email: String,
+            name: String,
+        }
+        @init
+        @validate |evt| {
+            if evt.email.is_empty() {
+                return Err(MemberError::EmptyEmail);
+            }
+            Ok(())
+        }
+        => |id, event| {
+            Member {
+                id,
+                email: event.email.clone(),
+                name: event.name.clone(),
+                role: MemberRole::Admin,
+                verified: true,
+            }
+        },
+
+        // Invite creation — limited access until verified
+        CreatedByInvite {
+            email: String,
+            name: String,
+            invite_code: String,
+        }
+        @init
+        @validate |evt| {
+            if evt.invite_code.is_empty() {
+                return Err(MemberError::InvalidInviteCode);
+            }
+            Ok(())
+        }
+        => |id, event| {
+            Member {
+                id,
+                email: event.email.clone(),
+                name: event.name.clone(),
+                role: MemberRole::Regular,
+                verified: false,
+            }
+        },
+
+        // Regular event — available after either init path
+        Verified {} => |member, _event| {
+            member.verified = true;
+        },
+    }
+}
+```
+
+Each `@init` variant generates its own `InitEvent<A>` implementation with independent validation and construction logic. The `command_handler!` macro also supports multiple `@init` commands:
+
+```rust
+command_handler! {
+    impl Member {
+        @init fn create_admin(email: String, name: String)
+            -> AdminCreatedEvent { email, name };
+        @init fn create_by_invite(email: String, name: String, invite_code: String)
+            -> CreatedByInviteEvent { email, name, invite_code };
+        fn verify() -> VerifiedEvent { };
+    }
+}
+
+// Two distinct creation paths:
+let admin = Member::create_admin("admin@co.com".into(), "Alice".into())?;
+let invited = Member::create_by_invite("user@co.com".into(), "Bob".into(), "INV123".into())?;
+```
+
+This pattern is useful for:
+- **Different user roles** (admin vs regular vs guest)
+- **Different registration flows** (self-signup vs invitation vs SSO)
+- **Different creation contexts** (manual vs imported vs migrated)
+
 ### Manual Event Creation
 
 For complex scenarios requiring fine-grained control (conditional events, saga orchestration, multi-event transactions), you can bypass `command_handler!` and create events manually:

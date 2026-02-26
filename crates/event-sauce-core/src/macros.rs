@@ -25,8 +25,11 @@
 ///             -> EventStruct { field1, field2 };
 ///
 ///         // Init commands (on UninitAggregateRoot + creation functions)
+///         // Multiple @init commands are supported for different creation paths
 ///         @init fn create(param1: Type1)
 ///             -> CreatedEventStruct { field1 };
+///         @init fn create_by_invite(param1: Type1, code: String)
+///             -> InvitedEventStruct { field1, code };
 ///     }
 /// }
 /// ```
@@ -567,6 +570,7 @@ macro_rules! projection {
 /// - **Versioning**: Use `@version(n)` to specify event schema version (defaults to 1)
 /// - **Pre-validation**: Use `@validate |aggregate, event| { ... }` for pre-conditions
 /// - **Post-validation**: Use `@post_validate |aggregate, event| { ... }` for invariants
+/// - **Init events**: Use `@init` for events that construct the aggregate (multiple allowed)
 /// - **Type-safe**: Full type checking of validation and apply logic
 ///
 /// # Examples
@@ -3891,5 +3895,424 @@ mod tests {
         let agg1 = Account::open_account("Alice".to_string(), 100).unwrap();
         let agg2 = Account::open_account("Bob".to_string(), 200).unwrap();
         assert_ne!(agg1.entity_id(), agg2.entity_id());
+    }
+
+    // ===== Multiple init events on same aggregate tests =====
+
+    #[derive(Debug, thiserror::Error)]
+    pub enum MemberError {
+        #[error("Empty email")]
+        EmptyEmail,
+        #[error("Empty name")]
+        EmptyName,
+        #[error("Invalid invite code")]
+        InvalidInviteCode,
+        #[error("Already verified")]
+        AlreadyVerified,
+    }
+
+    impl AggregateError for MemberError {}
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    pub enum MemberRole {
+        Admin,
+        Regular,
+    }
+
+    #[derive(Debug, Serialize, Deserialize)]
+    pub struct Member {
+        id: EntityId,
+        email: String,
+        name: String,
+        role: MemberRole,
+        verified: bool,
+    }
+
+    impl Entity for Member {
+        fn entity_id(&self) -> EntityId {
+            self.id
+        }
+    }
+
+    impl Aggregate for Member {
+        type Event = MemberEvent;
+        type Error = MemberError;
+    }
+
+    // Two @init events + one regular event
+    define_events! {
+        pub enum MemberEvent for Member {
+            AdminCreated {
+                email: String,
+                name: String,
+            }
+            @init
+            @validate |evt| {
+                if evt.email.is_empty() {
+                    return Err(MemberError::EmptyEmail);
+                }
+                return Ok(());
+            }
+            => |id, event| {
+                Member {
+                    id,
+                    email: event.email.clone(),
+                    name: event.name.clone(),
+                    role: MemberRole::Admin,
+                    verified: true,
+                }
+            },
+
+            CreatedByInvite {
+                email: String,
+                name: String,
+                invite_code: String,
+            }
+            @init
+            @validate |evt| {
+                if evt.email.is_empty() {
+                    return Err(MemberError::EmptyEmail);
+                }
+                if evt.invite_code.is_empty() {
+                    return Err(MemberError::InvalidInviteCode);
+                }
+                return Ok(());
+            }
+            => |id, event| {
+                Member {
+                    id,
+                    email: event.email.clone(),
+                    name: event.name.clone(),
+                    role: MemberRole::Regular,
+                    verified: false,
+                }
+            },
+
+            Verified {} => |member, _event| {
+                member.verified = true;
+            },
+        }
+    }
+
+    command_handler! {
+        impl Member {
+            @init fn create_admin(email: String, name: String)
+                -> AdminCreatedEvent { email, name };
+            @init fn create_by_invite(email: String, name: String, invite_code: String)
+                -> CreatedByInviteEvent { email, name, invite_code };
+            fn verify() -> VerifiedEvent { };
+        }
+    }
+
+    // --- define_events! tests for multiple init variants ---
+
+    #[test]
+    fn test_multi_init_event_structs_created() {
+        let _admin = AdminCreatedEvent {
+            email: "admin@co.com".to_string(),
+            name: "Admin".to_string(),
+            timestamp: Utc::now(),
+        };
+        let _invite = CreatedByInviteEvent {
+            email: "user@co.com".to_string(),
+            name: "User".to_string(),
+            invite_code: "ABC123".to_string(),
+            timestamp: Utc::now(),
+        };
+    }
+
+    #[test]
+    fn test_multi_init_both_implement_init_event() {
+        use crate::InitEvent;
+        let id = EntityId::new();
+
+        let admin_evt = AdminCreatedEvent {
+            email: "admin@co.com".to_string(),
+            name: "Admin".to_string(),
+            timestamp: Utc::now(),
+        };
+        let member = admin_evt.init(id);
+        assert_eq!(member.role, MemberRole::Admin);
+        assert!(member.verified);
+
+        let invite_evt = CreatedByInviteEvent {
+            email: "user@co.com".to_string(),
+            name: "User".to_string(),
+            invite_code: "ABC123".to_string(),
+            timestamp: Utc::now(),
+        };
+        let member = invite_evt.init(id);
+        assert_eq!(member.role, MemberRole::Regular);
+        assert!(!member.verified);
+    }
+
+    #[test]
+    fn test_multi_init_is_init_for_both() {
+        use crate::EventApplicator;
+
+        let admin = MemberEvent::AdminCreated {
+            email: "a@b.com".to_string(),
+            name: "A".to_string(),
+            timestamp: Utc::now(),
+        };
+        assert!(EventApplicator::is_init(&admin));
+
+        let invite = MemberEvent::CreatedByInvite {
+            email: "a@b.com".to_string(),
+            name: "A".to_string(),
+            invite_code: "X".to_string(),
+            timestamp: Utc::now(),
+        };
+        assert!(EventApplicator::is_init(&invite));
+
+        let verified = MemberEvent::Verified {
+            timestamp: Utc::now(),
+        };
+        assert!(!EventApplicator::is_init(&verified));
+    }
+
+    #[test]
+    fn test_multi_init_dispatch_init_admin() {
+        use crate::EventApplicator;
+        let id = EntityId::new();
+        let event = MemberEvent::AdminCreated {
+            email: "admin@co.com".to_string(),
+            name: "Admin".to_string(),
+            timestamp: Utc::now(),
+        };
+        let member = EventApplicator::dispatch_init(&event, id).unwrap();
+        assert_eq!(member.email, "admin@co.com");
+        assert_eq!(member.role, MemberRole::Admin);
+    }
+
+    #[test]
+    fn test_multi_init_dispatch_init_invite() {
+        use crate::EventApplicator;
+        let id = EntityId::new();
+        let event = MemberEvent::CreatedByInvite {
+            email: "user@co.com".to_string(),
+            name: "User".to_string(),
+            invite_code: "ABC".to_string(),
+            timestamp: Utc::now(),
+        };
+        let member = EventApplicator::dispatch_init(&event, id).unwrap();
+        assert_eq!(member.email, "user@co.com");
+        assert_eq!(member.role, MemberRole::Regular);
+    }
+
+    #[test]
+    fn test_multi_init_dispatch_init_unchecked_both() {
+        use crate::EventApplicator;
+        let id = EntityId::new();
+
+        let admin = MemberEvent::AdminCreated {
+            email: "a@b.com".to_string(),
+            name: "A".to_string(),
+            timestamp: Utc::now(),
+        };
+        let m = EventApplicator::dispatch_init_unchecked(&admin, id);
+        assert_eq!(m.role, MemberRole::Admin);
+
+        let invite = MemberEvent::CreatedByInvite {
+            email: "u@b.com".to_string(),
+            name: "U".to_string(),
+            invite_code: "X".to_string(),
+            timestamp: Utc::now(),
+        };
+        let m = EventApplicator::dispatch_init_unchecked(&invite, id);
+        assert_eq!(m.role, MemberRole::Regular);
+    }
+
+    #[test]
+    fn test_multi_init_validation_per_variant() {
+        use crate::InitEvent;
+
+        // Admin: empty email fails
+        let evt = AdminCreatedEvent {
+            email: String::new(),
+            name: "A".to_string(),
+            timestamp: Utc::now(),
+        };
+        assert_eq!(evt.validate_init().unwrap_err().to_string(), "Empty email");
+
+        // Invite: empty invite code fails
+        let evt = CreatedByInviteEvent {
+            email: "a@b.com".to_string(),
+            name: "U".to_string(),
+            invite_code: String::new(),
+            timestamp: Utc::now(),
+        };
+        assert_eq!(
+            evt.validate_init().unwrap_err().to_string(),
+            "Invalid invite code"
+        );
+    }
+
+    // --- command_handler! tests for multiple @init commands ---
+
+    #[test]
+    fn test_multi_init_cmd_event_helpers() {
+        let admin_evt = Member::create_admin_event("a@b.com".to_string(), "Admin".to_string());
+        assert_eq!(admin_evt.email, "a@b.com");
+
+        let invite_evt = Member::create_by_invite_event(
+            "u@b.com".to_string(),
+            "User".to_string(),
+            "INV123".to_string(),
+        );
+        assert_eq!(invite_evt.invite_code, "INV123");
+    }
+
+    #[test]
+    fn test_multi_init_cmd_on_uninit_admin() {
+        let uninit = crate::UninitAggregateRoot::<Member>::new(EntityId::new());
+        let id = uninit.entity_id();
+        let agg = uninit
+            .create_admin("admin@co.com".to_string(), "Admin".to_string())
+            .unwrap();
+        assert_eq!(agg.entity_id(), id);
+        assert_eq!(agg.role, MemberRole::Admin);
+        assert!(agg.verified);
+        assert_eq!(agg.version(), AggregateVersion::new(1));
+    }
+
+    #[test]
+    fn test_multi_init_cmd_on_uninit_invite() {
+        let uninit = crate::UninitAggregateRoot::<Member>::new(EntityId::new());
+        let id = uninit.entity_id();
+        let agg = uninit
+            .create_by_invite(
+                "user@co.com".to_string(),
+                "User".to_string(),
+                "INV456".to_string(),
+            )
+            .unwrap();
+        assert_eq!(agg.entity_id(), id);
+        assert_eq!(agg.role, MemberRole::Regular);
+        assert!(!agg.verified);
+    }
+
+    #[test]
+    fn test_multi_init_creation_fn_admin() {
+        let agg = Member::create_admin("admin@co.com".to_string(), "Admin".to_string()).unwrap();
+        assert_eq!(agg.role, MemberRole::Admin);
+        assert!(agg.verified);
+    }
+
+    #[test]
+    fn test_multi_init_creation_fn_invite() {
+        let agg = Member::create_by_invite(
+            "user@co.com".to_string(),
+            "User".to_string(),
+            "INV789".to_string(),
+        )
+        .unwrap();
+        assert_eq!(agg.role, MemberRole::Regular);
+        assert!(!agg.verified);
+    }
+
+    #[test]
+    fn test_multi_init_creation_fn_with_id() {
+        let id = EntityId::new();
+        let agg = Member::create_admin_with_id(id, "admin@co.com".to_string(), "Admin".to_string())
+            .unwrap();
+        assert_eq!(agg.entity_id(), id);
+
+        let id2 = EntityId::new();
+        let agg = Member::create_by_invite_with_id(
+            id2,
+            "user@co.com".to_string(),
+            "User".to_string(),
+            "CODE".to_string(),
+        )
+        .unwrap();
+        assert_eq!(agg.entity_id(), id2);
+    }
+
+    #[test]
+    fn test_multi_init_creation_fn_validation() {
+        let result = Member::create_admin(String::new(), "Admin".to_string());
+        assert!(result.is_err());
+
+        let result =
+            Member::create_by_invite("a@b.com".to_string(), "User".to_string(), String::new());
+        assert!(result.is_err());
+    }
+
+    // --- Full lifecycle: init then regular events ---
+
+    #[test]
+    fn test_multi_init_admin_then_regular() {
+        let mut agg =
+            Member::create_admin("admin@co.com".to_string(), "Admin".to_string()).unwrap();
+        assert!(agg.verified); // Already verified as admin
+
+        // Verify is a no-op for admin but still works
+        agg.verify().unwrap();
+        assert!(agg.verified);
+        assert_eq!(agg.version(), AggregateVersion::new(2));
+        assert_eq!(agg.pending_events().len(), 2);
+    }
+
+    #[test]
+    fn test_multi_init_invite_then_verify() {
+        let mut agg = Member::create_by_invite(
+            "user@co.com".to_string(),
+            "User".to_string(),
+            "INV".to_string(),
+        )
+        .unwrap();
+        assert!(!agg.verified);
+
+        agg.verify().unwrap();
+        assert!(agg.verified);
+        assert_eq!(agg.version(), AggregateVersion::new(2));
+    }
+
+    #[test]
+    fn test_multi_init_domain_event_types() {
+        use crate::DomainEvent;
+
+        let admin = MemberEvent::AdminCreated {
+            email: "a@b.com".to_string(),
+            name: "A".to_string(),
+            timestamp: Utc::now(),
+        };
+        assert_eq!(admin.event_type(), "Member.AdminCreated");
+
+        let invite = MemberEvent::CreatedByInvite {
+            email: "u@b.com".to_string(),
+            name: "U".to_string(),
+            invite_code: "X".to_string(),
+            timestamp: Utc::now(),
+        };
+        assert_eq!(invite.event_type(), "Member.CreatedByInvite");
+    }
+
+    #[test]
+    fn test_multi_init_envelope_roundtrip_admin() {
+        use crate::DomainEvent;
+        let event = MemberEvent::AdminCreated {
+            email: "admin@co.com".to_string(),
+            name: "Admin".to_string(),
+            timestamp: Utc::now(),
+        };
+        let envelope = event.to_envelope(uuid::Uuid::new_v4()).unwrap();
+        let restored = MemberEvent::from_envelope(&envelope).unwrap();
+        assert!(matches!(restored, MemberEvent::AdminCreated { .. }));
+    }
+
+    #[test]
+    fn test_multi_init_envelope_roundtrip_invite() {
+        use crate::DomainEvent;
+        let event = MemberEvent::CreatedByInvite {
+            email: "user@co.com".to_string(),
+            name: "User".to_string(),
+            invite_code: "INV".to_string(),
+            timestamp: Utc::now(),
+        };
+        let envelope = event.to_envelope(uuid::Uuid::new_v4()).unwrap();
+        let restored = MemberEvent::from_envelope(&envelope).unwrap();
+        assert!(matches!(restored, MemberEvent::CreatedByInvite { .. }));
     }
 }

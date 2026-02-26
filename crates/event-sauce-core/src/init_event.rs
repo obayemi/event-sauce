@@ -340,4 +340,285 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().to_string(), "Name too short");
     }
+
+    // === Multiple init events on the same aggregate ===
+
+    #[derive(Debug, thiserror::Error)]
+    enum TeamMemberError {
+        #[error("Empty email")]
+        EmptyEmail,
+        #[error("Empty invite code")]
+        EmptyInviteCode,
+    }
+
+    impl AggregateError for TeamMemberError {}
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    enum TeamMemberRole {
+        Admin,
+        Invited,
+    }
+
+    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    struct TeamMember {
+        id: EntityId,
+        email: String,
+        role: TeamMemberRole,
+    }
+
+    impl crate::Entity for TeamMember {
+        fn entity_id(&self) -> EntityId {
+            self.id
+        }
+    }
+
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+    enum TeamMemberEvent {
+        AdminCreated {
+            email: String,
+            timestamp: chrono::DateTime<Utc>,
+        },
+        InviteAccepted {
+            email: String,
+            invite_code: String,
+            timestamp: chrono::DateTime<Utc>,
+        },
+    }
+
+    impl DomainEvent for TeamMemberEvent {
+        type Aggregate = TeamMember;
+        fn event_type(&self) -> &'static str {
+            match self {
+                TeamMemberEvent::AdminCreated { .. } => "TeamMember.AdminCreated",
+                TeamMemberEvent::InviteAccepted { .. } => "TeamMember.InviteAccepted",
+            }
+        }
+        fn event_version(&self) -> EventVersion {
+            EventVersion::new(1)
+        }
+        fn occurred_at(&self) -> chrono::DateTime<Utc> {
+            match self {
+                TeamMemberEvent::AdminCreated { timestamp, .. }
+                | TeamMemberEvent::InviteAccepted { timestamp, .. } => *timestamp,
+            }
+        }
+    }
+
+    impl EventApplicator<TeamMember> for TeamMemberEvent {
+        fn dispatch(&self, _aggregate: &mut TeamMember) -> Result<(), TeamMemberError> {
+            Ok(())
+        }
+        fn dispatch_unchecked(&self, _aggregate: &mut TeamMember) {}
+
+        fn is_init(&self) -> bool {
+            matches!(
+                self,
+                TeamMemberEvent::AdminCreated { .. } | TeamMemberEvent::InviteAccepted { .. }
+            )
+        }
+
+        fn dispatch_init(&self, id: EntityId) -> Result<TeamMember, TeamMemberError> {
+            match self {
+                TeamMemberEvent::AdminCreated {
+                    email, timestamp, ..
+                } => {
+                    let evt = AdminCreatedEvent {
+                        email: email.clone(),
+                        timestamp: *timestamp,
+                    };
+                    evt.validate_init()?;
+                    let entity = evt.init(id);
+                    evt.post_validate_init(&entity)?;
+                    Ok(entity)
+                }
+                TeamMemberEvent::InviteAccepted {
+                    email,
+                    invite_code,
+                    timestamp,
+                } => {
+                    let evt = InviteAcceptedEvent {
+                        email: email.clone(),
+                        invite_code: invite_code.clone(),
+                        timestamp: *timestamp,
+                    };
+                    evt.validate_init()?;
+                    let entity = evt.init(id);
+                    evt.post_validate_init(&entity)?;
+                    Ok(entity)
+                }
+            }
+        }
+
+        fn dispatch_init_unchecked(&self, id: EntityId) -> TeamMember {
+            match self {
+                TeamMemberEvent::AdminCreated {
+                    email, timestamp, ..
+                } => AdminCreatedEvent {
+                    email: email.clone(),
+                    timestamp: *timestamp,
+                }
+                .init(id),
+                TeamMemberEvent::InviteAccepted {
+                    email,
+                    invite_code,
+                    timestamp,
+                } => InviteAcceptedEvent {
+                    email: email.clone(),
+                    invite_code: invite_code.clone(),
+                    timestamp: *timestamp,
+                }
+                .init(id),
+            }
+        }
+    }
+
+    impl Aggregate for TeamMember {
+        type Event = TeamMemberEvent;
+        type Error = TeamMemberError;
+    }
+
+    // First init event: admin creation
+    #[derive(Debug, Clone)]
+    struct AdminCreatedEvent {
+        email: String,
+        timestamp: chrono::DateTime<Utc>,
+    }
+
+    impl From<AdminCreatedEvent> for TeamMemberEvent {
+        fn from(e: AdminCreatedEvent) -> Self {
+            TeamMemberEvent::AdminCreated {
+                email: e.email,
+                timestamp: e.timestamp,
+            }
+        }
+    }
+
+    impl InitEvent<TeamMember> for AdminCreatedEvent {
+        fn validate_init(&self) -> Result<(), TeamMemberError> {
+            if self.email.is_empty() {
+                return Err(TeamMemberError::EmptyEmail);
+            }
+            Ok(())
+        }
+
+        fn init(&self, id: EntityId) -> TeamMember {
+            TeamMember {
+                id,
+                email: self.email.clone(),
+                role: TeamMemberRole::Admin,
+            }
+        }
+    }
+
+    // Second init event: invite acceptance
+    #[derive(Debug, Clone)]
+    struct InviteAcceptedEvent {
+        email: String,
+        invite_code: String,
+        timestamp: chrono::DateTime<Utc>,
+    }
+
+    impl From<InviteAcceptedEvent> for TeamMemberEvent {
+        fn from(e: InviteAcceptedEvent) -> Self {
+            TeamMemberEvent::InviteAccepted {
+                email: e.email,
+                invite_code: e.invite_code,
+                timestamp: e.timestamp,
+            }
+        }
+    }
+
+    impl InitEvent<TeamMember> for InviteAcceptedEvent {
+        fn validate_init(&self) -> Result<(), TeamMemberError> {
+            if self.email.is_empty() {
+                return Err(TeamMemberError::EmptyEmail);
+            }
+            if self.invite_code.is_empty() {
+                return Err(TeamMemberError::EmptyInviteCode);
+            }
+            Ok(())
+        }
+
+        fn init(&self, id: EntityId) -> TeamMember {
+            TeamMember {
+                id,
+                email: self.email.clone(),
+                role: TeamMemberRole::Invited,
+            }
+        }
+    }
+
+    #[test]
+    fn test_multiple_init_events_admin_path() {
+        let uninit = crate::UninitAggregateRoot::<TeamMember>::new(EntityId::new());
+        let id = uninit.entity_id();
+
+        let event = AdminCreatedEvent {
+            email: "admin@co.com".to_string(),
+            timestamp: Utc::now(),
+        };
+        let agg = uninit.apply_init(event).unwrap();
+        assert_eq!(agg.entity_id(), id);
+        assert_eq!(agg.email, "admin@co.com");
+        assert_eq!(agg.role, TeamMemberRole::Admin);
+    }
+
+    #[test]
+    fn test_multiple_init_events_invite_path() {
+        let uninit = crate::UninitAggregateRoot::<TeamMember>::new(EntityId::new());
+        let id = uninit.entity_id();
+
+        let event = InviteAcceptedEvent {
+            email: "invited@co.com".to_string(),
+            invite_code: "ABC123".to_string(),
+            timestamp: Utc::now(),
+        };
+        let agg = uninit.apply_init(event).unwrap();
+        assert_eq!(agg.entity_id(), id);
+        assert_eq!(agg.email, "invited@co.com");
+        assert_eq!(agg.role, TeamMemberRole::Invited);
+    }
+
+    #[test]
+    fn test_multiple_init_events_different_validation() {
+        // Admin: empty email fails
+        let uninit = crate::UninitAggregateRoot::<TeamMember>::new(EntityId::new());
+        let result = uninit.apply_init(AdminCreatedEvent {
+            email: String::new(),
+            timestamp: Utc::now(),
+        });
+        assert_eq!(result.unwrap_err().to_string(), "Empty email");
+
+        // Invite: empty invite code fails
+        let uninit = crate::UninitAggregateRoot::<TeamMember>::new(EntityId::new());
+        let result = uninit.apply_init(InviteAcceptedEvent {
+            email: "a@b.com".to_string(),
+            invite_code: String::new(),
+            timestamp: Utc::now(),
+        });
+        assert_eq!(result.unwrap_err().to_string(), "Empty invite code");
+    }
+
+    #[test]
+    fn test_multiple_init_events_produce_different_state() {
+        let id = EntityId::new();
+
+        let admin = crate::UninitAggregateRoot::<TeamMember>::new(id)
+            .apply_init(AdminCreatedEvent {
+                email: "admin@co.com".to_string(),
+                timestamp: Utc::now(),
+            })
+            .unwrap();
+
+        let invited = crate::UninitAggregateRoot::<TeamMember>::new(id)
+            .apply_init(InviteAcceptedEvent {
+                email: "invited@co.com".to_string(),
+                invite_code: "CODE".to_string(),
+                timestamp: Utc::now(),
+            })
+            .unwrap();
+
+        assert_eq!(admin.role, TeamMemberRole::Admin);
+        assert_eq!(invited.role, TeamMemberRole::Invited);
+    }
 }

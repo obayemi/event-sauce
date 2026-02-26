@@ -6,6 +6,13 @@ This guide explains how to define and work with aggregates in event-sauce, inclu
 
 - [Aggregate Basics](#aggregate-basics)
 - [Defining Aggregates](#defining-aggregates)
+- [Aggregate Initialization](#aggregate-initialization)
+  - [Default Initialization (DefaultEntity)](#pattern-1-default-initialization-defaultentity)
+  - [Init Events (Type-State)](#pattern-2-init-events-type-state)
+  - [Multiple Init Events](#multiple-init-events)
+  - [Init Events with command_handler!](#init-events-with-command_handler)
+  - [Init Events with Repository](#init-events-with-repository)
+  - [Choosing Between Patterns](#choosing-between-patterns)
 - [Aggregate Errors](#aggregate-errors)
 - [Business Logic](#business-logic)
 - [State Management](#state-management)
@@ -124,6 +131,285 @@ account.apply(some_event)?;
 - **`EntityId` for all entities**: Concrete UUID-backed newtype, no custom ID types
 - **`AggregateRoot<A>` wrapper**: Handles version, pending events, and event application
 - **Read-only Deref**: Access entity fields directly through `AggregateRoot`
+
+## Aggregate Initialization
+
+Aggregates need to be created before they can accept events. event-sauce supports two initialization patterns: **default initialization** (with `DefaultEntity`) and **init events** (with `UninitAggregateRoot`). Choose based on whether your aggregate has a meaningful default/empty state.
+
+### Pattern 1: Default Initialization (`DefaultEntity`)
+
+Use this when your aggregate has a natural empty state. All fields are set to defaults and the first event fills in the real data:
+
+```rust
+#[aggregate(event = "AccountEvent", error = "AccountError")]
+#[derive(Default)]
+struct BankAccount {
+    #[id]
+    id: EntityId,
+    owner: String,      // Default::default() = ""
+    balance: i64,       // Default::default() = 0
+    status: AccountStatus, // Default::default() must be defined
+}
+```
+
+The `#[aggregate]` macro generates `Entity::new(id)` (using `Default` for other fields) and `DefaultEntity` marker. You create aggregates directly:
+
+```rust
+// Direct creation
+let mut account = AggregateRoot::<BankAccount>::new(EntityId::new());
+account.apply(AccountOpenedEvent { owner: "Alice".into(), ..})?;
+
+// Via repository
+let repo = store.repository::<BankAccount>();
+let mut account = repo.create();
+account.apply(AccountOpenedEvent { .. })?;
+```
+
+**Downside**: Fields like `owner` start as empty strings. You may need `Option<T>` or meaningless defaults for required fields.
+
+### Pattern 2: Init Events (Type-State)
+
+Use this when your aggregate **cannot exist without initial data** (e.g., a `User` must always have an email). The `@init` flag skips `DefaultEntity` and enforces that the aggregate is constructed from an init event:
+
+```rust
+// The `init` flag tells the macro: no DefaultEntity, no Entity::new()
+#[aggregate(event = "UserEvent", error = "UserError", init)]
+#[derive(Serialize, Deserialize)]
+struct User {
+    #[id]
+    id: EntityId,
+    email: String,     // Always valid — set by init event
+    name: String,      // Always valid — set by init event
+    status: UserStatus,
+}
+```
+
+Now the aggregate is created via `UninitAggregateRoot` → init event → `AggregateRoot`:
+
+```rust
+// Type-state transition: UninitAggregateRoot → AggregateRoot
+let uninit = UninitAggregateRoot::<User>::new(EntityId::new());
+let mut user: AggregateRoot<User> = uninit.apply_init(CreatedEvent {
+    email: "alice@example.com".into(),
+    name: "Alice".into(),
+    timestamp: Utc::now(),
+})?;
+
+// Now user is fully initialized — no Option fields needed
+user.change_email("alice@newdomain.com".into())?;
+```
+
+**Benefits**: No `Option<T>` wrappers, no meaningless defaults, compile-time enforcement that aggregate is properly initialized before use.
+
+### Init Events with `define_events!`
+
+Mark creation events with `@init` in the macro. The init event's apply closure receives `(id, event)` and **returns** the aggregate (instead of mutating it):
+
+```rust
+define_events! {
+    pub enum UserEvent for User {
+        Created {
+            email: String,
+            name: String,
+        }
+        @init
+        @validate |evt| {
+            if !evt.email.contains('@') {
+                return Err(UserError::InvalidEmail);
+            }
+            Ok(())
+        }
+        => |id, event| {
+            // Return a new User — construction, not mutation
+            User {
+                id,
+                email: event.email.clone(),
+                name: event.name.clone(),
+                status: UserStatus::Active,
+            }
+        },
+
+        // Regular events — mutate existing aggregate
+        EmailChanged { new_email: String }
+        => |user, event| {
+            user.email = event.new_email.clone();
+        },
+    }
+}
+```
+
+Key differences from regular events:
+- `@validate` receives only the event (one arg) — no aggregate exists yet
+- Apply closure uses `|id, event|` and **returns** the aggregate
+- `@post_validate` receives `|aggregate, event|` (runs after construction)
+- Generates `InitEvent<A>` trait impl instead of `ApplyEvent<A>`
+
+### Multiple Init Events
+
+Aggregates can have **multiple `@init` events** for different creation paths. This is common when the same entity type can be created in different ways, each producing different initial state:
+
+```rust
+define_events! {
+    pub enum MemberEvent for Member {
+        // Path 1: Admin creates member directly — full access
+        AdminCreated {
+            email: String,
+            name: String,
+        }
+        @init
+        => |id, event| {
+            Member {
+                id,
+                email: event.email.clone(),
+                name: event.name.clone(),
+                role: MemberRole::Admin,
+                verified: true,
+            }
+        },
+
+        // Path 2: Invite link — limited until verified
+        CreatedByInvite {
+            email: String,
+            name: String,
+            invite_code: String,
+        }
+        @init
+        @validate |evt| {
+            if evt.invite_code.is_empty() {
+                return Err(MemberError::InvalidInviteCode);
+            }
+            Ok(())
+        }
+        => |id, event| {
+            Member {
+                id,
+                email: event.email.clone(),
+                name: event.name.clone(),
+                role: MemberRole::Regular,
+                verified: false,
+            }
+        },
+
+        // Regular event — works after either init path
+        Verified {} => |member, _event| {
+            member.verified = true;
+        },
+    }
+}
+```
+
+Each `@init` variant has its own validation and construction logic. All produce a valid `Member`, but with different initial state.
+
+**Common use cases:**
+- **Different user roles**: `AdminCreated` vs `UserRegistered` vs `GuestCreated`
+- **Different registration flows**: `SelfSignup` vs `InviteAccepted` vs `SSOLinked`
+- **Different creation contexts**: `ManuallyCreated` vs `ImportedFromCSV` vs `MigratedFromLegacy`
+
+### Init Events with `command_handler!`
+
+The `command_handler!` macro supports multiple `@init` commands. For each `@init` command, it generates:
+- An event helper **associated function** (no `&self` — the aggregate doesn't exist yet)
+- A method on `UninitAggregateRoot<A>` (consumes self, returns `AggregateRoot<A>`)
+- Creation functions on the aggregate: `Aggregate::cmd(...)` and `Aggregate::cmd_with_id(id, ...)`
+
+```rust
+command_handler! {
+    impl Member {
+        // Two init commands — each produces different initial state
+        @init fn create_admin(email: String, name: String)
+            -> AdminCreatedEvent { email, name };
+        @init fn create_by_invite(email: String, name: String, invite_code: String)
+            -> CreatedByInviteEvent { email, name, invite_code };
+
+        // Regular command
+        fn verify() -> VerifiedEvent { };
+    }
+}
+```
+
+**Generated creation functions:**
+
+```rust
+// Path 1: Admin creation
+let admin = Member::create_admin("admin@co.com".into(), "Alice".into())?;
+let admin = Member::create_admin_with_id(id, "admin@co.com".into(), "Alice".into())?;
+
+// Path 2: Invite creation
+let invited = Member::create_by_invite(
+    "user@co.com".into(), "Bob".into(), "INV123".into()
+)?;
+
+// After either path, regular commands work the same
+admin.verify()?;
+invited.verify()?;
+```
+
+**Generated trait:**
+
+```rust
+// All init commands go into a single trait on UninitAggregateRoot
+pub trait MemberInitCommands {
+    fn create_admin(self, email: String, name: String)
+        -> Result<AggregateRoot<Member>, MemberError>;
+    fn create_by_invite(self, email: String, name: String, invite_code: String)
+        -> Result<AggregateRoot<Member>, MemberError>;
+}
+impl MemberInitCommands for UninitAggregateRoot<Member> { /* ... */ }
+```
+
+### Init Events with Repository
+
+The `Repository` provides convenience methods for init-event aggregates:
+
+```rust
+let repo = store.repository::<Member>();
+
+// Create uninit + apply in one step
+let mut admin = repo.create_with(AdminCreatedEvent {
+    email: "admin@co.com".into(),
+    name: "Alice".into(),
+    timestamp: Utc::now(),
+})?;
+
+// Or with explicit ID
+let mut invited = repo.create_with_id_and(id, CreatedByInviteEvent {
+    email: "user@co.com".into(),
+    name: "Bob".into(),
+    invite_code: "INV123".into(),
+    timestamp: Utc::now(),
+})?;
+
+// Save works the same regardless of init path
+repo.save(&mut admin).await?;
+repo.save(&mut invited).await?;
+```
+
+### Init Event Loading and Replay
+
+When loading from the event store, the framework **automatically detects** init events by checking `is_init()` on the first event:
+
+- **Init event detected**: Uses `UninitAggregateRoot::apply_init_unchecked()` to construct the aggregate, then replays remaining events normally
+- **Regular event detected**: Falls back to `Entity::new(id)` + `apply_unchecked()` (legacy/default pattern)
+
+This is transparent — `repo.load(id)` works identically for both patterns:
+
+```rust
+// Works for DefaultEntity aggregates AND init-event aggregates
+let member = repo.load(member_id).await?;
+```
+
+### Choosing Between Patterns
+
+| Aspect | DefaultEntity | Init Events |
+|--------|--------------|-------------|
+| When to use | Aggregate has natural empty state | Aggregate requires initial data |
+| `Option<T>` fields | May need for "not yet set" | Not needed — set at construction |
+| Compile-time safety | Lower — empty state is valid | Higher — must go through init event |
+| Multiple creation paths | Manual factory methods | Multiple `@init` events |
+| Macro attribute | `#[aggregate(event = "E", error = "Err")]` | `#[aggregate(event = "E", error = "Err", init)]` |
+| Creation type | `AggregateRoot::new(id)` | `UninitAggregateRoot::new(id).apply_init(event)` |
+
+**Recommendation**: Use init events for domain entities that always require initialization data (users, orders, accounts). Use `DefaultEntity` for simple counters, accumulators, or configuration-like aggregates.
 
 ## Aggregate Errors
 
