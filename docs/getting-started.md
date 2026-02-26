@@ -403,17 +403,22 @@ async fn handle_increment_command(
 For cleaner code, use the built-in `Repository` type:
 
 ```rust
-use event_sauce::Repository;
+use std::sync::Arc;
 
-let repo = Repository::new(store);
+let store = Arc::new(InMemoryEventStore::builder().build());
+let repo = store.repository::<Counter>();
 
-// Save and load aggregates
-let mut counter = AggregateRoot::<Counter>::new(EntityId::new());
+// Create and save aggregates
+let mut counter = repo.create();
 counter.increment(5)?;
-repo.save(&counter).await?;
+repo.save(&mut counter).await?;
 
-let loaded = repo.load::<Counter>(counter.entity_id()).await?;
+let loaded = repo.load(counter.entity_id()).await?;
 ```
+
+The `Repository` provides convenience methods for aggregate creation:
+- **`repo.create()`** — creates a new aggregate with a random `EntityId`
+- **`repo.create_with_id(id)`** — creates a new aggregate with a specific `EntityId`
 
 ## Tips
 

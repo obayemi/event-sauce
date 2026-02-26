@@ -436,10 +436,16 @@ async fn place_order(&mut self, items: Vec<OrderItem>) -> Result<(), OrderError>
 
 ### 5. Constructor Pattern
 
-Use `AggregateRoot::new()` with factory methods:
+Use `repo.create()` when a repository is available, or `AggregateRoot::new()` for standalone factory methods:
 
 ```rust
-// Good:
+// Best: Use repo.create() when you have a repository
+let repo = store.repository::<BankAccount>();
+let mut account = repo.create();
+account.apply(AccountOpenedEvent { owner, initial_balance, timestamp: Utc::now() })?;
+repo.save(&mut account).await?;
+
+// Good: Factory method for standalone creation
 impl AggregateRoot<BankAccount> {
     fn open(owner: String, initial_balance: i64)
         -> Result<Self, BankAccountError>
@@ -450,7 +456,7 @@ impl AggregateRoot<BankAccount> {
     }
 }
 
-// Bad:
+// Bad: Manually constructing bypasses events
 let mut account = BankAccount {
     id: EntityId::new(),
     owner: String::new(),

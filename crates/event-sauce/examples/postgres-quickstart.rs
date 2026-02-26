@@ -16,8 +16,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use event_sauce_core::{
-    command_handler, define_events, spec, AggregateRoot, CheckpointStrategy, EntityId, ErrorPolicy,
-    EventFilter, EventStore, Specification,
+    command_handler, define_events, spec, CheckpointStrategy, EntityId, ErrorPolicy, EventFilter,
+    EventStore, Specification,
 };
 use event_sauce_macros::{aggregate, aggregate_error, AggregateError};
 use event_sauce_postgres::PostgresBackend;
@@ -322,7 +322,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n=== Creating Users ===\n");
 
     // Create users
-    let mut alice = AggregateRoot::<User>::new(EntityId::new());
+    let mut alice = user_repo.create();
     alice.apply(CreatedEvent {
         email: "alice@example.com".to_string(),
         name: "Alice Smith".to_string(),
@@ -331,7 +331,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Created user: {} ({})", alice.name, alice.email);
     user_repo.save(&mut alice).await?;
 
-    let mut bob = AggregateRoot::<User>::new(EntityId::new());
+    let mut bob = user_repo.create();
     bob.apply(CreatedEvent {
         email: "bob@example.com".to_string(),
         name: "Bob Jones".to_string(),
@@ -343,7 +343,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n=== Creating Orders ===\n");
 
     // Create orders
-    let mut order1 = AggregateRoot::<Order>::new(EntityId::new());
+    let mut order1 = order_repo.create();
     order1.apply(OrderCreatedEvent {
         user_id: alice.entity_id(),
         timestamp: chrono::Utc::now(),
@@ -357,7 +357,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     order_repo.save(&mut order1).await?;
 
-    let mut order2 = AggregateRoot::<Order>::new(EntityId::new());
+    let mut order2 = order_repo.create();
     order2.apply(OrderCreatedEvent {
         user_id: bob.entity_id(),
         timestamp: chrono::Utc::now(),

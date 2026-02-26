@@ -25,10 +25,15 @@ use crate::{
 /// ```ignore
 /// use event_sauce_core::Repository;
 ///
-/// let repo = Repository::<PostgresEventStore, User>::new(store);
+/// let repo = store.repository::<User>();
 ///
-/// let user = repo.load(entity_id).await?;
+/// // Create a new aggregate
+/// let mut user = repo.create();
+/// user.apply(UserCreatedEvent { name: "Alice".into(), timestamp: Utc::now() })?;
 /// repo.save(&mut user).await?;
+///
+/// // Load an existing aggregate
+/// let loaded = repo.load(user.entity_id()).await?;
 /// ```
 #[derive(Debug)]
 pub struct Repository<S, A> {
