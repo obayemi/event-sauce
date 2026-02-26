@@ -31,7 +31,7 @@ use crate::{PostgresCheckpointStore, PostgresEventStore};
 /// ```
 pub struct PostgresBackend {
     pool: PgPool,
-    event_store: PostgresEventStore,
+    event_store: Arc<PostgresEventStore>,
     checkpoint_store: Arc<PostgresCheckpointStore>,
 }
 
@@ -90,16 +90,16 @@ impl PostgresBackend {
         &self.pool
     }
 
-    /// Returns a reference to the event store.
+    /// Returns a shared reference to the event store.
     #[must_use]
-    pub fn event_store(&self) -> &PostgresEventStore {
-        &self.event_store
+    pub fn event_store(&self) -> Arc<PostgresEventStore> {
+        Arc::clone(&self.event_store)
     }
 
-    /// Returns a reference to the checkpoint store.
+    /// Returns a shared reference to the checkpoint store.
     #[must_use]
-    pub fn checkpoint_store(&self) -> &PostgresCheckpointStore {
-        &self.checkpoint_store
+    pub fn checkpoint_store(&self) -> Arc<PostgresCheckpointStore> {
+        Arc::clone(&self.checkpoint_store)
     }
 }
 
@@ -200,7 +200,7 @@ impl PostgresBackendBuilder {
 
         Ok(PostgresBackend {
             pool,
-            event_store,
+            event_store: Arc::new(event_store),
             checkpoint_store,
         })
     }
@@ -361,14 +361,14 @@ mod tests {
         let stream_id = StreamId::new("TestAggregate", aggregate_id);
         let event = create_test_envelope(aggregate_id);
 
-        backend
-            .event_store()
+        let store = backend.event_store();
+
+        store
             .append(stream_id.clone(), vec![event], AggregateVersion::initial())
             .await
             .expect("append should succeed");
 
-        let mut stream = backend
-            .event_store()
+        let mut stream = store
             .load_stream(stream_id, AggregateVersion::initial())
             .await
             .expect("load_stream should succeed");

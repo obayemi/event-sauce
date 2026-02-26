@@ -310,9 +310,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Initializing backend (event store + checkpoint store + migrations)...");
     let backend = PostgresBackend::setup(&database_url, "event_sauce").await?;
 
-    let store = Arc::new(backend.event_store().clone());
+    let store = backend.event_store();
     let checkpoint_ref: Arc<dyn event_sauce_core::CheckpointStore> =
-        Arc::new(backend.checkpoint_store().clone());
+        backend.checkpoint_store();
 
     // Create repositories for type-safe aggregate persistence
     println!("  Creating repositories...");
