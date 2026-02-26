@@ -943,34 +943,75 @@ macro_rules! define_events {
         }
 
         // ---- Shared: DomainEvent ----
-        impl $crate::DomainEvent for $event_enum {
-            type Aggregate = $aggregate;
+        // Wrapped in paste::paste! so [<$variant Event>] is available for
+        // to_envelope/from_envelope which serialize/deserialize the flat struct format
+        paste::paste! {
+            impl $crate::DomainEvent for $event_enum {
+                type Aggregate = $aggregate;
 
-            fn event_type(&self) -> &'static str {
-                match self {
-                    $(
-                        $event_enum::$variant { .. } => {
-                            concat!(stringify!($aggregate), ".", stringify!($variant))
-                        }
-                    ),*
+                fn event_type(&self) -> &'static str {
+                    match self {
+                        $(
+                            $event_enum::$variant { .. } => {
+                                concat!(stringify!($aggregate), ".", stringify!($variant))
+                            }
+                        ),*
+                    }
                 }
-            }
 
-            fn event_version(&self) -> $crate::EventVersion {
-                match self {
-                    $(
-                        $event_enum::$variant { .. } => {
-                            $crate::EventVersion::new(define_events!(@version_from [$($version)*]))
-                        }
-                    ),*
+                fn event_version(&self) -> $crate::EventVersion {
+                    match self {
+                        $(
+                            $event_enum::$variant { .. } => {
+                                $crate::EventVersion::new(define_events!(@version_from [$($version)*]))
+                            }
+                        ),*
+                    }
                 }
-            }
 
-            fn occurred_at(&self) -> ::chrono::DateTime<::chrono::Utc> {
-                match self {
+                fn occurred_at(&self) -> ::chrono::DateTime<::chrono::Utc> {
+                    match self {
+                        $(
+                            $event_enum::$variant { timestamp, .. } => *timestamp
+                        ),*
+                    }
+                }
+
+                fn to_envelope(&self, aggregate_id: ::uuid::Uuid) -> $crate::Result<$crate::EventEnvelope> {
+                    let event_data = match self {
+                        $(
+                            $event_enum::$variant { $($field,)* timestamp } => {
+                                ::serde_json::to_value(&[<$variant Event>] {
+                                    $($field: $field.clone(),)*
+                                    timestamp: *timestamp,
+                                })
+                            }
+                        ),*
+                    }.map_err(|e| $crate::Error::custom(format!("Failed to serialize event: {e}")))?;
+
+                    Ok($crate::EventEnvelope::new(
+                        ::uuid::Uuid::new_v4(),
+                        aggregate_id,
+                        <Self::Aggregate as $crate::Aggregate>::aggregate_type().to_string(),
+                        self.event_type().to_string(),
+                        self.event_version(),
+                        event_data,
+                    )
+                    .with_created_at(self.occurred_at()))
+                }
+
+                fn from_envelope(envelope: &$crate::EventEnvelope) -> $crate::Result<Self> {
                     $(
-                        $event_enum::$variant { timestamp, .. } => *timestamp
-                    ),*
+                        if envelope.event_type == <[<$variant Event>] as $crate::EventType>::EVENT_TYPE {
+                            let event = ::serde_json::from_value::<[<$variant Event>]>(envelope.event_data.clone())
+                                .map_err(|e| $crate::Error::custom(format!("Failed to deserialize event: {e}")))?;
+                            return Ok($event_enum::$variant {
+                                $($field: event.$field,)*
+                                timestamp: event.timestamp,
+                            });
+                        }
+                    )*
+                    Err($crate::Error::custom(format!("Unknown event type: {}", envelope.event_type)))
                 }
             }
         }
@@ -2773,6 +2814,99 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[test]
+    fn test_define_events_to_envelope_serializes_flat_struct() {
+        // to_envelope() should serialize event data as flat struct (no enum variant wrapper)
+        let event = OrderEvent::Created {
+            order_id: "order-123".to_string(),
+            timestamp: Utc::now(),
+        };
+
+        let envelope = event.to_envelope(uuid::Uuid::new_v4()).unwrap();
+
+        // The event_data should be flat: {"order_id":"order-123","timestamp":"..."}
+        // NOT enum-wrapped: {"Created":{"order_id":"order-123","timestamp":"..."}}
+        let data = &envelope.event_data;
+        assert!(
+            data.get("order_id").is_some(),
+            "event_data should have flat 'order_id' field"
+        );
+        assert!(
+            data.get("timestamp").is_some(),
+            "event_data should have flat 'timestamp' field"
+        );
+        assert!(
+            data.get("Created").is_none(),
+            "event_data should NOT have enum variant wrapper"
+        );
+    }
+
+    #[test]
+    fn test_define_events_envelope_roundtrip() {
+        // to_envelope() → from_envelope() should produce equivalent events
+        let timestamp = Utc::now();
+        let aggregate_id = uuid::Uuid::new_v4();
+
+        let original = OrderEvent::ItemAdded {
+            item_id: "item-42".to_string(),
+            quantity: 3,
+            price: 500,
+            timestamp,
+        };
+
+        let envelope = original.to_envelope(aggregate_id).unwrap();
+        let deserialized = OrderEvent::from_envelope(&envelope).unwrap();
+
+        assert_eq!(deserialized.event_type(), "Order.ItemAdded");
+        if let OrderEvent::ItemAdded {
+            item_id,
+            quantity,
+            price,
+            timestamp: ts,
+        } = deserialized
+        {
+            assert_eq!(item_id, "item-42");
+            assert_eq!(quantity, 3);
+            assert_eq!(price, 500);
+            assert_eq!(ts, timestamp);
+        } else {
+            panic!("Expected ItemAdded variant");
+        }
+    }
+
+    #[test]
+    fn test_define_events_envelope_roundtrip_no_fields() {
+        // Round-trip for event with no fields (only timestamp)
+        let timestamp = Utc::now();
+        let original = OrderEvent::Completed { timestamp };
+
+        let envelope = original.to_envelope(uuid::Uuid::new_v4()).unwrap();
+        let deserialized = OrderEvent::from_envelope(&envelope).unwrap();
+
+        assert_eq!(deserialized.event_type(), "Order.Completed");
+        if let OrderEvent::Completed { timestamp: ts } = deserialized {
+            assert_eq!(ts, timestamp);
+        } else {
+            panic!("Expected Completed variant");
+        }
+    }
+
+    #[test]
+    fn test_define_events_from_envelope_unknown_event_type() {
+        // from_envelope() should return error for unknown event types
+        let envelope = crate::EventEnvelope::new(
+            uuid::Uuid::new_v4(),
+            uuid::Uuid::new_v4(),
+            "Order".to_string(),
+            "Order.Unknown".to_string(),
+            crate::EventVersion::from(1),
+            serde_json::json!({}),
+        );
+
+        let result = OrderEvent::from_envelope(&envelope);
+        assert!(result.is_err());
+    }
+
     // ===== command_handler! Event Helper Function Tests =====
 
     #[test]
@@ -3761,5 +3895,66 @@ mod tests {
         // Note: post_validate fires after apply, so the entity state was mutated
         // but the event was NOT appended to pending_events (dispatch returned Err)
         assert_eq!(agg.pending_events().len(), 1); // Only the init event
+    }
+
+    #[test]
+    fn test_init_events_envelope_roundtrip_init_variant() {
+        use crate::DomainEvent;
+        let timestamp = Utc::now();
+        let original = AccountEvent::AccountOpened {
+            name: "Alice".to_string(),
+            initial_balance: 100,
+            timestamp,
+        };
+
+        let envelope = original.to_envelope(uuid::Uuid::new_v4()).unwrap();
+
+        // Should serialize as flat struct
+        assert!(envelope.event_data.get("name").is_some());
+        assert!(envelope.event_data.get("AccountOpened").is_none());
+
+        let deserialized = AccountEvent::from_envelope(&envelope).unwrap();
+        assert_eq!(deserialized.event_type(), "Account.AccountOpened");
+        if let AccountEvent::AccountOpened {
+            name,
+            initial_balance,
+            timestamp: ts,
+        } = deserialized
+        {
+            assert_eq!(name, "Alice");
+            assert_eq!(initial_balance, 100);
+            assert_eq!(ts, timestamp);
+        } else {
+            panic!("Expected AccountOpened variant");
+        }
+    }
+
+    #[test]
+    fn test_init_events_envelope_roundtrip_regular_variant() {
+        use crate::DomainEvent;
+        let timestamp = Utc::now();
+        let original = AccountEvent::Deposited {
+            amount: 50,
+            timestamp,
+        };
+
+        let envelope = original.to_envelope(uuid::Uuid::new_v4()).unwrap();
+
+        // Should serialize as flat struct
+        assert!(envelope.event_data.get("amount").is_some());
+        assert!(envelope.event_data.get("Deposited").is_none());
+
+        let deserialized = AccountEvent::from_envelope(&envelope).unwrap();
+        assert_eq!(deserialized.event_type(), "Account.Deposited");
+        if let AccountEvent::Deposited {
+            amount,
+            timestamp: ts,
+        } = deserialized
+        {
+            assert_eq!(amount, 50);
+            assert_eq!(ts, timestamp);
+        } else {
+            panic!("Expected Deposited variant");
+        }
     }
 }
