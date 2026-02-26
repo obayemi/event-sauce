@@ -173,6 +173,174 @@ macro_rules! command_handler {
             }
         }
     };
+
+    // Init-aware entry point — delegates to __command_handler_init_internal TT muncher
+    (
+        @with_init
+        impl $aggregate:ty {
+            $($rest:tt)*
+        }
+    ) => {
+        $crate::__command_handler_init_internal! {
+            @munch [$aggregate]
+            init_commands: []
+            regular_commands: []
+            $($rest)*
+        }
+    };
+}
+
+/// Init-aware command_handler! — supports @init flag on individual commands.
+///
+/// When `@init` is present on a command:
+/// - Event helper is an **associated function** (no `&self`): `Aggregate::cmd_event(params) -> Event`
+/// - Command method is on `UninitAggregateRoot<Aggregate>`, consuming `self` and returning
+///   `Result<AggregateRoot<Aggregate>, Error>`
+///
+/// Regular commands (no `@init`) generate the same code as the standard `command_handler!`.
+///
+/// # Syntax
+///
+/// ```ignore
+/// command_handler! {
+///     @with_init
+///     impl Order {
+///         @init fn create(user_id: EntityId) -> OrderCreatedEvent { user_id };
+///         fn add_item(item: String, qty: u32) -> ItemAddedEvent { item, qty };
+///     }
+/// }
+/// ```
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __command_handler_init_internal {
+    // ---- TT muncher: parse @init command ----
+    (
+        @munch [$aggregate:ty]
+        // accumulated
+        init_commands: [ $({ attrs: [$($i_attr:meta),*] cmd: $i_cmd:ident ($($i_param:ident: $i_param_ty:ty),*) -> $i_evt:ident { $($i_field:ident),* } })* ]
+        regular_commands: [ $({ attrs: [$($r_attr:meta),*] cmd: $r_cmd:ident ($($r_param:ident: $r_param_ty:ty),*) -> $r_evt:ident { $($r_field:ident),* } })* ]
+
+        // next command is @init
+        @init
+        $(#[$attr:meta])*
+        fn $command:ident($($param:ident: $param_ty:ty),* $(,)?)
+            -> $event_struct:ident { $($field:ident),* $(,)? }
+        $(; $($rest:tt)*)?
+    ) => {
+        $crate::__command_handler_init_internal! {
+            @munch [$aggregate]
+            init_commands: [ $({ attrs: [$($i_attr),*] cmd: $i_cmd ($($i_param: $i_param_ty),*) -> $i_evt { $($i_field),* } })* { attrs: [$($attr),*] cmd: $command ($($param: $param_ty),*) -> $event_struct { $($field),* } } ]
+            regular_commands: [ $({ attrs: [$($r_attr),*] cmd: $r_cmd ($($r_param: $r_param_ty),*) -> $r_evt { $($r_field),* } })* ]
+            $($($rest)*)?
+        }
+    };
+
+    // ---- TT muncher: parse regular command ----
+    (
+        @munch [$aggregate:ty]
+        init_commands: [ $({ attrs: [$($i_attr:meta),*] cmd: $i_cmd:ident ($($i_param:ident: $i_param_ty:ty),*) -> $i_evt:ident { $($i_field:ident),* } })* ]
+        regular_commands: [ $({ attrs: [$($r_attr:meta),*] cmd: $r_cmd:ident ($($r_param:ident: $r_param_ty:ty),*) -> $r_evt:ident { $($r_field:ident),* } })* ]
+
+        // next command is regular (no @init)
+        $(#[$attr:meta])*
+        fn $command:ident($($param:ident: $param_ty:ty),* $(,)?)
+            -> $event_struct:ident { $($field:ident),* $(,)? }
+        $(; $($rest:tt)*)?
+    ) => {
+        $crate::__command_handler_init_internal! {
+            @munch [$aggregate]
+            init_commands: [ $({ attrs: [$($i_attr),*] cmd: $i_cmd ($($i_param: $i_param_ty),*) -> $i_evt { $($i_field),* } })* ]
+            regular_commands: [ $({ attrs: [$($r_attr),*] cmd: $r_cmd ($($r_param: $r_param_ty),*) -> $r_evt { $($r_field),* } })* { attrs: [$($attr),*] cmd: $command ($($param: $param_ty),*) -> $event_struct { $($field),* } } ]
+            $($($rest)*)?
+        }
+    };
+
+    // ---- Base case: all commands parsed, emit code ----
+    (
+        @munch [$aggregate:ty]
+        init_commands: [ $({ attrs: [$($i_attr:meta),*] cmd: $i_cmd:ident ($($i_param:ident: $i_param_ty:ty),*) -> $i_evt:ident { $($i_field:ident),* } })* ]
+        regular_commands: [ $({ attrs: [$($r_attr:meta),*] cmd: $r_cmd:ident ($($r_param:ident: $r_param_ty:ty),*) -> $r_evt:ident { $($r_field:ident),* } })* ]
+    ) => {
+        // --- Init event helpers: associated functions (no &self) ---
+        impl $aggregate {
+            $(
+                paste::paste! {
+                    $(#[$i_attr])*
+                    #[allow(missing_docs)]
+                    pub fn [<$i_cmd _event>]($($i_param: $i_param_ty),*) -> $i_evt {
+                        $i_evt {
+                            $($i_field: $i_param,)*
+                            timestamp: ::chrono::Utc::now(),
+                        }
+                    }
+                }
+            )*
+        }
+
+        // --- Regular event helpers: instance methods ---
+        impl $aggregate {
+            $(
+                paste::paste! {
+                    $(#[$r_attr])*
+                    #[allow(missing_docs)]
+                    pub fn [<$r_cmd _event>](&self, $($r_param: $r_param_ty),*) -> $r_evt {
+                        $r_evt {
+                            $($r_field: $r_param,)*
+                            timestamp: ::chrono::Utc::now(),
+                        }
+                    }
+                }
+            )*
+        }
+
+        // --- Init commands trait + impl on UninitAggregateRoot ---
+        paste::paste! {
+            #[allow(missing_docs, private_interfaces)]
+            pub trait [<$aggregate InitCommands>] {
+                $(
+                    $(#[$i_attr])*
+                    fn $i_cmd(self, $($i_param: $i_param_ty),*)
+                        -> ::std::result::Result<$crate::AggregateRoot<$aggregate>, <$aggregate as $crate::Aggregate>::Error>;
+                )*
+            }
+
+            impl [<$aggregate InitCommands>] for $crate::UninitAggregateRoot<$aggregate> {
+                $(
+                    $(#[$i_attr])*
+                    fn $i_cmd(self, $($i_param: $i_param_ty),*)
+                        -> ::std::result::Result<$crate::AggregateRoot<$aggregate>, <$aggregate as $crate::Aggregate>::Error>
+                    {
+                        let event = $aggregate::[<$i_cmd _event>]($($i_param),*);
+                        self.apply_init(event)
+                    }
+                )*
+            }
+        }
+
+        // --- Regular commands trait + impl on AggregateRoot ---
+        paste::paste! {
+            #[allow(missing_docs, private_interfaces)]
+            pub trait [<$aggregate Commands>] {
+                $(
+                    $(#[$r_attr])*
+                    fn $r_cmd(&mut self, $($r_param: $r_param_ty),*)
+                        -> ::std::result::Result<(), <$aggregate as $crate::Aggregate>::Error>;
+                )*
+            }
+
+            impl [<$aggregate Commands>] for $crate::AggregateRoot<$aggregate> {
+                $(
+                    $(#[$r_attr])*
+                    fn $r_cmd(&mut self, $($r_param: $r_param_ty),*)
+                        -> ::std::result::Result<(), <$aggregate as $crate::Aggregate>::Error>
+                    {
+                        let event = self.[<$r_cmd _event>]($($r_param),*);
+                        self.apply(event)
+                    }
+                )*
+            }
+        }
+    };
 }
 
 /// Generate a projection (read model) with declarative event handlers.
@@ -3502,5 +3670,96 @@ mod tests {
             timestamp: Utc::now(),
         };
         assert_eq!(deposit.event_type(), "Account.Deposited");
+    }
+
+    // ===== @init command_handler! macro tests =====
+
+    command_handler! {
+        @with_init
+        impl Account {
+            @init fn open_account(name: String, initial_balance: i64)
+                -> AccountOpenedEvent { name, initial_balance };
+            fn deposit(amount: i64)
+                -> DepositedEvent { amount };
+            fn withdraw(amount: i64)
+                -> WithdrawnEvent { amount };
+        }
+    }
+
+    #[test]
+    fn test_init_command_handler_event_helper_is_associated_fn() {
+        // Init event helper is an associated function (no &self)
+        let event = Account::open_account_event("Alice".to_string(), 100);
+        assert_eq!(event.name, "Alice");
+        assert_eq!(event.initial_balance, 100);
+    }
+
+    #[test]
+    fn test_init_command_handler_init_command_on_uninit() {
+        let uninit = crate::UninitAggregateRoot::<Account>::new(EntityId::new());
+        let id = uninit.entity_id();
+        let agg = uninit.open_account("Alice".to_string(), 100).unwrap();
+        assert_eq!(agg.entity_id(), id);
+        assert_eq!(agg.name, "Alice");
+        assert_eq!(agg.balance, 100);
+        assert_eq!(agg.version(), AggregateVersion::new(1));
+        assert_eq!(agg.pending_events().len(), 1);
+    }
+
+    #[test]
+    fn test_init_command_handler_init_validation_fails() {
+        let uninit = crate::UninitAggregateRoot::<Account>::new(EntityId::new());
+        let result = uninit.open_account(String::new(), 0);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().to_string(), "Empty name");
+    }
+
+    #[test]
+    fn test_init_command_handler_regular_event_helper() {
+        let account = Account {
+            id: EntityId::new(),
+            name: "Alice".to_string(),
+            balance: 100,
+        };
+        // Regular event helper is an instance method
+        let event = account.deposit_event(50);
+        assert_eq!(event.amount, 50);
+    }
+
+    #[test]
+    fn test_init_command_handler_regular_command_on_aggregate_root() {
+        let uninit = crate::UninitAggregateRoot::<Account>::new(EntityId::new());
+        let mut agg = uninit.open_account("Alice".to_string(), 100).unwrap();
+
+        agg.deposit(50).unwrap();
+        assert_eq!(agg.balance, 150);
+        assert_eq!(agg.version(), AggregateVersion::new(2));
+    }
+
+    #[test]
+    fn test_init_command_handler_full_lifecycle() {
+        let uninit = crate::UninitAggregateRoot::<Account>::new(EntityId::new());
+        let mut agg = uninit.open_account("Alice".to_string(), 100).unwrap();
+
+        agg.deposit(50).unwrap();
+        agg.withdraw(30).unwrap();
+
+        assert_eq!(agg.balance, 120);
+        assert_eq!(agg.version(), AggregateVersion::new(3));
+        assert_eq!(agg.pending_events().len(), 3);
+    }
+
+    #[test]
+    fn test_init_command_handler_regular_post_validation() {
+        let uninit = crate::UninitAggregateRoot::<Account>::new(EntityId::new());
+        let mut agg = uninit.open_account("Alice".to_string(), 10).unwrap();
+
+        // Withdraw more than balance should fail post-validation
+        let result = agg.withdraw(20);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().to_string(), "Negative balance");
+        // Note: post_validate fires after apply, so the entity state was mutated
+        // but the event was NOT appended to pending_events (dispatch returned Err)
+        assert_eq!(agg.pending_events().len(), 1); // Only the init event
     }
 }
