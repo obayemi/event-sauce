@@ -27,7 +27,7 @@ use sqlx::PgPool;
 ///     let store = PostgresCheckpointStore::builder()
 ///         .pool(pool)
 ///         .schema("event_sauce") // Isolates migrations from your app
-///         .build();
+///         .build()?;
 ///
 ///     // Run migrations in the custom schema
 ///     store.migrate().await?;
@@ -61,7 +61,7 @@ pub struct PostgresCheckpointStore {
 /// let store = PostgresCheckpointStore::builder()
 ///     .pool(pool)
 ///     .schema("event_sauce")
-///     .build();
+///     .build()?;
 /// ```
 #[derive(Clone)]
 pub struct PostgresCheckpointStoreBuilder {
@@ -77,6 +77,10 @@ impl PostgresCheckpointStore {
     ///
     /// Equivalent to `PostgresCheckpointStore::builder().pool(pool).build()`.
     ///
+    /// # Panics
+    ///
+    /// Cannot panic — the pool is always set before calling `build()`.
+    ///
     /// # Examples
     ///
     /// ```ignore
@@ -91,7 +95,7 @@ impl PostgresCheckpointStore {
     /// ```
     #[must_use]
     pub fn new(pool: PgPool) -> Self {
-        Self::builder().pool(pool).build()
+        Self::builder().pool(pool).build().expect("pool was set")
     }
 
     /// Creates a builder for configuring the checkpoint store.
@@ -110,7 +114,7 @@ impl PostgresCheckpointStore {
     /// let store = PostgresCheckpointStore::builder()
     ///     .pool(pool)
     ///     .schema("event_sauce")  // Isolate from app migrations
-    ///     .build();
+    ///     .build()?;
     /// ```
     #[must_use]
     pub fn builder() -> PostgresCheckpointStoreBuilder {
@@ -131,7 +135,7 @@ impl PostgresCheckpointStore {
     /// let store = PostgresCheckpointStore::builder()
     ///     .pool(pool)
     ///     .schema("my_schema")
-    ///     .build();
+    ///     .build()?;
     ///
     /// assert_eq!(store.schema(), "my_schema");
     /// ```
@@ -307,9 +311,9 @@ impl PostgresCheckpointStoreBuilder {
     ///
     /// - **Schema**: "`event_sauce`" (isolates migrations from your app)
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if the pool has not been set via [`pool()`](Self::pool).
+    /// Returns an error if the pool has not been set via [`pool()`](Self::pool).
     ///
     /// # Examples
     ///
@@ -322,14 +326,15 @@ impl PostgresCheckpointStoreBuilder {
     /// // Uses "event_sauce" schema by default
     /// let store = PostgresCheckpointStore::builder()
     ///     .pool(pool)
-    ///     .build();
+    ///     .build()?;
     /// ```
-    #[must_use]
-    pub fn build(self) -> PostgresCheckpointStore {
-        PostgresCheckpointStore {
-            pool: self.pool.expect("Pool is required"),
+    pub fn build(self) -> event_sauce_core::Result<PostgresCheckpointStore> {
+        Ok(PostgresCheckpointStore {
+            pool: self
+                .pool
+                .ok_or_else(|| Error::invalid_state("pool is required"))?,
             schema: self.schema.unwrap_or_else(|| "event_sauce".to_string()),
-        }
+        })
     }
 }
 
@@ -631,7 +636,8 @@ mod tests {
         let db = TestDatabase::new().await.unwrap();
         let store = PostgresCheckpointStore::builder()
             .pool(db.pool().clone())
-            .build();
+            .build()
+            .unwrap();
 
         // Default schema should be "event_sauce"
         assert_eq!(store.schema(), "event_sauce");
@@ -655,7 +661,8 @@ mod tests {
         let store = PostgresCheckpointStore::builder()
             .pool(db.pool().clone())
             .schema("custom_schema")
-            .build();
+            .build()
+            .unwrap();
 
         // Verify schema is used
         assert_eq!(store.schema(), "custom_schema");
@@ -667,7 +674,8 @@ mod tests {
         let store = PostgresCheckpointStore::builder()
             .pool(db.pool().clone())
             .schema("checkpoint_test")
-            .build();
+            .build()
+            .unwrap();
 
         // Run migrations
         store.migrate().await.unwrap();
@@ -707,7 +715,8 @@ mod tests {
         let store = PostgresCheckpointStore::builder()
             .pool(db.pool().clone())
             .schema("checkpoints_schema")
-            .build();
+            .build()
+            .unwrap();
 
         store.migrate().await.unwrap();
 

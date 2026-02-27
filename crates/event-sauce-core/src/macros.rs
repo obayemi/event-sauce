@@ -1746,7 +1746,7 @@ mod tests {
                 uuid::Uuid::new_v4(),
                 "Test".to_string(),
                 "Test.Incremented".to_string(),
-                crate::EventVersion::new(u64::try_from(i).unwrap()),
+                crate::EventVersion::new(i64::from(i)),
                 serde_json::to_value(&event).unwrap(),
             );
             projection.handle(&envelope).await.unwrap();

@@ -34,7 +34,7 @@ struct AggregateAttrs {
 /// Attributes for the #[event(...)] container attribute
 #[derive(Debug, FromMeta)]
 struct EventAttrs {
-    version: u64,
+    version: i64,
     #[darling(default)]
     type_prefix: Option<String>,
     #[darling(default)]

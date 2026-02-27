@@ -14,6 +14,9 @@ use std::fmt;
 /// Represents how many events have been applied to an aggregate.
 /// Versions start at 0 and increment with each event.
 ///
+/// Uses `i64` internally to match `PostgreSQL` `BIGINT` columns directly,
+/// avoiding unsafe `u64`↔`i64` casts at database boundaries.
+///
 /// # Examples
 ///
 /// ```
@@ -25,7 +28,7 @@ use std::fmt;
 /// assert!(v2 > v1);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct AggregateVersion(u64);
+pub struct AggregateVersion(i64);
 
 impl AggregateVersion {
     /// Creates a new aggregate version.
@@ -36,14 +39,14 @@ impl AggregateVersion {
     /// use event_sauce_core::AggregateVersion;
     ///
     /// let version = AggregateVersion::new(0);
-    /// assert_eq!(version.as_u64(), 0);
+    /// assert_eq!(version.as_i64(), 0);
     /// ```
     #[must_use]
-    pub const fn new(value: u64) -> Self {
+    pub const fn new(value: i64) -> Self {
         Self(value)
     }
 
-    /// Returns the version as a u64.
+    /// Returns the version as an i64.
     ///
     /// # Examples
     ///
@@ -51,10 +54,10 @@ impl AggregateVersion {
     /// use event_sauce_core::AggregateVersion;
     ///
     /// let version = AggregateVersion::new(42);
-    /// assert_eq!(version.as_u64(), 42);
+    /// assert_eq!(version.as_i64(), 42);
     /// ```
     #[must_use]
-    pub const fn as_u64(self) -> u64 {
+    pub const fn as_i64(self) -> i64 {
         self.0
     }
 
@@ -67,7 +70,7 @@ impl AggregateVersion {
     ///
     /// let v1 = AggregateVersion::new(5);
     /// let v2 = v1.next();
-    /// assert_eq!(v2.as_u64(), 6);
+    /// assert_eq!(v2.as_i64(), 6);
     /// ```
     #[must_use]
     pub const fn next(self) -> Self {
@@ -82,7 +85,7 @@ impl AggregateVersion {
     /// use event_sauce_core::AggregateVersion;
     ///
     /// let initial = AggregateVersion::initial();
-    /// assert_eq!(initial.as_u64(), 0);
+    /// assert_eq!(initial.as_i64(), 0);
     /// ```
     #[must_use]
     pub const fn initial() -> Self {
@@ -96,13 +99,13 @@ impl fmt::Display for AggregateVersion {
     }
 }
 
-impl From<u64> for AggregateVersion {
-    fn from(value: u64) -> Self {
+impl From<i64> for AggregateVersion {
+    fn from(value: i64) -> Self {
         Self(value)
     }
 }
 
-impl From<AggregateVersion> for u64 {
+impl From<AggregateVersion> for i64 {
     fn from(version: AggregateVersion) -> Self {
         version.0
     }
@@ -112,6 +115,9 @@ impl From<AggregateVersion> for u64 {
 ///
 /// Represents which schema version an event type uses,
 /// enabling event evolution and migration.
+///
+/// Uses `i64` internally to match `PostgreSQL` `BIGINT` columns directly,
+/// avoiding unsafe `u64`↔`i64` casts at database boundaries.
 ///
 /// # Examples
 ///
@@ -124,7 +130,7 @@ impl From<AggregateVersion> for u64 {
 /// assert!(v2 > v1);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct EventVersion(u64);
+pub struct EventVersion(i64);
 
 impl EventVersion {
     /// Creates a new event version.
@@ -135,14 +141,14 @@ impl EventVersion {
     /// use event_sauce_core::EventVersion;
     ///
     /// let version = EventVersion::new(1);
-    /// assert_eq!(version.as_u64(), 1);
+    /// assert_eq!(version.as_i64(), 1);
     /// ```
     #[must_use]
-    pub const fn new(value: u64) -> Self {
+    pub const fn new(value: i64) -> Self {
         Self(value)
     }
 
-    /// Returns the version as a u64.
+    /// Returns the version as an i64.
     ///
     /// # Examples
     ///
@@ -150,10 +156,10 @@ impl EventVersion {
     /// use event_sauce_core::EventVersion;
     ///
     /// let version = EventVersion::new(42);
-    /// assert_eq!(version.as_u64(), 42);
+    /// assert_eq!(version.as_i64(), 42);
     /// ```
     #[must_use]
-    pub const fn as_u64(self) -> u64 {
+    pub const fn as_i64(self) -> i64 {
         self.0
     }
 }
@@ -164,13 +170,13 @@ impl fmt::Display for EventVersion {
     }
 }
 
-impl From<u64> for EventVersion {
-    fn from(value: u64) -> Self {
+impl From<i64> for EventVersion {
+    fn from(value: i64) -> Self {
         Self(value)
     }
 }
 
-impl From<EventVersion> for u64 {
+impl From<EventVersion> for i64 {
     fn from(version: EventVersion) -> Self {
         version.0
     }
@@ -185,20 +191,20 @@ mod tests {
     #[test]
     fn test_aggregate_version_new() {
         let version = AggregateVersion::new(42);
-        assert_eq!(version.as_u64(), 42);
+        assert_eq!(version.as_i64(), 42);
     }
 
     #[test]
     fn test_aggregate_version_initial() {
         let version = AggregateVersion::initial();
-        assert_eq!(version.as_u64(), 0);
+        assert_eq!(version.as_i64(), 0);
     }
 
     #[test]
     fn test_aggregate_version_next() {
         let v1 = AggregateVersion::new(5);
         let v2 = v1.next();
-        assert_eq!(v2.as_u64(), 6);
+        assert_eq!(v2.as_i64(), 6);
     }
 
     #[test]
@@ -208,10 +214,10 @@ mod tests {
         let v3 = v2.next();
         let v4 = v3.next();
 
-        assert_eq!(v1.as_u64(), 0);
-        assert_eq!(v2.as_u64(), 1);
-        assert_eq!(v3.as_u64(), 2);
-        assert_eq!(v4.as_u64(), 3);
+        assert_eq!(v1.as_i64(), 0);
+        assert_eq!(v2.as_i64(), 1);
+        assert_eq!(v3.as_i64(), 2);
+        assert_eq!(v4.as_i64(), 3);
     }
 
     #[test]
@@ -233,15 +239,15 @@ mod tests {
     }
 
     #[test]
-    fn test_aggregate_version_from_u64() {
-        let version: AggregateVersion = 42u64.into();
-        assert_eq!(version.as_u64(), 42);
+    fn test_aggregate_version_from_i64() {
+        let version: AggregateVersion = 42i64.into();
+        assert_eq!(version.as_i64(), 42);
     }
 
     #[test]
-    fn test_aggregate_version_into_u64() {
+    fn test_aggregate_version_into_i64() {
         let version = AggregateVersion::new(42);
-        let value: u64 = version.into();
+        let value: i64 = version.into();
         assert_eq!(value, 42);
     }
 
@@ -250,7 +256,7 @@ mod tests {
     #[test]
     fn test_event_version_new() {
         let version = EventVersion::new(1);
-        assert_eq!(version.as_u64(), 1);
+        assert_eq!(version.as_i64(), 1);
     }
 
     #[test]
@@ -272,15 +278,15 @@ mod tests {
     }
 
     #[test]
-    fn test_event_version_from_u64() {
-        let version: EventVersion = 3u64.into();
-        assert_eq!(version.as_u64(), 3);
+    fn test_event_version_from_i64() {
+        let version: EventVersion = 3i64.into();
+        assert_eq!(version.as_i64(), 3);
     }
 
     #[test]
-    fn test_event_version_into_u64() {
+    fn test_event_version_into_i64() {
         let version = EventVersion::new(5);
-        let value: u64 = version.into();
+        let value: i64 = version.into();
         assert_eq!(value, 5);
     }
 
@@ -296,6 +302,6 @@ mod tests {
         assert_eq!(format!("{agg}"), format!("{evt}"));
 
         // But they are distinct types (this is a compile-time guarantee)
-        assert_eq!(agg.as_u64(), evt.as_u64());
+        assert_eq!(agg.as_i64(), evt.as_i64());
     }
 }

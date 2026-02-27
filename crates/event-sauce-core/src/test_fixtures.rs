@@ -164,13 +164,13 @@ impl EventStore for MockEventStore {
         from_version: AggregateVersion,
     ) -> Result<impl futures::Stream<Item = Result<EventEnvelope>> + Send> {
         let streams = self.streams.lock().unwrap();
-        #[allow(clippy::cast_possible_truncation)]
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let events = streams
             .get(&stream_id)
             .cloned()
             .unwrap_or_default()
             .into_iter()
-            .skip(from_version.as_u64() as usize)
+            .skip(from_version.as_i64() as usize)
             .map(Ok)
             .collect::<Vec<_>>();
         Ok(stream::iter(events))
@@ -189,7 +189,8 @@ impl EventStore for MockEventStore {
     async fn get_version(&self, stream_id: StreamId) -> Result<AggregateVersion> {
         let streams = self.streams.lock().unwrap();
         let count = streams.get(&stream_id).map_or(0, std::vec::Vec::len);
-        Ok(AggregateVersion::new(count as u64))
+        #[allow(clippy::cast_possible_wrap)]
+        Ok(AggregateVersion::new(count as i64))
     }
 
     async fn load_snapshot(&self, _stream_id: StreamId) -> Result<Option<crate::Snapshot>> {
@@ -339,4 +340,230 @@ impl AggregateError for TestCounterError {}
 impl crate::Aggregate for TestCounter {
     type Event = TestCounterEvent;
     type Error = TestCounterError;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        AggregateRoot, CheckpointStore, DefaultEntity, DomainEvent, Entity, EventApplicator,
+        EventStore, Position, StreamId,
+    };
+    use futures::StreamExt;
+
+    // --- MockEventStore Default ---
+
+    #[test]
+    fn mock_event_store_default_creates_empty_store() {
+        let store = MockEventStore::default();
+        assert!(store.streams.lock().unwrap().is_empty());
+        assert!(store.global_log.lock().unwrap().is_empty());
+    }
+
+    // --- MockCheckpointStore Default ---
+
+    #[test]
+    fn mock_checkpoint_store_default_creates_empty_store() {
+        let store = MockCheckpointStore::default();
+        assert!(store.get("anything").is_none());
+    }
+
+    // --- MockCheckpointStore::delete_checkpoint ---
+
+    #[tokio::test]
+    async fn mock_checkpoint_store_delete_removes_checkpoint() {
+        let store = MockCheckpointStore::new();
+        store
+            .save_checkpoint("sub", Position::new(5))
+            .await
+            .unwrap();
+        assert_eq!(store.get("sub"), Some(Position::new(5)));
+
+        store.delete_checkpoint("sub").await.unwrap();
+        assert!(store.get("sub").is_none());
+    }
+
+    // --- MockEventStore::stream_all ---
+
+    #[tokio::test]
+    async fn mock_event_store_stream_all_returns_events_in_order() {
+        let store = MockEventStore::new();
+        let env1 = create_test_envelope("Ev1", "Agg");
+        let env2 = create_test_envelope("Ev2", "Agg");
+        store.add_event(env1.clone());
+        store.add_event(env2.clone());
+
+        let stream = store.stream_all(Position::new(0)).await.unwrap();
+        let events: Vec<_> = stream.map(|r| r.unwrap()).collect().await;
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].event_type, env1.event_type);
+        assert_eq!(events[1].event_type, env2.event_type);
+    }
+
+    #[tokio::test]
+    async fn mock_event_store_stream_all_skips_with_offset() {
+        let store = MockEventStore::new();
+        store.add_event(create_test_envelope("Ev1", "Agg"));
+        store.add_event(create_test_envelope("Ev2", "Agg"));
+
+        let stream = store.stream_all(Position::new(1)).await.unwrap();
+        let events: Vec<_> = stream.map(|r| r.unwrap()).collect().await;
+        assert_eq!(events.len(), 1);
+    }
+
+    // --- MockEventStore::get_version ---
+
+    #[tokio::test]
+    async fn mock_event_store_get_version_empty_stream() {
+        let store = MockEventStore::new();
+        let stream_id = StreamId::new("Test", uuid::Uuid::new_v4());
+        let version = store.get_version(stream_id).await.unwrap();
+        assert_eq!(version.as_i64(), 0);
+    }
+
+    #[tokio::test]
+    async fn mock_event_store_get_version_after_append() {
+        let store = MockEventStore::new();
+        let id = uuid::Uuid::new_v4();
+        let stream_id = StreamId::new("Test", id);
+        let env = create_test_envelope("Ev1", "Test");
+        store
+            .append(
+                stream_id.clone(),
+                vec![env],
+                crate::AggregateVersion::new(0),
+            )
+            .await
+            .unwrap();
+        let version = store.get_version(stream_id).await.unwrap();
+        assert_eq!(version.as_i64(), 1);
+    }
+
+    // --- MockEventStore snapshot methods ---
+
+    #[tokio::test]
+    async fn mock_event_store_load_snapshot_returns_none() {
+        let store = MockEventStore::new();
+        let stream_id = StreamId::new("Test", uuid::Uuid::new_v4());
+        assert!(store.load_snapshot(stream_id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn mock_event_store_save_snapshot_succeeds() {
+        let store = MockEventStore::new();
+        let snapshot = crate::Snapshot {
+            aggregate_id: uuid::Uuid::new_v4(),
+            aggregate_type: "Test".into(),
+            snapshot_version: crate::AggregateVersion::new(1),
+            snapshot_data: serde_json::json!({}),
+        };
+        store.save_snapshot(snapshot).await.unwrap();
+    }
+
+    #[test]
+    fn mock_event_store_snapshot_config_is_disabled() {
+        let store = MockEventStore::new();
+        assert!(!store.snapshot_config().use_snapshots_on_load());
+    }
+
+    // --- SimpleTestEvent::dispatch_unchecked ---
+
+    #[test]
+    fn simple_test_event_dispatch_unchecked_applies_created() {
+        let mut entity = SimpleTestEntity::new(EntityId::new());
+        let event = SimpleTestEvent::Created { value: 42 };
+        EventApplicator::dispatch_unchecked(&event, &mut entity);
+        assert_eq!(entity.value, 42);
+    }
+
+    #[test]
+    fn simple_test_event_dispatch_unchecked_applies_updated() {
+        let mut entity = SimpleTestEntity::new(EntityId::new());
+        let event = SimpleTestEvent::Updated { value: 99 };
+        EventApplicator::dispatch_unchecked(&event, &mut entity);
+        assert_eq!(entity.value, 99);
+    }
+
+    // --- SimpleTestError ---
+
+    #[test]
+    fn simple_test_error_display() {
+        let err = SimpleTestError;
+        assert_eq!(err.to_string(), "test error");
+    }
+
+    // --- TestCounter ---
+
+    #[test]
+    fn test_counter_entity_new() {
+        let id = EntityId::new();
+        let counter = TestCounter::new(id);
+        assert_eq!(counter.entity_id(), id);
+        assert_eq!(counter.value, 0);
+    }
+
+    #[test]
+    fn test_counter_default_entity() {
+        // Verify TestCounter implements DefaultEntity (compile-time check exercised at runtime)
+        fn assert_default_entity<T: DefaultEntity>() {}
+        assert_default_entity::<TestCounter>();
+    }
+
+    // --- TestCounterEvent ---
+
+    #[test]
+    fn test_counter_event_type() {
+        let event = TestCounterEvent::Incremented { amount: 1 };
+        assert_eq!(event.event_type(), "TestCounter.Incremented");
+    }
+
+    #[test]
+    fn test_counter_event_version() {
+        let event = TestCounterEvent::Incremented { amount: 1 };
+        assert_eq!(event.event_version(), EventVersion::new(1));
+    }
+
+    #[test]
+    fn test_counter_event_occurred_at() {
+        let before = Utc::now();
+        let event = TestCounterEvent::Incremented { amount: 1 };
+        let at = event.occurred_at();
+        let after = Utc::now();
+        assert!(at >= before && at <= after);
+    }
+
+    #[test]
+    fn test_counter_event_dispatch() {
+        let mut counter = TestCounter::new(EntityId::new());
+        let event = TestCounterEvent::Incremented { amount: 7 };
+        EventApplicator::dispatch(&event, &mut counter).unwrap();
+        assert_eq!(counter.value, 7);
+    }
+
+    #[test]
+    fn test_counter_event_dispatch_unchecked() {
+        let mut counter = TestCounter::new(EntityId::new());
+        let event = TestCounterEvent::Incremented { amount: 3 };
+        EventApplicator::dispatch_unchecked(&event, &mut counter);
+        assert_eq!(counter.value, 3);
+    }
+
+    // --- TestCounterError ---
+
+    #[test]
+    fn test_counter_error_display() {
+        let err = TestCounterError;
+        assert_eq!(err.to_string(), "Test counter error");
+    }
+
+    // --- TestCounter as Aggregate ---
+
+    #[test]
+    fn test_counter_aggregate_apply() {
+        let id = EntityId::new();
+        let mut agg = AggregateRoot::<TestCounter>::new(id);
+        agg.apply(TestCounterEvent::Incremented { amount: 5 })
+            .unwrap();
+        assert_eq!(agg.entity().value, 5);
+    }
 }

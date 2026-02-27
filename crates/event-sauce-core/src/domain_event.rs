@@ -354,7 +354,7 @@ mod tests {
     // Test versioned event
     #[derive(Debug, Clone, Serialize, Deserialize)]
     struct VersionedEvent {
-        version: u64,
+        version: i64,
         timestamp: DateTime<Utc>,
     }
 

@@ -33,7 +33,7 @@ use sqlx::PgPool;
 ///     let store = PostgresEventStore::builder()
 ///         .pool(pool)
 ///         .schema("event_sauce") // Isolates migrations from your app
-///         .build();
+///         .build()?;
 ///
 ///     // Run migrations in the custom schema
 ///     store.migrate().await?;
@@ -72,7 +72,7 @@ pub struct PostgresEventStore {
 ///     .pool(pool)
 ///     .schema("event_sauce")
 ///     .snapshot_config(SnapshotConfig::builder().build())
-///     .build();
+///     .build()?;
 /// ```
 #[derive(Clone)]
 pub struct PostgresEventStoreBuilder {
@@ -91,6 +91,10 @@ impl PostgresEventStore {
     ///
     /// Equivalent to `PostgresEventStore::builder().pool(pool).build()`.
     ///
+    /// # Panics
+    ///
+    /// Cannot panic — the pool is always set before calling `build()`.
+    ///
     /// # Examples
     ///
     /// ```ignore
@@ -105,12 +109,16 @@ impl PostgresEventStore {
     /// ```
     #[must_use]
     pub fn new(pool: PgPool) -> Self {
-        Self::builder().pool(pool).build()
+        Self::builder().pool(pool).build().expect("pool was set")
     }
 
     /// Creates a new `PostgreSQL` event store with custom snapshot configuration.
     ///
     /// Uses default schema "`event_sauce`".
+    ///
+    /// # Panics
+    ///
+    /// Cannot panic — the pool is always set before calling `build()`.
     ///
     /// # Examples
     ///
@@ -132,6 +140,7 @@ impl PostgresEventStore {
             .pool(pool)
             .snapshot_config(snapshot_config)
             .build()
+            .expect("pool was set")
     }
 
     /// Creates a builder for configuring the event store.
@@ -150,7 +159,7 @@ impl PostgresEventStore {
     /// let store = PostgresEventStore::builder()
     ///     .pool(pool)
     ///     .schema("event_sauce")  // Isolate from app migrations
-    ///     .build();
+    ///     .build()?;
     /// ```
     #[must_use]
     pub fn builder() -> PostgresEventStoreBuilder {
@@ -171,7 +180,7 @@ impl PostgresEventStore {
     /// let store = PostgresEventStore::builder()
     ///     .pool(pool)
     ///     .schema("my_schema")
-    ///     .build();
+    ///     .build()?;
     ///
     /// assert_eq!(store.schema(), "my_schema");
     /// ```
@@ -442,9 +451,9 @@ impl PostgresEventStoreBuilder {
     /// - **Schema**: "`event_sauce`" (isolates migrations from your app)
     /// - **Snapshot config**: Every 100 events
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if the pool has not been set via [`pool()`](Self::pool).
+    /// Returns an error if the pool has not been set via [`pool()`](Self::pool).
     ///
     /// # Examples
     ///
@@ -457,18 +466,19 @@ impl PostgresEventStoreBuilder {
     /// // Uses "event_sauce" schema by default
     /// let store = PostgresEventStore::builder()
     ///     .pool(pool)
-    ///     .build();
+    ///     .build()?;
     /// ```
-    #[must_use]
-    pub fn build(self) -> PostgresEventStore {
-        PostgresEventStore {
-            pool: self.pool.expect("Pool is required"),
+    pub fn build(self) -> event_sauce_core::Result<PostgresEventStore> {
+        Ok(PostgresEventStore {
+            pool: self
+                .pool
+                .ok_or_else(|| Error::invalid_state("pool is required"))?,
             snapshot_config: self
                 .snapshot_config
                 .unwrap_or_else(|| SnapshotConfig::builder().build()),
             schema: self.schema.unwrap_or_else(|| "event_sauce".to_string()),
             checkpoint_store: self.checkpoint_store,
-        }
+        })
     }
 }
 
@@ -508,8 +518,7 @@ impl EventStore for PostgresEventStore {
             .await
             .map_err(|e| Error::custom(format!("Failed to check version: {e}")))?;
 
-        #[allow(clippy::cast_sign_loss)]
-        let current_version = AggregateVersion::new((current_version.unwrap_or(-1) + 1) as u64);
+        let current_version = AggregateVersion::new(current_version.unwrap_or(-1) + 1);
 
         if current_version != expected_version {
             return Err(Error::concurrency_conflict(
@@ -521,9 +530,8 @@ impl EventStore for PostgresEventStore {
         // Insert events
         for (idx, event) in events.iter().enumerate() {
             #[allow(clippy::cast_possible_wrap)]
-            let stream_version = expected_version.as_u64() as i64 + idx as i64;
-            #[allow(clippy::cast_possible_wrap)]
-            let event_version_i64 = event.event_version.as_u64() as i64;
+            let stream_version = expected_version.as_i64() + idx as i64;
+            let event_version_i64 = event.event_version.as_i64();
 
             let insert_query = format!(
                 "INSERT INTO {events_table} (
@@ -570,8 +578,7 @@ impl EventStore for PostgresEventStore {
              ORDER BY stream_version ASC"
         );
 
-        #[allow(clippy::cast_possible_wrap)]
-        let from_version_i64 = from_version.as_u64() as i64;
+        let from_version_i64 = from_version.as_i64();
         let events: Vec<EventEnvelope> = sqlx::query_as::<_, EventRow>(&query)
             .bind(stream_id.aggregate_id())
             .bind(stream_id.aggregate_type().as_str())
@@ -624,8 +631,7 @@ impl EventStore for PostgresEventStore {
             .await
             .map_err(|e| Error::custom(format!("Failed to get version: {e}")))?;
 
-        #[allow(clippy::cast_sign_loss)]
-        let next_version = version.map_or(0, |v| v + 1) as u64;
+        let next_version = version.map_or(0, |v| v + 1);
         Ok(AggregateVersion::new(next_version))
     }
 
@@ -638,8 +644,7 @@ impl EventStore for PostgresEventStore {
              DO UPDATE SET snapshot_version = $3, snapshot_data = $4, created_at = NOW()"
         );
 
-        #[allow(clippy::cast_possible_wrap)]
-        let snapshot_version_i64 = snapshot.snapshot_version.as_u64() as i64;
+        let snapshot_version_i64 = snapshot.snapshot_version.as_i64();
         sqlx::query(&query)
             .bind(snapshot.aggregate_id)
             .bind(snapshot.aggregate_type.as_str())
@@ -752,8 +757,7 @@ impl From<EventRow> for EventEnvelope {
             aggregate_id: row.aggregate_id,
             aggregate_type: event_sauce_core::AggregateType::from_owned(row.aggregate_type),
             event_type: row.event_type,
-            #[allow(clippy::cast_sign_loss)]
-            event_version: EventVersion::new(row.event_version as u64),
+            event_version: EventVersion::new(row.event_version),
             event_data: row.event_data,
             created_by: row.created_by,
             created_at: row.created_at,
@@ -772,8 +776,7 @@ struct SnapshotRow {
 
 impl From<SnapshotRow> for Snapshot {
     fn from(row: SnapshotRow) -> Self {
-        #[allow(clippy::cast_sign_loss)]
-        let snapshot_version = AggregateVersion::new(row.snapshot_version as u64);
+        let snapshot_version = AggregateVersion::new(row.snapshot_version);
 
         Snapshot {
             aggregate_id: row.aggregate_id,
@@ -851,6 +854,7 @@ mod tests {
                 .pool(self.pool.clone())
                 .schema("public") // Match the schema where TestDatabase runs migrations
                 .build()
+                .expect("pool was set")
         }
     }
 
@@ -1310,7 +1314,8 @@ mod tests {
         let db = TestDatabase::new().await.unwrap();
         let store = PostgresEventStore::builder()
             .pool(db.pool().clone())
-            .build();
+            .build()
+            .unwrap();
 
         // Default schema should be "event_sauce"
         assert_eq!(store.schema(), "event_sauce");
@@ -1338,7 +1343,8 @@ mod tests {
         let store = PostgresEventStore::builder()
             .pool(db.pool().clone())
             .schema("custom_schema")
-            .build();
+            .build()
+            .unwrap();
 
         // Verify schema is used
         assert_eq!(store.schema(), "custom_schema");
@@ -1351,7 +1357,8 @@ mod tests {
         let store = PostgresEventStore::builder()
             .pool(db.pool().clone())
             .snapshot_config(config.clone())
-            .build();
+            .build()
+            .unwrap();
 
         // Verify snapshot config is set - just check it's accessible
         // (testing the actual strategy behavior is done in core crate tests)
@@ -1370,7 +1377,8 @@ mod tests {
             .pool(db.pool().clone())
             .schema("my_events")
             .snapshot_config(config)
-            .build();
+            .build()
+            .unwrap();
 
         assert_eq!(store.schema(), "my_events");
     }
@@ -1394,7 +1402,8 @@ mod tests {
         let store = PostgresEventStore::builder()
             .pool(pool.clone())
             .schema("event_sauce_test")
-            .build();
+            .build()
+            .unwrap();
 
         // Run migrations
         store.migrate().await.unwrap();
@@ -1447,7 +1456,8 @@ mod tests {
         let store = PostgresEventStore::builder()
             .pool(pool.clone())
             .schema("events_schema")
-            .build();
+            .build()
+            .unwrap();
 
         store.migrate().await.unwrap();
 

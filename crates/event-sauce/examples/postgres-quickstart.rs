@@ -421,7 +421,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Get version
     let alice_version = user_repo.get_version(alice.entity_id()).await?;
-    println!("  Alice version: {}", alice_version.as_u64());
+    println!("  Alice version: {}", alice_version.as_i64());
 
     // Count events
     let alice_event_count = user_repo.count_events(alice.entity_id()).await?;

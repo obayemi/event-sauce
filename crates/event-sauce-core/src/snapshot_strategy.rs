@@ -212,10 +212,10 @@ impl EveryNEvents {
 
 impl SnapshotStrategy for EveryNEvents {
     fn should_snapshot(&self, current_version: AggregateVersion) -> bool {
-        if current_version.as_u64() == 0 {
+        if current_version.as_i64() == 0 {
             return false;
         }
-        current_version.as_u64() % u64::from(self.0) == 0
+        current_version.as_i64() % i64::from(self.0) == 0
     }
 }
 
@@ -232,7 +232,7 @@ mod tests {
         assert!(strategy.should_snapshot(AggregateVersion::new(10)));
         assert!(strategy.should_snapshot(AggregateVersion::new(100)));
         assert!(strategy.should_snapshot(AggregateVersion::new(1000)));
-        assert!(strategy.should_snapshot(AggregateVersion::new(u64::MAX)));
+        assert!(strategy.should_snapshot(AggregateVersion::new(i64::MAX)));
     }
 
     #[test]
@@ -244,7 +244,7 @@ mod tests {
         assert!(!strategy.should_snapshot(AggregateVersion::new(10)));
         assert!(!strategy.should_snapshot(AggregateVersion::new(100)));
         assert!(!strategy.should_snapshot(AggregateVersion::new(1000)));
-        assert!(!strategy.should_snapshot(AggregateVersion::new(u64::MAX)));
+        assert!(!strategy.should_snapshot(AggregateVersion::new(i64::MAX)));
     }
 
     #[test]

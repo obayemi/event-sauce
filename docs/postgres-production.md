@@ -93,7 +93,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let checkpoint_store = PostgresCheckpointStore::builder()
         .pool(pool.clone())
         .schema("event_sauce")
-        .build();
+        .build()?;
     checkpoint_store.migrate().await?;
 
     let event_store = PostgresEventStore::builder()
@@ -103,7 +103,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .default_strategy(EveryNEvents(50))
             .build())
         .checkpoint_store(Arc::new(checkpoint_store))
-        .build();
+        .build()?;
     event_store.migrate().await?;
 
     Ok(())
@@ -149,13 +149,13 @@ let store = PostgresEventStore::new(pool);
 let store = PostgresEventStore::builder()
     .pool(pool)
     .schema("my_events")
-    .build();
+    .build()?;
 
 // Option 3: Use public schema (not recommended for production)
 let store = PostgresEventStore::builder()
     .pool(pool)
     .schema("public")
-    .build();
+    .build()?;
 ```
 
 ### Multiple Event Stores
@@ -167,14 +167,14 @@ You can run multiple isolated event stores in the same database:
 let orders_store = PostgresEventStore::builder()
     .pool(pool.clone())
     .schema("orders_events")
-    .build();
+    .build()?;
 orders_store.migrate().await?;
 
 // Event store for inventory domain
 let inventory_store = PostgresEventStore::builder()
     .pool(pool.clone())
     .schema("inventory_events")
-    .build();
+    .build()?;
 inventory_store.migrate().await?;
 ```
 
@@ -492,7 +492,7 @@ info!("Event append took: {:?}", start.elapsed());
 
 // 2. Event count per aggregate
 let version = store.get_version(stream_id).await?;
-if version.as_u64() > 1000 {
+if version.as_i64() > 1000 {
     warn!("High event count for aggregate: {}", stream_id);
 }
 

@@ -202,15 +202,14 @@ impl PostgresBackendBuilder {
 
     /// Builds the `PostgresBackend` by connecting to the database and running migrations.
     ///
-    /// # Panics
-    ///
-    /// Panics if `database_url` has not been set.
-    ///
     /// # Errors
     ///
-    /// Returns an error if the database connection fails or migrations cannot be applied.
+    /// Returns an error if `database_url` has not been set, or if the database
+    /// connection fails or migrations cannot be applied.
     pub async fn build(self) -> event_sauce_core::Result<PostgresBackend> {
-        let database_url = self.database_url.expect("database_url is required");
+        let database_url = self
+            .database_url
+            .ok_or_else(|| event_sauce_core::Error::invalid_state("database_url is required"))?;
         let schema = self.schema.unwrap_or_else(|| "event_sauce".to_string());
         let snapshot_config = self
             .snapshot_config
@@ -223,7 +222,7 @@ impl PostgresBackendBuilder {
         let checkpoint_store = PostgresCheckpointStore::builder()
             .pool(pool.clone())
             .schema(&schema)
-            .build();
+            .build()?;
         checkpoint_store.migrate().await?;
 
         let checkpoint_store = Arc::new(checkpoint_store);
@@ -235,7 +234,7 @@ impl PostgresBackendBuilder {
             .checkpoint_store(
                 Arc::clone(&checkpoint_store) as Arc<dyn event_sauce_core::CheckpointStore>
             )
-            .build();
+            .build()?;
         event_store.migrate().await?;
 
         Ok(PostgresBackend {
@@ -459,9 +458,14 @@ mod tests {
     }
 
     #[tokio::test]
-    #[should_panic(expected = "database_url is required")]
-    async fn test_builder_panics_without_url() {
-        let _ = PostgresBackend::builder().build().await;
+    async fn test_builder_errors_without_url() {
+        let result = PostgresBackend::builder().build().await;
+        let err = result.err().expect("should be an error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("database_url is required"),
+            "unexpected error: {msg}"
+        );
     }
 
     #[tokio::test]

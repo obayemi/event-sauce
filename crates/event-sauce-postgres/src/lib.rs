@@ -72,7 +72,7 @@
 //!     let store = PostgresEventStore::builder()
 //!         .pool(pool)
 //!         .schema("event_sauce")
-//!         .build();
+//!         .build()?;
 //!
 //!     store.migrate().await?;
 //!

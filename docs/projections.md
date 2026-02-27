@@ -433,7 +433,7 @@ async fn main() -> Result<()> {
     let store = Arc::new(PostgresEventStore::builder()
         .pool(pool)
         .checkpoint_store(checkpoint_store)  // Configure once
-        .build());
+        .build()?);
 
     // 3. Create projection state
     let projection = Arc::new(Mutex::new(UserCountProjection::new()));
@@ -686,7 +686,7 @@ impl PostgresCheckpointStore {
                 updated_at = NOW()
             "#,
             subscription,
-            position.as_u64(),
+            position.as_i64(),
         )
         .execute(&self.pool)
         .await?;
@@ -1275,7 +1275,7 @@ struct SubscriptionMetrics {
 
 impl SubscriptionMetrics {
     fn lag(&self) -> i64 {
-        self.current_position.as_u64() - self.last_processed_position.as_u64()
+        self.current_position.as_i64() - self.last_processed_position.as_i64()
     }
 
     fn is_lagging(&self) -> bool {

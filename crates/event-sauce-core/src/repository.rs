@@ -256,7 +256,7 @@ mod tests {
         repo.save(&mut aggregate).await.unwrap();
 
         let version = repo.get_version(test_id).await.unwrap();
-        assert_eq!(version.as_u64(), 2);
+        assert_eq!(version.as_i64(), 2);
     }
 
     #[tokio::test]

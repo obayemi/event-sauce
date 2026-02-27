@@ -312,12 +312,10 @@ pub trait EventStore: Send + Sync {
 
         let aggregate_id = aggregate.entity_id().as_uuid();
         let aggregate_type = AggregateRoot::<A>::aggregate_type();
-        let expected_version = AggregateVersion::new(
-            aggregate
-                .version()
-                .as_u64()
-                .saturating_sub(pending.len() as u64),
-        );
+        #[allow(clippy::cast_possible_wrap)]
+        let pending_count = pending.len() as i64;
+        let expected_version =
+            AggregateVersion::new(aggregate.version().as_i64().saturating_sub(pending_count));
 
         let envelopes: Result<Vec<EventEnvelope>> = pending
             .iter()
@@ -637,12 +635,13 @@ mod tests {
         fn with_stream(mut self, stream_id: StreamId, count: usize) -> Self {
             let mut events = Vec::new();
             for i in 0..count {
+                #[allow(clippy::cast_possible_wrap)]
                 let envelope = EventEnvelope::new(
                     Uuid::new_v4(),
                     stream_id.aggregate_id(),
                     stream_id.aggregate_type().to_string(),
                     "TestEvent".to_string(),
-                    crate::EventVersion::new(i as u64 + 1),
+                    crate::EventVersion::new(i as i64 + 1),
                     serde_json::json!({"index": i}),
                 );
                 events.push(envelope);
@@ -668,14 +667,14 @@ mod tests {
             stream_id: StreamId,
             from_version: AggregateVersion,
         ) -> Result<impl Stream<Item = Result<EventEnvelope>> + Send> {
-            #[allow(clippy::cast_possible_truncation)]
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             let events = self
                 .streams
                 .get(&stream_id)
                 .map(|events| {
                     events
                         .iter()
-                        .skip(from_version.as_u64() as usize)
+                        .skip(from_version.as_i64() as usize)
                         .cloned()
                         .collect::<Vec<_>>()
                 })
@@ -692,12 +691,14 @@ mod tests {
         }
 
         async fn get_version(&self, stream_id: StreamId) -> Result<AggregateVersion> {
-            Ok(self
+            #[allow(clippy::cast_possible_wrap)]
+            let version = self
                 .streams
                 .get(&stream_id)
                 .map_or(AggregateVersion::initial(), |events| {
-                    AggregateVersion::new(events.len() as u64)
-                }))
+                    AggregateVersion::new(events.len() as i64)
+                });
+            Ok(version)
         }
     }
 
@@ -810,13 +811,13 @@ mod tests {
             from_version: AggregateVersion,
         ) -> Result<impl Stream<Item = Result<EventEnvelope>> + Send> {
             let streams = self.streams.lock().unwrap();
-            #[allow(clippy::cast_possible_truncation)]
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             let events = streams
                 .get(&stream_id)
                 .cloned()
                 .unwrap_or_default()
                 .into_iter()
-                .skip(from_version.as_u64() as usize)
+                .skip(from_version.as_i64() as usize)
                 .map(Ok)
                 .collect::<Vec<_>>();
             Ok(stream::iter(events))
@@ -832,7 +833,8 @@ mod tests {
         async fn get_version(&self, stream_id: StreamId) -> Result<AggregateVersion> {
             let streams = self.streams.lock().unwrap();
             let count = streams.get(&stream_id).map_or(0, Vec::len);
-            Ok(AggregateVersion::new(count as u64))
+            #[allow(clippy::cast_possible_wrap)]
+            Ok(AggregateVersion::new(count as i64))
         }
 
         async fn save_snapshot(&self, snapshot: Snapshot) -> Result<()> {
