@@ -14,7 +14,9 @@
 #![warn(clippy::pedantic)]
 
 mod checkpoint_store;
+mod crypto_key_store;
 mod event_store;
 
 pub use checkpoint_store::InMemoryCheckpointStore;
+pub use crypto_key_store::InMemoryCryptoKeyStore;
 pub use event_store::InMemoryEventStore;

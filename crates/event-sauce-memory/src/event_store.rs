@@ -46,6 +46,8 @@ use std::sync::Arc;
 pub struct InMemoryEventStore {
     inner: Arc<InMemoryEventStoreInner>,
     checkpoint_store: Option<Arc<dyn event_sauce_core::CheckpointStore>>,
+    crypto_key_store: Option<Arc<dyn event_sauce_core::CryptoKeyStore>>,
+    crypto_provider: Option<Arc<dyn event_sauce_core::CryptoProvider>>,
 }
 
 struct InMemoryEventStoreInner {
@@ -79,6 +81,8 @@ struct InMemoryEventStoreInner {
 pub struct InMemoryEventStoreBuilder {
     snapshot_config: Option<SnapshotConfig>,
     checkpoint_store: Option<Arc<dyn event_sauce_core::CheckpointStore>>,
+    crypto_key_store: Option<Arc<dyn event_sauce_core::CryptoKeyStore>>,
+    crypto_provider: Option<Arc<dyn event_sauce_core::CryptoProvider>>,
 }
 
 impl InMemoryEventStore {
@@ -189,6 +193,8 @@ impl InMemoryEventStoreBuilder {
         Self {
             snapshot_config: None,
             checkpoint_store: None,
+            crypto_key_store: None,
+            crypto_provider: None,
         }
     }
 
@@ -232,6 +238,47 @@ impl InMemoryEventStoreBuilder {
         self
     }
 
+    /// Sets the crypto key store for private aggregate encryption.
+    ///
+    /// Required when using private aggregates. Stores per-aggregate encryption keys.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use event_sauce_memory::{InMemoryEventStore, InMemoryCryptoKeyStore};
+    /// use std::sync::Arc;
+    ///
+    /// let key_store = Arc::new(InMemoryCryptoKeyStore::new());
+    /// let builder = InMemoryEventStore::builder()
+    ///     .crypto_key_store(key_store);
+    /// ```
+    #[must_use]
+    pub fn crypto_key_store(mut self, store: Arc<dyn event_sauce_core::CryptoKeyStore>) -> Self {
+        self.crypto_key_store = Some(store);
+        self
+    }
+
+    /// Sets the crypto provider for private aggregate encryption.
+    ///
+    /// Required when using private aggregates. Provides encrypt/decrypt operations.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use event_sauce_memory::InMemoryEventStore;
+    /// use event_sauce_crypto::Aes256GcmProvider;
+    /// use std::sync::Arc;
+    ///
+    /// let provider = Arc::new(Aes256GcmProvider);
+    /// let builder = InMemoryEventStore::builder()
+    ///     .crypto_provider(provider);
+    /// ```
+    #[must_use]
+    pub fn crypto_provider(mut self, provider: Arc<dyn event_sauce_core::CryptoProvider>) -> Self {
+        self.crypto_provider = Some(provider);
+        self
+    }
+
     /// Builds the `InMemoryEventStore` with the configured settings.
     ///
     /// # Defaults
@@ -258,6 +305,8 @@ impl InMemoryEventStoreBuilder {
                     .unwrap_or_else(|| SnapshotConfig::builder().build()),
             }),
             checkpoint_store: self.checkpoint_store,
+            crypto_key_store: self.crypto_key_store,
+            crypto_provider: self.crypto_provider,
         }
     }
 }
@@ -376,6 +425,14 @@ impl EventStore for InMemoryEventStore {
 
     fn checkpoint_store(&self) -> Option<std::sync::Arc<dyn event_sauce_core::CheckpointStore>> {
         self.checkpoint_store.clone()
+    }
+
+    fn crypto_key_store(&self) -> Option<&dyn event_sauce_core::CryptoKeyStore> {
+        self.crypto_key_store.as_deref()
+    }
+
+    fn crypto_provider(&self) -> Option<&dyn event_sauce_core::CryptoProvider> {
+        self.crypto_provider.as_deref()
     }
 }
 
@@ -1037,6 +1094,59 @@ mod tests {
         let v1 = store1.get_version(stream_id.clone()).await.unwrap();
         let v2 = store2.get_version(stream_id).await.unwrap();
         assert_eq!(v1, v2);
+    }
+
+    // === Crypto Builder Tests ===
+
+    #[tokio::test]
+    async fn test_crypto_key_store_returns_none_by_default() {
+        let store = InMemoryEventStore::new();
+        assert!(store.crypto_key_store().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_crypto_provider_returns_none_by_default() {
+        let store = InMemoryEventStore::new();
+        assert!(store.crypto_provider().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_builder_with_crypto_key_store() {
+        use super::super::crypto_key_store::InMemoryCryptoKeyStore;
+        let key_store = Arc::new(InMemoryCryptoKeyStore::new());
+        let store = InMemoryEventStore::builder()
+            .crypto_key_store(key_store)
+            .build();
+
+        assert!(store.crypto_key_store().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_builder_with_crypto_provider() {
+        /// Minimal mock provider for builder testing.
+        struct MockProvider;
+        impl event_sauce_core::CryptoProvider for MockProvider {
+            fn encrypt(&self, _key: &[u8], _plaintext: &[u8]) -> event_sauce_core::Result<Vec<u8>> {
+                Ok(vec![])
+            }
+            fn decrypt(
+                &self,
+                _key: &[u8],
+                _ciphertext: &[u8],
+            ) -> event_sauce_core::Result<Vec<u8>> {
+                Ok(vec![])
+            }
+            fn generate_key(&self) -> Vec<u8> {
+                vec![0; 32]
+            }
+        }
+
+        let provider = Arc::new(MockProvider);
+        let store = InMemoryEventStore::builder()
+            .crypto_provider(provider)
+            .build();
+
+        assert!(store.crypto_provider().is_some());
     }
 
     #[tokio::test]
