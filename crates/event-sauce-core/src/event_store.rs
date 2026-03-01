@@ -313,6 +313,7 @@ pub trait EventStore: Send + Sync {
     /// Returns `Error::ConcurrencyConflict` if another process modified the aggregate.
     /// Returns `Error::Encryption` if encryption fails for a encrypted aggregate.
     /// Returns `Error::InvalidState` if a encrypted aggregate lacks crypto configuration.
+    #[allow(clippy::too_many_lines)]
     async fn commit<A>(&self, aggregate: &mut AggregateRoot<A>) -> Result<()>
     where
         A: Aggregate + serde::Serialize,
@@ -351,6 +352,22 @@ pub trait EventStore: Send + Sync {
                 envelope.event_data =
                     crate::crypto::encrypt_value(provider, &crypto_key, &envelope.event_data)?;
             }
+        } else if A::Event::has_any_encrypted_fields() {
+            // Field-level encryption: encrypt only specific fields per event
+            let crypto_key = ensure_crypto_key(self, aggregate_id).await?;
+            let provider = require_crypto_provider(self)?;
+
+            for (envelope, pe) in envelopes.iter_mut().zip(pending.iter()) {
+                let fields = pe.event.encrypted_fields();
+                if !fields.is_empty() {
+                    crate::crypto::encrypt_fields(
+                        provider,
+                        &crypto_key,
+                        &mut envelope.event_data,
+                        fields,
+                    )?;
+                }
+            }
         }
 
         self.append(
@@ -368,8 +385,8 @@ pub trait EventStore: Send + Sync {
         if strategy.should_snapshot(current_version) {
             match serde_json::to_value(aggregate.entity()) {
                 Ok(mut snapshot_data) => {
-                    // Encrypt snapshot data for encrypted aggregates
-                    if A::is_encrypted() {
+                    // Encrypt snapshot data for encrypted or field-encrypted aggregates
+                    if A::is_encrypted() || A::Event::has_any_encrypted_fields() {
                         if let (Some(key_store), Some(provider)) =
                             (self.crypto_key_store(), self.crypto_provider())
                         {
@@ -457,6 +474,24 @@ fn require_crypto_provider<S: EventStore + ?Sized>(
         .ok_or_else(|| crate::Error::invalid_state("Encrypted aggregate requires crypto_provider"))
 }
 
+/// Decrypts event envelope data using either full-value or field-level decryption.
+fn decrypt_event_data<S: EventStore + ?Sized>(
+    store: &S,
+    crypto_key: Option<&[u8]>,
+    event_data: &mut serde_json::Value,
+) -> Result<()> {
+    if let Some(key) = crypto_key {
+        if crate::crypto::is_encrypted(event_data) {
+            let provider = require_crypto_provider(store)?;
+            *event_data = crate::crypto::decrypt_value(provider, key, event_data)?;
+        } else if crate::crypto::has_encrypted_fields(event_data) {
+            let provider = require_crypto_provider(store)?;
+            crate::crypto::decrypt_encrypted_fields(provider, key, event_data)?;
+        }
+    }
+    Ok(())
+}
+
 /// Loads an aggregate from the event store by its ID.
 ///
 /// Returns an `AggregateRoot<A>` reconstructed by replaying events,
@@ -492,6 +527,13 @@ where
             .await?
             .ok_or_else(|| crate::Error::key_not_found(uuid))?;
         Some(key)
+    } else if A::Event::has_any_encrypted_fields() {
+        // Field-level encryption: key may not exist yet (no events committed)
+        if let Some(key_store) = store.crypto_key_store() {
+            key_store.get_key(uuid).await?
+        } else {
+            None
+        }
     } else {
         None
     };
@@ -500,14 +542,7 @@ where
     let config = store.snapshot_config();
     if config.use_snapshots_on_load() {
         if let Some(mut snapshot) = store.load_snapshot(stream_id.clone()).await? {
-            // Decrypt snapshot data for encrypted aggregates
-            if let Some(ref key) = crypto_key {
-                if crate::crypto::is_encrypted(&snapshot.snapshot_data) {
-                    let provider = require_crypto_provider(store)?;
-                    snapshot.snapshot_data =
-                        crate::crypto::decrypt_value(provider, key, &snapshot.snapshot_data)?;
-                }
-            }
+            decrypt_event_data(store, crypto_key.as_deref(), &mut snapshot.snapshot_data)?;
 
             let entity: A = serde_json::from_value(snapshot.snapshot_data).map_err(|e| {
                 crate::Error::custom(format!("Failed to deserialize snapshot entity: {e}"))
@@ -521,14 +556,7 @@ where
 
             while let Some(envelope) = event_stream.next().await {
                 let mut envelope = envelope?;
-                // Decrypt event data for encrypted aggregates
-                if let Some(ref key) = crypto_key {
-                    if crate::crypto::is_encrypted(&envelope.event_data) {
-                        let provider = require_crypto_provider(store)?;
-                        envelope.event_data =
-                            crate::crypto::decrypt_value(provider, key, &envelope.event_data)?;
-                    }
-                }
+                decrypt_event_data(store, crypto_key.as_deref(), &mut envelope.event_data)?;
                 let event = A::Event::from_envelope(&envelope)?;
                 aggregate.apply_unchecked(&event);
             }
@@ -550,14 +578,7 @@ where
     };
     let mut first_envelope = first_envelope?;
 
-    // Decrypt first event for encrypted aggregates
-    if let Some(ref key) = crypto_key {
-        if crate::crypto::is_encrypted(&first_envelope.event_data) {
-            let provider = require_crypto_provider(store)?;
-            first_envelope.event_data =
-                crate::crypto::decrypt_value(provider, key, &first_envelope.event_data)?;
-        }
-    }
+    decrypt_event_data(store, crypto_key.as_deref(), &mut first_envelope.event_data)?;
 
     let first_event = A::Event::from_envelope(&first_envelope)?;
 
@@ -575,14 +596,7 @@ where
     // Replay remaining events (all regular)
     while let Some(envelope) = event_stream.next().await {
         let mut envelope = envelope?;
-        // Decrypt event data for encrypted aggregates
-        if let Some(ref key) = crypto_key {
-            if crate::crypto::is_encrypted(&envelope.event_data) {
-                let provider = require_crypto_provider(store)?;
-                envelope.event_data =
-                    crate::crypto::decrypt_value(provider, key, &envelope.event_data)?;
-            }
-        }
+        decrypt_event_data(store, crypto_key.as_deref(), &mut envelope.event_data)?;
         let event = A::Event::from_envelope(&envelope)?;
         aggregate.apply_unchecked(&event);
     }

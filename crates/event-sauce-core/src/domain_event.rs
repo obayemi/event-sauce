@@ -70,6 +70,28 @@ pub trait DomainEvent: Clone + Debug + Send + Sync + Serialize + DeserializeOwne
     /// Returns when this event occurred.
     fn occurred_at(&self) -> DateTime<Utc>;
 
+    /// Returns the names of fields that should be individually encrypted.
+    ///
+    /// When non-empty, the listed fields are encrypted individually within the
+    /// event's JSON payload (using `{"__encrypted": "<base64>"}` format) while
+    /// the remaining fields stay in plaintext. This enables partial
+    /// crypto-shredding: deleting the aggregate's encryption key makes only the
+    /// sensitive fields unreadable.
+    ///
+    /// The default implementation returns an empty slice (no field-level encryption).
+    fn encrypted_fields(&self) -> &'static [&'static str] {
+        &[]
+    }
+
+    /// Returns `true` if **any** variant of this event enum has encrypted fields.
+    ///
+    /// Used at load-time to decide whether a crypto key is needed even when the
+    /// aggregate itself is not fully encrypted.
+    #[must_use]
+    fn has_any_encrypted_fields() -> bool {
+        false
+    }
+
     /// Converts this domain event into an `EventEnvelope`.
     ///
     /// Uses `EntityId.as_uuid()` for the aggregate ID and
@@ -686,5 +708,20 @@ mod tests {
         assert_eq!(parts.len(), 2);
         assert_eq!(parts[0], "Test");
         assert_eq!(parts[1], "EventWithType");
+    }
+
+    #[test]
+    fn test_encrypted_fields_default_is_empty() {
+        let timestamp = Utc::now();
+        let event = TestEvent::Created {
+            id: "test-1".to_string(),
+            timestamp,
+        };
+        assert!(event.encrypted_fields().is_empty());
+    }
+
+    #[test]
+    fn test_has_any_encrypted_fields_default_is_false() {
+        assert!(!TestEvent::has_any_encrypted_fields());
     }
 }

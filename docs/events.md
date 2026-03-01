@@ -41,6 +41,7 @@ The **`define_events!` macro** is the recommended way to define events in event-
 - Type-safe validation - Business rules co-located with events
 - Automatic versioning - Support for schema evolution with `@version`
 - Pre and post-validation - `@validate` and `@post_validate` hooks
+- Field-level encryption - Encrypt sensitive fields with `@encrypted_fields` (see [Privacy](privacy.md))
 
 ```rust
 use event_sauce_core::{define_events, Aggregate};
@@ -858,6 +859,7 @@ The event-sauce event system provides:
 - **Optimized replay** with `apply_unchecked`
 - **Clean separation** between validation and application
 - **Schema evolution** with `@version` attribute
+- **Field-level encryption** with `@encrypted_fields` for selective privacy
 - **Better testing** with independent event tests
 
 ### Quick Reference: Event Pattern (Recommended)

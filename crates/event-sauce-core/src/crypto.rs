@@ -126,6 +126,92 @@ pub fn decrypt_value(
     Ok(decrypted)
 }
 
+/// Encrypts specific named fields within a JSON object in-place.
+///
+/// Each field listed in `fields` is replaced with `{"__encrypted": "<base64>"}`.
+/// Fields that are not present in the object are silently skipped.
+///
+/// # Errors
+///
+/// Returns an error if the value is not a JSON object, or if encryption fails.
+pub fn encrypt_fields(
+    provider: &dyn CryptoProvider,
+    key: &[u8],
+    data: &mut serde_json::Value,
+    fields: &[&str],
+) -> Result<()> {
+    let obj = data
+        .as_object_mut()
+        .ok_or_else(|| crate::Error::encryption("encrypt_fields requires a JSON object"))?;
+
+    for &field in fields {
+        if let Some(value) = obj.get(field) {
+            let encrypted = encrypt_value(provider, key, value)?;
+            obj.insert(field.to_string(), encrypted);
+        }
+    }
+
+    Ok(())
+}
+
+/// Decrypts any individually-encrypted fields within a JSON object in-place.
+///
+/// Walks all top-level fields; any value matching `{"__encrypted": "..."}` is
+/// decrypted and replaced with its plaintext form. Non-encrypted fields are
+/// left untouched.
+///
+/// # Errors
+///
+/// Returns an error if the value is not a JSON object, or if decryption fails.
+pub fn decrypt_encrypted_fields(
+    provider: &dyn CryptoProvider,
+    key: &[u8],
+    data: &mut serde_json::Value,
+) -> Result<()> {
+    let obj = data.as_object_mut().ok_or_else(|| {
+        crate::Error::encryption("decrypt_encrypted_fields requires a JSON object")
+    })?;
+
+    let fields_to_decrypt: Vec<String> = obj
+        .iter()
+        .filter(|(_, v)| is_encrypted(v))
+        .map(|(k, _)| k.clone())
+        .collect();
+
+    for field in fields_to_decrypt {
+        if let Some(value) = obj.get(&field) {
+            let decrypted = decrypt_value(provider, key, value)?;
+            obj.insert(field, decrypted);
+        }
+    }
+
+    Ok(())
+}
+
+/// Returns `true` if any top-level field in a JSON object is individually encrypted.
+///
+/// Checks whether any value within the object matches the `{"__encrypted": "..."}` format.
+/// Returns `false` for non-object values or objects with no encrypted fields.
+///
+/// # Examples
+///
+/// ```
+/// use event_sauce_core::crypto::has_encrypted_fields;
+/// use serde_json::json;
+///
+/// let data = json!({"name": {"__encrypted": "abc"}, "age": 30});
+/// assert!(has_encrypted_fields(&data));
+///
+/// let plain = json!({"name": "Alice", "age": 30});
+/// assert!(!has_encrypted_fields(&plain));
+/// ```
+#[must_use]
+pub fn has_encrypted_fields(value: &serde_json::Value) -> bool {
+    value
+        .as_object()
+        .is_some_and(|obj| obj.values().any(is_encrypted))
+}
+
 /// Returns `true` if the JSON value is in encrypted form.
 ///
 /// Encrypted values have the shape `{"__encrypted": "<base64>"}`.
@@ -319,5 +405,150 @@ mod tests {
         assert!(is_encrypted(&encrypted));
         let decrypted = decrypt_value(&provider, &key, &encrypted).unwrap();
         assert_eq!(decrypted, value);
+    }
+
+    // --- Tests for encrypt_fields ---
+
+    #[test]
+    fn encrypt_fields_encrypts_named_fields() {
+        let provider = MockCryptoProvider;
+        let key = provider.generate_key();
+        let mut data = serde_json::json!({
+            "name": "Alice",
+            "diagnosis": "flu",
+            "visit_count": 3
+        });
+
+        encrypt_fields(&provider, &key, &mut data, &["name", "diagnosis"]).unwrap();
+
+        assert!(is_encrypted(&data["name"]));
+        assert!(is_encrypted(&data["diagnosis"]));
+        assert_eq!(data["visit_count"], 3);
+    }
+
+    #[test]
+    fn encrypt_fields_roundtrip() {
+        let provider = MockCryptoProvider;
+        let key = provider.generate_key();
+        let original = serde_json::json!({
+            "name": "Alice",
+            "diagnosis": "flu",
+            "visit_count": 3
+        });
+        let mut data = original.clone();
+
+        encrypt_fields(&provider, &key, &mut data, &["name", "diagnosis"]).unwrap();
+        decrypt_encrypted_fields(&provider, &key, &mut data).unwrap();
+
+        assert_eq!(data, original);
+    }
+
+    #[test]
+    fn encrypt_fields_skips_missing_fields() {
+        let provider = MockCryptoProvider;
+        let key = provider.generate_key();
+        let mut data = serde_json::json!({"name": "Alice"});
+
+        encrypt_fields(&provider, &key, &mut data, &["name", "nonexistent"]).unwrap();
+
+        assert!(is_encrypted(&data["name"]));
+        assert!(data.get("nonexistent").is_none());
+    }
+
+    #[test]
+    fn encrypt_fields_fails_on_non_object() {
+        let provider = MockCryptoProvider;
+        let key = provider.generate_key();
+        let mut data = serde_json::json!([1, 2, 3]);
+
+        let result = encrypt_fields(&provider, &key, &mut data, &["name"]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().is_encryption());
+    }
+
+    #[test]
+    fn encrypt_fields_propagates_provider_error() {
+        let provider = FailingCryptoProvider;
+        let key = vec![0; 32];
+        let mut data = serde_json::json!({"name": "Alice"});
+
+        let result = encrypt_fields(&provider, &key, &mut data, &["name"]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().is_encryption());
+    }
+
+    // --- Tests for decrypt_encrypted_fields ---
+
+    #[test]
+    fn decrypt_encrypted_fields_decrypts_only_encrypted() {
+        let provider = MockCryptoProvider;
+        let key = provider.generate_key();
+        let mut data = serde_json::json!({
+            "name": "Alice",
+            "diagnosis": "flu",
+            "visit_count": 3
+        });
+
+        encrypt_fields(&provider, &key, &mut data, &["name"]).unwrap();
+        assert!(is_encrypted(&data["name"]));
+        assert_eq!(data["diagnosis"], "flu");
+
+        decrypt_encrypted_fields(&provider, &key, &mut data).unwrap();
+
+        assert_eq!(data["name"], "Alice");
+        assert_eq!(data["diagnosis"], "flu");
+        assert_eq!(data["visit_count"], 3);
+    }
+
+    #[test]
+    fn decrypt_encrypted_fields_noop_when_no_encrypted() {
+        let provider = MockCryptoProvider;
+        let key = provider.generate_key();
+        let mut data = serde_json::json!({"name": "Alice", "age": 30});
+        let original = data.clone();
+
+        decrypt_encrypted_fields(&provider, &key, &mut data).unwrap();
+
+        assert_eq!(data, original);
+    }
+
+    #[test]
+    fn decrypt_encrypted_fields_fails_on_non_object() {
+        let provider = MockCryptoProvider;
+        let key = provider.generate_key();
+        let mut data = serde_json::json!("a string");
+
+        let result = decrypt_encrypted_fields(&provider, &key, &mut data);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().is_encryption());
+    }
+
+    // --- Tests for has_encrypted_fields ---
+
+    #[test]
+    fn has_encrypted_fields_detects_encrypted_field() {
+        let data = serde_json::json!({
+            "name": {"__encrypted": "abc"},
+            "age": 30
+        });
+        assert!(has_encrypted_fields(&data));
+    }
+
+    #[test]
+    fn has_encrypted_fields_false_for_plain_object() {
+        let data = serde_json::json!({"name": "Alice", "age": 30});
+        assert!(!has_encrypted_fields(&data));
+    }
+
+    #[test]
+    fn has_encrypted_fields_false_for_non_object() {
+        assert!(!has_encrypted_fields(&serde_json::json!([1, 2, 3])));
+        assert!(!has_encrypted_fields(&serde_json::json!("string")));
+        assert!(!has_encrypted_fields(&serde_json::Value::Null));
+    }
+
+    #[test]
+    fn has_encrypted_fields_false_for_empty_object() {
+        assert!(!has_encrypted_fields(&serde_json::json!({})));
     }
 }

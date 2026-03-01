@@ -830,6 +830,7 @@ macro_rules! define_events {
             $(@validate_spec($val_spec:expr))?
             $(@post_validate |$post_val_agg:ident, $post_val_evt:ident| $post_val_body:block)?
             $(@post_validate_spec($post_val_spec:expr))?
+            $(@encrypted_fields($($enc_field:ident),+ $(,)?))?
             => $apply:expr,
             $($rest:tt)*
         ]
@@ -850,6 +851,7 @@ macro_rules! define_events {
                     validate_spec: [$([$val_spec])?],
                     post_validate: [$([$post_val_agg, $post_val_evt, $post_val_body])?],
                     post_validate_spec: [$([$post_val_spec])?],
+                    encrypted_fields: [$([$($enc_field),+])?],
                     apply: $apply,
                 }
             ]
@@ -876,6 +878,7 @@ macro_rules! define_events {
             $(@validate_spec($val_spec:expr))?
             $(@post_validate |$post_val_agg:ident, $post_val_evt:ident| $post_val_body:block)?
             $(@post_validate_spec($post_val_spec:expr))?
+            $(@encrypted_fields($($enc_field:ident),+ $(,)?))?
             => $apply:expr,
             $($rest:tt)*
         ]
@@ -896,6 +899,7 @@ macro_rules! define_events {
                     validate_spec: [$([$val_spec])?],
                     post_validate: [$([$post_val_agg, $post_val_evt, $post_val_body])?],
                     post_validate_spec: [$([$post_val_spec])?],
+                    encrypted_fields: [$([$($enc_field),+])?],
                     apply: $apply,
                 }
             ]
@@ -919,6 +923,7 @@ macro_rules! define_events {
             $(@validate_spec($val_spec:expr))?
             $(@post_validate |$post_val_agg:ident, $post_val_evt:ident| $post_val_body:block)?
             $(@post_validate_spec($post_val_spec:expr))?
+            $(@encrypted_fields($($enc_field:ident),+ $(,)?))?
             => $apply:expr,
             $($rest:tt)*
         ]
@@ -939,6 +944,7 @@ macro_rules! define_events {
                     validate_spec: [$([$val_spec])?],
                     post_validate: [$([$post_val_agg, $post_val_evt, $post_val_body])?],
                     post_validate_spec: [$([$post_val_spec])?],
+                    encrypted_fields: [$([$($enc_field),+])?],
                     apply: $apply,
                 }
             ]
@@ -963,6 +969,7 @@ macro_rules! define_events {
             $(@validate_spec($val_spec:expr))?
             $(@post_validate |$post_val_agg:ident, $post_val_evt:ident| $post_val_body:block)?
             $(@post_validate_spec($post_val_spec:expr))?
+            $(@encrypted_fields($($enc_field:ident),+ $(,)?))?
             => $apply:expr,
             $($rest:tt)*
         ]
@@ -983,6 +990,7 @@ macro_rules! define_events {
                     validate_spec: [$([$val_spec])?],
                     post_validate: [$([$post_val_agg, $post_val_evt, $post_val_body])?],
                     post_validate_spec: [$([$post_val_spec])?],
+                    encrypted_fields: [$([$($enc_field),+])?],
                     apply: $apply,
                 }
             ]
@@ -1025,6 +1033,7 @@ macro_rules! define_events {
                     validate_spec: [$($validate_spec:tt)*],
                     post_validate: [$($post_validate:tt)*],
                     post_validate_spec: [$($post_validate_spec:tt)*],
+                    encrypted_fields: [$($encrypted_fields:tt)*],
                     apply: $apply:expr,
                 }
             )*
@@ -1154,6 +1163,20 @@ macro_rules! define_events {
                         }
                     )*
                     Err($crate::Error::custom(format!("Unknown event type: {}", envelope.event_type)))
+                }
+
+                fn encrypted_fields(&self) -> &'static [&'static str] {
+                    match self {
+                        $(
+                            $event_enum::$variant { .. } => {
+                                define_events!(@encrypted_fields_from [$($encrypted_fields)*])
+                            }
+                        ),*
+                    }
+                }
+
+                fn has_any_encrypted_fields() -> bool {
+                    define_events!(@has_any_encrypted_fields $([$($encrypted_fields)*])*)
                 }
             }
         }
@@ -1597,6 +1620,31 @@ macro_rules! define_events {
     // Legacy version helper
     (@version $version:literal) => { $version };
     (@version) => { 1 };
+
+    // =========================================================================
+    // Helper: extract encrypted field names for a variant (default to empty)
+    // =========================================================================
+    (@encrypted_fields_from [[$($enc_field:ident),+]]) => {
+        &[$(stringify!($enc_field)),+]
+    };
+    (@encrypted_fields_from []) => {
+        &[]
+    };
+
+    // =========================================================================
+    // Helper: check if any variant has encrypted fields
+    // =========================================================================
+    // Processes each variant's encrypted_fields one at a time.
+    // Each item is either `[[field1, field2, ...]]` (encrypted) or `[]` (plain).
+    (@has_any_encrypted_fields [[$($enc_field:ident),+]] $($rest:tt)*) => {
+        true
+    };
+    (@has_any_encrypted_fields [] $($rest:tt)*) => {
+        define_events!(@has_any_encrypted_fields $($rest)*)
+    };
+    (@has_any_encrypted_fields) => {
+        false
+    };
 }
 
 /// Create a specification struct or inline specification value.
@@ -5301,6 +5349,153 @@ mod tests {
             };
             EventApplicator::dispatch_unchecked(&assigned, &mut ticket);
             assert_eq!(ticket.assignee.as_deref(), Some("Alice"));
+        }
+    }
+
+    // ===================================================================
+    // @encrypted_fields define_events! tests (in submodule to avoid
+    // naming collisions with existing generated types)
+    // ===================================================================
+
+    mod encrypted_fields_tests {
+        use super::*;
+
+        #[derive(Debug, Clone, Serialize, Deserialize)]
+        struct Patient {
+            id: EntityId,
+            name: String,
+            diagnosis: String,
+            visit_count: i32,
+        }
+
+        impl Entity for Patient {
+            fn new(id: EntityId) -> Self {
+                Self {
+                    id,
+                    name: String::new(),
+                    diagnosis: String::new(),
+                    visit_count: 0,
+                }
+            }
+            fn entity_id(&self) -> EntityId {
+                self.id
+            }
+        }
+
+        impl crate::DefaultEntity for Patient {}
+
+        #[derive(Debug, thiserror::Error)]
+        #[error("Patient error")]
+        struct PatientError;
+
+        impl AggregateError for PatientError {}
+
+        impl Aggregate for Patient {
+            type Event = PatientEvent;
+            type Error = PatientError;
+        }
+
+        define_events! {
+            enum PatientEvent for Patient {
+                Registered {
+                    name: String,
+                    diagnosis: String,
+                    visit_count: i32,
+                }
+                @encrypted_fields(name, diagnosis)
+                => |patient, event| {
+                    patient.name = event.name.clone();
+                    patient.diagnosis = event.diagnosis.clone();
+                    patient.visit_count = event.visit_count;
+                },
+
+                VisitRecorded {
+                    visit_count: i32,
+                }
+                => |patient, event| {
+                    patient.visit_count = event.visit_count;
+                },
+            }
+        }
+
+        #[test]
+        fn test_encrypted_fields_returns_field_names_for_encrypted_variant() {
+            let event = PatientEvent::Registered {
+                name: "Alice".to_string(),
+                diagnosis: "flu".to_string(),
+                visit_count: 1,
+                timestamp: Utc::now(),
+            };
+            let fields = event.encrypted_fields();
+            assert_eq!(fields, &["name", "diagnosis"]);
+        }
+
+        #[test]
+        fn test_encrypted_fields_returns_empty_for_non_encrypted_variant() {
+            let event = PatientEvent::VisitRecorded {
+                visit_count: 2,
+                timestamp: Utc::now(),
+            };
+            assert!(event.encrypted_fields().is_empty());
+        }
+
+        #[test]
+        fn test_has_any_encrypted_fields_is_true() {
+            assert!(PatientEvent::has_any_encrypted_fields());
+        }
+
+        // Test a define_events! with NO encrypted fields at all
+        #[derive(Debug, Clone, Serialize, Deserialize)]
+        struct PlainEntity {
+            id: EntityId,
+            value: i32,
+        }
+
+        impl Entity for PlainEntity {
+            fn new(id: EntityId) -> Self {
+                Self { id, value: 0 }
+            }
+            fn entity_id(&self) -> EntityId {
+                self.id
+            }
+        }
+
+        impl crate::DefaultEntity for PlainEntity {}
+
+        #[derive(Debug, thiserror::Error)]
+        #[error("Plain error")]
+        struct PlainError;
+
+        impl AggregateError for PlainError {}
+
+        impl Aggregate for PlainEntity {
+            type Event = PlainEvent;
+            type Error = PlainError;
+        }
+
+        define_events! {
+            enum PlainEvent for PlainEntity {
+                Updated {
+                    value: i32,
+                }
+                => |entity, event| {
+                    entity.value = event.value;
+                },
+            }
+        }
+
+        #[test]
+        fn test_has_any_encrypted_fields_false_when_no_encrypted_fields() {
+            assert!(!PlainEvent::has_any_encrypted_fields());
+        }
+
+        #[test]
+        fn test_encrypted_fields_empty_for_plain_event() {
+            let event = PlainEvent::Updated {
+                value: 42,
+                timestamp: Utc::now(),
+            };
+            assert!(event.encrypted_fields().is_empty());
         }
     }
 }

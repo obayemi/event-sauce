@@ -170,6 +170,72 @@ assert!(result.unwrap_err().is_key_not_found());
 
 The encrypted event and snapshot data remains in the database but is permanently unreadable without the key. This satisfies GDPR Article 17 (right to erasure) without requiring actual deletion of event history.
 
+## Field-Level Encryption
+
+For aggregates where only some fields are sensitive, you can encrypt individual fields instead of the entire event. Non-sensitive fields remain queryable in plaintext, while encrypted fields are stored as `{"__encrypted": "..."}`.
+
+### Syntax
+
+Use `@encrypted_fields(field1, field2)` in `define_events!`:
+
+```rust
+use event_sauce::define_events;
+
+define_events! {
+    pub enum PatientEvent for Patient {
+        Registered {
+            name: String,
+            diagnosis: String,
+            visit_count: i32,
+        }
+        @encrypted_fields(name, diagnosis)
+        => |patient, event| {
+            patient.state.name = event.name.clone();
+            patient.state.diagnosis = event.diagnosis.clone();
+            patient.state.visit_count = event.visit_count;
+        },
+
+        VisitRecorded {
+            visit_count: i32,
+        }
+        => |patient, event| {
+            patient.state.visit_count = event.visit_count;
+        },
+    }
+}
+```
+
+### Stored Format
+
+The `Registered` event is stored as:
+
+```json
+{
+  "name": {"__encrypted": "base64..."},
+  "diagnosis": {"__encrypted": "base64..."},
+  "visit_count": 42,
+  "timestamp": "2026-03-01T12:00:00Z"
+}
+```
+
+The `VisitRecorded` event is stored entirely in plaintext (no `@encrypted_fields` annotation).
+
+### How It Works
+
+- **Same key management**: Field-encrypted aggregates use the same per-aggregate `CryptoKeyStore` and `CryptoProvider` as fully encrypted ones
+- **Snapshots are fully encrypted**: When any event variant has `@encrypted_fields`, snapshots are encrypted with `encrypt_value()` to prevent plaintext leaks
+- **Auto-detection on load**: Encrypted fields are detected by scanning for the `{"__encrypted": ...}` marker — no field list is needed for decryption
+- **Crypto-shredding works**: Deleting the key makes encrypted fields unreadable, causing load to fail
+- **Not fully encrypted**: `Aggregate::is_encrypted()` remains `false` — the aggregate is not marked as fully encrypted
+
+### When to Use
+
+| Scenario | Approach |
+|----------|----------|
+| All data is sensitive (e.g., medical records) | `#[aggregate(encrypted)]` — full encryption |
+| Only some fields are sensitive (e.g., PII in otherwise public data) | `@encrypted_fields(name, email)` — field-level |
+| No sensitive data | Default — no encryption |
+
 ## Architecture
 
 ### Components

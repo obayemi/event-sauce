@@ -1,4 +1,11 @@
-- [ ] add "privacy Aggregate" system, allowing to make the events for a type of aggregate encrypted, and have a cryptography store to store encryption keys by aggregateId so that events can be seamlessly decoded by the store, and return EncriptedAggregate for aggregates where key has been lost
+- [ ] update postgres example to use function based specifications instead of macro one.
+        also update all validation to be based on specificationns instead of being written in the validation functions
+
+- [.] add encrypted property to events
+
+- [x] rename private to "encrypt" for crypto stuff
+- [x] add a way to define events that must have an "actor", being an other entity, that can be used for permssions validation and from wich the id will be stored in the event's creatd_by 
+- [x] add "privacy Aggregate" system, allowing to make the events for a type of aggregate encrypted, and have a cryptography store to store encryption keys by aggregateId so that events can be seamlessly decoded by the store, and return EncriptedAggregate for aggregates where key has been lost
 
 - [ ] remove unsafe or code that panics everywhere
 
