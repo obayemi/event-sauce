@@ -27,3 +27,4 @@ tokio = { workspace = true, features = ["test-util", "macros", "rt", "rt-multi-t
 tokio-test.workspace = true
 proptest.workspace = true
 anyhow.workspace = true
+event-sauce-crypto = { path = "../event-sauce-crypto", version = "0.1.0" }
