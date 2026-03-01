@@ -1,3 +1,5 @@
+- [ ] add "privacy Aggregate" system, allowing to make the events for a type of aggregate encrypted, and have a cryptography store to store encryption keys by aggregateId so that events can be seamlessly decoded by the store, and return EncriptedAggregate for aggregates where key has been lost
+
 - [ ] remove unsafe or code that panics everywhere
 
 - [ ] add the snapshot store as optional attribute to the event store to allow not requiring it when building subscription

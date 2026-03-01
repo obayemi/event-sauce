@@ -4,6 +4,7 @@
 
 use crate::AggregateVersion;
 use thiserror::Error;
+use uuid::Uuid;
 
 /// Result type for event sourcing operations.
 pub type Result<T> = std::result::Result<T, Error>;
@@ -58,6 +59,23 @@ pub enum Error {
     #[error("Invalid state: {0}")]
     InvalidState(String),
 
+    /// Encryption key not found for a private aggregate.
+    ///
+    /// Occurs when trying to load a private aggregate whose encryption key
+    /// has been deleted (e.g., GDPR right-to-be-forgotten / crypto-shredding).
+    #[error("Encryption key not found for aggregate {aggregate_id}")]
+    KeyNotFound {
+        /// The aggregate ID whose key was not found.
+        aggregate_id: Uuid,
+    },
+
+    /// Encryption or decryption error.
+    ///
+    /// Occurs when encrypting event data before storage or
+    /// decrypting event data during aggregate reconstruction.
+    #[error("Encryption error: {0}")]
+    Encryption(String),
+
     /// Generic error with custom message.
     #[error("{0}")]
     Custom(String),
@@ -107,6 +125,35 @@ impl Error {
     #[must_use]
     pub fn invalid_state(message: impl Into<String>) -> Self {
         Self::InvalidState(message.into())
+    }
+
+    /// Creates a key not found error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use event_sauce_core::Error;
+    /// use uuid::Uuid;
+    ///
+    /// let error = Error::key_not_found(Uuid::nil());
+    /// ```
+    #[must_use]
+    pub fn key_not_found(aggregate_id: Uuid) -> Self {
+        Self::KeyNotFound { aggregate_id }
+    }
+
+    /// Creates an encryption error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use event_sauce_core::Error;
+    ///
+    /// let error = Error::encryption("decryption failed");
+    /// ```
+    #[must_use]
+    pub fn encryption(message: impl Into<String>) -> Self {
+        Self::Encryption(message.into())
     }
 
     /// Creates a custom error.
@@ -168,6 +215,37 @@ impl Error {
     #[must_use]
     pub fn is_serialization(&self) -> bool {
         matches!(self, Self::Serialization(_))
+    }
+
+    /// Returns true if this is a key not found error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use event_sauce_core::Error;
+    /// use uuid::Uuid;
+    ///
+    /// let error = Error::key_not_found(Uuid::nil());
+    /// assert!(error.is_key_not_found());
+    /// ```
+    #[must_use]
+    pub fn is_key_not_found(&self) -> bool {
+        matches!(self, Self::KeyNotFound { .. })
+    }
+
+    /// Returns true if this is an encryption error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use event_sauce_core::Error;
+    ///
+    /// let error = Error::encryption("failed");
+    /// assert!(error.is_encryption());
+    /// ```
+    #[must_use]
+    pub fn is_encryption(&self) -> bool {
+        matches!(self, Self::Encryption(_))
     }
 }
 
@@ -333,6 +411,61 @@ mod tests {
             assert_eq!(msg, message);
         } else {
             panic!("Expected Custom variant");
+        }
+    }
+
+    #[test]
+    fn test_key_not_found_error() {
+        let id = uuid::Uuid::new_v4();
+        let error = Error::key_not_found(id);
+
+        assert!(error.is_key_not_found());
+        assert!(!error.is_concurrency_conflict());
+        assert!(!error.is_not_found());
+        assert!(!error.is_serialization());
+        assert!(!error.is_encryption());
+
+        let message = error.to_string();
+        assert!(message.contains("Encryption key not found"));
+        assert!(message.contains(&id.to_string()));
+    }
+
+    #[test]
+    fn test_key_not_found_fields() {
+        let id = uuid::Uuid::new_v4();
+        let error = Error::KeyNotFound { aggregate_id: id };
+
+        if let Error::KeyNotFound { aggregate_id } = error {
+            assert_eq!(aggregate_id, id);
+        } else {
+            panic!("Expected KeyNotFound variant");
+        }
+    }
+
+    #[test]
+    fn test_encryption_error() {
+        let error = Error::encryption("decryption failed: invalid key");
+
+        assert!(error.is_encryption());
+        assert!(!error.is_concurrency_conflict());
+        assert!(!error.is_not_found());
+        assert!(!error.is_serialization());
+        assert!(!error.is_key_not_found());
+
+        let message = error.to_string();
+        assert!(message.contains("Encryption error"));
+        assert!(message.contains("decryption failed: invalid key"));
+    }
+
+    #[test]
+    fn test_encryption_error_message() {
+        let msg = "AES-GCM auth tag mismatch";
+        let error = Error::encryption(msg);
+
+        if let Error::Encryption(message) = error {
+            assert_eq!(message, msg);
+        } else {
+            panic!("Expected Encryption variant");
         }
     }
 }
