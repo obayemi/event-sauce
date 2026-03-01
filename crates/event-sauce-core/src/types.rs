@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use crate::CheckpointStore;
+use crate::{CheckpointStore, CryptoKeyStore, CryptoProvider};
 
 /// Arc-wrapped checkpoint store for shared ownership across threads.
 ///
@@ -21,3 +21,9 @@ use crate::CheckpointStore;
 /// let store: CheckpointStoreRef = Arc::new(my_checkpoint_store);
 /// ```
 pub type CheckpointStoreRef = Arc<dyn CheckpointStore>;
+
+/// Arc-wrapped crypto key store for shared ownership across threads.
+pub type CryptoKeyStoreRef = Arc<dyn CryptoKeyStore>;
+
+/// Arc-wrapped crypto provider for shared ownership across threads.
+pub type CryptoProviderRef = Arc<dyn CryptoProvider>;

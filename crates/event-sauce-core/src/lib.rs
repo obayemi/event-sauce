@@ -25,6 +25,8 @@ mod aggregate_error;
 mod aggregate_root;
 mod aggregate_type;
 mod apply_event;
+/// Cryptographic traits and helpers for private aggregate encryption (crypto-shredding).
+pub mod crypto;
 mod domain_event;
 mod entity;
 mod entity_id;
@@ -53,6 +55,7 @@ pub use aggregate_error::AggregateError;
 pub use aggregate_root::AggregateRoot;
 pub use aggregate_type::AggregateType;
 pub use apply_event::ApplyEvent;
+pub use crypto::{CryptoKeyStore, CryptoProvider};
 pub use domain_event::{DomainEvent, EventType};
 pub use entity::{DefaultEntity, Entity};
 pub use entity_id::EntityId;
@@ -70,6 +73,6 @@ pub use subscription::{
     CheckpointStore, CheckpointStrategy, ErrorPolicy, EventFilter, Subscription,
     SubscriptionBuilder, SubscriptionConfig,
 };
-pub use types::CheckpointStoreRef;
+pub use types::{CheckpointStoreRef, CryptoKeyStoreRef, CryptoProviderRef};
 pub use uninit_aggregate_root::UninitAggregateRoot;
 pub use version::{AggregateVersion, EventVersion};
