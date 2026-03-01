@@ -3,6 +3,7 @@
 //! This example demonstrates:
 //! - **Private User aggregate** with crypto-shredding for GDPR compliance
 //! - **Actor-validated Order commands** requiring an authenticated User
+//! - **Function-based specifications** with `#[specification]` for validation
 //! - Init creation functions for ergonomic aggregate construction
 //! - Repository pattern for type-safe aggregate persistence
 //! - A projection that combines Order data (User PII stays encrypted)
@@ -18,11 +19,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use event_sauce_core::{
-    command_handler, crypto, define_events, spec, Aggregate, AggregateVersion, CryptoKeyStore,
-    Entity, EntityId, EventStore, Specification, StreamId,
+    command_handler, crypto, define_events, Aggregate, AggregateVersion, CryptoKeyStore, Entity,
+    EntityId, EventStore, Specification, StreamId,
 };
 use event_sauce_crypto::Aes256GcmProvider;
-use event_sauce_macros::{aggregate, aggregate_error, AggregateError};
+use event_sauce_macros::{aggregate, aggregate_error, specification, AggregateError};
 use event_sauce_postgres::{PostgresBackend, PostgresCryptoKeyStore};
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -49,6 +50,18 @@ enum UserRole {
     Admin,
 }
 
+// Specification: Email must contain @
+#[specification("Email must contain @")]
+fn valid_email(email: &str) -> bool {
+    email.contains('@')
+}
+
+// Specification: Name must not be empty
+#[specification("Name must not be empty")]
+fn non_empty_name(name: &str) -> bool {
+    !name.is_empty()
+}
+
 // User events with define_events! macro — Created is an @init event
 define_events! {
     enum UserEvent for User {
@@ -59,12 +72,8 @@ define_events! {
         }
         @init
         @validate |evt| {
-            if !evt.email.contains('@') {
-                return Err(UserError::InvalidEmail(evt.email.clone()));
-            }
-            if evt.name.is_empty() {
-                return Err(UserError::EmptyName);
-            }
+            ValidEmail.validate_or(&evt.email, |_| UserError::InvalidEmail(evt.email.clone()))?;
+            NonEmptyName.validate_or(&evt.name, |_| UserError::EmptyName)?;
             Ok(())
         }
         => |id, event| {
@@ -80,9 +89,7 @@ define_events! {
             new_email: String,
         }
         @validate |_agg, evt| {
-            if !evt.new_email.contains('@') {
-                return Err(UserError::InvalidEmail(evt.new_email.clone()));
-            }
+            ValidEmail.validate_or(&evt.new_email, |_| UserError::InvalidEmail(evt.new_email.clone()))?;
             Ok(())
         }
         => |user, event| {
@@ -150,9 +157,22 @@ struct OrderItem {
 }
 
 // Specification: Order must be in Pending status
-spec!(OrderIsPending for Order, "Order must be pending", |o| {
-    o.status == OrderStatus::Pending
-});
+#[specification("Order must be pending")]
+fn order_is_pending(order: &Order) -> bool {
+    order.status == OrderStatus::Pending
+}
+
+// Specification: Price must be positive
+#[specification("Price must be positive")]
+fn positive_price(price: &i64) -> bool {
+    *price > 0
+}
+
+// Specification: Actor must be the order owner
+#[specification("Only the order owner can perform this action", actor = actor_id)]
+fn is_order_owner(order: &Order, actor_id: EntityId) -> bool {
+    order.user_id == *actor_id
+}
 
 // Order events with @actor — require an authenticated User for permission checks
 define_events! {
@@ -162,10 +182,6 @@ define_events! {
         }
         @init
         @actor(User)
-        @validate_actor |_actor| {
-            // Any authenticated user can create an order
-            Ok(())
-        }
         => |id, event| {
             Order {
                 id,
@@ -183,18 +199,14 @@ define_events! {
         }
         @actor(User)
         @validate_actor |order, actor| {
-            if actor.entity_id() != order.user_id {
-                return Err(OrderError::PermissionDenied(
-                    "Only the order owner can add items".to_string()
-                ));
-            }
+            IsOrderOwner { actor_id: actor.entity_id() }.validate_or(order, |msg| {
+                OrderError::PermissionDenied(msg)
+            })?;
             Ok(())
         }
         @validate |agg, evt| {
-            if evt.price <= 0 {
-                return Err(OrderError::InvalidAmount(evt.price));
-            }
-            OrderIsPending.check(agg)?; // Uses SpecificationError -> OrderError via From
+            PositivePrice.validate_or(&evt.price, |_| OrderError::InvalidAmount(evt.price))?;
+            OrderIsPending.check(agg)?;
             Ok(())
         }
         => |order, event| {
@@ -210,11 +222,9 @@ define_events! {
         OrderCompleted {}
         @actor(User)
         @validate_actor |order, actor| {
-            if actor.entity_id() != order.user_id {
-                return Err(OrderError::PermissionDenied(
-                    "Only the order owner can complete the order".to_string()
-                ));
-            }
+            IsOrderOwner { actor_id: actor.entity_id() }.validate_or(order, |msg| {
+                OrderError::PermissionDenied(msg)
+            })?;
             Ok(())
         }
         @validate_spec(OrderIsPending)
