@@ -59,9 +59,9 @@ pub enum Error {
     #[error("Invalid state: {0}")]
     InvalidState(String),
 
-    /// Encryption key not found for a private aggregate.
+    /// Encryption key not found for an encrypted aggregate.
     ///
-    /// Occurs when trying to load a private aggregate whose encryption key
+    /// Occurs when trying to load an encrypted aggregate whose encryption key
     /// has been deleted (e.g., GDPR right-to-be-forgotten / crypto-shredding).
     #[error("Encryption key not found for aggregate {aggregate_id}")]
     KeyNotFound {

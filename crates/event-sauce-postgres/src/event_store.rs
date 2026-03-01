@@ -450,9 +450,9 @@ impl PostgresEventStoreBuilder {
         self
     }
 
-    /// Sets the crypto key store for private aggregate encryption.
+    /// Sets the crypto key store for encrypted aggregate encryption.
     ///
-    /// Required when using private aggregates with crypto-shredding support.
+    /// Required when using encrypted aggregates with crypto-shredding support.
     ///
     /// # Examples
     ///
@@ -474,9 +474,9 @@ impl PostgresEventStoreBuilder {
         self
     }
 
-    /// Sets the crypto provider for private aggregate encryption.
+    /// Sets the crypto provider for encrypted aggregate encryption.
     ///
-    /// Required when using private aggregates with crypto-shredding support.
+    /// Required when using encrypted aggregates with crypto-shredding support.
     ///
     /// # Examples
     ///

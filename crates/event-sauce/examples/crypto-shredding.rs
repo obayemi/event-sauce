@@ -2,15 +2,15 @@
 //!
 //! This example demonstrates **crypto-shredding** for GDPR-style privacy:
 //!
-//! - **Private aggregate** (`Patient`) with `is_private() -> true` — event data is encrypted at rest
-//! - **Public aggregate** (`Counter`) with default `is_private() -> false` — data stored as plaintext
+//! - **Encrypted aggregate** (`Patient`) with `is_encrypted() -> true` — event data is encrypted at rest
+//! - **Public aggregate** (`Counter`) with default `is_encrypted() -> false` — data stored as plaintext
 //! - **Transparent encryption/decryption** — `commit()` encrypts, `load()` decrypts automatically
 //! - **Encryption verification** — raw event stream inspection proves data is encrypted
 //! - **Crypto-shredding** — deleting the key makes the aggregate permanently unloadable
 //!
 //! ## How it works
 //!
-//! Each private aggregate instance gets its own AES-256-GCM encryption key, stored in a
+//! Each encrypted aggregate instance gets its own AES-256-GCM encryption key, stored in a
 //! `CryptoKeyStore`. When you call `commit()`, event and snapshot data is encrypted before
 //! storage. When you call `load()`, it is decrypted transparently. Deleting the key via
 //! `delete_key()` makes the data permanently unreadable — satisfying GDPR Article 17.
@@ -34,7 +34,7 @@ use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 
 // ============================================================================
-// Private Aggregate: Patient (sensitive medical data)
+// Encrypted Aggregate: Patient (sensitive medical data)
 // ============================================================================
 
 /// Domain errors for the Patient aggregate.
@@ -46,7 +46,7 @@ enum PatientError {
 
 /// A patient record containing sensitive medical data.
 ///
-/// This aggregate is **private**: all event and snapshot data is encrypted at rest.
+/// This aggregate is **encrypted**: all event and snapshot data is encrypted at rest.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Patient {
     id: EntityId,
@@ -74,8 +74,8 @@ impl Aggregate for Patient {
     type Event = PatientEvent;
     type Error = PatientError;
 
-    /// Mark this aggregate as private — enables automatic encryption.
-    fn is_private() -> bool {
+    /// Mark this aggregate as encrypted — enables automatic encryption.
+    fn is_encrypted() -> bool {
         true
     }
 }
@@ -159,7 +159,7 @@ impl DefaultEntity for Counter {}
 impl Aggregate for Counter {
     type Event = CounterEvent;
     type Error = CounterError;
-    // is_private() defaults to false — no encryption
+    // is_encrypted() defaults to false — no encryption
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -195,7 +195,7 @@ enum CounterEvent {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Event Sauce - Crypto-Shredding Example\n");
     println!("This example demonstrates:");
-    println!("  - Private aggregates with automatic encryption at rest");
+    println!("  - Encrypted aggregates with automatic encryption at rest");
     println!("  - Public aggregates stored as plaintext for contrast");
     println!("  - Crypto-shredding: deleting a key to implement right-to-be-forgotten\n");
 
@@ -215,10 +215,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Store configured with AES-256-GCM encryption and in-memory key store.\n");
 
     // ========================================================================
-    // Step 1: Create and commit a private aggregate (Patient)
+    // Step 1: Create and commit an encrypted aggregate (Patient)
     // ========================================================================
 
-    println!("=== Step 1: Commit a Private Aggregate (Patient) ===\n");
+    println!("=== Step 1: Commit an Encrypted Aggregate (Patient) ===\n");
 
     let mut patient = AggregateRoot::<Patient>::new(EntityId::new());
     patient.apply(PatientRegisteredEvent {
@@ -358,7 +358,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("\n=== Summary ===\n");
     println!("  Key Takeaways:");
-    println!("    - Private aggregates have is_private() -> true");
+    println!("    - Encrypted aggregates have is_encrypted() -> true");
     println!("    - Event data is encrypted automatically on commit()");
     println!("    - Decryption is transparent on load()");
     println!("    - Deleting the key makes data permanently unreadable");

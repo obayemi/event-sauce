@@ -444,7 +444,7 @@ fn test_aggregate_init_uninit_lifecycle() {
 }
 
 // ============================================================================
-// Tests for #[aggregate(private)] — privacy-sensitive aggregates
+// Tests for #[aggregate(encrypted)] — encrypted aggregates
 // ============================================================================
 
 #[derive(Debug, Error)]
@@ -491,7 +491,7 @@ impl EventApplicator<PrivateAgg> for PrivateAggEvent {
     }
 }
 
-#[event_sauce_macros::aggregate(event = "PrivateAggEvent", error = "PrivateAggError", private)]
+#[event_sauce_macros::aggregate(event = "PrivateAggEvent", error = "PrivateAggError", encrypted)]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct PrivateAgg {
     #[id]
@@ -500,18 +500,18 @@ struct PrivateAgg {
 }
 
 #[test]
-fn test_aggregate_private_is_private_returns_true() {
-    assert!(PrivateAgg::is_private());
+fn test_aggregate_encrypted_is_encrypted_returns_true() {
+    assert!(PrivateAgg::is_encrypted());
 }
 
 #[test]
-fn test_aggregate_without_private_is_not_private() {
-    // TestCounter was defined without `private` — should return false
-    assert!(!TestCounter::is_private());
+fn test_aggregate_without_encrypted_is_not_encrypted() {
+    // TestCounter was defined without `encrypted` — should return false
+    assert!(!TestCounter::is_encrypted());
 }
 
 #[test]
-fn test_aggregate_private_still_generates_entity_trait() {
+fn test_aggregate_encrypted_still_generates_entity_trait() {
     let id = EntityId::new();
     let agg = PrivateAgg::new(id);
     assert_eq!(agg.entity_id(), id);
@@ -519,12 +519,12 @@ fn test_aggregate_private_still_generates_entity_trait() {
 }
 
 #[test]
-fn test_aggregate_private_still_generates_aggregate_type() {
+fn test_aggregate_encrypted_still_generates_aggregate_type() {
     assert_eq!(PrivateAgg::aggregate_type(), "PrivateAgg");
 }
 
 #[test]
-fn test_aggregate_private_works_with_aggregate_root() {
+fn test_aggregate_encrypted_works_with_aggregate_root() {
     let id = EntityId::new();
     let mut root = AggregateRoot::<PrivateAgg>::new(id);
 

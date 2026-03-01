@@ -26,7 +26,7 @@ mod aggregate_error;
 mod aggregate_root;
 mod aggregate_type;
 mod apply_event;
-/// Cryptographic traits and helpers for private aggregate encryption (crypto-shredding).
+/// Cryptographic traits and helpers for encrypted aggregate encryption (crypto-shredding).
 pub mod crypto;
 mod domain_event;
 mod entity;

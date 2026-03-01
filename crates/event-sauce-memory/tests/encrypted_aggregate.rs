@@ -1,4 +1,4 @@
-//! Integration tests for private aggregate crypto-shredding support.
+//! Integration tests for encrypted aggregate crypto-shredding support.
 
 use event_sauce_core::{
     Aggregate, AggregateError, AggregateRoot, AggregateVersion, ApplyEvent, CryptoKeyStore,
@@ -10,7 +10,7 @@ use event_sauce_memory::{InMemoryCryptoKeyStore, InMemoryEventStore};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-// --- Private aggregate definition ---
+// --- Encrypted aggregate definition ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SecretUser {
@@ -38,7 +38,7 @@ impl Aggregate for SecretUser {
     type Event = SecretUserEvent;
     type Error = SecretUserError;
 
-    fn is_private() -> bool {
+    fn is_encrypted() -> bool {
         true
     }
 }
@@ -94,7 +94,7 @@ impl EventApplicator<SecretUser> for SecretUserEvent {
 struct SecretUserError;
 impl AggregateError for SecretUserError {}
 
-// --- Non-private aggregate for comparison ---
+// --- Non-encrypted aggregate for comparison ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PublicUser {
@@ -193,7 +193,7 @@ fn create_store_with_crypto_and_snapshots() -> (InMemoryEventStore, Arc<InMemory
 // --- Tests ---
 
 #[tokio::test]
-async fn private_aggregate_commit_encrypts_event_data() {
+async fn encrypted_aggregate_commit_encrypts_event_data() {
     let (store, _key_store) = create_store_with_crypto();
     let id = EntityId::new();
 
@@ -230,7 +230,7 @@ async fn private_aggregate_commit_encrypts_event_data() {
 }
 
 #[tokio::test]
-async fn private_aggregate_load_decrypts_correctly() {
+async fn encrypted_aggregate_load_decrypts_correctly() {
     let (store, _key_store) = create_store_with_crypto();
     let id = EntityId::new();
 
@@ -257,7 +257,7 @@ async fn private_aggregate_load_decrypts_correctly() {
 }
 
 #[tokio::test]
-async fn private_aggregate_key_deletion_returns_key_not_found() {
+async fn encrypted_aggregate_key_deletion_returns_key_not_found() {
     let (store, key_store) = create_store_with_crypto();
     let id = EntityId::new();
 
@@ -286,7 +286,7 @@ async fn private_aggregate_key_deletion_returns_key_not_found() {
 }
 
 #[tokio::test]
-async fn non_private_aggregate_is_not_encrypted() {
+async fn non_encrypted_aggregate_is_not_encrypted() {
     let (store, _key_store) = create_store_with_crypto();
     let id = EntityId::new();
 
@@ -310,7 +310,7 @@ async fn non_private_aggregate_is_not_encrypted() {
     let envelope = event_stream.next().await.unwrap().unwrap();
     assert!(
         !event_sauce_core::crypto::is_encrypted(&envelope.event_data),
-        "Non-private aggregate data should NOT be encrypted"
+        "Non-encrypted aggregate data should NOT be encrypted"
     );
     assert!(
         envelope.event_data.to_string().contains("Dave"),
@@ -319,7 +319,7 @@ async fn non_private_aggregate_is_not_encrypted() {
 }
 
 #[tokio::test]
-async fn non_private_aggregate_loads_without_crypto() {
+async fn non_encrypted_aggregate_loads_without_crypto() {
     let (store, _key_store) = create_store_with_crypto();
     let id = EntityId::new();
 
@@ -386,7 +386,7 @@ async fn backward_compat_loading_unencrypted_events() {
     .unwrap();
     plain_store.commit(&mut agg).await.unwrap();
 
-    // Load from a store WITH crypto configured — should work (non-private)
+    // Load from a store WITH crypto configured — should work (non-encrypted)
     let crypto_store = InMemoryEventStore::builder()
         .snapshot_config(SnapshotConfig::disabled())
         .crypto_key_store(key_store)
@@ -419,13 +419,13 @@ async fn backward_compat_loading_unencrypted_events() {
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), plain_value);
 
-    // Also verify non-private loads still work
+    // Also verify non-encrypted loads still work
     let store = Arc::new(crypto_store);
     let _ = store.repository::<PublicUser>();
 }
 
 #[tokio::test]
-async fn commit_without_crypto_config_fails_for_private_aggregate() {
+async fn commit_without_crypto_config_fails_for_encrypted_aggregate() {
     let store = InMemoryEventStore::new(); // No crypto configured
     let id = EntityId::new();
 
@@ -441,7 +441,7 @@ async fn commit_without_crypto_config_fails_for_private_aggregate() {
 }
 
 #[tokio::test]
-async fn multiple_private_aggregates_use_different_keys() {
+async fn multiple_encrypted_aggregates_use_different_keys() {
     let (store, key_store) = create_store_with_crypto();
     let id1 = EntityId::new();
     let id2 = EntityId::new();

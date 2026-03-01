@@ -238,9 +238,9 @@ impl InMemoryEventStoreBuilder {
         self
     }
 
-    /// Sets the crypto key store for private aggregate encryption.
+    /// Sets the crypto key store for encrypted aggregate encryption.
     ///
-    /// Required when using private aggregates. Stores per-aggregate encryption keys.
+    /// Required when using encrypted aggregates. Stores per-aggregate encryption keys.
     ///
     /// # Examples
     ///
@@ -258,9 +258,9 @@ impl InMemoryEventStoreBuilder {
         self
     }
 
-    /// Sets the crypto provider for private aggregate encryption.
+    /// Sets the crypto provider for encrypted aggregate encryption.
     ///
-    /// Required when using private aggregates. Provides encrypt/decrypt operations.
+    /// Required when using encrypted aggregates. Provides encrypt/decrypt operations.
     ///
     /// # Examples
     ///

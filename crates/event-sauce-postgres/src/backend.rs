@@ -204,14 +204,14 @@ impl PostgresBackendBuilder {
         self
     }
 
-    /// Sets the crypto key store for private aggregate encryption.
+    /// Sets the crypto key store for encrypted aggregate encryption.
     #[must_use]
     pub fn crypto_key_store(mut self, store: Arc<dyn event_sauce_core::CryptoKeyStore>) -> Self {
         self.crypto_key_store = Some(store);
         self
     }
 
-    /// Sets the crypto provider for private aggregate encryption.
+    /// Sets the crypto provider for encrypted aggregate encryption.
     #[must_use]
     pub fn crypto_provider(mut self, provider: Arc<dyn event_sauce_core::CryptoProvider>) -> Self {
         self.crypto_provider = Some(provider);

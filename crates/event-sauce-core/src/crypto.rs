@@ -1,11 +1,11 @@
-//! Cryptographic traits and helpers for private aggregate encryption.
+//! Cryptographic traits and helpers for encrypted aggregate encryption.
 //!
 //! This module provides the abstractions needed for crypto-shredding support:
 //! - [`CryptoKeyStore`] — per-aggregate encryption key management
 //! - [`CryptoProvider`] — pluggable encryption/decryption implementations
 //! - Helper functions for encrypting/decrypting [`serde_json::Value`] payloads
 //!
-//! When a private aggregate's encryption key is deleted, its event and snapshot
+//! When an encrypted aggregate's encryption key is deleted, its event and snapshot
 //! data becomes permanently unreadable (GDPR right-to-be-forgotten).
 
 use async_trait::async_trait;
@@ -16,7 +16,7 @@ use crate::Result;
 
 /// Per-aggregate encryption key storage.
 ///
-/// Manages the lifecycle of encryption keys used for private aggregates.
+/// Manages the lifecycle of encryption keys used for encrypted aggregates.
 /// Deleting a key effectively "crypto-shreds" the aggregate's data.
 ///
 /// # Examples

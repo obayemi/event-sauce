@@ -1,6 +1,6 @@
 # Privacy & Crypto-Shredding
 
-event-sauce supports GDPR-style "crypto-shredding" for private aggregates. When an aggregate is marked as private, its event data and snapshot data are encrypted at rest using per-aggregate encryption keys. Deleting a key renders that aggregate's history permanently unreadable, implementing the right to be forgotten.
+event-sauce supports GDPR-style "crypto-shredding" for encrypted aggregates. When an aggregate is marked as encrypted, its event data and snapshot data are encrypted at rest using per-aggregate encryption keys. Deleting a key renders that aggregate's history permanently unreadable, implementing the right to be forgotten.
 
 ## Example
 
@@ -15,8 +15,8 @@ cargo run --example crypto-shredding --features crypto
 ```rust
 use event_sauce::prelude::*;
 
-// Mark an aggregate as private with the `private` flag
-#[aggregate(event = "UserEvent", error = "UserError", private)]
+// Mark an aggregate as encrypted with the `encrypted` flag
+#[aggregate(event = "UserEvent", error = "UserError", encrypted)]
 struct User {
     #[id]
     id: EntityId,
@@ -29,7 +29,7 @@ struct User {
 
 ### Encryption Flow
 
-When you `commit()` events for a private aggregate:
+When you `commit()` events for an encrypted aggregate:
 
 1. A per-aggregate encryption key is generated (or retrieved if it already exists)
 2. Each event's `event_data` is serialized to JSON, then encrypted with AES-256-GCM
@@ -39,7 +39,7 @@ When you `commit()` events for a private aggregate:
 
 ### Decryption Flow
 
-When you `load()` a private aggregate:
+When you `load()` an encrypted aggregate:
 
 1. The per-aggregate encryption key is fetched from the key store
 2. If the key is missing (deleted), `Error::KeyNotFound` is returned
@@ -126,12 +126,12 @@ let backend = PostgresBackend::builder()
     .await?;
 ```
 
-## Defining Private Aggregates
+## Defining Encrypted Aggregates
 
 ### With the Proc Macro
 
 ```rust
-#[aggregate(event = "PatientEvent", error = "PatientError", private)]
+#[aggregate(event = "PatientEvent", error = "PatientError", encrypted)]
 struct Patient {
     #[id]
     id: EntityId,
@@ -140,7 +140,7 @@ struct Patient {
 }
 ```
 
-The `private` flag generates `fn is_private() -> bool { true }` in the `Aggregate` implementation.
+The `encrypted` flag generates `fn is_encrypted() -> bool { true }` in the `Aggregate` implementation.
 
 ### Manual Implementation
 
@@ -149,7 +149,7 @@ impl Aggregate for Patient {
     type Event = PatientEvent;
     type Error = PatientError;
 
-    fn is_private() -> bool {
+    fn is_encrypted() -> bool {
         true
     }
 }
@@ -184,15 +184,15 @@ The encrypted event and snapshot data remains in the database but is permanently
 
 ### Key Per Aggregate
 
-Each private aggregate instance gets its own unique encryption key. This means:
+Each encrypted aggregate instance gets its own unique encryption key. This means:
 
 - Deleting one user's key doesn't affect other users
 - Keys are generated automatically on first `commit()`
 - Keys are stored in the configured `CryptoKeyStore`
 
-### Non-Private Aggregates Are Unaffected
+### Non-Encrypted Aggregates Are Unaffected
 
-Aggregates without `private` (the default) continue to store plaintext data. The encryption system only activates when `Aggregate::is_private()` returns `true`.
+Aggregates without `encrypted` (the default) continue to store plaintext data. The encryption system only activates when `Aggregate::is_encrypted()` returns `true`.
 
 ### Backward Compatibility
 
@@ -200,7 +200,7 @@ The system handles mixed encrypted/unencrypted data gracefully:
 
 - `decrypt_value()` checks for the `__encrypted` marker
 - Unencrypted JSON values pass through unchanged
-- You can add `private` to an existing aggregate — new events will be encrypted, old events remain readable
+- You can add `encrypted` to an existing aggregate — new events will be encrypted, old events remain readable
 
 ## Error Handling
 

@@ -3,7 +3,7 @@
 //! AES-256-GCM encryption provider for event-sauce privacy support.
 //!
 //! Provides [`Aes256GcmProvider`], a [`CryptoProvider`] implementation using
-//! AES-256-GCM authenticated encryption. Used with private aggregates for
+//! AES-256-GCM authenticated encryption. Used with encrypted aggregates for
 //! GDPR-style crypto-shredding.
 //!
 //! # Examples

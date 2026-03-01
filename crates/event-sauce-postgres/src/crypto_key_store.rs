@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 /// `PostgreSQL` crypto key store for per-aggregate encryption keys.
 ///
-/// Manages the lifecycle of encryption keys used for private aggregates.
+/// Manages the lifecycle of encryption keys used for encrypted aggregates.
 /// Deleting a key effectively "crypto-shreds" the aggregate's data,
 /// making it permanently unreadable (GDPR right-to-be-forgotten).
 ///

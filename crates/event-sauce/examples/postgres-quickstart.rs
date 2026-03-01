@@ -91,9 +91,9 @@ define_events! {
     }
 }
 
-/// User aggregate — **private** for GDPR: all event data is encrypted at rest.
-/// The `init` flag uses the type-state pattern; `private` enables crypto-shredding.
-#[aggregate(event = "UserEvent", error = "UserError", init, private)]
+/// User aggregate — **encrypted** for GDPR: all event data is encrypted at rest.
+/// The `init` flag uses the type-state pattern; `encrypted` enables crypto-shredding.
+#[aggregate(event = "UserEvent", error = "UserError", init, encrypted)]
 #[derive(Serialize, Deserialize)]
 struct User {
     #[id]
@@ -350,7 +350,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     crypto_key_store.migrate().await?;
     let crypto_key_store = Arc::new(crypto_key_store);
 
-    // Build backend with AES-256-GCM encryption for private aggregates
+    // Build backend with AES-256-GCM encryption for encrypted aggregates
     println!("  Initializing backend with AES-256-GCM encryption...");
     let backend = PostgresBackend::builder()
         .database_url(&database_url)
