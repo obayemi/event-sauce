@@ -50,16 +50,22 @@ enum UserRole {
     Admin,
 }
 
-// Specification: Email must contain @
+// Specification: Created event email must contain @
 #[specification("Email must contain @")]
-fn valid_email(email: &str) -> bool {
-    email.contains('@')
+fn valid_created_email(event: &CreatedEvent) -> bool {
+    event.email.contains('@')
 }
 
-// Specification: Name must not be empty
+// Specification: Created event name must not be empty
 #[specification("Name must not be empty")]
-fn non_empty_name(name: &str) -> bool {
-    !name.is_empty()
+fn valid_created_name(event: &CreatedEvent) -> bool {
+    !event.name.is_empty()
+}
+
+// Specification: EmailChanged event email must contain @
+#[specification("Email must contain @")]
+fn valid_email_change(event: &EmailChangedEvent) -> bool {
+    event.new_email.contains('@')
 }
 
 // User events with define_events! macro — Created is an @init event
@@ -72,8 +78,8 @@ define_events! {
         }
         @init
         @validate |evt| {
-            ValidEmail.validate_or(&evt.email, |_| UserError::InvalidEmail(evt.email.clone()))?;
-            NonEmptyName.validate_or(&evt.name, |_| UserError::EmptyName)?;
+            ValidCreatedEmail.validate_or(evt, |_| UserError::InvalidEmail(evt.email.clone()))?;
+            ValidCreatedName.validate_or(evt, |_| UserError::EmptyName)?;
             Ok(())
         }
         => |id, event| {
@@ -89,7 +95,7 @@ define_events! {
             new_email: String,
         }
         @validate |_agg, evt| {
-            ValidEmail.validate_or(&evt.new_email, |_| UserError::InvalidEmail(evt.new_email.clone()))?;
+            ValidEmailChange.validate_or(evt, |_| UserError::InvalidEmail(evt.new_email.clone()))?;
             Ok(())
         }
         => |user, event| {
@@ -162,10 +168,10 @@ fn order_is_pending(order: &Order) -> bool {
     order.status == OrderStatus::Pending
 }
 
-// Specification: Price must be positive
+// Specification: ItemAdded event price must be positive
 #[specification("Price must be positive")]
-fn positive_price(price: &i64) -> bool {
-    *price > 0
+fn valid_item_price(event: &ItemAddedEvent) -> bool {
+    event.price > 0
 }
 
 // Specification: Actor must be the order owner
@@ -205,7 +211,7 @@ define_events! {
             Ok(())
         }
         @validate |agg, evt| {
-            PositivePrice.validate_or(&evt.price, |_| OrderError::InvalidAmount(evt.price))?;
+            ValidItemPrice.validate_or(evt, |_| OrderError::InvalidAmount(evt.price))?;
             OrderIsPending.check(agg)?;
             Ok(())
         }
