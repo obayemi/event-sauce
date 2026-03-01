@@ -45,6 +45,9 @@ pub use event_sauce_memory;
 #[cfg(feature = "postgres")]
 pub use event_sauce_postgres;
 
+#[cfg(feature = "crypto")]
+pub use event_sauce_crypto;
+
 /// Prelude module for convenient imports
 ///
 /// Commonly used types and traits

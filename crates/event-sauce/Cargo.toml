@@ -16,13 +16,15 @@ event-sauce-core = { path = "../event-sauce-core", version = "0.1.0" }
 event-sauce-memory = { path = "../event-sauce-memory", version = "0.1.0", optional = true }
 event-sauce-postgres = { path = "../event-sauce-postgres", version = "0.1.0", optional = true }
 event-sauce-macros = { path = "../event-sauce-macros", version = "0.1.0", optional = true }
+event-sauce-crypto = { path = "../event-sauce-crypto", version = "0.1.0", optional = true }
 
 [features]
 default = ["macros", "memory"]
 macros = ["dep:event-sauce-macros"]
 memory = ["dep:event-sauce-memory"]
 postgres = ["dep:event-sauce-postgres"]
-full = ["macros", "memory", "postgres"]
+crypto = ["dep:event-sauce-crypto"]
+full = ["macros", "memory", "postgres", "crypto"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt", "test-util"] }

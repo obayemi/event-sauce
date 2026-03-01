@@ -888,5 +888,6 @@ Aggregates in event-sauce provide:
 4. **Implement commands** on `AggregateRoot<Entity>` or use `command_handler!` macro
 5. **Access entity fields** via `Deref` for read-only access through `AggregateRoot`
 6. **Let `AggregateRoot` manage** version and pending events
+7. **Use `private`** for GDPR-sensitive aggregates: `#[aggregate(event = "...", error = "...", private)]` (see [Privacy & Crypto-Shredding](privacy.md))
 
 Next: [Events Guide](events.md) | [Validation Guide](validation.md)

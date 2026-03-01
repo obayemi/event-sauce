@@ -16,7 +16,8 @@ Welcome to the event-sauce documentation! This directory contains comprehensive 
 
 ## Production Deployment
 
-- **[PostgreSQL Production Setup](postgres-production.md)** - 🆕 Complete guide to deploying with PostgreSQL (connection pooling, snapshots, HA, monitoring)
+- **[PostgreSQL Production Setup](postgres-production.md)** - Complete guide to deploying with PostgreSQL (connection pooling, snapshots, HA, monitoring)
+- **[Privacy & Crypto-Shredding](privacy.md)** - GDPR-style encryption for private aggregates with right-to-be-forgotten support
 
 ## Guides
 
