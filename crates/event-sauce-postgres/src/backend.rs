@@ -159,6 +159,8 @@ pub struct PostgresBackendBuilder {
     database_url: Option<String>,
     schema: Option<String>,
     snapshot_config: Option<SnapshotConfig>,
+    crypto_key_store: Option<Arc<dyn event_sauce_core::CryptoKeyStore>>,
+    crypto_provider: Option<Arc<dyn event_sauce_core::CryptoProvider>>,
 }
 
 impl PostgresBackendBuilder {
@@ -169,6 +171,8 @@ impl PostgresBackendBuilder {
             database_url: None,
             schema: None,
             snapshot_config: None,
+            crypto_key_store: None,
+            crypto_provider: None,
         }
     }
 
@@ -200,6 +204,20 @@ impl PostgresBackendBuilder {
         self
     }
 
+    /// Sets the crypto key store for private aggregate encryption.
+    #[must_use]
+    pub fn crypto_key_store(mut self, store: Arc<dyn event_sauce_core::CryptoKeyStore>) -> Self {
+        self.crypto_key_store = Some(store);
+        self
+    }
+
+    /// Sets the crypto provider for private aggregate encryption.
+    #[must_use]
+    pub fn crypto_provider(mut self, provider: Arc<dyn event_sauce_core::CryptoProvider>) -> Self {
+        self.crypto_provider = Some(provider);
+        self
+    }
+
     /// Builds the `PostgresBackend` by connecting to the database and running migrations.
     ///
     /// # Errors
@@ -227,14 +245,22 @@ impl PostgresBackendBuilder {
 
         let checkpoint_store = Arc::new(checkpoint_store);
 
-        let event_store = PostgresEventStore::builder()
+        let mut event_store_builder = PostgresEventStore::builder()
             .pool(pool.clone())
             .schema(&schema)
             .snapshot_config(snapshot_config)
             .checkpoint_store(
                 Arc::clone(&checkpoint_store) as Arc<dyn event_sauce_core::CheckpointStore>
-            )
-            .build()?;
+            );
+
+        if let Some(key_store) = self.crypto_key_store {
+            event_store_builder = event_store_builder.crypto_key_store(key_store);
+        }
+        if let Some(provider) = self.crypto_provider {
+            event_store_builder = event_store_builder.crypto_provider(provider);
+        }
+
+        let event_store = event_store_builder.build()?;
         event_store.migrate().await?;
 
         Ok(PostgresBackend {

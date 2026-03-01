@@ -50,6 +50,8 @@ pub struct PostgresEventStore {
     snapshot_config: SnapshotConfig,
     schema: String,
     checkpoint_store: Option<std::sync::Arc<dyn event_sauce_core::CheckpointStore>>,
+    crypto_key_store: Option<std::sync::Arc<dyn event_sauce_core::CryptoKeyStore>>,
+    crypto_provider: Option<std::sync::Arc<dyn event_sauce_core::CryptoProvider>>,
 }
 
 /// Builder for configuring `PostgresEventStore`.
@@ -80,6 +82,8 @@ pub struct PostgresEventStoreBuilder {
     snapshot_config: Option<SnapshotConfig>,
     schema: Option<String>,
     checkpoint_store: Option<std::sync::Arc<dyn event_sauce_core::CheckpointStore>>,
+    crypto_key_store: Option<std::sync::Arc<dyn event_sauce_core::CryptoKeyStore>>,
+    crypto_provider: Option<std::sync::Arc<dyn event_sauce_core::CryptoProvider>>,
 }
 
 impl PostgresEventStore {
@@ -356,6 +360,8 @@ impl PostgresEventStoreBuilder {
             snapshot_config: None,
             schema: None,
             checkpoint_store: None,
+            crypto_key_store: None,
+            crypto_provider: None,
         }
     }
 
@@ -444,6 +450,55 @@ impl PostgresEventStoreBuilder {
         self
     }
 
+    /// Sets the crypto key store for private aggregate encryption.
+    ///
+    /// Required when using private aggregates with crypto-shredding support.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use event_sauce_postgres::{PostgresEventStore, PostgresCryptoKeyStore};
+    /// use std::sync::Arc;
+    ///
+    /// let key_store = Arc::new(PostgresCryptoKeyStore::new(pool.clone()));
+    /// let builder = PostgresEventStore::builder()
+    ///     .pool(pool)
+    ///     .crypto_key_store(key_store);
+    /// ```
+    #[must_use]
+    pub fn crypto_key_store(
+        mut self,
+        store: std::sync::Arc<dyn event_sauce_core::CryptoKeyStore>,
+    ) -> Self {
+        self.crypto_key_store = Some(store);
+        self
+    }
+
+    /// Sets the crypto provider for private aggregate encryption.
+    ///
+    /// Required when using private aggregates with crypto-shredding support.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use event_sauce_postgres::PostgresEventStore;
+    /// use event_sauce_crypto::Aes256GcmProvider;
+    /// use std::sync::Arc;
+    ///
+    /// let provider = Arc::new(Aes256GcmProvider);
+    /// let builder = PostgresEventStore::builder()
+    ///     .pool(pool)
+    ///     .crypto_provider(provider);
+    /// ```
+    #[must_use]
+    pub fn crypto_provider(
+        mut self,
+        provider: std::sync::Arc<dyn event_sauce_core::CryptoProvider>,
+    ) -> Self {
+        self.crypto_provider = Some(provider);
+        self
+    }
+
     /// Builds the `PostgresEventStore` with the configured settings.
     ///
     /// # Defaults
@@ -478,6 +533,8 @@ impl PostgresEventStoreBuilder {
                 .unwrap_or_else(|| SnapshotConfig::builder().build()),
             schema: self.schema.unwrap_or_else(|| "event_sauce".to_string()),
             checkpoint_store: self.checkpoint_store,
+            crypto_key_store: self.crypto_key_store,
+            crypto_provider: self.crypto_provider,
         })
     }
 }
@@ -681,6 +738,14 @@ impl EventStore for PostgresEventStore {
 
     fn checkpoint_store(&self) -> Option<std::sync::Arc<dyn event_sauce_core::CheckpointStore>> {
         self.checkpoint_store.clone()
+    }
+
+    fn crypto_key_store(&self) -> Option<&dyn event_sauce_core::CryptoKeyStore> {
+        self.crypto_key_store.as_deref()
+    }
+
+    fn crypto_provider(&self) -> Option<&dyn event_sauce_core::CryptoProvider> {
+        self.crypto_provider.as_deref()
     }
 }
 
