@@ -229,6 +229,16 @@ pub trait EventStore: Send + Sync {
         None
     }
 
+    /// Returns the crypto key store for private aggregate encryption, if configured.
+    fn crypto_key_store(&self) -> Option<&dyn crate::CryptoKeyStore> {
+        None
+    }
+
+    /// Returns the crypto provider for private aggregate encryption, if configured.
+    fn crypto_provider(&self) -> Option<&dyn crate::CryptoProvider> {
+        None
+    }
+
     /// Creates a subscription builder pre-configured with this event store.
     fn subscription_builder(
         self: &std::sync::Arc<Self>,
@@ -293,13 +303,16 @@ pub trait EventStore: Send + Sync {
     /// This method:
     /// 1. Extracts pending events from the aggregate root
     /// 2. Converts them to event envelopes
-    /// 3. Appends them to the event store with optimistic concurrency control
-    /// 4. Creates a snapshot if the strategy indicates it should
-    /// 5. Clears the pending events on success
+    /// 3. Encrypts event data if the aggregate is private
+    /// 4. Appends them to the event store with optimistic concurrency control
+    /// 5. Creates a snapshot if the strategy indicates it should (encrypted for private aggregates)
+    /// 6. Clears the pending events on success
     ///
     /// # Errors
     ///
     /// Returns `Error::ConcurrencyConflict` if another process modified the aggregate.
+    /// Returns `Error::Encryption` if encryption fails for a private aggregate.
+    /// Returns `Error::InvalidState` if a private aggregate lacks crypto configuration.
     async fn commit<A>(&self, aggregate: &mut AggregateRoot<A>) -> Result<()>
     where
         A: Aggregate + serde::Serialize,
@@ -321,7 +334,18 @@ pub trait EventStore: Send + Sync {
             .iter()
             .map(|event| event.to_envelope(aggregate_id))
             .collect();
-        let envelopes = envelopes?;
+        let mut envelopes = envelopes?;
+
+        // Encrypt event data for private aggregates
+        if A::is_private() {
+            let crypto_key = ensure_crypto_key(self, aggregate_id).await?;
+            let provider = require_crypto_provider(self)?;
+
+            for envelope in &mut envelopes {
+                envelope.event_data =
+                    crate::crypto::encrypt_value(provider, &crypto_key, &envelope.event_data)?;
+            }
+        }
 
         self.append(
             StreamId::new(aggregate_type.clone(), aggregate_id),
@@ -337,7 +361,32 @@ pub trait EventStore: Send + Sync {
 
         if strategy.should_snapshot(current_version) {
             match serde_json::to_value(aggregate.entity()) {
-                Ok(snapshot_data) => {
+                Ok(mut snapshot_data) => {
+                    // Encrypt snapshot data for private aggregates
+                    if A::is_private() {
+                        if let (Some(key_store), Some(provider)) =
+                            (self.crypto_key_store(), self.crypto_provider())
+                        {
+                            if let Ok(Some(crypto_key)) = key_store.get_key(aggregate_id).await {
+                                match crate::crypto::encrypt_value(
+                                    provider,
+                                    &crypto_key,
+                                    &snapshot_data,
+                                ) {
+                                    Ok(encrypted) => snapshot_data = encrypted,
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            aggregate_type = %aggregate_type,
+                                            aggregate_id = %aggregate_id,
+                                            error = %e,
+                                            "Failed to encrypt snapshot data"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     let snapshot = Snapshot::new(
                         aggregate_id,
                         aggregate_type.clone(),
@@ -371,6 +420,37 @@ pub trait EventStore: Send + Sync {
     }
 }
 
+/// Gets or creates a crypto key for an aggregate.
+///
+/// If the key already exists, returns it. Otherwise, generates a new key
+/// and upserts it.
+async fn ensure_crypto_key<S: EventStore + ?Sized>(
+    store: &S,
+    aggregate_id: Uuid,
+) -> Result<Vec<u8>> {
+    let key_store = store.crypto_key_store().ok_or_else(|| {
+        crate::Error::invalid_state("Private aggregate requires crypto_key_store")
+    })?;
+    let provider = require_crypto_provider(store)?;
+
+    if let Some(existing) = key_store.get_key(aggregate_id).await? {
+        return Ok(existing);
+    }
+
+    let new_key = provider.generate_key();
+    key_store.upsert_key(aggregate_id, new_key.clone()).await?;
+    Ok(new_key)
+}
+
+/// Unwraps the crypto provider or returns an error.
+fn require_crypto_provider<S: EventStore + ?Sized>(
+    store: &S,
+) -> Result<&dyn crate::CryptoProvider> {
+    store
+        .crypto_provider()
+        .ok_or_else(|| crate::Error::invalid_state("Private aggregate requires crypto_provider"))
+}
+
 /// Loads an aggregate from the event store by its ID.
 ///
 /// Returns an `AggregateRoot<A>` reconstructed by replaying events,
@@ -396,10 +476,33 @@ where
     let aggregate_type = A::aggregate_type();
     let stream_id = StreamId::new(aggregate_type, uuid);
 
+    // Resolve crypto key for private aggregates (required before any decryption)
+    let crypto_key = if A::is_private() {
+        let key_store = store.crypto_key_store().ok_or_else(|| {
+            crate::Error::invalid_state("Private aggregate requires crypto_key_store")
+        })?;
+        let key = key_store
+            .get_key(uuid)
+            .await?
+            .ok_or_else(|| crate::Error::key_not_found(uuid))?;
+        Some(key)
+    } else {
+        None
+    };
+
     // Try to load snapshot if enabled
     let config = store.snapshot_config();
     if config.use_snapshots_on_load() {
-        if let Some(snapshot) = store.load_snapshot(stream_id.clone()).await? {
+        if let Some(mut snapshot) = store.load_snapshot(stream_id.clone()).await? {
+            // Decrypt snapshot data for private aggregates
+            if let Some(ref key) = crypto_key {
+                if crate::crypto::is_encrypted(&snapshot.snapshot_data) {
+                    let provider = require_crypto_provider(store)?;
+                    snapshot.snapshot_data =
+                        crate::crypto::decrypt_value(provider, key, &snapshot.snapshot_data)?;
+                }
+            }
+
             let entity: A = serde_json::from_value(snapshot.snapshot_data).map_err(|e| {
                 crate::Error::custom(format!("Failed to deserialize snapshot entity: {e}"))
             })?;
@@ -411,7 +514,15 @@ where
             futures::pin_mut!(event_stream);
 
             while let Some(envelope) = event_stream.next().await {
-                let envelope = envelope?;
+                let mut envelope = envelope?;
+                // Decrypt event data for private aggregates
+                if let Some(ref key) = crypto_key {
+                    if crate::crypto::is_encrypted(&envelope.event_data) {
+                        let provider = require_crypto_provider(store)?;
+                        envelope.event_data =
+                            crate::crypto::decrypt_value(provider, key, &envelope.event_data)?;
+                    }
+                }
                 let event = A::Event::from_envelope(&envelope)?;
                 aggregate.apply_unchecked(&event);
             }
@@ -431,7 +542,18 @@ where
         // For init-event aggregates, Entity::new panics (data integrity issue).
         return Ok(AggregateRoot::new_for_replay(id));
     };
-    let first_event = A::Event::from_envelope(&first_envelope?)?;
+    let mut first_envelope = first_envelope?;
+
+    // Decrypt first event for private aggregates
+    if let Some(ref key) = crypto_key {
+        if crate::crypto::is_encrypted(&first_envelope.event_data) {
+            let provider = require_crypto_provider(store)?;
+            first_envelope.event_data =
+                crate::crypto::decrypt_value(provider, key, &first_envelope.event_data)?;
+        }
+    }
+
+    let first_event = A::Event::from_envelope(&first_envelope)?;
 
     // Detect init vs legacy from first event
     let mut aggregate = if EventApplicator::is_init(&first_event) {
@@ -446,7 +568,15 @@ where
 
     // Replay remaining events (all regular)
     while let Some(envelope) = event_stream.next().await {
-        let envelope = envelope?;
+        let mut envelope = envelope?;
+        // Decrypt event data for private aggregates
+        if let Some(ref key) = crypto_key {
+            if crate::crypto::is_encrypted(&envelope.event_data) {
+                let provider = require_crypto_provider(store)?;
+                envelope.event_data =
+                    crate::crypto::decrypt_value(provider, key, &envelope.event_data)?;
+            }
+        }
         let event = A::Event::from_envelope(&envelope)?;
         aggregate.apply_unchecked(&event);
     }
@@ -572,8 +702,20 @@ mod tests {
         assert_eq!(snapshot.snapshot_data, snapshot_data);
     }
 
-    // Tests for default trait implementations
+    // Tests for default trait implementations (including crypto accessors)
     use crate::test_fixtures::MockEventStore as SharedMockEventStore;
+
+    #[tokio::test]
+    async fn test_crypto_key_store_returns_none_by_default() {
+        let store = SharedMockEventStore::new();
+        assert!(store.crypto_key_store().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_crypto_provider_returns_none_by_default() {
+        let store = SharedMockEventStore::new();
+        assert!(store.crypto_provider().is_none());
+    }
 
     #[tokio::test]
     async fn test_save_snapshot_default_implementation() {

@@ -90,6 +90,20 @@ pub trait Aggregate: Entity {
     /// The type of errors that can occur during event application.
     type Error: AggregateError;
 
+    /// Returns whether this aggregate is privacy-sensitive.
+    ///
+    /// Private aggregates have their event data and snapshot data encrypted
+    /// at rest using per-aggregate encryption keys. Deleting the key
+    /// renders the aggregate's history permanently unreadable
+    /// (GDPR right-to-be-forgotten / crypto-shredding).
+    ///
+    /// Defaults to `false`. Override by using `#[aggregate(..., private)]`
+    /// or by implementing manually.
+    #[must_use]
+    fn is_private() -> bool {
+        false
+    }
+
     /// Returns the aggregate type name.
     ///
     /// Defaults to the short type name (last segment of the full path),
@@ -124,6 +138,11 @@ mod tests {
     fn test_aggregate_type_name() {
         let type_name = SimpleTestEntity::aggregate_type();
         assert_eq!(type_name, "SimpleTestEntity");
+    }
+
+    #[test]
+    fn test_aggregate_is_private_defaults_to_false() {
+        assert!(!SimpleTestEntity::is_private());
     }
 
     #[test]
