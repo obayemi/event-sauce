@@ -32,6 +32,7 @@ The [`../crates/event-sauce/examples/`](../crates/event-sauce/examples/) directo
 2. **shopping-cart.rs** - Complex aggregate with business rules
 3. **bank-account.rs** - Full workflow with derive macros
 4. **task-projections.rs** - Building read models from events
+5. **crypto-shredding.rs** - Privacy & crypto-shredding for GDPR compliance (requires `crypto` feature)
 
 ## Quick Links
 

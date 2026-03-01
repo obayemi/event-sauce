@@ -42,6 +42,10 @@ testcontainers = "0.23"
 testcontainers-modules = { version = "0.11", features = ["postgres"] }
 paste.workspace = true
 
+[[example]]
+name = "crypto-shredding"
+required-features = ["crypto"]
+
 [[bench]]
 name = "event_application"
 harness = false

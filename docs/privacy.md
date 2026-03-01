@@ -2,6 +2,14 @@
 
 event-sauce supports GDPR-style "crypto-shredding" for private aggregates. When an aggregate is marked as private, its event data and snapshot data are encrypted at rest using per-aggregate encryption keys. Deleting a key renders that aggregate's history permanently unreadable, implementing the right to be forgotten.
 
+## Example
+
+See the complete runnable example: [`examples/crypto-shredding.rs`](../crates/event-sauce/examples/crypto-shredding.rs)
+
+```bash
+cargo run --example crypto-shredding --features crypto
+```
+
 ## Quick Start
 
 ```rust
