@@ -2,6 +2,7 @@
 members = [
     "crates/event-sauce",
     "crates/event-sauce-core",
+    "crates/event-sauce-crypto",
     "crates/event-sauce-macros",
     "crates/event-sauce-postgres",
     "crates/event-sauce-memory",
@@ -55,6 +56,9 @@ paste = "1.0"
 
 # Encoding
 base64 = "0.22"
+
+# Cryptography
+aes-gcm = "0.10"
 
 # Additional utilities
 parking_lot = "0.12"
