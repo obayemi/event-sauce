@@ -5,8 +5,8 @@
 
 use chrono::{DateTime, Utc};
 use event_sauce_core::{
-    Aggregate, AggregateError, AggregateRoot, AggregateType, AggregateVersion, DomainEvent, Entity,
-    EntityId, EventApplicator,
+    Aggregate, AggregateError, AggregateRoot, AggregateType, AggregateVersion, ApplyEvent,
+    DomainEvent, Entity, EntityId, EventApplicator,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -441,4 +441,98 @@ fn test_aggregate_init_uninit_lifecycle() {
 
     assert_eq!(agg.entity_id(), id);
     assert_eq!(agg.name, "Alice");
+}
+
+// ============================================================================
+// Tests for #[aggregate(private)] — privacy-sensitive aggregates
+// ============================================================================
+
+#[derive(Debug, Error)]
+#[error("Private agg error")]
+struct PrivateAggError;
+
+impl AggregateError for PrivateAggError {}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum PrivateAggEvent {
+    Created { name: String },
+}
+
+impl DomainEvent for PrivateAggEvent {
+    type Aggregate = PrivateAgg;
+    fn event_type(&self) -> &'static str {
+        match self {
+            PrivateAggEvent::Created { .. } => "PrivateAgg.Created",
+        }
+    }
+    fn event_version(&self) -> event_sauce_core::EventVersion {
+        event_sauce_core::EventVersion::new(1)
+    }
+    fn occurred_at(&self) -> chrono::DateTime<Utc> {
+        Utc::now()
+    }
+}
+
+impl ApplyEvent<PrivateAgg> for PrivateAggEvent {
+    fn apply(&self, entity: &mut PrivateAgg) {
+        match self {
+            PrivateAggEvent::Created { name } => entity.name = name.clone(),
+        }
+    }
+}
+
+impl EventApplicator<PrivateAgg> for PrivateAggEvent {
+    fn dispatch(&self, entity: &mut PrivateAgg) -> Result<(), PrivateAggError> {
+        ApplyEvent::apply(self, entity);
+        Ok(())
+    }
+    fn dispatch_unchecked(&self, entity: &mut PrivateAgg) {
+        ApplyEvent::apply(self, entity);
+    }
+}
+
+#[event_sauce_macros::aggregate(event = "PrivateAggEvent", error = "PrivateAggError", private)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct PrivateAgg {
+    #[id]
+    id: EntityId,
+    name: String,
+}
+
+#[test]
+fn test_aggregate_private_is_private_returns_true() {
+    assert!(PrivateAgg::is_private());
+}
+
+#[test]
+fn test_aggregate_without_private_is_not_private() {
+    // TestCounter was defined without `private` — should return false
+    assert!(!TestCounter::is_private());
+}
+
+#[test]
+fn test_aggregate_private_still_generates_entity_trait() {
+    let id = EntityId::new();
+    let agg = PrivateAgg::new(id);
+    assert_eq!(agg.entity_id(), id);
+    assert_eq!(agg.name, String::new());
+}
+
+#[test]
+fn test_aggregate_private_still_generates_aggregate_type() {
+    assert_eq!(PrivateAgg::aggregate_type(), "PrivateAgg");
+}
+
+#[test]
+fn test_aggregate_private_works_with_aggregate_root() {
+    let id = EntityId::new();
+    let mut root = AggregateRoot::<PrivateAgg>::new(id);
+
+    root.apply(PrivateAggEvent::Created {
+        name: "Secret".into(),
+    })
+    .unwrap();
+
+    assert_eq!(root.name, "Secret");
+    assert_eq!(root.version(), AggregateVersion::new(1));
 }

@@ -29,6 +29,10 @@ struct AggregateAttrs {
     /// instead of `stringify!(StructName)` for `aggregate_type()`.
     #[darling(default)]
     type_name: Option<String>,
+    /// When true, the aggregate is privacy-sensitive and its event/snapshot
+    /// data will be encrypted at rest. Generates `fn is_private() -> bool { true }`.
+    #[darling(default)]
+    private: bool,
 }
 
 /// Attributes for the #[event(...)] container attribute
@@ -1145,6 +1149,17 @@ pub fn aggregate(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     };
 
+    // Generate is_private() override if the `private` flag is set
+    let is_private_override = if aggregate_attrs.private {
+        quote! {
+            fn is_private() -> bool {
+                true
+            }
+        }
+    } else {
+        quote! {}
+    };
+
     // Emit the cleaned struct + Entity impl + Aggregate impl
     let gen = quote! {
         #cleaned_input
@@ -1156,6 +1171,7 @@ pub fn aggregate(attr: TokenStream, item: TokenStream) -> TokenStream {
             type Error = #error_type;
 
             #aggregate_type_override
+            #is_private_override
         }
     };
 
