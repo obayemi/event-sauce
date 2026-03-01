@@ -20,6 +20,7 @@
 #![deny(clippy::all)]
 #![warn(clippy::pedantic)]
 
+mod actor_event;
 mod aggregate;
 mod aggregate_error;
 mod aggregate_root;
@@ -50,6 +51,7 @@ mod version;
 #[doc(hidden)]
 pub mod test_fixtures;
 
+pub use actor_event::{ActorEvent, ActorInitEvent};
 pub use aggregate::Aggregate;
 pub use aggregate_error::AggregateError;
 pub use aggregate_root::AggregateRoot;

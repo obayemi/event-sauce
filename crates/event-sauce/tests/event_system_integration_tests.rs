@@ -452,7 +452,7 @@ fn test_aggregate_type_safety() {
     // Verify types are correct
     let _id: EntityId = account.entity_id();
     let _version: AggregateVersion = account.version();
-    let _events: &[TestAccountEvent] = account.pending_events();
+    let _events: Vec<&TestAccountEvent> = account.pending_events();
 }
 
 #[test]

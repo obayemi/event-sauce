@@ -89,7 +89,7 @@
 #[macro_export]
 macro_rules! command_handler {
     // Single entry point — always delegates to TT muncher.
-    // Supports both `@init` and regular commands without needing `@with_init`.
+    // Supports `@init`, `@actor(Type)`, and regular commands.
     (
         impl $aggregate:ty {
             $($rest:tt)*
@@ -99,6 +99,8 @@ macro_rules! command_handler {
             @munch [$aggregate]
             init_commands: []
             regular_commands: []
+            actor_commands: []
+            actor_init_commands: []
             $($rest)*
         }
     };
@@ -117,14 +119,39 @@ macro_rules! command_handler {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __command_handler_init_internal {
-    // ---- TT muncher: parse @init command (attrs before @init) ----
+    // ---- TT muncher: parse @init @actor(Type) command ----
     (
         @munch [$aggregate:ty]
-        // accumulated
-        init_commands: [ $({ attrs: [$($i_attr:meta),*] cmd: $i_cmd:ident ($($i_param:ident: $i_param_ty:ty),*) -> $i_evt:ident { $($i_field:ident),* } })* ]
-        regular_commands: [ $({ attrs: [$($r_attr:meta),*] cmd: $r_cmd:ident ($($r_param:ident: $r_param_ty:ty),*) -> $r_evt:ident { $($r_field:ident),* } })* ]
+        init_commands: [ $($i_acc:tt)* ]
+        regular_commands: [ $($r_acc:tt)* ]
+        actor_commands: [ $($a_acc:tt)* ]
+        actor_init_commands: [ $($ai_acc:tt)* ]
 
-        // next command is @init (attributes come before @init)
+        $(#[$attr:meta])*
+        @init
+        @actor($actor_type:ty)
+        fn $command:ident($($param:ident: $param_ty:ty),* $(,)?)
+            -> $event_struct:ident { $($field:ident),* $(,)? }
+        $(; $($rest:tt)*)?
+    ) => {
+        $crate::__command_handler_init_internal! {
+            @munch [$aggregate]
+            init_commands: [ $($i_acc)* ]
+            regular_commands: [ $($r_acc)* ]
+            actor_commands: [ $($a_acc)* ]
+            actor_init_commands: [ $($ai_acc)* { attrs: [$($attr),*] cmd: $command ($($param: $param_ty),*) -> $event_struct { $($field),* } actor: $actor_type } ]
+            $($($rest)*)?
+        }
+    };
+
+    // ---- TT muncher: parse @init command (no actor) ----
+    (
+        @munch [$aggregate:ty]
+        init_commands: [ $($i_acc:tt)* ]
+        regular_commands: [ $($r_acc:tt)* ]
+        actor_commands: [ $($a_acc:tt)* ]
+        actor_init_commands: [ $($ai_acc:tt)* ]
+
         $(#[$attr:meta])*
         @init
         fn $command:ident($($param:ident: $param_ty:ty),* $(,)?)
@@ -133,19 +160,46 @@ macro_rules! __command_handler_init_internal {
     ) => {
         $crate::__command_handler_init_internal! {
             @munch [$aggregate]
-            init_commands: [ $({ attrs: [$($i_attr),*] cmd: $i_cmd ($($i_param: $i_param_ty),*) -> $i_evt { $($i_field),* } })* { attrs: [$($attr),*] cmd: $command ($($param: $param_ty),*) -> $event_struct { $($field),* } } ]
-            regular_commands: [ $({ attrs: [$($r_attr),*] cmd: $r_cmd ($($r_param: $r_param_ty),*) -> $r_evt { $($r_field),* } })* ]
+            init_commands: [ $($i_acc)* { attrs: [$($attr),*] cmd: $command ($($param: $param_ty),*) -> $event_struct { $($field),* } } ]
+            regular_commands: [ $($r_acc)* ]
+            actor_commands: [ $($a_acc)* ]
+            actor_init_commands: [ $($ai_acc)* ]
             $($($rest)*)?
         }
     };
 
-    // ---- TT muncher: parse regular command ----
+    // ---- TT muncher: parse @actor(Type) command (regular + actor) ----
     (
         @munch [$aggregate:ty]
-        init_commands: [ $({ attrs: [$($i_attr:meta),*] cmd: $i_cmd:ident ($($i_param:ident: $i_param_ty:ty),*) -> $i_evt:ident { $($i_field:ident),* } })* ]
-        regular_commands: [ $({ attrs: [$($r_attr:meta),*] cmd: $r_cmd:ident ($($r_param:ident: $r_param_ty:ty),*) -> $r_evt:ident { $($r_field:ident),* } })* ]
+        init_commands: [ $($i_acc:tt)* ]
+        regular_commands: [ $($r_acc:tt)* ]
+        actor_commands: [ $($a_acc:tt)* ]
+        actor_init_commands: [ $($ai_acc:tt)* ]
 
-        // next command is regular (no @init)
+        $(#[$attr:meta])*
+        @actor($actor_type:ty)
+        fn $command:ident($($param:ident: $param_ty:ty),* $(,)?)
+            -> $event_struct:ident { $($field:ident),* $(,)? }
+        $(; $($rest:tt)*)?
+    ) => {
+        $crate::__command_handler_init_internal! {
+            @munch [$aggregate]
+            init_commands: [ $($i_acc)* ]
+            regular_commands: [ $($r_acc)* ]
+            actor_commands: [ $($a_acc)* { attrs: [$($attr),*] cmd: $command ($($param: $param_ty),*) -> $event_struct { $($field),* } actor: $actor_type } ]
+            actor_init_commands: [ $($ai_acc)* ]
+            $($($rest)*)?
+        }
+    };
+
+    // ---- TT muncher: parse regular command (no @init, no @actor) ----
+    (
+        @munch [$aggregate:ty]
+        init_commands: [ $($i_acc:tt)* ]
+        regular_commands: [ $($r_acc:tt)* ]
+        actor_commands: [ $($a_acc:tt)* ]
+        actor_init_commands: [ $($ai_acc:tt)* ]
+
         $(#[$attr:meta])*
         fn $command:ident($($param:ident: $param_ty:ty),* $(,)?)
             -> $event_struct:ident { $($field:ident),* $(,)? }
@@ -153,8 +207,10 @@ macro_rules! __command_handler_init_internal {
     ) => {
         $crate::__command_handler_init_internal! {
             @munch [$aggregate]
-            init_commands: [ $({ attrs: [$($i_attr),*] cmd: $i_cmd ($($i_param: $i_param_ty),*) -> $i_evt { $($i_field),* } })* ]
-            regular_commands: [ $({ attrs: [$($r_attr),*] cmd: $r_cmd ($($r_param: $r_param_ty),*) -> $r_evt { $($r_field),* } })* { attrs: [$($attr),*] cmd: $command ($($param: $param_ty),*) -> $event_struct { $($field),* } } ]
+            init_commands: [ $($i_acc)* ]
+            regular_commands: [ $($r_acc)* { attrs: [$($attr),*] cmd: $command ($($param: $param_ty),*) -> $event_struct { $($field),* } } ]
+            actor_commands: [ $($a_acc)* ]
+            actor_init_commands: [ $($ai_acc)* ]
             $($($rest)*)?
         }
     };
@@ -164,6 +220,8 @@ macro_rules! __command_handler_init_internal {
         @munch [$aggregate:ty]
         init_commands: [ $({ attrs: [$($i_attr:meta),*] cmd: $i_cmd:ident ($($i_param:ident: $i_param_ty:ty),*) -> $i_evt:ident { $($i_field:ident),* } })* ]
         regular_commands: [ $({ attrs: [$($r_attr:meta),*] cmd: $r_cmd:ident ($($r_param:ident: $r_param_ty:ty),*) -> $r_evt:ident { $($r_field:ident),* } })* ]
+        actor_commands: [ $({ attrs: [$($a_attr:meta),*] cmd: $a_cmd:ident ($($a_param:ident: $a_param_ty:ty),*) -> $a_evt:ident { $($a_field:ident),* } actor: $a_actor:ty })* ]
+        actor_init_commands: [ $({ attrs: [$($ai_attr:meta),*] cmd: $ai_cmd:ident ($($ai_param:ident: $ai_param_ty:ty),*) -> $ai_evt:ident { $($ai_field:ident),* } actor: $ai_actor:ty })* ]
     ) => {
         // --- Init event helpers: associated functions (no &self) ---
         impl $aggregate {
@@ -174,6 +232,22 @@ macro_rules! __command_handler_init_internal {
                     pub fn [<$i_cmd _event>]($($i_param: $i_param_ty),*) -> $i_evt {
                         $i_evt {
                             $($i_field: $i_param,)*
+                            timestamp: ::chrono::Utc::now(),
+                        }
+                    }
+                }
+            )*
+        }
+
+        // --- Actor init event helpers: associated functions (no &self) ---
+        impl $aggregate {
+            $(
+                paste::paste! {
+                    $(#[$ai_attr])*
+                    #[allow(missing_docs)]
+                    pub fn [<$ai_cmd _event>]($($ai_param: $ai_param_ty),*) -> $ai_evt {
+                        $ai_evt {
+                            $($ai_field: $ai_param,)*
                             timestamp: ::chrono::Utc::now(),
                         }
                     }
@@ -197,6 +271,22 @@ macro_rules! __command_handler_init_internal {
             )*
         }
 
+        // --- Actor event helpers: instance methods ---
+        impl $aggregate {
+            $(
+                paste::paste! {
+                    $(#[$a_attr])*
+                    #[allow(missing_docs)]
+                    pub fn [<$a_cmd _event>](&self, $($a_param: $a_param_ty),*) -> $a_evt {
+                        $a_evt {
+                            $($a_field: $a_param,)*
+                            timestamp: ::chrono::Utc::now(),
+                        }
+                    }
+                }
+            )*
+        }
+
         // --- Init commands trait + impl on UninitAggregateRoot ---
         paste::paste! {
             #[allow(missing_docs, private_interfaces)]
@@ -204,6 +294,11 @@ macro_rules! __command_handler_init_internal {
                 $(
                     $(#[$i_attr])*
                     fn $i_cmd(self, $($i_param: $i_param_ty),*)
+                        -> ::std::result::Result<$crate::AggregateRoot<$aggregate>, <$aggregate as $crate::Aggregate>::Error>;
+                )*
+                $(
+                    $(#[$ai_attr])*
+                    fn $ai_cmd(self, actor: &$crate::AggregateRoot<$ai_actor>, $($ai_param: $ai_param_ty),*)
                         -> ::std::result::Result<$crate::AggregateRoot<$aggregate>, <$aggregate as $crate::Aggregate>::Error>;
                 )*
             }
@@ -216,6 +311,16 @@ macro_rules! __command_handler_init_internal {
                     {
                         let event = $aggregate::[<$i_cmd _event>]($($i_param),*);
                         self.apply_init(event)
+                    }
+                )*
+                $(
+                    $(#[$ai_attr])*
+                    fn $ai_cmd(self, actor: &$crate::AggregateRoot<$ai_actor>, $($ai_param: $ai_param_ty),*)
+                        -> ::std::result::Result<$crate::AggregateRoot<$aggregate>, <$aggregate as $crate::Aggregate>::Error>
+                    {
+                        let event = $aggregate::[<$ai_cmd _event>]($($ai_param),*);
+                        $crate::ActorInitEvent::validate_init_actor(&event, actor.entity())?;
+                        self.apply_init_with_actor(event, actor.entity_id())
                     }
                 )*
             }
@@ -254,6 +359,41 @@ macro_rules! __command_handler_init_internal {
             }
         )*
 
+        // --- Actor init creation functions ---
+        $(
+            paste::paste! {
+                impl $aggregate {
+                    $(#[$ai_attr])*
+                    #[allow(missing_docs)]
+                    pub fn $ai_cmd(actor: &$crate::AggregateRoot<$ai_actor>, $($ai_param: $ai_param_ty),*)
+                        -> ::std::result::Result<
+                            $crate::AggregateRoot<$aggregate>,
+                            <$aggregate as $crate::Aggregate>::Error,
+                        >
+                    {
+                        let event = $aggregate::[<$ai_cmd _event>]($($ai_param),*);
+                        $crate::ActorInitEvent::validate_init_actor(&event, actor.entity())?;
+                        $crate::UninitAggregateRoot::<$aggregate>::new(
+                            $crate::EntityId::new()
+                        ).apply_init_with_actor(event, actor.entity_id())
+                    }
+
+                    $(#[$ai_attr])*
+                    #[allow(missing_docs)]
+                    pub fn [<$ai_cmd _with_id>](id: $crate::EntityId, actor: &$crate::AggregateRoot<$ai_actor>, $($ai_param: $ai_param_ty),*)
+                        -> ::std::result::Result<
+                            $crate::AggregateRoot<$aggregate>,
+                            <$aggregate as $crate::Aggregate>::Error,
+                        >
+                    {
+                        let event = $aggregate::[<$ai_cmd _event>]($($ai_param),*);
+                        $crate::ActorInitEvent::validate_init_actor(&event, actor.entity())?;
+                        $crate::UninitAggregateRoot::<$aggregate>::new(id).apply_init_with_actor(event, actor.entity_id())
+                    }
+                }
+            }
+        )*
+
         // --- Regular commands trait + impl on AggregateRoot ---
         paste::paste! {
             #[allow(missing_docs, private_interfaces)]
@@ -261,6 +401,11 @@ macro_rules! __command_handler_init_internal {
                 $(
                     $(#[$r_attr])*
                     fn $r_cmd(&mut self, $($r_param: $r_param_ty),*)
+                        -> ::std::result::Result<(), <$aggregate as $crate::Aggregate>::Error>;
+                )*
+                $(
+                    $(#[$a_attr])*
+                    fn $a_cmd(&mut self, actor: &$crate::AggregateRoot<$a_actor>, $($a_param: $a_param_ty),*)
                         -> ::std::result::Result<(), <$aggregate as $crate::Aggregate>::Error>;
                 )*
             }
@@ -273,6 +418,16 @@ macro_rules! __command_handler_init_internal {
                     {
                         let event = self.[<$r_cmd _event>]($($r_param),*);
                         self.apply(event)
+                    }
+                )*
+                $(
+                    $(#[$a_attr])*
+                    fn $a_cmd(&mut self, actor: &$crate::AggregateRoot<$a_actor>, $($a_param: $a_param_ty),*)
+                        -> ::std::result::Result<(), <$aggregate as $crate::Aggregate>::Error>
+                    {
+                        let event = self.[<$a_cmd _event>]($($a_param),*);
+                        $crate::ActorEvent::validate_actor(&event, self.entity(), actor.entity())?;
+                        self.apply_with_actor(event, actor.entity_id())
                     }
                 )*
             }
@@ -658,6 +813,97 @@ macro_rules! define_events {
     };
 
     // =========================================================================
+    // TT muncher: parse one ACTOR variant (regular + @actor(Type))
+    // =========================================================================
+    (
+        @munch
+        [$vis:vis] [$event_enum:ident] [$aggregate:ty]
+        accumulated: [$($acc:tt)*]
+        rest: [
+            $variant:ident {
+                $($field:ident: $field_ty:ty),* $(,)?
+            }
+            @actor($actor_type:ty)
+            $(@validate_actor |$va_agg:ident, $va_actor:ident| $va_body:block)?
+            $(@version($version:literal))?
+            $(@validate |$val_agg:ident, $val_evt:ident| $val_body:block)?
+            $(@validate_spec($val_spec:expr))?
+            $(@post_validate |$post_val_agg:ident, $post_val_evt:ident| $post_val_body:block)?
+            $(@post_validate_spec($post_val_spec:expr))?
+            => $apply:expr,
+            $($rest:tt)*
+        ]
+    ) => {
+        define_events! {
+            @munch
+            [$vis] [$event_enum] [$aggregate]
+            accumulated: [
+                $($acc)*
+                {
+                    variant: $variant,
+                    fields: { $($field: $field_ty),* },
+                    kind: actor,
+                    actor_type: [$actor_type],
+                    validate_actor: [$([$va_agg, $va_actor, $va_body])?],
+                    version: [$([$version])?],
+                    validate: [$([$val_agg, $val_evt, $val_body])?],
+                    validate_spec: [$([$val_spec])?],
+                    post_validate: [$([$post_val_agg, $post_val_evt, $post_val_body])?],
+                    post_validate_spec: [$([$post_val_spec])?],
+                    apply: $apply,
+                }
+            ]
+            rest: [$($rest)*]
+        }
+    };
+
+    // =========================================================================
+    // TT muncher: parse one ACTOR INIT variant (@init @actor(Type))
+    // =========================================================================
+    (
+        @munch
+        [$vis:vis] [$event_enum:ident] [$aggregate:ty]
+        accumulated: [$($acc:tt)*]
+        rest: [
+            $variant:ident {
+                $($field:ident: $field_ty:ty),* $(,)?
+            }
+            @init
+            @actor($actor_type:ty)
+            $(@validate_actor |$va_actor:ident| $va_body:block)?
+            $(@version($version:literal))?
+            $(@validate |$val_evt:ident| $val_body:block)?
+            $(@validate_spec($val_spec:expr))?
+            $(@post_validate |$post_val_agg:ident, $post_val_evt:ident| $post_val_body:block)?
+            $(@post_validate_spec($post_val_spec:expr))?
+            => $apply:expr,
+            $($rest:tt)*
+        ]
+    ) => {
+        define_events! {
+            @munch
+            [$vis] [$event_enum] [$aggregate]
+            accumulated: [
+                $($acc)*
+                {
+                    variant: $variant,
+                    fields: { $($field: $field_ty),* },
+                    kind: actor_init,
+                    actor_type: [$actor_type],
+                    validate_actor: [$([$va_actor, $va_body])?],
+                    version: [$([$version])?],
+                    validate: [$([$val_evt, $val_body])?],
+                    validate_spec: [$([$val_spec])?],
+                    post_validate: [$([$post_val_agg, $post_val_evt, $post_val_body])?],
+                    post_validate_spec: [$([$post_val_spec])?],
+                    apply: $apply,
+                }
+            ]
+            rest: [$($rest)*]
+        }
+    };
+
+    // =========================================================================
     // TT muncher: parse one REGULAR variant (no @init after fields)
     // =========================================================================
     (
@@ -686,6 +932,8 @@ macro_rules! define_events {
                     variant: $variant,
                     fields: { $($field: $field_ty),* },
                     kind: regular,
+                    actor_type: [],
+                    validate_actor: [],
                     version: [$([$version])?],
                     validate: [$([$val_agg, $val_evt, $val_body])?],
                     validate_spec: [$([$val_spec])?],
@@ -728,6 +976,8 @@ macro_rules! define_events {
                     variant: $variant,
                     fields: { $($field: $field_ty),* },
                     kind: init,
+                    actor_type: [],
+                    validate_actor: [],
                     version: [$([$version])?],
                     validate: [$([$val_evt, $val_body])?],
                     validate_spec: [$([$val_spec])?],
@@ -768,6 +1018,8 @@ macro_rules! define_events {
                     variant: $variant:ident,
                     fields: { $($field:ident: $field_ty:ty),* },
                     kind: $kind:ident,
+                    actor_type: [$($actor_type:ty)?],
+                    validate_actor: [$($validate_actor:tt)*],
                     version: [$($version:tt)*],
                     validate: [$($validate:tt)*],
                     validate_spec: [$($validate_spec:tt)*],
@@ -805,12 +1057,14 @@ macro_rules! define_events {
                 }
             }
 
-            // Emit ApplyEvent or InitEvent based on kind
+            // Emit ApplyEvent or InitEvent (and optionally ActorEvent/ActorInitEvent) based on kind
             define_events! {
                 @emit_trait
                 [$vis] [$aggregate] [$event_enum] [$variant]
                 [{ $($field: $field_ty,)* }]
                 kind: $kind,
+                actor_type: [$($actor_type)?],
+                validate_actor: [$($validate_actor)*],
                 validate: [$($validate)*],
                 validate_spec: [$($validate_spec)*],
                 post_validate: [$($post_validate)*],
@@ -971,6 +1225,8 @@ macro_rules! define_events {
         [$vis:vis] [$aggregate:ty] [$event_enum:ident] [$variant:ident]
         [{ $($field:ident: $field_ty:ty,)* }]
         kind: regular,
+        actor_type: [],
+        validate_actor: [],
         validate: [$([$val_agg:ident, $val_evt:ident, $val_body:block])?],
         validate_spec: [$([$val_spec:expr])?],
         post_validate: [$([$post_val_agg:ident, $post_val_evt:ident, $post_val_body:block])?],
@@ -1014,6 +1270,74 @@ macro_rules! define_events {
     };
 
     // =========================================================================
+    // Helper: Emit ApplyEvent + ActorEvent impl for ACTOR events (regular + @actor)
+    // =========================================================================
+    (
+        @emit_trait
+        [$vis:vis] [$aggregate:ty] [$event_enum:ident] [$variant:ident]
+        [{ $($field:ident: $field_ty:ty,)* }]
+        kind: actor,
+        actor_type: [$actor_type:ty],
+        validate_actor: [$([$va_agg:ident, $va_actor:ident, $va_body:block])?],
+        validate: [$([$val_agg:ident, $val_evt:ident, $val_body:block])?],
+        validate_spec: [$([$val_spec:expr])?],
+        post_validate: [$([$post_val_agg:ident, $post_val_evt:ident, $post_val_body:block])?],
+        post_validate_spec: [$([$post_val_spec:expr])?],
+        apply: $apply:expr,
+    ) => {
+        paste::paste! {
+            // ApplyEvent impl (same as regular — for replay, no actor validation)
+            impl $crate::ApplyEvent<$aggregate> for [<$variant Event>] {
+                #[allow(unused_variables, unreachable_code, clippy::redundant_closure_call)]
+                fn validate(&self, aggregate: &$aggregate)
+                    -> ::std::result::Result<(), <$aggregate as $crate::Aggregate>::Error>
+                {
+                    $(
+                        return (|$val_agg: &$aggregate, $val_evt: &Self| $val_body)(aggregate, self);
+                    )?
+                    $(
+                        $crate::Specification::check(&$val_spec, aggregate)?;
+                    )?
+                    ::std::result::Result::Ok(())
+                }
+
+                fn apply(&self, aggregate: &mut $aggregate) {
+                    let apply_fn: fn(&mut $aggregate, &Self) = $apply;
+                    apply_fn(aggregate, self);
+                }
+
+                #[allow(unused_variables, unreachable_code, clippy::redundant_closure_call)]
+                fn post_validate(&self, aggregate: &$aggregate)
+                    -> ::std::result::Result<(), <$aggregate as $crate::Aggregate>::Error>
+                {
+                    $(
+                        return (|$post_val_agg: &$aggregate, $post_val_evt: &Self| $post_val_body)(aggregate, self);
+                    )?
+                    $(
+                        $crate::Specification::check(&$post_val_spec, aggregate)?;
+                    )?
+                    ::std::result::Result::Ok(())
+                }
+            }
+
+            // ActorEvent impl (for command-time actor validation)
+            impl $crate::ActorEvent<$aggregate> for [<$variant Event>] {
+                type Actor = $actor_type;
+
+                #[allow(unused_variables, unreachable_code, clippy::redundant_closure_call)]
+                fn validate_actor(&self, aggregate: &$aggregate, actor: &$actor_type)
+                    -> ::std::result::Result<(), <$aggregate as $crate::Aggregate>::Error>
+                {
+                    $(
+                        return (|$va_agg: &$aggregate, $va_actor: &$actor_type| $va_body)(aggregate, actor);
+                    )?
+                    ::std::result::Result::Ok(())
+                }
+            }
+        }
+    };
+
+    // =========================================================================
     // Helper: Emit InitEvent impl for @init events
     // =========================================================================
     (
@@ -1021,6 +1345,8 @@ macro_rules! define_events {
         [$vis:vis] [$aggregate:ty] [$event_enum:ident] [$variant:ident]
         [{ $($field:ident: $field_ty:ty,)* }]
         kind: init,
+        actor_type: [],
+        validate_actor: [],
         validate: [$([$val_evt:ident, $val_body:block])?],
         validate_spec: [$([$val_spec:expr])?],
         post_validate: [$([$post_val_agg:ident, $post_val_evt:ident, $post_val_body:block])?],
@@ -1060,6 +1386,70 @@ macro_rules! define_events {
     };
 
     // =========================================================================
+    // Helper: Emit InitEvent + ActorInitEvent impl for @init @actor events
+    // =========================================================================
+    (
+        @emit_trait
+        [$vis:vis] [$aggregate:ty] [$event_enum:ident] [$variant:ident]
+        [{ $($field:ident: $field_ty:ty,)* }]
+        kind: actor_init,
+        actor_type: [$actor_type:ty],
+        validate_actor: [$([$va_actor:ident, $va_body:block])?],
+        validate: [$([$val_evt:ident, $val_body:block])?],
+        validate_spec: [$([$val_spec:expr])?],
+        post_validate: [$([$post_val_agg:ident, $post_val_evt:ident, $post_val_body:block])?],
+        post_validate_spec: [$([$post_val_spec:expr])?],
+        apply: $apply:expr,
+    ) => {
+        paste::paste! {
+            // InitEvent impl (for replay, no actor validation)
+            impl $crate::InitEvent<$aggregate> for [<$variant Event>] {
+                #[allow(unused_variables, unreachable_code, clippy::redundant_closure_call)]
+                fn validate_init(&self) -> ::std::result::Result<(), <$aggregate as $crate::Aggregate>::Error> {
+                    $(
+                        return (|$val_evt: &Self| $val_body)(self);
+                    )?
+                    $(
+                        $crate::Specification::check(&$val_spec, self)?;
+                    )?
+                    ::std::result::Result::Ok(())
+                }
+
+                fn init(&self, id: $crate::EntityId) -> $aggregate {
+                    let init_fn: fn($crate::EntityId, &Self) -> $aggregate = $apply;
+                    init_fn(id, self)
+                }
+
+                #[allow(unused_variables, unreachable_code, clippy::redundant_closure_call)]
+                fn post_validate_init(&self, aggregate: &$aggregate) -> ::std::result::Result<(), <$aggregate as $crate::Aggregate>::Error> {
+                    $(
+                        return (|$post_val_agg: &$aggregate, $post_val_evt: &Self| $post_val_body)(aggregate, self);
+                    )?
+                    $(
+                        $crate::Specification::check(&$post_val_spec, aggregate)?;
+                    )?
+                    ::std::result::Result::Ok(())
+                }
+            }
+
+            // ActorInitEvent impl (for command-time actor validation)
+            impl $crate::ActorInitEvent<$aggregate> for [<$variant Event>] {
+                type Actor = $actor_type;
+
+                #[allow(unused_variables, unreachable_code, clippy::redundant_closure_call)]
+                fn validate_init_actor(&self, actor: &$actor_type)
+                    -> ::std::result::Result<(), <$aggregate as $crate::Aggregate>::Error>
+                {
+                    $(
+                        return (|$va_actor: &$actor_type| $va_body)(actor);
+                    )?
+                    ::std::result::Result::Ok(())
+                }
+            }
+        }
+    };
+
+    // =========================================================================
     // Helper: dispatch arm — called from within paste::paste! so $evt_type
     // is already resolved (e.g. CreatedEvent). No inner paste needed.
     // =========================================================================
@@ -1075,7 +1465,22 @@ macro_rules! define_events {
             evt.post_validate($aggregate_var)?;
         }
     };
+    (@dispatch_arm actor [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
+        {
+            use $crate::ApplyEvent;
+            let evt = $evt_type {
+                $($field: $field.clone(),)*
+                $timestamp: *$timestamp,
+            };
+            evt.validate($aggregate_var)?;
+            evt.apply($aggregate_var);
+            evt.post_validate($aggregate_var)?;
+        }
+    };
     (@dispatch_arm init [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
+        unreachable!("dispatch() called on init event; use dispatch_init()")
+    };
+    (@dispatch_arm actor_init [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
         unreachable!("dispatch() called on init event; use dispatch_init()")
     };
 
@@ -1092,7 +1497,20 @@ macro_rules! define_events {
             evt.apply($aggregate_var);
         }
     };
+    (@dispatch_unchecked_arm actor [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
+        {
+            use $crate::ApplyEvent;
+            let evt = $evt_type {
+                $($field: $field.clone(),)*
+                $timestamp: *$timestamp,
+            };
+            evt.apply($aggregate_var);
+        }
+    };
     (@dispatch_unchecked_arm init [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
+        unreachable!("dispatch_unchecked() called on init event; use dispatch_init_unchecked()")
+    };
+    (@dispatch_unchecked_arm actor_init [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
         unreachable!("dispatch_unchecked() called on init event; use dispatch_init_unchecked()")
     };
 
@@ -1115,6 +1533,22 @@ macro_rules! define_events {
     (@dispatch_init_arm regular [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$id_var:ident]) => {
         unreachable!("dispatch_init() called on non-init event")
     };
+    (@dispatch_init_arm actor [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$id_var:ident]) => {
+        unreachable!("dispatch_init() called on non-init event")
+    };
+    (@dispatch_init_arm actor_init [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$id_var:ident]) => {
+        {
+            use $crate::InitEvent;
+            let evt = $evt_type {
+                $($field: $field.clone(),)*
+                $timestamp: *$timestamp,
+            };
+            evt.validate_init()?;
+            let entity = evt.init($id_var);
+            evt.post_validate_init(&entity)?;
+            ::std::result::Result::Ok(entity)
+        }
+    };
 
     // =========================================================================
     // Helper: dispatch_init_unchecked arm
@@ -1132,12 +1566,27 @@ macro_rules! define_events {
     (@dispatch_init_unchecked_arm regular [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$id_var:ident]) => {
         unreachable!("dispatch_init_unchecked() called on non-init event")
     };
+    (@dispatch_init_unchecked_arm actor [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$id_var:ident]) => {
+        unreachable!("dispatch_init_unchecked() called on non-init event")
+    };
+    (@dispatch_init_unchecked_arm actor_init [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$id_var:ident]) => {
+        {
+            use $crate::InitEvent;
+            let evt = $evt_type {
+                $($field: $field.clone(),)*
+                $timestamp: *$timestamp,
+            };
+            evt.init($id_var)
+        }
+    };
 
     // =========================================================================
     // Helper: is_init
     // =========================================================================
     (@is_init init) => { true };
+    (@is_init actor_init) => { true };
     (@is_init regular) => { false };
+    (@is_init actor) => { false };
 
     // =========================================================================
     // Helper: extract version (default to 1)
@@ -4314,5 +4763,544 @@ mod tests {
         let envelope = event.to_envelope(uuid::Uuid::new_v4()).unwrap();
         let restored = MemberEvent::from_envelope(&envelope).unwrap();
         assert!(matches!(restored, MemberEvent::CreatedByInvite { .. }));
+    }
+
+    // ===================================================================
+    // @actor define_events! + command_handler! tests (in submodule to avoid
+    // naming collisions with existing CreatedEvent etc.)
+    // ===================================================================
+
+    #[allow(clippy::too_many_lines)]
+    mod actor_tests {
+        use super::*;
+
+        // --- Actor entity for tests ---
+
+        #[derive(Debug, Serialize, Deserialize)]
+        struct Operator {
+            id: EntityId,
+            is_admin: bool,
+        }
+
+        impl Entity for Operator {
+            fn new(id: EntityId) -> Self {
+                Self {
+                    id,
+                    is_admin: false,
+                }
+            }
+            fn entity_id(&self) -> EntityId {
+                self.id
+            }
+        }
+
+        impl crate::DefaultEntity for Operator {}
+
+        #[derive(Debug, Clone, Serialize, Deserialize)]
+        enum OperatorEvent {
+            Noop,
+        }
+
+        impl DomainEvent for OperatorEvent {
+            type Aggregate = Operator;
+            fn event_type(&self) -> &'static str {
+                "Operator.Noop"
+            }
+            fn event_version(&self) -> crate::EventVersion {
+                crate::EventVersion::new(1)
+            }
+            fn occurred_at(&self) -> DateTime<Utc> {
+                Utc::now()
+            }
+        }
+
+        impl crate::EventApplicator<Operator> for OperatorEvent {
+            fn dispatch(&self, _: &mut Operator) -> Result<(), TicketError> {
+                Ok(())
+            }
+            fn dispatch_unchecked(&self, _: &mut Operator) {}
+        }
+
+        impl Aggregate for Operator {
+            type Event = OperatorEvent;
+            type Error = TicketError;
+        }
+
+        // --- Ticket aggregate with actor events ---
+
+        #[derive(Debug, thiserror::Error)]
+        enum TicketError {
+            #[error("Not authorized")]
+            NotAuthorized,
+            #[error("Empty title")]
+            EmptyTitle,
+            #[error("Already closed")]
+            AlreadyClosed,
+        }
+
+        impl AggregateError for TicketError {}
+
+        #[derive(Debug, Serialize, Deserialize)]
+        struct Ticket {
+            id: EntityId,
+            title: String,
+            assignee: Option<String>,
+            closed: bool,
+        }
+
+        impl Entity for Ticket {
+            fn entity_id(&self) -> EntityId {
+                self.id
+            }
+        }
+
+        impl Aggregate for Ticket {
+            type Event = TicketEvent;
+            type Error = TicketError;
+        }
+
+        define_events! {
+            enum TicketEvent for Ticket {
+                TicketOpened {
+                    title: String,
+                }
+                @init
+                @actor(Operator)
+                @validate_actor |actor| {
+                    if !actor.is_admin {
+                        return Err(TicketError::NotAuthorized);
+                    }
+                    return Ok(());
+                }
+                @validate |event| {
+                    if event.title.is_empty() {
+                        return Err(TicketError::EmptyTitle);
+                    }
+                    return Ok(());
+                }
+                => |id, event| {
+                    Ticket {
+                        id,
+                        title: event.title.clone(),
+                        assignee: None,
+                        closed: false,
+                    }
+                },
+
+                TicketAssigned {
+                    assignee: String,
+                }
+                @actor(Operator)
+                @validate_actor |ticket, actor| {
+                    if !actor.is_admin {
+                        return Err(TicketError::NotAuthorized);
+                    }
+                    return Ok(());
+                }
+                => |ticket, event| {
+                    ticket.assignee = Some(event.assignee.clone());
+                },
+
+                TicketClosed {
+                    reason: String,
+                }
+                @validate |ticket, _event| {
+                    if ticket.closed {
+                        return Err(TicketError::AlreadyClosed);
+                    }
+                    return Ok(());
+                }
+                => |ticket, _event| {
+                    ticket.closed = true;
+                },
+            }
+        }
+
+        command_handler! {
+            impl Ticket {
+                @init @actor(Operator)
+                fn open_ticket(title: String) -> TicketOpenedEvent { title };
+                @actor(Operator)
+                fn assign_ticket(assignee: String) -> TicketAssignedEvent { assignee };
+                fn close_ticket(reason: String) -> TicketClosedEvent { reason };
+            }
+        }
+
+        fn make_admin() -> AggregateRoot<Operator> {
+            let entity = Operator {
+                id: EntityId::new(),
+                is_admin: true,
+            };
+            AggregateRoot::from_snapshot(AggregateVersion::new(1), entity)
+        }
+
+        // --- define_events! @actor tests ---
+
+        #[test]
+        fn test_actor_event_struct_generated() {
+            let _event = TicketOpenedEvent {
+                title: "Bug".to_string(),
+                timestamp: Utc::now(),
+            };
+            let _event = TicketAssignedEvent {
+                assignee: "Alice".to_string(),
+                timestamp: Utc::now(),
+            };
+        }
+
+        #[test]
+        fn test_actor_init_event_trait_generated() {
+            use crate::ActorInitEvent;
+            let event = TicketOpenedEvent {
+                title: "Bug".to_string(),
+                timestamp: Utc::now(),
+            };
+            let admin = Operator {
+                id: EntityId::new(),
+                is_admin: true,
+            };
+            assert!(event.validate_init_actor(&admin).is_ok());
+        }
+
+        #[test]
+        fn test_actor_init_event_validation_rejects_non_admin() {
+            use crate::ActorInitEvent;
+            let event = TicketOpenedEvent {
+                title: "Bug".to_string(),
+                timestamp: Utc::now(),
+            };
+            let non_admin = Operator::new(EntityId::new());
+            let result = event.validate_init_actor(&non_admin);
+            assert!(result.is_err());
+            assert_eq!(result.unwrap_err().to_string(), "Not authorized");
+        }
+
+        #[test]
+        fn test_actor_regular_event_trait_generated() {
+            use crate::ActorEvent;
+            let event = TicketAssignedEvent {
+                assignee: "Alice".to_string(),
+                timestamp: Utc::now(),
+            };
+            let ticket = Ticket {
+                id: EntityId::new(),
+                title: "Bug".to_string(),
+                assignee: None,
+                closed: false,
+            };
+            let admin = Operator {
+                id: EntityId::new(),
+                is_admin: true,
+            };
+            assert!(event.validate_actor(&ticket, &admin).is_ok());
+        }
+
+        #[test]
+        fn test_actor_regular_event_validation_rejects() {
+            use crate::ActorEvent;
+            let event = TicketAssignedEvent {
+                assignee: "Alice".to_string(),
+                timestamp: Utc::now(),
+            };
+            let ticket = Ticket {
+                id: EntityId::new(),
+                title: "Bug".to_string(),
+                assignee: None,
+                closed: false,
+            };
+            let non_admin = Operator::new(EntityId::new());
+            let result = event.validate_actor(&ticket, &non_admin);
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn test_actor_event_apply_works_during_replay() {
+            let event = TicketAssignedEvent {
+                assignee: "Alice".to_string(),
+                timestamp: Utc::now(),
+            };
+            let mut ticket = Ticket {
+                id: EntityId::new(),
+                title: "Bug".to_string(),
+                assignee: None,
+                closed: false,
+            };
+            ApplyEvent::apply(&event, &mut ticket);
+            assert_eq!(ticket.assignee.as_deref(), Some("Alice"));
+        }
+
+        #[test]
+        fn test_actor_init_event_init_trait_works() {
+            use crate::InitEvent;
+            let event = TicketOpenedEvent {
+                title: "Bug".to_string(),
+                timestamp: Utc::now(),
+            };
+            let id = EntityId::new();
+            let ticket = event.init(id);
+            assert_eq!(ticket.id, id);
+            assert_eq!(ticket.title, "Bug");
+            assert!(!ticket.closed);
+        }
+
+        #[test]
+        fn test_actor_event_applicator_dispatch() {
+            use crate::EventApplicator;
+            let event = TicketEvent::TicketAssigned {
+                assignee: "Bob".to_string(),
+                timestamp: Utc::now(),
+            };
+            let mut ticket = Ticket {
+                id: EntityId::new(),
+                title: "Bug".to_string(),
+                assignee: None,
+                closed: false,
+            };
+            EventApplicator::dispatch(&event, &mut ticket).unwrap();
+            assert_eq!(ticket.assignee.as_deref(), Some("Bob"));
+        }
+
+        #[test]
+        fn test_actor_event_applicator_dispatch_unchecked() {
+            use crate::EventApplicator;
+            let event = TicketEvent::TicketAssigned {
+                assignee: "Bob".to_string(),
+                timestamp: Utc::now(),
+            };
+            let mut ticket = Ticket {
+                id: EntityId::new(),
+                title: "Bug".to_string(),
+                assignee: None,
+                closed: false,
+            };
+            EventApplicator::dispatch_unchecked(&event, &mut ticket);
+            assert_eq!(ticket.assignee.as_deref(), Some("Bob"));
+        }
+
+        #[test]
+        fn test_actor_event_domain_event_types() {
+            let event = TicketEvent::TicketOpened {
+                title: "Bug".to_string(),
+                timestamp: Utc::now(),
+            };
+            assert_eq!(event.event_type(), "Ticket.TicketOpened");
+
+            let event = TicketEvent::TicketAssigned {
+                assignee: "Bob".to_string(),
+                timestamp: Utc::now(),
+            };
+            assert_eq!(event.event_type(), "Ticket.TicketAssigned");
+        }
+
+        #[test]
+        fn test_actor_is_init_classification() {
+            use crate::EventApplicator;
+            let created = TicketEvent::TicketOpened {
+                title: "Bug".to_string(),
+                timestamp: Utc::now(),
+            };
+            assert!(EventApplicator::<Ticket>::is_init(&created));
+
+            let assigned = TicketEvent::TicketAssigned {
+                assignee: "Bob".to_string(),
+                timestamp: Utc::now(),
+            };
+            assert!(!EventApplicator::<Ticket>::is_init(&assigned));
+
+            let closed = TicketEvent::TicketClosed {
+                reason: "done".to_string(),
+                timestamp: Utc::now(),
+            };
+            assert!(!EventApplicator::<Ticket>::is_init(&closed));
+        }
+
+        // --- command_handler! @actor tests ---
+
+        #[test]
+        fn test_actor_init_cmd_event_helper() {
+            let event = Ticket::open_ticket_event("Bug report".to_string());
+            assert_eq!(event.title, "Bug report");
+        }
+
+        #[test]
+        fn test_actor_regular_cmd_event_helper() {
+            let ticket = Ticket {
+                id: EntityId::new(),
+                title: "Bug".to_string(),
+                assignee: None,
+                closed: false,
+            };
+            let event = ticket.assign_ticket_event("Alice".to_string());
+            assert_eq!(event.assignee, "Alice");
+        }
+
+        #[test]
+        fn test_actor_init_cmd_on_uninit_with_admin() {
+            let admin = make_admin();
+            let uninit = crate::UninitAggregateRoot::<Ticket>::new(EntityId::new());
+            let ticket = uninit
+                .open_ticket(&admin, "Bug report".to_string())
+                .unwrap();
+            assert_eq!(ticket.title, "Bug report");
+            assert_eq!(ticket.version(), AggregateVersion::new(1));
+            assert_eq!(ticket.pending_events().len(), 1);
+        }
+
+        #[test]
+        fn test_actor_init_cmd_on_uninit_rejects_non_admin() {
+            let non_admin = AggregateRoot::<Operator>::new(EntityId::new());
+            let uninit = crate::UninitAggregateRoot::<Ticket>::new(EntityId::new());
+            let result = uninit.open_ticket(&non_admin, "Bug report".to_string());
+            assert!(result.is_err());
+            assert_eq!(result.unwrap_err().to_string(), "Not authorized");
+        }
+
+        #[test]
+        fn test_actor_init_creation_fn_with_admin() {
+            let admin = make_admin();
+            let ticket = Ticket::open_ticket(&admin, "Bug report".to_string()).unwrap();
+            assert_eq!(ticket.title, "Bug report");
+            assert_eq!(ticket.version(), AggregateVersion::new(1));
+        }
+
+        #[test]
+        fn test_actor_init_creation_fn_rejects_non_admin() {
+            let non_admin = AggregateRoot::<Operator>::new(EntityId::new());
+            let result = Ticket::open_ticket(&non_admin, "Bug report".to_string());
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn test_actor_init_creation_fn_with_id() {
+            let admin = make_admin();
+            let id = EntityId::new();
+            let ticket = Ticket::open_ticket_with_id(id, &admin, "Bug report".to_string()).unwrap();
+            assert_eq!(ticket.entity_id(), id);
+            assert_eq!(ticket.title, "Bug report");
+        }
+
+        #[test]
+        fn test_actor_init_creation_fn_validates_event_too() {
+            let admin = make_admin();
+            let result = Ticket::open_ticket(&admin, String::new());
+            assert!(result.is_err());
+            assert_eq!(result.unwrap_err().to_string(), "Empty title");
+        }
+
+        #[test]
+        fn test_actor_regular_cmd_with_admin() {
+            let admin = make_admin();
+            let mut ticket = Ticket::open_ticket(&admin, "Bug report".to_string()).unwrap();
+            ticket.assign_ticket(&admin, "Alice".to_string()).unwrap();
+            assert_eq!(ticket.assignee.as_deref(), Some("Alice"));
+            assert_eq!(ticket.version(), AggregateVersion::new(2));
+        }
+
+        #[test]
+        fn test_actor_regular_cmd_rejects_non_admin() {
+            let admin = make_admin();
+            let non_admin = AggregateRoot::<Operator>::new(EntityId::new());
+            let mut ticket = Ticket::open_ticket(&admin, "Bug report".to_string()).unwrap();
+            let result = ticket.assign_ticket(&non_admin, "Alice".to_string());
+            assert!(result.is_err());
+            assert_eq!(result.unwrap_err().to_string(), "Not authorized");
+        }
+
+        #[test]
+        fn test_non_actor_cmd_works_without_actor() {
+            let admin = make_admin();
+            let mut ticket = Ticket::open_ticket(&admin, "Bug report".to_string()).unwrap();
+            ticket.close_ticket("done".to_string()).unwrap();
+            assert!(ticket.closed);
+        }
+
+        #[test]
+        fn test_actor_cmd_tracks_actor_id() {
+            let admin = make_admin();
+            let admin_id = admin.entity_id();
+
+            let mut ticket = Ticket::open_ticket(&admin, "Bug report".to_string()).unwrap();
+            ticket.assign_ticket(&admin, "Alice".to_string()).unwrap();
+            ticket.close_ticket("done".to_string()).unwrap();
+
+            let pending = ticket.pending_events_with_actors();
+            assert_eq!(pending[0].actor_id, Some(admin_id));
+            assert_eq!(pending[1].actor_id, Some(admin_id));
+            assert_eq!(pending[2].actor_id, None);
+        }
+
+        #[test]
+        fn test_actor_full_lifecycle() {
+            let admin = make_admin();
+
+            let mut ticket = Ticket::open_ticket(&admin, "Bug report".to_string()).unwrap();
+            assert_eq!(ticket.version(), AggregateVersion::new(1));
+
+            ticket.assign_ticket(&admin, "Alice".to_string()).unwrap();
+            assert_eq!(ticket.version(), AggregateVersion::new(2));
+
+            ticket.close_ticket("fixed".to_string()).unwrap();
+            assert_eq!(ticket.version(), AggregateVersion::new(3));
+
+            assert_eq!(ticket.title, "Bug report");
+            assert_eq!(ticket.assignee.as_deref(), Some("Alice"));
+            assert!(ticket.closed);
+            assert_eq!(ticket.pending_events().len(), 3);
+        }
+
+        #[test]
+        fn test_actor_event_envelope_roundtrip() {
+            use crate::DomainEvent;
+            let event = TicketEvent::TicketAssigned {
+                assignee: "Alice".to_string(),
+                timestamp: Utc::now(),
+            };
+            let envelope = event.to_envelope(uuid::Uuid::new_v4()).unwrap();
+            let restored = TicketEvent::from_envelope(&envelope).unwrap();
+            assert!(matches!(restored, TicketEvent::TicketAssigned { .. }));
+        }
+
+        #[test]
+        fn test_actor_init_event_envelope_roundtrip() {
+            use crate::DomainEvent;
+            let event = TicketEvent::TicketOpened {
+                title: "Bug".to_string(),
+                timestamp: Utc::now(),
+            };
+            let envelope = event.to_envelope(uuid::Uuid::new_v4()).unwrap();
+            let restored = TicketEvent::from_envelope(&envelope).unwrap();
+            assert!(matches!(restored, TicketEvent::TicketOpened { .. }));
+        }
+
+        #[test]
+        fn test_actor_dispatch_init_via_event_applicator() {
+            use crate::EventApplicator;
+            let event = TicketEvent::TicketOpened {
+                title: "Bug".to_string(),
+                timestamp: Utc::now(),
+            };
+            let id = EntityId::new();
+            let ticket = EventApplicator::dispatch_init(&event, id).unwrap();
+            assert_eq!(ticket.title, "Bug");
+            assert_eq!(ticket.entity_id(), id);
+        }
+
+        #[test]
+        fn test_actor_replay_skips_actor_validation() {
+            use crate::EventApplicator;
+            let created = TicketEvent::TicketOpened {
+                title: "Bug".to_string(),
+                timestamp: Utc::now(),
+            };
+            let id = EntityId::new();
+            let mut ticket = EventApplicator::dispatch_init_unchecked(&created, id);
+
+            let assigned = TicketEvent::TicketAssigned {
+                assignee: "Alice".to_string(),
+                timestamp: Utc::now(),
+            };
+            EventApplicator::dispatch_unchecked(&assigned, &mut ticket);
+            assert_eq!(ticket.assignee.as_deref(), Some("Alice"));
+        }
     }
 }

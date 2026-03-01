@@ -6,6 +6,16 @@
 
 use crate::{Aggregate, AggregateVersion, DefaultEntity, EntityId, EventApplicator};
 
+/// A pending event with optional actor information.
+///
+/// Wraps an event with the entity ID of the actor who caused it,
+/// for propagation to `EventEnvelope::created_by` at commit time.
+#[derive(Debug)]
+pub(crate) struct PendingEvent<E> {
+    pub event: E,
+    pub actor_id: Option<EntityId>,
+}
+
 /// Infrastructure wrapper for event-sourced aggregates.
 ///
 /// Wraps an entity that implements `Aggregate`, providing all infrastructure
@@ -78,7 +88,7 @@ use crate::{Aggregate, AggregateVersion, DefaultEntity, EntityId, EventApplicato
 pub struct AggregateRoot<A: Aggregate> {
     entity: A,
     version: AggregateVersion,
-    pending_events: Vec<A::Event>,
+    pending_events: Vec<PendingEvent<A::Event>>,
 }
 
 impl<A: Aggregate> std::ops::Deref for AggregateRoot<A> {
@@ -131,9 +141,14 @@ impl<A: Aggregate> AggregateRoot<A> {
         self.version
     }
 
-    /// Returns uncommitted events.
+    /// Returns uncommitted events (without actor information).
     #[must_use]
-    pub fn pending_events(&self) -> &[A::Event] {
+    pub fn pending_events(&self) -> Vec<&A::Event> {
+        self.pending_events.iter().map(|pe| &pe.event).collect()
+    }
+
+    /// Returns uncommitted events with actor information (for commit).
+    pub(crate) fn pending_events_with_actors(&self) -> &[PendingEvent<A::Event>] {
         &self.pending_events
     }
 
@@ -165,7 +180,34 @@ impl<A: Aggregate> AggregateRoot<A> {
         let event = event.into();
         EventApplicator::dispatch(&event, &mut self.entity)?;
         self.version = self.version.next();
-        self.pending_events.push(event);
+        self.pending_events.push(PendingEvent {
+            event,
+            actor_id: None,
+        });
+        Ok(())
+    }
+
+    /// Applies an event with actor tracking.
+    ///
+    /// Like [`apply()`](Self::apply), but records the actor's entity ID
+    /// alongside the event. At commit time, the actor ID flows into
+    /// `EventEnvelope::created_by`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if validation (pre or post) fails.
+    pub fn apply_with_actor<E: Into<A::Event>>(
+        &mut self,
+        event: E,
+        actor_id: EntityId,
+    ) -> Result<(), A::Error> {
+        let event = event.into();
+        EventApplicator::dispatch(&event, &mut self.entity)?;
+        self.version = self.version.next();
+        self.pending_events.push(PendingEvent {
+            event,
+            actor_id: Some(actor_id),
+        });
         Ok(())
     }
 
@@ -186,7 +228,7 @@ impl<A: Aggregate> AggregateRoot<A> {
         Self {
             entity,
             version,
-            pending_events: Vec::new(),
+            pending_events: vec![],
         }
     }
 
@@ -197,7 +239,24 @@ impl<A: Aggregate> AggregateRoot<A> {
         Self {
             entity,
             version: AggregateVersion::new(1),
-            pending_events: vec![event],
+            pending_events: vec![PendingEvent {
+                event,
+                actor_id: None,
+            }],
+        }
+    }
+
+    /// Creates an aggregate root from an init event with actor tracking.
+    ///
+    /// Used by `UninitAggregateRoot::apply_init_with_actor()`.
+    pub(crate) fn from_init_with_actor(entity: A, event: A::Event, actor_id: EntityId) -> Self {
+        Self {
+            entity,
+            version: AggregateVersion::new(1),
+            pending_events: vec![PendingEvent {
+                event,
+                actor_id: Some(actor_id),
+            }],
         }
     }
 
@@ -241,8 +300,18 @@ where
         let mut state = serializer.serialize_struct("AggregateRoot", 3)?;
         state.serialize_field("entity", &self.entity)?;
         state.serialize_field("version", &self.version)?;
-        state.serialize_field("pending_events", &self.pending_events)?;
+        let events: Vec<&A::Event> = self.pending_events.iter().map(|pe| &pe.event).collect();
+        state.serialize_field("pending_events", &events)?;
         state.end()
+    }
+}
+
+impl<E: Clone> Clone for PendingEvent<E> {
+    fn clone(&self) -> Self {
+        Self {
+            event: self.event.clone(),
+            actor_id: self.actor_id,
+        }
     }
 }
 
@@ -558,6 +627,66 @@ mod tests {
         assert_eq!(json["entity"]["value"], 8);
         assert_eq!(json["version"], 2);
         assert_eq!(json["pending_events"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_aggregate_root_apply_with_actor() {
+        let mut counter = AggregateRoot::<CounterEntity>::new(EntityId::new());
+        let actor_id = EntityId::new();
+
+        counter
+            .apply_with_actor(
+                IncrementedEvent {
+                    amount: 7,
+                    timestamp: Utc::now(),
+                },
+                actor_id,
+            )
+            .unwrap();
+
+        assert_eq!(counter.value, 7);
+        assert_eq!(counter.version(), AggregateVersion::new(1));
+        assert_eq!(counter.pending_events().len(), 1);
+
+        // Verify actor_id is stored
+        let pending = counter.pending_events_with_actors();
+        assert_eq!(pending[0].actor_id, Some(actor_id));
+    }
+
+    #[test]
+    fn test_apply_without_actor_has_none_actor_id() {
+        let mut counter = AggregateRoot::<CounterEntity>::new(EntityId::new());
+
+        counter.increment(5).unwrap();
+
+        let pending = counter.pending_events_with_actors();
+        assert_eq!(pending[0].actor_id, None);
+    }
+
+    #[test]
+    fn test_mixed_actor_and_non_actor_events() {
+        let mut counter = AggregateRoot::<CounterEntity>::new(EntityId::new());
+        let actor_id = EntityId::new();
+
+        counter.increment(5).unwrap();
+        counter
+            .apply_with_actor(
+                IncrementedEvent {
+                    amount: 3,
+                    timestamp: Utc::now(),
+                },
+                actor_id,
+            )
+            .unwrap();
+        counter.increment(2).unwrap();
+
+        assert_eq!(counter.value, 10);
+        assert_eq!(counter.pending_events().len(), 3);
+
+        let pending = counter.pending_events_with_actors();
+        assert_eq!(pending[0].actor_id, None);
+        assert_eq!(pending[1].actor_id, Some(actor_id));
+        assert_eq!(pending[2].actor_id, None);
     }
 
     #[test]

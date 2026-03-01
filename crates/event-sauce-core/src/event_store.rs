@@ -318,7 +318,7 @@ pub trait EventStore: Send + Sync {
         A: Aggregate + serde::Serialize,
         A::Event: serde::Serialize,
     {
-        let pending = aggregate.pending_events();
+        let pending = aggregate.pending_events_with_actors();
         if pending.is_empty() {
             return Ok(());
         }
@@ -332,7 +332,13 @@ pub trait EventStore: Send + Sync {
 
         let envelopes: Result<Vec<EventEnvelope>> = pending
             .iter()
-            .map(|event| event.to_envelope(aggregate_id))
+            .map(|pe| {
+                let mut envelope = pe.event.to_envelope(aggregate_id)?;
+                if let Some(actor_id) = pe.actor_id {
+                    envelope = envelope.with_created_by(actor_id.as_uuid());
+                }
+                Ok(envelope)
+            })
             .collect();
         let mut envelopes = envelopes?;
 
@@ -1136,6 +1142,37 @@ mod tests {
         );
         // AggregateVersion should be preserved
         assert_eq!(agg.version(), AggregateVersion::new(3));
+    }
+
+    #[tokio::test]
+    async fn test_commit_propagates_actor_id_to_created_by() {
+        let store = CommitTestStore::new(SnapshotConfig::disabled());
+        let id = crate::EntityId::new();
+        let actor_id = crate::EntityId::new();
+        let mut agg = AggregateRoot::<SimpleTestEntity>::new(id);
+
+        // First event without actor
+        agg.apply(SimpleTestEvent::Created { value: 1 }).unwrap();
+        // Second event with actor
+        agg.apply_with_actor(SimpleTestEvent::Updated { value: 2 }, actor_id)
+            .unwrap();
+
+        store.commit(&mut agg).await.unwrap();
+
+        let stream_id = StreamId::new("SimpleTestEntity", id.as_uuid());
+        let streams = store.streams.lock().unwrap();
+        let stored = streams.get(&stream_id).unwrap();
+
+        assert_eq!(stored.len(), 2);
+        assert!(
+            stored[0].created_by.is_none(),
+            "First event should not have created_by"
+        );
+        assert_eq!(
+            stored[1].created_by,
+            Some(actor_id.as_uuid()),
+            "Second event should have actor's UUID as created_by"
+        );
     }
 
     // -- load() tests --

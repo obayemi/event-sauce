@@ -235,10 +235,10 @@ fn test_aggregate_root_integration_lifecycle() {
     assert_eq!(root.pending_events().len(), 2);
 
     // Replay events using dispatch_unchecked on a fresh entity
-    let events: Vec<_> = root.pending_events().to_vec();
+    let events = root.pending_events();
     let mut replayed_entity = TestAgg::new(id);
 
-    for event in &events {
+    for event in events {
         event_sauce_core::EventApplicator::dispatch_unchecked(event, &mut replayed_entity);
     }
 
