@@ -1,30 +1,36 @@
 //! # PostgreSQL Quick Start Example
 //!
 //! This example demonstrates:
-//! - Two aggregates: User and Order (both using init events)
+//! - **Private User aggregate** with crypto-shredding for GDPR compliance
+//! - **Actor-validated Order commands** requiring an authenticated User
 //! - Init creation functions for ergonomic aggregate construction
 //! - Repository pattern for type-safe aggregate persistence
-//! - Commands for all mutations — no manual event application
-//! - A projection that combines data from both aggregates
-//! - PostgreSQL backend for events, snapshots, and projections
+//! - A projection that combines Order data (User PII stays encrypted)
+//! - PostgreSQL backend with testcontainers
 //! - Subscription system for real-time projection updates
 //!
 //! Run with:
 //! ```bash
-//! cargo run --example postgres-quickstart --features postgres
+//! cargo run --example postgres-quickstart --features "postgres,crypto"
 //! ```
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
-use event_sauce_core::{command_handler, define_events, spec, EntityId, EventStore, Specification};
+use event_sauce_core::{
+    command_handler, crypto, define_events, spec, Aggregate, AggregateVersion, CryptoKeyStore,
+    Entity, EntityId, EventStore, Specification, StreamId,
+};
+use event_sauce_crypto::Aes256GcmProvider;
 use event_sauce_macros::{aggregate, aggregate_error, AggregateError};
-use event_sauce_postgres::PostgresBackend;
+use event_sauce_postgres::{PostgresBackend, PostgresCryptoKeyStore};
+use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
 
 // ============================================================================
-// User Aggregate (Init Event — type-state pattern)
+// User Aggregate (Private — encrypted at rest for GDPR compliance)
 // ============================================================================
 
 /// User domain errors - auto-implements AggregateError trait
@@ -36,10 +42,11 @@ enum UserError {
     EmptyName,
 }
 
-/// User status
+/// User role — used for actor-based permission checks on Order commands
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-enum UserStatus {
-    Active,
+enum UserRole {
+    Customer,
+    Admin,
 }
 
 // User events with define_events! macro — Created is an @init event
@@ -48,6 +55,7 @@ define_events! {
         Created {
             email: String,
             name: String,
+            role: UserRole,
         }
         @init
         @validate |evt| {
@@ -64,7 +72,7 @@ define_events! {
                 id,
                 email: event.email.clone(),
                 name: event.name.clone(),
-                status: UserStatus::Active,
+                role: event.role,
             }
         },
 
@@ -83,23 +91,25 @@ define_events! {
     }
 }
 
-/// User aggregate with init — no Default needed, no Option fields!
-/// The `init` flag skips DefaultEntity; aggregate is constructed via init events.
-#[aggregate(event = "UserEvent", error = "UserError", init)]
+/// User aggregate — **private** for GDPR: all event data is encrypted at rest.
+/// The `init` flag uses the type-state pattern; `private` enables crypto-shredding.
+#[aggregate(event = "UserEvent", error = "UserError", init, private)]
 #[derive(Serialize, Deserialize)]
 struct User {
     #[id]
     id: EntityId,
     email: String,
     name: String,
-    status: UserStatus,
+    role: UserRole,
 }
 
 // Use command_handler! macro for command methods
 command_handler! {
     impl User {
         /// Create a new user (init command)
-        @init fn create_user(email: String, name: String) -> CreatedEvent { email, name };
+        @init fn create_user(email: String, name: String, role: UserRole) -> CreatedEvent {
+            email, name, role
+        };
 
         /// Change user's email address
         fn change_email(new_email: String) -> EmailChangedEvent { new_email };
@@ -107,7 +117,7 @@ command_handler! {
 }
 
 // ============================================================================
-// Order Aggregate (Init Event — type-state pattern)
+// Order Aggregate (Actor-validated — requires authenticated User)
 // ============================================================================
 
 /// Order domain errors - auto-implements AggregateError trait with spec support.
@@ -118,6 +128,8 @@ command_handler! {
 enum OrderError {
     #[error("Invalid amount: {0}")]
     InvalidAmount(i64),
+    #[error("Permission denied: {0}")]
+    PermissionDenied(String),
 }
 
 /// Order status
@@ -142,13 +154,18 @@ spec!(OrderIsPending for Order, "Order must be pending", |o| {
     o.status == OrderStatus::Pending
 });
 
-// Order events with @init — OrderCreated constructs the aggregate
+// Order events with @actor — require an authenticated User for permission checks
 define_events! {
     enum OrderEvent for Order {
         OrderCreated {
             user_id: EntityId,
         }
         @init
+        @actor(User)
+        @validate_actor |_actor| {
+            // Any authenticated user can create an order
+            Ok(())
+        }
         => |id, event| {
             Order {
                 id,
@@ -163,6 +180,15 @@ define_events! {
             product_id: String,
             quantity: u32,
             price: i64,
+        }
+        @actor(User)
+        @validate_actor |order, actor| {
+            if actor.entity_id() != order.user_id {
+                return Err(OrderError::PermissionDenied(
+                    "Only the order owner can add items".to_string()
+                ));
+            }
+            Ok(())
         }
         @validate |agg, evt| {
             if evt.price <= 0 {
@@ -182,6 +208,15 @@ define_events! {
         },
 
         OrderCompleted {}
+        @actor(User)
+        @validate_actor |order, actor| {
+            if actor.entity_id() != order.user_id {
+                return Err(OrderError::PermissionDenied(
+                    "Only the order owner can complete the order".to_string()
+                ));
+            }
+            Ok(())
+        }
         @validate_spec(OrderIsPending)
         => |order, _event| {
             order.status = OrderStatus::Completed;
@@ -189,8 +224,8 @@ define_events! {
     }
 }
 
-/// Order aggregate with init — no Default needed, no Option<EntityId>!
-/// The `init` flag skips DefaultEntity; aggregate is constructed via init events.
+/// Order aggregate with actor-validated events
+/// The `init` flag uses the type-state pattern; no Option fields needed.
 #[aggregate(event = "OrderEvent", error = "OrderError", init)]
 #[derive(Serialize, Deserialize)]
 struct Order {
@@ -202,18 +237,21 @@ struct Order {
     status: OrderStatus,
 }
 
-// Use command_handler! with @init for type-safe lifecycle
+// Command handler with @actor for permission-validated commands
 command_handler! {
     impl Order {
-        /// Create a new order (init command — on UninitAggregateRoot)
-        @init fn create_order(user_id: EntityId) -> OrderCreatedEvent { user_id };
+        /// Create a new order (requires authenticated user)
+        @init @actor(User)
+        fn create_order(user_id: EntityId) -> OrderCreatedEvent { user_id };
 
-        /// Add an item to the order
+        /// Add an item to the order (requires order owner)
+        @actor(User)
         fn add_item(product_id: String, quantity: u32, price: i64) -> ItemAddedEvent {
             product_id, quantity, price
         };
 
-        /// Complete the order
+        /// Complete the order (requires order owner)
+        @actor(User)
         fn complete() -> OrderCompletedEvent { };
     }
 }
@@ -222,13 +260,12 @@ command_handler! {
 // Order Summary Projection
 // ============================================================================
 
-/// Order summary view
+/// Order summary view — references user_id, not user PII.
+/// User data is encrypted at rest and should not be denormalized into projections.
 #[derive(Debug, Clone)]
 struct OrderSummaryView {
     order_id: EntityId,
     user_id: EntityId,
-    user_email: String,
-    user_name: String,
     item_count: usize,
     total_amount: i64,
     status: OrderStatus,
@@ -237,44 +274,22 @@ struct OrderSummaryView {
 /// Projection state
 #[derive(Debug, Default)]
 struct ProjectionState {
-    users: HashMap<EntityId, (String, String)>,
     orders: HashMap<EntityId, OrderSummaryView>,
 }
 
-// Order summary projection using the projection! macro with aggregate_id
+// Order summary projection — subscribes only to OrderEvent
+// (User events are encrypted and should not be denormalized)
 event_sauce_core::projection! {
     struct OrderSummaryProjection {
         state: ProjectionState,
 
-        on UserEvent::Created |proj, event, aggregate_id| {
-            proj.state.users.insert(EntityId::from(aggregate_id), (event.email.clone(), event.name.clone()));
-        },
-
-        on UserEvent::EmailChanged |proj, event, aggregate_id| {
-            let user_id = EntityId::from(aggregate_id);
-            if let Some((email, _)) = proj.state.users.get_mut(&user_id) {
-                *email = event.new_email.clone();
-            }
-            // Update orders
-            for order in proj.state.orders.values_mut() {
-                if order.user_id == user_id {
-                    order.user_email = event.new_email.clone();
-                }
-            }
-        },
-
         on OrderEvent::OrderCreated |proj, event, aggregate_id| {
             let order_id = EntityId::from(aggregate_id);
-            let (email, name) = proj.state.users.get(&event.user_id).cloned().unwrap_or_else(|| {
-                ("unknown@example.com".to_string(), "Unknown".to_string())
-            });
             proj.state.orders.insert(
                 order_id,
                 OrderSummaryView {
                     order_id,
                     user_id: event.user_id,
-                    user_email: email,
-                    user_name: name,
                     item_count: 0,
                     total_amount: 0,
                     status: OrderStatus::Pending,
@@ -313,21 +328,37 @@ impl OrderSummaryProjection {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Event Sauce - PostgreSQL Quick Start\n");
     println!("This example demonstrates:");
-    println!("  - Two aggregates: User and Order (both init events)");
+    println!("  - Private User aggregate with crypto-shredding (GDPR)");
+    println!("  - Actor-validated Order commands (permission checks)");
     println!("  - Init creation functions: User::create_user(), Order::create_order()");
-    println!("  - Commands for all mutations — no manual event application");
     println!("  - Repository pattern for type-safe persistence");
-    println!("  - Projection combining data from both");
+    println!("  - Projection over Order data (User PII stays encrypted)");
     println!("  - PostgreSQL backend with testcontainers\n");
 
-    // Setup PostgreSQL using PostgresBackend (handles pool, stores, and migrations)
+    // Setup PostgreSQL using testcontainers
     println!("  Starting PostgreSQL container...");
     let postgres = Postgres::default().start().await?;
     let port = postgres.get_host_port_ipv4(5432).await?;
     let database_url = format!("postgres://postgres:postgres@localhost:{port}/postgres");
 
-    println!("  Initializing backend (event store + checkpoint store + migrations)...");
-    let backend = PostgresBackend::setup(&database_url, "event_sauce").await?;
+    // Create and migrate the PostgreSQL crypto key store
+    let pool = sqlx::PgPool::connect(&database_url).await?;
+    let crypto_key_store = PostgresCryptoKeyStore::builder()
+        .pool(pool)
+        .schema("event_sauce")
+        .build()?;
+    crypto_key_store.migrate().await?;
+    let crypto_key_store = Arc::new(crypto_key_store);
+
+    // Build backend with AES-256-GCM encryption for private aggregates
+    println!("  Initializing backend with AES-256-GCM encryption...");
+    let backend = PostgresBackend::builder()
+        .database_url(&database_url)
+        .schema("event_sauce")
+        .crypto_key_store(crypto_key_store.clone() as Arc<dyn CryptoKeyStore>)
+        .crypto_provider(Arc::new(Aes256GcmProvider))
+        .build()
+        .await?;
 
     let store = backend.event_store();
 
@@ -336,110 +367,204 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let user_repo = store.repository::<User>();
     let order_repo = store.repository::<Order>();
 
-    println!("\n=== Creating Users (Init Events) ===\n");
+    // ========================================================================
+    // Step 1: Create Users (Private — encrypted at rest)
+    // ========================================================================
 
-    // Create users using init creation functions — ergonomic one-liner!
-    let mut alice = User::create_user("alice@example.com".to_string(), "Alice Smith".to_string())?;
-    println!("  Created user: {} ({})", alice.name, alice.email);
+    println!("\n=== Creating Users (Private — Encrypted at Rest) ===\n");
+
+    let mut alice = User::create_user(
+        "alice@example.com".to_string(),
+        "Alice Smith".to_string(),
+        UserRole::Customer,
+    )?;
+    println!(
+        "  Created user: {} ({}) [role: {:?}]",
+        alice.name, alice.email, alice.role
+    );
     user_repo.save(&mut alice).await?;
 
-    let mut bob = User::create_user("bob@example.com".to_string(), "Bob Jones".to_string())?;
-    println!("  Created user: {} ({})", bob.name, bob.email);
+    let mut bob = User::create_user(
+        "bob@example.com".to_string(),
+        "Bob Jones".to_string(),
+        UserRole::Customer,
+    )?;
+    println!(
+        "  Created user: {} ({}) [role: {:?}]",
+        bob.name, bob.email, bob.role
+    );
     user_repo.save(&mut bob).await?;
 
-    println!("\n=== Creating Orders (Init Events) ===\n");
+    // ========================================================================
+    // Step 2: Verify User data is encrypted at rest
+    // ========================================================================
 
-    // Create orders using init creation functions — ergonomic one-liner!
-    let mut order1 = Order::create_order(alice.entity_id())?;
-    order1.add_item("laptop".to_string(), 1, 120_000)?;
-    order1.add_item("mouse".to_string(), 2, 2500)?;
+    println!("\n=== Verifying User Data is Encrypted at Rest ===\n");
+
+    let alice_stream_id = StreamId::new(User::aggregate_type(), alice.entity_id().as_uuid());
+    let mut alice_stream = store
+        .load_stream(alice_stream_id, AggregateVersion::initial())
+        .await?;
+    while let Some(Ok(envelope)) = alice_stream.next().await {
+        let encrypted = crypto::is_encrypted(&envelope.event_data);
+        println!(
+            "  User event '{}': encrypted={}",
+            envelope.event_type, encrypted
+        );
+    }
+
+    // ========================================================================
+    // Step 3: Create Orders with actor validation
+    // ========================================================================
+
+    println!("\n=== Creating Orders (Actor-Validated) ===\n");
+
+    // Alice creates an order — she's the actor providing permission
+    let mut order1 = Order::create_order(&alice, alice.entity_id())?;
+    order1.add_item(&alice, "laptop".to_string(), 1, 120_000)?;
+    order1.add_item(&alice, "mouse".to_string(), 2, 2500)?;
     println!(
-        "  Order {} created for Alice (${:.2})",
+        "  Order {} created by Alice (${:.2})",
         order1.entity_id(),
         order1.total as f64 / 100.0
     );
-    // order1.user_id is EntityId (not Option!) — always valid after init
-    println!("  Order user_id: {} (no Option!)", order1.user_id);
     order_repo.save(&mut order1).await?;
 
-    // Alternative: create with explicit ID
+    // Bob tries to add items to Alice's order — should fail!
+    println!("\n  Bob tries to add item to Alice's order...");
+    match order1.add_item(&bob, "stolen-item".to_string(), 1, 100) {
+        Ok(()) => println!("    ERROR: Should have been denied!"),
+        Err(e) => println!("    Denied: {e}"),
+    }
+
+    // Bob creates his own order
     let order2_id = EntityId::new();
-    let mut order2 = Order::create_order_with_id(order2_id, bob.entity_id())?;
-    order2.add_item("keyboard".to_string(), 1, 8500)?;
+    let mut order2 = Order::create_order_with_id(order2_id, &bob, bob.entity_id())?;
+    order2.add_item(&bob, "keyboard".to_string(), 1, 8500)?;
     println!(
-        "  Order {} created for Bob (${:.2})",
+        "\n  Order {} created by Bob (${:.2})",
         order2.entity_id(),
         order2.total as f64 / 100.0
     );
     order_repo.save(&mut order2).await?;
 
+    // ========================================================================
+    // Step 4: Complete Orders with owner validation
+    // ========================================================================
+
     println!("\n=== Completing Orders ===\n");
 
-    order1.complete()?;
-    order_repo.save(&mut order1).await?;
-    println!("  Order {} completed", order1.entity_id());
+    // Alice tries to complete Bob's order — should fail!
+    println!("  Alice tries to complete Bob's order...");
+    match order2.complete(&alice) {
+        Ok(()) => println!("    ERROR: Should have been denied!"),
+        Err(e) => println!("    Denied: {e}"),
+    }
 
-    println!("\n=== Updating User ===\n");
+    // Alice completes her own order
+    order1.complete(&alice)?;
+    order_repo.save(&mut order1).await?;
+    println!("  Order {} completed by Alice", order1.entity_id());
+
+    // ========================================================================
+    // Step 5: Update User (transparent decrypt + re-encrypt)
+    // ========================================================================
+
+    println!("\n=== Updating User (Transparent Decrypt + Re-encrypt) ===\n");
 
     alice.change_email("alice.smith@newdomain.com".to_string())?;
     user_repo.save(&mut alice).await?;
-    println!("  Alice's email changed to {}", alice.email);
+    println!(
+        "  Alice's email changed to {} (encrypted at rest)",
+        alice.email
+    );
+
+    // ========================================================================
+    // Step 6: Build Projection
+    // ========================================================================
 
     println!("\n=== Building Projection ===\n");
 
     let mut projection = OrderSummaryProjection::new(ProjectionState::default());
 
-    // Use projection_subscription convenience — name, filter, and checkpoint store are auto-wired
+    // projection_subscription auto-wires name, filter, and checkpoint store
     let mut subscription = backend
         .projection_subscription::<OrderSummaryProjection>()
         .build()?;
     subscription.run_projection(&mut projection).await?;
 
-    println!("  Processed events via run_projection");
-    println!("\n=== Projection Results ===\n");
+    println!("  Processed Order events via run_projection");
+    println!("  (User events are encrypted — projection uses user_id references only)\n");
 
     for order_view in projection.get_all_orders() {
         println!(
-            "Order {}: {} ({}) - {} items, ${:.2}, Status: {:?}",
+            "  Order {}: user={}, {} items, ${:.2}, {:?}",
             order_view.order_id,
-            order_view.user_name,
-            order_view.user_email,
+            order_view.user_id,
             order_view.item_count,
             order_view.total_amount as f64 / 100.0,
             order_view.status
         );
     }
 
+    // ========================================================================
+    // Step 7: Repository Features
+    // ========================================================================
+
     println!("\n=== Repository Features ===\n");
 
-    // Demonstrate repository features
-    println!("Repository API examples:");
-
-    // Check existence
-    let alice_exists = user_repo.exists(alice.entity_id()).await?;
-    println!("  Alice exists: {alice_exists}");
-
-    // Get version
-    let alice_version = user_repo.get_version(alice.entity_id()).await?;
-    println!("  Alice version: {}", alice_version.as_i64());
-
-    // Count events
-    let alice_event_count = user_repo.count_events(alice.entity_id()).await?;
-    println!("  Alice event count: {alice_event_count}");
-
-    // Load aggregate from repository — works for both patterns!
+    // Load user (transparent decryption)
     let loaded_alice = user_repo.load(alice.entity_id()).await?;
     println!(
-        "  Loaded Alice: {} ({})",
+        "  Loaded Alice (decrypted): {} ({})",
         loaded_alice.name, loaded_alice.email
     );
 
-    // Load init-event aggregate — same API
+    // Check existence and version
+    let alice_exists = user_repo.exists(alice.entity_id()).await?;
+    println!("  Alice exists: {alice_exists}");
+
+    let alice_version = user_repo.get_version(alice.entity_id()).await?;
+    println!("  Alice version: {}", alice_version.as_i64());
+
+    // Load Order
     let loaded_order = order_repo.load(order1.entity_id()).await?;
     println!(
         "  Loaded Order: user_id={}, total=${:.2}",
         loaded_order.user_id,
         loaded_order.total as f64 / 100.0
+    );
+
+    // ========================================================================
+    // Step 8: Crypto-Shredding (GDPR Right to Be Forgotten)
+    // ========================================================================
+
+    println!("\n=== Crypto-Shredding (GDPR Right to Be Forgotten) ===\n");
+
+    let bob_uuid = bob.entity_id().as_uuid();
+    println!("  Deleting encryption key for Bob ({bob_uuid})...");
+    crypto_key_store.delete_key(bob_uuid).await?;
+    println!("  Key deleted — Bob's data is now permanently unreadable.\n");
+
+    // Attempt to load Bob — should fail
+    println!("  Attempting to load Bob after key deletion...");
+    match user_repo.load(bob.entity_id()).await {
+        Ok(_) => println!("    ERROR: Should have failed!"),
+        Err(e) if e.is_key_not_found() => {
+            println!("    KeyNotFound (expected): {e}");
+            println!("    Bob's PII is permanently erased (GDPR Article 17).");
+        }
+        Err(e) => println!("    Unexpected error: {e}"),
+    }
+
+    // Bob's order is still accessible (Order is NOT private)
+    println!("\n  Bob's order is still accessible (Order is not private):");
+    let loaded_order2 = order_repo.load(order2.entity_id()).await?;
+    println!(
+        "    Order {}: user_id={}, total=${:.2}",
+        loaded_order2.entity_id(),
+        loaded_order2.user_id,
+        loaded_order2.total as f64 / 100.0
     );
 
     println!("\n  Demo complete!");
