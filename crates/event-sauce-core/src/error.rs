@@ -515,4 +515,40 @@ mod tests {
             panic!("Expected Encryption variant");
         }
     }
+
+    #[test]
+    fn test_aggregate_deleted_error() {
+        let error = Error::aggregate_deleted("User", "user-123");
+
+        assert!(error.is_aggregate_deleted());
+        assert!(!error.is_concurrency_conflict());
+        assert!(!error.is_not_found());
+        assert!(!error.is_serialization());
+        assert!(!error.is_key_not_found());
+        assert!(!error.is_encryption());
+
+        let message = error.to_string();
+        assert!(message.contains("Aggregate deleted"));
+        assert!(message.contains("User"));
+        assert!(message.contains("user-123"));
+    }
+
+    #[test]
+    fn test_aggregate_deleted_fields() {
+        let error = Error::AggregateDeleted {
+            aggregate_type: "Order".to_string(),
+            aggregate_id: "order-456".to_string(),
+        };
+
+        if let Error::AggregateDeleted {
+            aggregate_type,
+            aggregate_id,
+        } = error
+        {
+            assert_eq!(aggregate_type, "Order");
+            assert_eq!(aggregate_id, "order-456");
+        } else {
+            panic!("Expected AggregateDeleted variant");
+        }
+    }
 }

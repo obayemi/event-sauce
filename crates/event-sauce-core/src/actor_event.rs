@@ -135,11 +135,7 @@ pub trait ActorDeleteEvent<A: Aggregate> {
     /// # Errors
     ///
     /// Returns an error if the actor is not authorized.
-    fn validate_delete_actor(
-        &self,
-        _aggregate: &A,
-        _actor: &Self::Actor,
-    ) -> Result<(), A::Error> {
+    fn validate_delete_actor(&self, _aggregate: &A, _actor: &Self::Actor) -> Result<(), A::Error> {
         Ok(())
     }
 }
@@ -351,11 +347,7 @@ mod tests {
     impl ActorDeleteEvent<Order> for CancelledEvent {
         type Actor = User;
 
-        fn validate_delete_actor(
-            &self,
-            _order: &Order,
-            actor: &User,
-        ) -> Result<(), OrderError> {
+        fn validate_delete_actor(&self, _order: &Order, actor: &User) -> Result<(), OrderError> {
             if !actor.can_modify {
                 return Err(OrderError::PermissionDenied);
             }

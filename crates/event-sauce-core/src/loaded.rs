@@ -100,11 +100,8 @@ mod tests {
     fn make_deleted() -> Loaded<SimpleTestEntity> {
         let id = EntityId::new();
         let entity = SimpleTestEntity { id, value: 42 };
-        let deleted = DeletedAggregateRoot::from_delete_replay(
-            entity,
-            id,
-            AggregateVersion::new(5),
-        );
+        let deleted =
+            DeletedAggregateRoot::from_delete_replay(entity, id, AggregateVersion::new(5));
         Loaded::Deleted(deleted)
     }
 
@@ -163,11 +160,8 @@ mod tests {
     fn test_loaded_entity_id_deleted() {
         let id = EntityId::new();
         let entity = SimpleTestEntity { id, value: 0 };
-        let deleted = DeletedAggregateRoot::from_delete_replay(
-            entity,
-            id,
-            AggregateVersion::new(1),
-        );
+        let deleted =
+            DeletedAggregateRoot::from_delete_replay(entity, id, AggregateVersion::new(1));
         let loaded = Loaded::<SimpleTestEntity>::Deleted(deleted);
         assert_eq!(loaded.entity_id(), id);
     }

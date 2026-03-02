@@ -4,7 +4,7 @@
 //! that terminate an aggregate. While `ApplyEvent` mutates an existing
 //! aggregate, `DeleteEvent` consumes it and produces a `DeletedState`.
 
-use crate::{Aggregate, EntityId};
+use crate::Aggregate;
 
 /// Trait for events that delete/terminate an aggregate.
 ///
@@ -276,8 +276,14 @@ mod tests {
         }
     }
 
+    #[derive(Debug, thiserror::Error)]
+    #[error("custom account error")]
+    struct CustomAccountError;
+
+    impl AggregateError for CustomAccountError {}
+
     impl crate::EventApplicator<CustomAccount> for CustomAccountEvent {
-        fn dispatch(&self, _account: &mut CustomAccount) -> Result<(), ()> {
+        fn dispatch(&self, _account: &mut CustomAccount) -> Result<(), CustomAccountError> {
             Ok(())
         }
         fn dispatch_unchecked(&self, _account: &mut CustomAccount) {}
@@ -285,7 +291,7 @@ mod tests {
 
     impl crate::Aggregate for CustomAccount {
         type Event = CustomAccountEvent;
-        type Error = ();
+        type Error = CustomAccountError;
         type DeletedState = DeletedAccount;
     }
 
