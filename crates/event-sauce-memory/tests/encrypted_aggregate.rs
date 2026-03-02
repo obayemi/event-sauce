@@ -37,6 +37,7 @@ impl event_sauce_core::DefaultEntity for SecretUser {}
 impl Aggregate for SecretUser {
     type Event = SecretUserEvent;
     type Error = SecretUserError;
+    type DeletedState = Self;
 
     fn is_encrypted() -> bool {
         true
@@ -119,6 +120,7 @@ impl event_sauce_core::DefaultEntity for PublicUser {}
 impl Aggregate for PublicUser {
     type Event = PublicUserEvent;
     type Error = PublicUserError;
+    type DeletedState = Self;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

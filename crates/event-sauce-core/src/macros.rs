@@ -1946,6 +1946,7 @@ mod tests {
     impl Aggregate for TestAggregate {
         type Event = TestEvent;
         type Error = TestError;
+        type DeletedState = Self;
     }
 
     impl TestAggregate {
@@ -2444,6 +2445,7 @@ mod tests {
     impl Aggregate for Product {
         type Event = ProductEvent;
         type Error = ProductError;
+        type DeletedState = Self;
     }
 
     impl Product {
@@ -2928,6 +2930,7 @@ mod tests {
     impl Aggregate for Order {
         type Event = OrderEvent;
         type Error = OrderError;
+        type DeletedState = Self;
     }
 
     impl Order {
@@ -3803,6 +3806,7 @@ mod tests {
     impl Aggregate for Warehouse {
         type Event = WarehouseEvent;
         type Error = WarehouseError;
+        type DeletedState = Self;
     }
 
     impl Warehouse {
@@ -4051,6 +4055,7 @@ mod tests {
     impl Aggregate for Account {
         type Event = AccountEvent;
         type Error = AccountError;
+        type DeletedState = Self;
     }
 
     define_events! {
@@ -4541,6 +4546,7 @@ mod tests {
     impl Aggregate for Member {
         type Event = MemberEvent;
         type Error = MemberError;
+        type DeletedState = Self;
     }
 
     // Two @init events + one regular event
@@ -4979,6 +4985,7 @@ mod tests {
         impl Aggregate for Operator {
             type Event = OperatorEvent;
             type Error = TicketError;
+            type DeletedState = Self;
         }
 
         // --- Ticket aggregate with actor events ---
@@ -5012,6 +5019,7 @@ mod tests {
         impl Aggregate for Ticket {
             type Event = TicketEvent;
             type Error = TicketError;
+            type DeletedState = Self;
         }
 
         define_events! {
@@ -5598,6 +5606,7 @@ mod tests {
         impl Aggregate for Patient {
             type Event = PatientEvent;
             type Error = PatientError;
+            type DeletedState = Self;
         }
 
         define_events! {
@@ -5676,6 +5685,7 @@ mod tests {
         impl Aggregate for PlainEntity {
             type Event = PlainEvent;
             type Error = PlainError;
+            type DeletedState = Self;
         }
 
         define_events! {

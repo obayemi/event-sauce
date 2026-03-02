@@ -72,6 +72,7 @@ use crate::Aggregate;
 /// impl Aggregate for Counter {
 ///     type Event = CounterEvent;
 ///     type Error = CounterError;
+///     type DeletedState = Self;
 /// }
 ///
 /// struct Incremented { amount: i32 }
@@ -210,6 +211,7 @@ mod tests {
     impl Aggregate for TestEntity {
         type Event = TestEvent;
         type Error = TestError;
+        type DeletedState = Self;
     }
 
     struct SimpleEvent {

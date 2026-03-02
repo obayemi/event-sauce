@@ -164,6 +164,7 @@ mod tests {
     impl crate::Aggregate for Order {
         type Event = OrderEvent;
         type Error = OrderError;
+        type DeletedState = Self;
     }
 
     // Test actor

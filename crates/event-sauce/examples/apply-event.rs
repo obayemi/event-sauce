@@ -264,6 +264,7 @@ impl DefaultEntity for BankAccount {}
 impl Aggregate for BankAccount {
     type Event = BankAccountEvent;
     type Error = BankAccountError;
+    type DeletedState = Self;
 }
 
 // ============================================================================

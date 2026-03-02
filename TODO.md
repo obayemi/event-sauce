@@ -1,7 +1,12 @@
+- [ ] add "from_actor" property to event to allow filling them with data from the actor
+- [ ] allow validate_spec to use "on event" syntax
+- [ ] find  ways  to integrate specifications more tightly with error typings to avoid needing to validate speficications manually for error types, and also to avoid requireing to use validate_or to handle errors
 - [ ] update postgres example to use function based specifications instead of macro one.
-        also update all validation to be based on specificationns instead of being written in the validation functions
+        also update all validation to be based on specificationns instead of being written in the validation functions, and all specifications to be defined as functios instead of using the macro syntax
+- [.] allow "deletion" of aggregates "deleted", and provide with "deletion" events (like init ones, but return a DeletedAggregat variant)
+- [ ] add a way to create non event-stored entities / aggregates. this should be a flag in the #aggregate macro, and require an other store type that does store data dyrectly instead of events (also, should still 
 
-- [.] add encrypted property to events
+- [x] add encrypted property to events
 
 - [x] rename private to "encrypt" for crypto stuff
 - [x] add a way to define events that must have an "actor", being an other entity, that can be used for permssions validation and from wich the id will be stored in the event's creatd_by 
@@ -109,3 +114,8 @@
   libraries/tests, implicit for web handlers.
 
 - [ ] make sure that postgres event store's table definitions create the tables as append only (no update, no delete)
+
+
+
+         @validate_spec(|order, actor, _evt| IsOwner { actor_id: actor.entity_id() } & ValidPrice & OrderIsPending )
+

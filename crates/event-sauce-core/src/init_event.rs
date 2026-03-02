@@ -169,6 +169,7 @@ mod tests {
     impl Aggregate for User {
         type Event = UserEvent;
         type Error = UserError;
+        type DeletedState = Self;
     }
 
     #[derive(Debug, Clone)]
@@ -475,6 +476,7 @@ mod tests {
     impl Aggregate for TeamMember {
         type Event = TeamMemberEvent;
         type Error = TeamMemberError;
+        type DeletedState = Self;
     }
 
     // First init event: admin creation

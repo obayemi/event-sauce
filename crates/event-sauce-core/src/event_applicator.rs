@@ -185,6 +185,7 @@ mod tests {
     impl Aggregate for TestEntity {
         type Event = TestEvent;
         type Error = TestError;
+        type DeletedState = Self;
     }
 
     #[test]

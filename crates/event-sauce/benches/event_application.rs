@@ -107,6 +107,7 @@ impl DefaultEntity for BenchAccount {}
 impl Aggregate for BenchAccount {
     type Event = BenchAccountEvent;
     type Error = BenchAccountError;
+    type DeletedState = Self;
 }
 
 impl EventApplicator<BenchAccount> for BenchAccountEvent {

@@ -73,6 +73,7 @@ impl DefaultEntity for Patient {}
 impl Aggregate for Patient {
     type Event = PatientEvent;
     type Error = PatientError;
+    type DeletedState = Self;
 
     /// Mark this aggregate as encrypted — enables automatic encryption.
     fn is_encrypted() -> bool {
@@ -159,6 +160,7 @@ impl DefaultEntity for Counter {}
 impl Aggregate for Counter {
     type Event = CounterEvent;
     type Error = CounterError;
+    type DeletedState = Self;
     // is_encrypted() defaults to false — no encryption
 }
 

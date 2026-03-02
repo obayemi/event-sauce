@@ -283,6 +283,7 @@ impl event_sauce_core::EventApplicator<BasicAggregate> for BasicEvent {
 impl Aggregate for BasicAggregate {
     type Event = BasicEvent;
     type Error = TestError;
+    type DeletedState = Self;
 }
 
 #[test]

@@ -68,6 +68,7 @@ impl AggregateError for PatientError {}
 impl Aggregate for Patient {
     type Event = PatientEvent;
     type Error = PatientError;
+    type DeletedState = Self;
     // Note: is_encrypted() is NOT overridden — this is NOT a fully encrypted aggregate
 }
 

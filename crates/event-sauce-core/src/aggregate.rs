@@ -4,6 +4,8 @@
 //! specifying its event and error types. Infrastructure concerns (version,
 //! pending events) are handled by `AggregateRoot<A>`.
 
+use std::fmt::Debug;
+
 use crate::{AggregateError, AggregateType, DomainEvent, Entity, EventApplicator};
 
 /// Trait for event-sourced aggregates.
@@ -78,9 +80,10 @@ use crate::{AggregateError, AggregateType, DomainEvent, Entity, EventApplicator}
 /// impl Aggregate for Counter {
 ///     type Event = CounterEvent;
 ///     type Error = CounterError;
+///     type DeletedState = Self;
 /// }
 /// ```
-pub trait Aggregate: Entity {
+pub trait Aggregate: Entity + Into<Self::DeletedState> {
     /// The type of events this aggregate produces.
     ///
     /// Must implement `DomainEvent` (for serialization) and `EventApplicator<Self>`
@@ -89,6 +92,19 @@ pub trait Aggregate: Entity {
 
     /// The type of errors that can occur during event application.
     type Error: AggregateError;
+
+    /// The state type after deletion.
+    ///
+    /// Defaults to `Self` (via `#[aggregate]` macro), meaning delete events
+    /// simply return the aggregate in a terminal state. Override with
+    /// `#[aggregate(deleted_state = "DeletedUser")]` to transform into a
+    /// different type (e.g., for PII stripping).
+    ///
+    /// The `Into<Self::DeletedState>` supertrait on `Aggregate` enables the
+    /// default `DeleteEvent::delete()` implementation. When `DeletedState = Self`,
+    /// this is the identity conversion (always available). When custom, implement
+    /// `From<Self> for DeletedState`.
+    type DeletedState: Debug + Send + Sync;
 
     /// Returns whether this aggregate's data should be encrypted at rest.
     ///
@@ -131,8 +147,11 @@ pub trait Aggregate: Entity {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_fixtures::{SimpleTestEntity, SimpleTestEvent};
+    use crate::test_fixtures::SimpleTestEvent;
     use crate::{AggregateVersion, EntityId};
+
+    // Import SimpleTestEntity — it has DeletedState = Self in test_fixtures
+    use crate::test_fixtures::SimpleTestEntity;
 
     #[test]
     fn test_aggregate_type_name() {

@@ -78,6 +78,7 @@ pub(crate) struct PendingEvent<E> {
 /// impl Aggregate for Counter {
 ///     type Event = CounterEvent;
 ///     type Error = CounterError;
+///     type DeletedState = Self;
 /// }
 ///
 /// let mut counter = AggregateRoot::<Counter>::new(EntityId::new());
@@ -454,6 +455,7 @@ mod tests {
     impl Aggregate for CounterEntity {
         type Event = CounterEvent;
         type Error = TestError;
+        type DeletedState = Self;
     }
 
     // Custom methods on the aggregate root

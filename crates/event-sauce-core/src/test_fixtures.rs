@@ -101,6 +101,7 @@ impl EventApplicator<SimpleTestEntity> for SimpleTestEvent {
 impl crate::Aggregate for SimpleTestEntity {
     type Event = SimpleTestEvent;
     type Error = SimpleTestError;
+    type DeletedState = Self;
 }
 
 /// HashMap-based mock event store for testing.
@@ -340,6 +341,7 @@ impl AggregateError for TestCounterError {}
 impl crate::Aggregate for TestCounter {
     type Event = TestCounterEvent;
     type Error = TestCounterError;
+    type DeletedState = Self;
 }
 
 #[cfg(test)]

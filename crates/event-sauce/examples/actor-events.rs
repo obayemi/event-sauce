@@ -118,6 +118,7 @@ impl AggregateError for UserError {}
 impl Aggregate for User {
     type Event = UserEvent;
     type Error = UserError;
+    type DeletedState = Self;
 }
 
 // ============================================================================
@@ -153,6 +154,7 @@ impl Entity for Document {
 impl Aggregate for Document {
     type Event = DocumentEvent;
     type Error = DocumentError;
+    type DeletedState = Self;
 }
 
 // ============================================================================

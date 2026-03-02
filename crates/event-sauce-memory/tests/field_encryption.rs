@@ -43,6 +43,7 @@ impl AggregateError for PatientError {}
 impl Aggregate for Patient {
     type Event = PatientEvent;
     type Error = PatientError;
+    type DeletedState = Self;
 }
 
 define_events! {

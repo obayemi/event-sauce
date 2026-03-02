@@ -222,6 +222,7 @@ mod tests {
     impl crate::Aggregate for TestAggregate {
         type Event = TestEvent;
         type Error = TestAggregateError;
+        type DeletedState = Self;
     }
 
     // Test event implementation
@@ -345,6 +346,7 @@ mod tests {
     impl crate::Aggregate for SimpleEntity {
         type Event = SimpleEvent;
         type Error = TestAggregateError;
+        type DeletedState = Self;
     }
 
     impl DomainEvent for SimpleEvent {
@@ -409,6 +411,7 @@ mod tests {
     impl crate::Aggregate for VersionedEntity {
         type Event = VersionedEvent;
         type Error = TestAggregateError;
+        type DeletedState = Self;
     }
 
     impl DomainEvent for VersionedEvent {

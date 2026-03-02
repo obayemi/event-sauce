@@ -33,6 +33,10 @@ struct AggregateAttrs {
     /// Generates `fn is_encrypted() -> bool { true }`.
     #[darling(default)]
     encrypted: bool,
+    /// Optional custom deleted state type. When set, generates
+    /// `type DeletedState = <type>;` instead of `type DeletedState = Self;`.
+    #[darling(default)]
+    deleted_state: Option<String>,
 }
 
 /// Attributes for the #[event(...)] container attribute
@@ -1164,6 +1168,14 @@ pub fn aggregate(attr: TokenStream, item: TokenStream) -> TokenStream {
         quote! {}
     };
 
+    // Generate DeletedState type
+    let deleted_state_type = if let Some(ds) = &aggregate_attrs.deleted_state {
+        let ds_ident = Ident::new(ds, proc_macro2::Span::call_site());
+        quote! { type DeletedState = #ds_ident; }
+    } else {
+        quote! { type DeletedState = Self; }
+    };
+
     // Emit the cleaned struct + Entity impl + Aggregate impl
     let gen = quote! {
         #cleaned_input
@@ -1173,6 +1185,7 @@ pub fn aggregate(attr: TokenStream, item: TokenStream) -> TokenStream {
         impl event_sauce_core::Aggregate for #aggregate_name {
             type Event = #event_type;
             type Error = #error_type;
+            #deleted_state_type
 
             #aggregate_type_override
             #is_encrypted_override

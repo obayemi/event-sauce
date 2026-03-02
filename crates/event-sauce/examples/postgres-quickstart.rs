@@ -107,7 +107,7 @@ define_events! {
 /// User aggregate — **encrypted** for GDPR: all event data is encrypted at rest.
 /// The `init` flag uses the type-state pattern; `encrypted` enables crypto-shredding.
 #[aggregate(event = "UserEvent", error = "UserError", init, encrypted)]
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct User {
     #[id]
     id: EntityId,
@@ -240,7 +240,7 @@ define_events! {
 /// Order aggregate with actor-validated events
 /// The `init` flag uses the type-state pattern; no Option fields needed.
 #[aggregate(event = "OrderEvent", error = "OrderError", init)]
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct Order {
     #[id]
     id: EntityId,

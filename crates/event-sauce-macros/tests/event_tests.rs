@@ -67,6 +67,7 @@ impl EventApplicator<TestAggregate> for TestEvent {
 impl Aggregate for TestAggregate {
     type Event = TestEvent;
     type Error = TestAggregateError;
+    type DeletedState = Self;
 }
 
 #[test]
@@ -202,6 +203,7 @@ impl EventApplicator<TestAggregateV2> for TestEventV2 {
 impl Aggregate for TestAggregateV2 {
     type Event = TestEventV2;
     type Error = TestAggregateError;
+    type DeletedState = Self;
 }
 
 #[test]
@@ -261,6 +263,7 @@ impl EventApplicator<OrderAggregate> for OrderEvent {
 impl Aggregate for OrderAggregate {
     type Event = OrderEvent;
     type Error = TestAggregateError;
+    type DeletedState = Self;
 }
 
 #[test]
@@ -315,6 +318,7 @@ impl EventApplicator<SimpleAggregate> for SimpleEvent {
 impl Aggregate for SimpleAggregate {
     type Event = SimpleEvent;
     type Error = TestAggregateError;
+    type DeletedState = Self;
 }
 
 #[test]

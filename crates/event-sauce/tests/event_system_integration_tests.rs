@@ -164,6 +164,7 @@ impl DefaultEntity for TestAccount {}
 impl Aggregate for TestAccount {
     type Event = TestAccountEvent;
     type Error = TestAccountError;
+    type DeletedState = Self;
 }
 
 /// Opens a new account, returning an AggregateRoot wrapping the entity.

@@ -192,6 +192,7 @@ mod tests {
     impl crate::Aggregate for User {
         type Event = UserEvent;
         type Error = UserError;
+        type DeletedState = Self;
     }
 
     #[derive(Debug, Clone)]
