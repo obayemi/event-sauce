@@ -102,6 +102,48 @@ pub trait ActorInitEvent<A: Aggregate> {
     }
 }
 
+/// Trait for delete events that require an actor for permission validation.
+///
+/// Similar to [`ActorEvent`], but for events that terminate aggregates.
+/// The actor is validated at command time; validation is skipped during replay.
+///
+/// # Examples
+///
+/// ```ignore
+/// use event_sauce_core::ActorDeleteEvent;
+///
+/// impl ActorDeleteEvent<Order> for CancelledEvent {
+///     type Actor = Admin;
+///
+///     fn validate_delete_actor(&self, order: &Order, actor: &Admin) -> Result<(), OrderError> {
+///         if !actor.can_cancel_orders() {
+///             return Err(OrderError::PermissionDenied);
+///         }
+///         Ok(())
+///     }
+/// }
+/// ```
+pub trait ActorDeleteEvent<A: Aggregate> {
+    /// The entity type that acts as the actor for this delete event.
+    type Actor: Entity;
+
+    /// Validates the actor's permission to delete this aggregate.
+    ///
+    /// Called at command time with the current aggregate state and actor entity.
+    /// The default implementation allows all actors.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the actor is not authorized.
+    fn validate_delete_actor(
+        &self,
+        _aggregate: &A,
+        _actor: &Self::Actor,
+    ) -> Result<(), A::Error> {
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -301,5 +343,65 @@ mod tests {
         let event = NoValidationInitEvent;
 
         assert!(event.validate_init_actor(&user).is_ok());
+    }
+
+    // Test ActorDeleteEvent
+    struct CancelledEvent;
+
+    impl ActorDeleteEvent<Order> for CancelledEvent {
+        type Actor = User;
+
+        fn validate_delete_actor(
+            &self,
+            _order: &Order,
+            actor: &User,
+        ) -> Result<(), OrderError> {
+            if !actor.can_modify {
+                return Err(OrderError::PermissionDenied);
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn test_actor_delete_event_validate_succeeds() {
+        let order = Order::new(EntityId::new());
+        let user = User {
+            id: EntityId::new(),
+            can_modify: true,
+        };
+        let event = CancelledEvent;
+
+        assert!(event.validate_delete_actor(&order, &user).is_ok());
+    }
+
+    #[test]
+    fn test_actor_delete_event_validate_fails() {
+        let order = Order::new(EntityId::new());
+        let user = User {
+            id: EntityId::new(),
+            can_modify: false,
+        };
+        let event = CancelledEvent;
+
+        let result = event.validate_delete_actor(&order, &user);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().to_string(), "Permission denied");
+    }
+
+    // Test default ActorDeleteEvent allows all
+    struct NoValidationDeleteEvent;
+
+    impl ActorDeleteEvent<Order> for NoValidationDeleteEvent {
+        type Actor = User;
+    }
+
+    #[test]
+    fn test_actor_delete_event_default_allows_all() {
+        let order = Order::new(EntityId::new());
+        let user = User::new(EntityId::new());
+        let event = NoValidationDeleteEvent;
+
+        assert!(event.validate_delete_actor(&order, &user).is_ok());
     }
 }

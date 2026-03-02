@@ -19,6 +19,9 @@
 - 🛡️ **Rich Validation**: Aggregate-specific errors with business rule enforcement
 - 🧩 **Specification Pattern**: Composable, reusable business rules with AND/OR/NOT combinators
 - ⚡ **Optimized Replay**: Fast event replay without re-validation
+- 🔐 **Encryption & Crypto-Shredding**: Full-aggregate or field-level encryption with pluggable providers
+- 🚪 **Init Events**: Type-state aggregate construction — no more invalid uninitialized states
+- 👤 **Actor Events**: Permission validation tied to actor identity, with automatic audit trails
 
 ### Modern Event Sourcing Features
 
@@ -112,6 +115,142 @@ command_handler! {
 
 That's it! Your aggregate is ready to use with full event sourcing capabilities.
 
+### Init Events (Type-State Construction)
+
+Use `@init` events to enforce that aggregates are always constructed through a valid creation event — no more `Default` with invalid states:
+
+```rust
+#[aggregate(id = "OrderId", event = "OrderEvent", error = "OrderError", init)]
+struct Order {
+    order_id: String,
+    status: OrderStatus,
+}
+
+define_events! {
+    pub enum OrderEvent for Order {
+        Created {
+            order_id: String,
+        }
+        @init
+        @validate |evt| {
+            if evt.order_id.is_empty() {
+                return Err(OrderError::EmptyOrderId);
+            }
+            Ok(())
+        }
+        => |id, event| {
+            Order { order_id: event.order_id.clone(), status: OrderStatus::Pending }
+        },
+
+        Completed {} => |order, _event| {
+            order.status = OrderStatus::Completed;
+        },
+    }
+}
+
+command_handler! {
+    impl Order {
+        @init fn create_order(order_id: String) -> CreatedEvent { order_id };
+        fn complete() -> CompletedEvent {};
+    }
+}
+
+// Creation returns AggregateRoot<Order> directly
+let mut order = Order::create_order("ORD-001".into())?;
+order.complete()?;
+```
+
+Multiple init variants are supported for different creation paths (e.g., `CreatedByAdmin` vs `CreatedByInvite`).
+
+### Actor Events (Permission Validation)
+
+Require an actor (e.g., a `User`) for specific commands, with automatic permission validation and audit trail:
+
+```rust
+define_events! {
+    pub enum DocumentEvent for Document {
+        ContentUpdated {
+            content: String,
+        }
+        @actor(User)
+        @validate |_doc, actor, _evt| {
+            if actor.state.role == Role::Viewer {
+                return Err(DocumentError::PermissionDenied);
+            }
+            Ok(())
+        }
+        => |doc, event| {
+            doc.content = event.content.clone();
+        },
+    }
+}
+
+command_handler! {
+    impl Document {
+        @actor(User) fn update_content(content: String) -> ContentUpdatedEvent { content };
+    }
+}
+
+// Actor required at command time — validated, then stored in EventEnvelope::created_by
+doc.update_content(&editor, "new content".into())?;
+```
+
+Actor validation is **skipped during replay** — events are historical facts, only fresh commands validate permissions.
+
+### Encryption & Crypto-Shredding
+
+Protect sensitive data at rest with full-aggregate or field-level encryption:
+
+**Full-aggregate encryption** — all event and snapshot data encrypted:
+
+```rust
+#[aggregate(event = "UserEvent", error = "UserError", encrypted)]
+struct User {
+    name: String,
+    email: String,
+}
+```
+
+**Field-level encryption** — encrypt only sensitive fields, keep others queryable:
+
+```rust
+define_events! {
+    pub enum PatientEvent for Patient {
+        Registered {
+            name: String,
+            diagnosis: String,
+            visit_count: i32,
+        }
+        @encrypted_fields(name, diagnosis)
+        => |patient, event| {
+            patient.name = event.name.clone();
+            patient.diagnosis = event.diagnosis.clone();
+            patient.visit_count = event.visit_count;
+        },
+    }
+}
+```
+
+**Setup with a crypto provider:**
+
+```rust
+use event_sauce_crypto::Aes256GcmProvider;
+
+let store = InMemoryEventStore::builder()
+    .crypto_key_store(Arc::new(InMemoryCryptoKeyStore::new()))
+    .crypto_provider(Arc::new(Aes256GcmProvider))
+    .build();
+```
+
+**Crypto-shredding** (right to be forgotten) — delete the key to make data permanently unreadable:
+
+```rust
+key_store.delete_key(user_id.as_uuid()).await?;
+// Subsequent loads return Error::KeyNotFound
+```
+
+See the **[Privacy & Encryption Guide](docs/privacy.md)** for full details.
+
 ### Building Projections (Read Models)
 
 Build type-safe read models with the `projection!` macro:
@@ -183,6 +322,7 @@ event-sauce = { version = "0.1", features = ["postgres"] }
 - `macros` (default) - Derive macros for aggregates and events
 - `memory` (default) - In-memory backend for testing
 - `postgres` - PostgreSQL backend
+- `crypto` - Encryption support (AES-256-GCM provider, key stores)
 - `full` - All features enabled
 
 ## Architecture
@@ -422,7 +562,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### Guides
 
 - **[Getting Started Guide](docs/getting-started.md)** - Your first event-sourced application
-- **[Projections & Subscriptions](docs/projections.md)** - 🆕 Building read models with durable, guaranteed delivery
+- **[Events Guide](docs/events.md)** - Event definitions, init events, actor events, and validation
+- **[Aggregates Guide](docs/aggregates.md)** - Aggregate design, type-state construction
+- **[Validation Guide](docs/validation.md)** - Business rule validation and specification pattern
+- **[Privacy & Encryption](docs/privacy.md)** - Full-aggregate and field-level encryption, crypto-shredding
+- **[Projections & Subscriptions](docs/projections.md)** - Building read models with durable, guaranteed delivery
 - **[PostgreSQL Production Setup](docs/postgres-production.md)** - Complete production deployment guide
 - **[Architecture Overview](docs/architecture.md)** - System design and patterns
 - **[TDD Workflow](docs/tdd-workflow.md)** - Test-driven development for event sourcing
@@ -436,9 +580,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### Learn More
 
 - **Examples** - See `crates/event-sauce/examples/` for complete applications:
-  - **[postgres-quickstart.rs](crates/event-sauce/examples/postgres-quickstart.rs)** - Full-featured example with User and Order aggregates, projections, and PostgreSQL backend using `define_events!` macro
-  - **[apply-event.rs](crates/event-sauce/examples/apply-event.rs)** - Bank account example demonstrating manual event implementation with `ApplyEvent` trait and `#[derive(Event)]`
-- **Tests** - 231 tests show how to use every feature
+  - **[postgres-quickstart.rs](crates/event-sauce/examples/postgres-quickstart.rs)** - Full-featured example with User and Order aggregates, projections, and PostgreSQL backend
+  - **[apply-event.rs](crates/event-sauce/examples/apply-event.rs)** - Bank account example with manual `ApplyEvent` trait implementation
+  - **[actor-events.rs](crates/event-sauce/examples/actor-events.rs)** - Role-based permission validation with actor events
+  - **[crypto-shredding.rs](crates/event-sauce/examples/crypto-shredding.rs)** - Full-aggregate encryption and right-to-be-forgotten
+  - **[field-encryption.rs](crates/event-sauce/examples/field-encryption.rs)** - Selective field-level encryption for sensitive data
 - **CLAUDE.md** - Development guidelines and principles
 
 ## Roadmap

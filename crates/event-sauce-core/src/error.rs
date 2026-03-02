@@ -76,6 +76,18 @@ pub enum Error {
     #[error("Encryption error: {0}")]
     Encryption(String),
 
+    /// Aggregate has been deleted.
+    ///
+    /// Occurs when trying to load a deleted aggregate via `load()`.
+    /// Use `load_any()` or `load_deleted()` instead.
+    #[error("Aggregate deleted: {aggregate_type} with ID {aggregate_id}")]
+    AggregateDeleted {
+        /// The aggregate type that was deleted.
+        aggregate_type: String,
+        /// The aggregate ID that was deleted.
+        aggregate_id: String,
+    },
+
     /// Generic error with custom message.
     #[error("{0}")]
     Custom(String),
@@ -154,6 +166,26 @@ impl Error {
     #[must_use]
     pub fn encryption(message: impl Into<String>) -> Self {
         Self::Encryption(message.into())
+    }
+
+    /// Creates an aggregate deleted error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use event_sauce_core::Error;
+    ///
+    /// let error = Error::aggregate_deleted("User", "user-123");
+    /// ```
+    #[must_use]
+    pub fn aggregate_deleted(
+        aggregate_type: impl Into<String>,
+        aggregate_id: impl Into<String>,
+    ) -> Self {
+        Self::AggregateDeleted {
+            aggregate_type: aggregate_type.into(),
+            aggregate_id: aggregate_id.into(),
+        }
     }
 
     /// Creates a custom error.
@@ -246,6 +278,21 @@ impl Error {
     #[must_use]
     pub fn is_encryption(&self) -> bool {
         matches!(self, Self::Encryption(_))
+    }
+
+    /// Returns true if this is an aggregate deleted error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use event_sauce_core::Error;
+    ///
+    /// let error = Error::aggregate_deleted("User", "123");
+    /// assert!(error.is_aggregate_deleted());
+    /// ```
+    #[must_use]
+    pub fn is_aggregate_deleted(&self) -> bool {
+        matches!(self, Self::AggregateDeleted { .. })
     }
 }
 
