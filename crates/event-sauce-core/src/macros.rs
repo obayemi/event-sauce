@@ -89,7 +89,7 @@
 #[macro_export]
 macro_rules! command_handler {
     // Single entry point — always delegates to TT muncher.
-    // Supports `@init`, `@actor(Type)`, and regular commands.
+    // Supports `@init`, `@actor(Type)`, `@delete`, and regular commands.
     (
         impl $aggregate:ty {
             $($rest:tt)*
@@ -101,6 +101,8 @@ macro_rules! command_handler {
             regular_commands: []
             actor_commands: []
             actor_init_commands: []
+            delete_commands: []
+            actor_delete_commands: []
             $($rest)*
         }
     };
@@ -126,6 +128,8 @@ macro_rules! __command_handler_init_internal {
         regular_commands: [ $($r_acc:tt)* ]
         actor_commands: [ $($a_acc:tt)* ]
         actor_init_commands: [ $($ai_acc:tt)* ]
+        delete_commands: [ $($d_acc:tt)* ]
+        actor_delete_commands: [ $($ad_acc:tt)* ]
 
         $(#[$attr:meta])*
         @init
@@ -140,6 +144,8 @@ macro_rules! __command_handler_init_internal {
             regular_commands: [ $($r_acc)* ]
             actor_commands: [ $($a_acc)* ]
             actor_init_commands: [ $($ai_acc)* { attrs: [$($attr),*] cmd: $command ($($param: $param_ty),*) -> $event_struct { $($field),* } actor: $actor_type } ]
+            delete_commands: [ $($d_acc)* ]
+            actor_delete_commands: [ $($ad_acc)* ]
             $($($rest)*)?
         }
     };
@@ -151,6 +157,8 @@ macro_rules! __command_handler_init_internal {
         regular_commands: [ $($r_acc:tt)* ]
         actor_commands: [ $($a_acc:tt)* ]
         actor_init_commands: [ $($ai_acc:tt)* ]
+        delete_commands: [ $($d_acc:tt)* ]
+        actor_delete_commands: [ $($ad_acc:tt)* ]
 
         $(#[$attr:meta])*
         @init
@@ -164,6 +172,65 @@ macro_rules! __command_handler_init_internal {
             regular_commands: [ $($r_acc)* ]
             actor_commands: [ $($a_acc)* ]
             actor_init_commands: [ $($ai_acc)* ]
+            delete_commands: [ $($d_acc)* ]
+            actor_delete_commands: [ $($ad_acc)* ]
+            $($($rest)*)?
+        }
+    };
+
+    // ---- TT muncher: parse @delete @actor(Type) command ----
+    (
+        @munch [$aggregate:ty]
+        init_commands: [ $($i_acc:tt)* ]
+        regular_commands: [ $($r_acc:tt)* ]
+        actor_commands: [ $($a_acc:tt)* ]
+        actor_init_commands: [ $($ai_acc:tt)* ]
+        delete_commands: [ $($d_acc:tt)* ]
+        actor_delete_commands: [ $($ad_acc:tt)* ]
+
+        $(#[$attr:meta])*
+        @delete
+        @actor($actor_type:ty)
+        fn $command:ident($($param:ident: $param_ty:ty),* $(,)?)
+            -> $event_struct:ident { $($field:ident),* $(,)? }
+        $(; $($rest:tt)*)?
+    ) => {
+        $crate::__command_handler_init_internal! {
+            @munch [$aggregate]
+            init_commands: [ $($i_acc)* ]
+            regular_commands: [ $($r_acc)* ]
+            actor_commands: [ $($a_acc)* ]
+            actor_init_commands: [ $($ai_acc)* ]
+            delete_commands: [ $($d_acc)* ]
+            actor_delete_commands: [ $($ad_acc)* { attrs: [$($attr),*] cmd: $command ($($param: $param_ty),*) -> $event_struct { $($field),* } actor: $actor_type } ]
+            $($($rest)*)?
+        }
+    };
+
+    // ---- TT muncher: parse @delete command (no actor) ----
+    (
+        @munch [$aggregate:ty]
+        init_commands: [ $($i_acc:tt)* ]
+        regular_commands: [ $($r_acc:tt)* ]
+        actor_commands: [ $($a_acc:tt)* ]
+        actor_init_commands: [ $($ai_acc:tt)* ]
+        delete_commands: [ $($d_acc:tt)* ]
+        actor_delete_commands: [ $($ad_acc:tt)* ]
+
+        $(#[$attr:meta])*
+        @delete
+        fn $command:ident($($param:ident: $param_ty:ty),* $(,)?)
+            -> $event_struct:ident { $($field:ident),* $(,)? }
+        $(; $($rest:tt)*)?
+    ) => {
+        $crate::__command_handler_init_internal! {
+            @munch [$aggregate]
+            init_commands: [ $($i_acc)* ]
+            regular_commands: [ $($r_acc)* ]
+            actor_commands: [ $($a_acc)* ]
+            actor_init_commands: [ $($ai_acc)* ]
+            delete_commands: [ $($d_acc)* { attrs: [$($attr),*] cmd: $command ($($param: $param_ty),*) -> $event_struct { $($field),* } } ]
+            actor_delete_commands: [ $($ad_acc)* ]
             $($($rest)*)?
         }
     };
@@ -175,6 +242,8 @@ macro_rules! __command_handler_init_internal {
         regular_commands: [ $($r_acc:tt)* ]
         actor_commands: [ $($a_acc:tt)* ]
         actor_init_commands: [ $($ai_acc:tt)* ]
+        delete_commands: [ $($d_acc:tt)* ]
+        actor_delete_commands: [ $($ad_acc:tt)* ]
 
         $(#[$attr:meta])*
         @actor($actor_type:ty)
@@ -188,17 +257,21 @@ macro_rules! __command_handler_init_internal {
             regular_commands: [ $($r_acc)* ]
             actor_commands: [ $($a_acc)* { attrs: [$($attr),*] cmd: $command ($($param: $param_ty),*) -> $event_struct { $($field),* } actor: $actor_type } ]
             actor_init_commands: [ $($ai_acc)* ]
+            delete_commands: [ $($d_acc)* ]
+            actor_delete_commands: [ $($ad_acc)* ]
             $($($rest)*)?
         }
     };
 
-    // ---- TT muncher: parse regular command (no @init, no @actor) ----
+    // ---- TT muncher: parse regular command (no @init, no @actor, no @delete) ----
     (
         @munch [$aggregate:ty]
         init_commands: [ $($i_acc:tt)* ]
         regular_commands: [ $($r_acc:tt)* ]
         actor_commands: [ $($a_acc:tt)* ]
         actor_init_commands: [ $($ai_acc:tt)* ]
+        delete_commands: [ $($d_acc:tt)* ]
+        actor_delete_commands: [ $($ad_acc:tt)* ]
 
         $(#[$attr:meta])*
         fn $command:ident($($param:ident: $param_ty:ty),* $(,)?)
@@ -211,6 +284,8 @@ macro_rules! __command_handler_init_internal {
             regular_commands: [ $($r_acc)* { attrs: [$($attr),*] cmd: $command ($($param: $param_ty),*) -> $event_struct { $($field),* } } ]
             actor_commands: [ $($a_acc)* ]
             actor_init_commands: [ $($ai_acc)* ]
+            delete_commands: [ $($d_acc)* ]
+            actor_delete_commands: [ $($ad_acc)* ]
             $($($rest)*)?
         }
     };
@@ -222,6 +297,8 @@ macro_rules! __command_handler_init_internal {
         regular_commands: [ $({ attrs: [$($r_attr:meta),*] cmd: $r_cmd:ident ($($r_param:ident: $r_param_ty:ty),*) -> $r_evt:ident { $($r_field:ident),* } })* ]
         actor_commands: [ $({ attrs: [$($a_attr:meta),*] cmd: $a_cmd:ident ($($a_param:ident: $a_param_ty:ty),*) -> $a_evt:ident { $($a_field:ident),* } actor: $a_actor:ty })* ]
         actor_init_commands: [ $({ attrs: [$($ai_attr:meta),*] cmd: $ai_cmd:ident ($($ai_param:ident: $ai_param_ty:ty),*) -> $ai_evt:ident { $($ai_field:ident),* } actor: $ai_actor:ty })* ]
+        delete_commands: [ $({ attrs: [$($d_attr:meta),*] cmd: $d_cmd:ident ($($d_param:ident: $d_param_ty:ty),*) -> $d_evt:ident { $($d_field:ident),* } })* ]
+        actor_delete_commands: [ $({ attrs: [$($ad_attr:meta),*] cmd: $ad_cmd:ident ($($ad_param:ident: $ad_param_ty:ty),*) -> $ad_evt:ident { $($ad_field:ident),* } actor: $ad_actor:ty })* ]
     ) => {
         // --- Init event helpers: associated functions (no &self) ---
         impl $aggregate {
@@ -428,6 +505,77 @@ macro_rules! __command_handler_init_internal {
                         let event = self.[<$a_cmd _event>]($($a_param),*);
                         $crate::ActorEvent::validate_actor(&event, self.entity(), actor.entity())?;
                         self.apply_with_actor(event, actor.entity_id())
+                    }
+                )*
+            }
+        }
+
+        // --- Delete event helpers: instance methods ---
+        impl $aggregate {
+            $(
+                paste::paste! {
+                    $(#[$d_attr])*
+                    #[allow(missing_docs)]
+                    pub fn [<$d_cmd _event>](&self, $($d_param: $d_param_ty),*) -> $d_evt {
+                        $d_evt {
+                            $($d_field: $d_param,)*
+                            timestamp: ::chrono::Utc::now(),
+                        }
+                    }
+                }
+            )*
+        }
+
+        // --- Actor delete event helpers: instance methods ---
+        impl $aggregate {
+            $(
+                paste::paste! {
+                    $(#[$ad_attr])*
+                    #[allow(missing_docs)]
+                    pub fn [<$ad_cmd _event>](&self, $($ad_param: $ad_param_ty),*) -> $ad_evt {
+                        $ad_evt {
+                            $($ad_field: $ad_param,)*
+                            timestamp: ::chrono::Utc::now(),
+                        }
+                    }
+                }
+            )*
+        }
+
+        // --- Delete commands trait + impl on AggregateRoot ---
+        paste::paste! {
+            #[allow(missing_docs, private_interfaces)]
+            pub trait [<$aggregate DeleteCommands>] {
+                $(
+                    $(#[$d_attr])*
+                    fn $d_cmd(self, $($d_param: $d_param_ty),*)
+                        -> ::std::result::Result<$crate::DeletedAggregateRoot<$aggregate>, <$aggregate as $crate::Aggregate>::Error>;
+                )*
+                $(
+                    $(#[$ad_attr])*
+                    fn $ad_cmd(self, actor: &$crate::AggregateRoot<$ad_actor>, $($ad_param: $ad_param_ty),*)
+                        -> ::std::result::Result<$crate::DeletedAggregateRoot<$aggregate>, <$aggregate as $crate::Aggregate>::Error>;
+                )*
+            }
+
+            impl [<$aggregate DeleteCommands>] for $crate::AggregateRoot<$aggregate> {
+                $(
+                    $(#[$d_attr])*
+                    fn $d_cmd(self, $($d_param: $d_param_ty),*)
+                        -> ::std::result::Result<$crate::DeletedAggregateRoot<$aggregate>, <$aggregate as $crate::Aggregate>::Error>
+                    {
+                        let event = self.entity().[<$d_cmd _event>]($($d_param),*);
+                        self.apply_delete(event)
+                    }
+                )*
+                $(
+                    $(#[$ad_attr])*
+                    fn $ad_cmd(self, actor: &$crate::AggregateRoot<$ad_actor>, $($ad_param: $ad_param_ty),*)
+                        -> ::std::result::Result<$crate::DeletedAggregateRoot<$aggregate>, <$aggregate as $crate::Aggregate>::Error>
+                    {
+                        let event = self.entity().[<$ad_cmd _event>]($($ad_param),*);
+                        $crate::ActorDeleteEvent::validate_delete_actor(&event, self.entity(), actor.entity())?;
+                        self.apply_delete_with_actor(event, actor.entity_id())
                     }
                 )*
             }
@@ -923,6 +1071,97 @@ macro_rules! define_events {
     };
 
     // =========================================================================
+    // TT muncher: parse one DELETE ACTOR variant (@delete @actor(Type))
+    // =========================================================================
+    (
+        @munch
+        [$vis:vis] [$event_enum:ident] [$aggregate:ty]
+        accumulated: [$($acc:tt)*]
+        rest: [
+            $variant:ident {
+                $($field:ident: $field_ty:ty),* $(,)?
+            }
+            @delete
+            @actor($actor_type:ty)
+            $(@version($version:literal))?
+            $(@validate |$($val_args:ident),+| $val_body:block)?
+            $(@validate_spec($($val_spec:tt)*))?
+            $(@post_validate |$post_val_agg:ident, $post_val_evt:ident| $post_val_body:block)?
+            $(@post_validate_spec($($post_val_spec:tt)*))?
+            $(@encrypted_fields($($enc_field:ident),+ $(,)?))?
+            => $apply:expr,
+            $($rest:tt)*
+        ]
+    ) => {
+        define_events! {
+            @munch
+            [$vis] [$event_enum] [$aggregate]
+            accumulated: [
+                $($acc)*
+                {
+                    variant: $variant,
+                    fields: { $($field: $field_ty),* },
+                    kind: actor_delete,
+                    actor_type: [$actor_type],
+                    version: [$([$version])?],
+                    validate: [$([|$($val_args),+| $val_body])?],
+                    validate_spec: [$([$($val_spec)*])?],
+                    post_validate: [$([$post_val_agg, $post_val_evt, $post_val_body])?],
+                    post_validate_spec: [$([$($post_val_spec)*])?],
+                    encrypted_fields: [$([$($enc_field),+])?],
+                    apply: $apply,
+                }
+            ]
+            rest: [$($rest)*]
+        }
+    };
+
+    // =========================================================================
+    // TT muncher: parse one DELETE variant (@delete, no @actor)
+    // =========================================================================
+    (
+        @munch
+        [$vis:vis] [$event_enum:ident] [$aggregate:ty]
+        accumulated: [$($acc:tt)*]
+        rest: [
+            $variant:ident {
+                $($field:ident: $field_ty:ty),* $(,)?
+            }
+            @delete
+            $(@version($version:literal))?
+            $(@validate |$($val_args:ident),+| $val_body:block)?
+            $(@validate_spec($($val_spec:tt)*))?
+            $(@post_validate |$post_val_agg:ident, $post_val_evt:ident| $post_val_body:block)?
+            $(@post_validate_spec($($post_val_spec:tt)*))?
+            $(@encrypted_fields($($enc_field:ident),+ $(,)?))?
+            => $apply:expr,
+            $($rest:tt)*
+        ]
+    ) => {
+        define_events! {
+            @munch
+            [$vis] [$event_enum] [$aggregate]
+            accumulated: [
+                $($acc)*
+                {
+                    variant: $variant,
+                    fields: { $($field: $field_ty),* },
+                    kind: delete,
+                    actor_type: [],
+                    version: [$([$version])?],
+                    validate: [$([|$($val_args),+| $val_body])?],
+                    validate_spec: [$([$($val_spec)*])?],
+                    post_validate: [$([$post_val_agg, $post_val_evt, $post_val_body])?],
+                    post_validate_spec: [$([$($post_val_spec)*])?],
+                    encrypted_fields: [$([$($enc_field),+])?],
+                    apply: $apply,
+                }
+            ]
+            rest: [$($rest)*]
+        }
+    };
+
+    // =========================================================================
     // TT muncher: parse one REGULAR variant (no @init after fields)
     // =========================================================================
     (
@@ -1247,6 +1486,36 @@ macro_rules! define_events {
                         ),*
                     }
                 }
+
+                fn is_delete(&self) -> bool {
+                    match self {
+                        $(
+                            $event_enum::$variant { .. } => {
+                                define_events!(@is_delete $kind)
+                            }
+                        ),*
+                    }
+                }
+
+                fn dispatch_delete(&self, aggregate: $aggregate) -> ::std::result::Result<<$aggregate as $crate::Aggregate>::DeletedState, <$aggregate as $crate::Aggregate>::Error> {
+                    match self {
+                        $(
+                            $event_enum::$variant { $($field,)* timestamp } => {
+                                define_events!(@dispatch_delete_arm $kind [$aggregate] [[<$variant Event>]] [$($field),*] [timestamp] [aggregate])
+                            }
+                        ),*
+                    }
+                }
+
+                fn dispatch_delete_unchecked(&self, aggregate: $aggregate) -> <$aggregate as $crate::Aggregate>::DeletedState {
+                    match self {
+                        $(
+                            $event_enum::$variant { $($field,)* timestamp } => {
+                                define_events!(@dispatch_delete_unchecked_arm $kind [$aggregate] [[<$variant Event>]] [$($field),*] [timestamp] [aggregate])
+                            }
+                        ),*
+                    }
+                }
             }
         }
     };
@@ -1486,6 +1755,128 @@ macro_rules! define_events {
     };
 
     // =========================================================================
+    // Helper: Emit DeleteEvent impl for @delete events
+    // =========================================================================
+    (
+        @emit_trait
+        [$vis:vis] [$aggregate:ty] [$event_enum:ident] [$variant:ident]
+        [{ $($field:ident: $field_ty:ty,)* }]
+        kind: delete,
+        actor_type: [],
+        validate: [$([|$($val_args:ident),+| $val_body:block])?],
+        validate_spec: [$([$($val_spec:tt)*])?],
+        post_validate: [$([$post_val_agg:ident, $post_val_evt:ident, $post_val_body:block])?],
+        post_validate_spec: [$([$($post_val_spec:tt)*])?],
+        apply: $apply:expr,
+    ) => {
+        paste::paste! {
+            impl $crate::DeleteEvent<$aggregate> for [<$variant Event>] {
+                #[allow(unused_variables, unreachable_code, clippy::redundant_closure_call)]
+                fn validate_delete(&self, aggregate: &$aggregate)
+                    -> ::std::result::Result<(), <$aggregate as $crate::Aggregate>::Error>
+                {
+                    $(
+                        $crate::__validate!(|$($val_args),+| $val_body, $aggregate, Self, aggregate, self);
+                    )?
+                    $(
+                        $crate::__check_spec!($($val_spec)*, $aggregate, Self, aggregate, self);
+                    )?
+                    ::std::result::Result::Ok(())
+                }
+
+                fn delete(&self, aggregate: $aggregate) -> <$aggregate as $crate::Aggregate>::DeletedState {
+                    let delete_fn: fn($aggregate, &Self) -> <$aggregate as $crate::Aggregate>::DeletedState = $apply;
+                    delete_fn(aggregate, self)
+                }
+
+                #[allow(unused_variables, unreachable_code, clippy::redundant_closure_call)]
+                fn post_validate_delete(&self, state: &<$aggregate as $crate::Aggregate>::DeletedState)
+                    -> ::std::result::Result<(), <$aggregate as $crate::Aggregate>::Error>
+                {
+                    $(
+                        return (|$post_val_agg: &<$aggregate as $crate::Aggregate>::DeletedState, $post_val_evt: &Self| $post_val_body)(state, self);
+                    )?
+                    $(
+                        // Post-validate specs not supported for delete events (DeletedState != Aggregate)
+                        let _ = ($($post_val_spec)*,);
+                    )?
+                    ::std::result::Result::Ok(())
+                }
+            }
+        }
+    };
+
+    // =========================================================================
+    // Helper: Emit DeleteEvent + ActorDeleteEvent impl for @delete @actor events
+    // =========================================================================
+    (
+        @emit_trait
+        [$vis:vis] [$aggregate:ty] [$event_enum:ident] [$variant:ident]
+        [{ $($field:ident: $field_ty:ty,)* }]
+        kind: actor_delete,
+        actor_type: [$actor_type:ty],
+        validate: [$([|$($val_args:ident),+| $val_body:block])?],
+        validate_spec: [$([$($val_spec:tt)*])?],
+        post_validate: [$([$post_val_agg:ident, $post_val_evt:ident, $post_val_body:block])?],
+        post_validate_spec: [$([$($post_val_spec:tt)*])?],
+        apply: $apply:expr,
+    ) => {
+        paste::paste! {
+            // DeleteEvent impl (for replay — dispatches 2-arg @validate, skips 3-arg)
+            impl $crate::DeleteEvent<$aggregate> for [<$variant Event>] {
+                #[allow(unused_variables, unreachable_code, clippy::redundant_closure_call)]
+                fn validate_delete(&self, aggregate: &$aggregate)
+                    -> ::std::result::Result<(), <$aggregate as $crate::Aggregate>::Error>
+                {
+                    $(
+                        $crate::__validate!(|$($val_args),+| $val_body, $aggregate, Self, aggregate, self);
+                    )?
+                    $(
+                        $crate::__check_spec!($($val_spec)*, $aggregate, Self, aggregate, self);
+                    )?
+                    ::std::result::Result::Ok(())
+                }
+
+                fn delete(&self, aggregate: $aggregate) -> <$aggregate as $crate::Aggregate>::DeletedState {
+                    let delete_fn: fn($aggregate, &Self) -> <$aggregate as $crate::Aggregate>::DeletedState = $apply;
+                    delete_fn(aggregate, self)
+                }
+
+                #[allow(unused_variables, unreachable_code, clippy::redundant_closure_call)]
+                fn post_validate_delete(&self, state: &<$aggregate as $crate::Aggregate>::DeletedState)
+                    -> ::std::result::Result<(), <$aggregate as $crate::Aggregate>::Error>
+                {
+                    $(
+                        return (|$post_val_agg: &<$aggregate as $crate::Aggregate>::DeletedState, $post_val_evt: &Self| $post_val_body)(state, self);
+                    )?
+                    $(
+                        let _ = ($($post_val_spec)*,);
+                    )?
+                    ::std::result::Result::Ok(())
+                }
+            }
+
+            // ActorDeleteEvent impl (for command-time — dispatches 3-arg @validate, skips 2-arg)
+            impl $crate::ActorDeleteEvent<$aggregate> for [<$variant Event>] {
+                type Actor = $actor_type;
+
+                #[allow(unused_variables, unreachable_code, clippy::redundant_closure_call)]
+                fn validate_delete_actor(&self, aggregate: &$aggregate, actor: &$actor_type)
+                    -> ::std::result::Result<(), <$aggregate as $crate::Aggregate>::Error>
+                {
+                    $(
+                        $crate::__validate_actor!(|$($val_args),+| $val_body, $aggregate, $actor_type, Self, aggregate, actor, self);
+                    )?
+                    $(
+                        $crate::__check_spec_actor!($($val_spec)*, $aggregate, $actor_type, Self, aggregate, actor, self);
+                    )?
+                    ::std::result::Result::Ok(())
+                }
+            }
+        }
+    };
+
+    // =========================================================================
     // Helper: dispatch arm — called from within paste::paste! so $evt_type
     // is already resolved (e.g. CreatedEvent). No inner paste needed.
     // =========================================================================
@@ -1519,6 +1910,12 @@ macro_rules! define_events {
     (@dispatch_arm actor_init [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
         unreachable!("dispatch() called on init event; use dispatch_init()")
     };
+    (@dispatch_arm delete [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
+        unreachable!("dispatch() called on delete event; use dispatch_delete()")
+    };
+    (@dispatch_arm actor_delete [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
+        unreachable!("dispatch() called on delete event; use dispatch_delete()")
+    };
 
     // =========================================================================
     // Helper: dispatch_unchecked arm
@@ -1548,6 +1945,12 @@ macro_rules! define_events {
     };
     (@dispatch_unchecked_arm actor_init [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
         unreachable!("dispatch_unchecked() called on init event; use dispatch_init_unchecked()")
+    };
+    (@dispatch_unchecked_arm delete [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
+        unreachable!("dispatch_unchecked() called on delete event; use dispatch_delete_unchecked()")
+    };
+    (@dispatch_unchecked_arm actor_delete [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
+        unreachable!("dispatch_unchecked() called on delete event; use dispatch_delete_unchecked()")
     };
 
     // =========================================================================
@@ -1585,6 +1988,12 @@ macro_rules! define_events {
             ::std::result::Result::Ok(entity)
         }
     };
+    (@dispatch_init_arm delete [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$id_var:ident]) => {
+        unreachable!("dispatch_init() called on delete event; use dispatch_delete()")
+    };
+    (@dispatch_init_arm actor_delete [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$id_var:ident]) => {
+        unreachable!("dispatch_init() called on delete event; use dispatch_delete()")
+    };
 
     // =========================================================================
     // Helper: dispatch_init_unchecked arm
@@ -1615,6 +2024,12 @@ macro_rules! define_events {
             evt.init($id_var)
         }
     };
+    (@dispatch_init_unchecked_arm delete [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$id_var:ident]) => {
+        unreachable!("dispatch_init_unchecked() called on delete event; use dispatch_delete_unchecked()")
+    };
+    (@dispatch_init_unchecked_arm actor_delete [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$id_var:ident]) => {
+        unreachable!("dispatch_init_unchecked() called on delete event; use dispatch_delete_unchecked()")
+    };
 
     // =========================================================================
     // Helper: is_init
@@ -1623,6 +2038,96 @@ macro_rules! define_events {
     (@is_init actor_init) => { true };
     (@is_init regular) => { false };
     (@is_init actor) => { false };
+    (@is_init delete) => { false };
+    (@is_init actor_delete) => { false };
+
+    // =========================================================================
+    // Helper: is_delete
+    // =========================================================================
+    (@is_delete delete) => { true };
+    (@is_delete actor_delete) => { true };
+    (@is_delete regular) => { false };
+    (@is_delete actor) => { false };
+    (@is_delete init) => { false };
+    (@is_delete actor_init) => { false };
+
+    // =========================================================================
+    // Helper: dispatch_delete arm
+    // =========================================================================
+    (@dispatch_delete_arm delete [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
+        {
+            use $crate::DeleteEvent;
+            let evt = $evt_type {
+                $($field: $field.clone(),)*
+                $timestamp: *$timestamp,
+            };
+            evt.validate_delete(&$aggregate_var)?;
+            let state = evt.delete($aggregate_var);
+            evt.post_validate_delete(&state)?;
+            ::std::result::Result::Ok(state)
+        }
+    };
+    (@dispatch_delete_arm actor_delete [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
+        {
+            use $crate::DeleteEvent;
+            let evt = $evt_type {
+                $($field: $field.clone(),)*
+                $timestamp: *$timestamp,
+            };
+            evt.validate_delete(&$aggregate_var)?;
+            let state = evt.delete($aggregate_var);
+            evt.post_validate_delete(&state)?;
+            ::std::result::Result::Ok(state)
+        }
+    };
+    (@dispatch_delete_arm regular [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
+        unreachable!("dispatch_delete() called on non-delete event")
+    };
+    (@dispatch_delete_arm actor [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
+        unreachable!("dispatch_delete() called on non-delete event")
+    };
+    (@dispatch_delete_arm init [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
+        unreachable!("dispatch_delete() called on non-delete event")
+    };
+    (@dispatch_delete_arm actor_init [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
+        unreachable!("dispatch_delete() called on non-delete event")
+    };
+
+    // =========================================================================
+    // Helper: dispatch_delete_unchecked arm
+    // =========================================================================
+    (@dispatch_delete_unchecked_arm delete [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
+        {
+            use $crate::DeleteEvent;
+            let evt = $evt_type {
+                $($field: $field.clone(),)*
+                $timestamp: *$timestamp,
+            };
+            evt.delete($aggregate_var)
+        }
+    };
+    (@dispatch_delete_unchecked_arm actor_delete [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
+        {
+            use $crate::DeleteEvent;
+            let evt = $evt_type {
+                $($field: $field.clone(),)*
+                $timestamp: *$timestamp,
+            };
+            evt.delete($aggregate_var)
+        }
+    };
+    (@dispatch_delete_unchecked_arm regular [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
+        unreachable!("dispatch_delete_unchecked() called on non-delete event")
+    };
+    (@dispatch_delete_unchecked_arm actor [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
+        unreachable!("dispatch_delete_unchecked() called on non-delete event")
+    };
+    (@dispatch_delete_unchecked_arm init [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
+        unreachable!("dispatch_delete_unchecked() called on non-delete event")
+    };
+    (@dispatch_delete_unchecked_arm actor_init [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
+        unreachable!("dispatch_delete_unchecked() called on non-delete event")
+    };
 
     // =========================================================================
     // Helper: extract version (default to 1)
@@ -5711,6 +6216,516 @@ mod tests {
                 timestamp: Utc::now(),
             };
             assert!(event.encrypted_fields().is_empty());
+        }
+    }
+
+    mod delete_tests {
+        use super::*;
+        use crate::{
+            ActorDeleteEvent, AggregateRoot, AggregateVersion, DeleteEvent, DeletedAggregateRoot,
+            EventApplicator,
+        };
+
+        // --- Operator entity (actor) ---
+
+        #[derive(Debug, Serialize, Deserialize)]
+        struct Admin {
+            id: EntityId,
+            role: String,
+        }
+
+        impl Entity for Admin {
+            fn new(id: EntityId) -> Self {
+                Self {
+                    id,
+                    role: String::new(),
+                }
+            }
+            fn entity_id(&self) -> EntityId {
+                self.id
+            }
+        }
+
+        impl crate::DefaultEntity for Admin {}
+
+        #[derive(Debug, Clone, Serialize, Deserialize)]
+        enum AdminEvent {
+            Noop,
+        }
+
+        impl DomainEvent for AdminEvent {
+            type Aggregate = Admin;
+            fn event_type(&self) -> &'static str {
+                "Admin.Noop"
+            }
+            fn event_version(&self) -> crate::EventVersion {
+                crate::EventVersion::new(1)
+            }
+            fn occurred_at(&self) -> DateTime<Utc> {
+                Utc::now()
+            }
+        }
+
+        impl crate::EventApplicator<Admin> for AdminEvent {
+            fn dispatch(&self, _: &mut Admin) -> Result<(), AccountError> {
+                Ok(())
+            }
+            fn dispatch_unchecked(&self, _: &mut Admin) {}
+        }
+
+        impl Aggregate for Admin {
+            type Event = AdminEvent;
+            type Error = AccountError;
+            type DeletedState = Self;
+        }
+
+        // --- Account aggregate with delete events ---
+
+        #[derive(Debug, thiserror::Error)]
+        enum AccountError {
+            #[error("Already deactivated")]
+            AlreadyDeactivated,
+            #[error("Not authorized")]
+            NotAuthorized,
+        }
+
+        impl AggregateError for AccountError {}
+
+        #[derive(Debug, Serialize, Deserialize)]
+        struct Account {
+            id: EntityId,
+            name: String,
+            active: bool,
+        }
+
+        impl Entity for Account {
+            fn entity_id(&self) -> EntityId {
+                self.id
+            }
+        }
+
+        impl Aggregate for Account {
+            type Event = AccountEvent;
+            type Error = AccountError;
+            type DeletedState = Self;
+        }
+
+        define_events! {
+            enum AccountEvent for Account {
+                AccountCreated {
+                    name: String,
+                }
+                @init
+                => |id, event| {
+                    Account {
+                        id,
+                        name: event.name.clone(),
+                        active: true,
+                    }
+                },
+
+                AccountUpdated {
+                    name: String,
+                }
+                @validate |account, _event| {
+                    if !account.active {
+                        return Err(AccountError::AlreadyDeactivated);
+                    }
+                    return Ok(());
+                }
+                => |account, event| {
+                    account.name = event.name.clone();
+                },
+
+                AccountDeactivated {
+                    reason: String,
+                }
+                @delete
+                @validate |account, _event| {
+                    if !account.active {
+                        return Err(AccountError::AlreadyDeactivated);
+                    }
+                    return Ok(());
+                }
+                => |mut account, _event| {
+                    account.active = false;
+                    account
+                },
+
+                AccountAdminDeleted {
+                    reason: String,
+                }
+                @delete
+                @actor(Admin)
+                @validate |account, admin, _event| {
+                    if admin.role != "superadmin" {
+                        return Err(AccountError::NotAuthorized);
+                    }
+                    if !account.active {
+                        return Err(AccountError::AlreadyDeactivated);
+                    }
+                    return Ok(());
+                }
+                => |mut account, _event| {
+                    account.active = false;
+                    account.name.clear();
+                    account
+                },
+            }
+        }
+
+        command_handler! {
+            impl Account {
+                @init fn create_account(name: String) -> AccountCreatedEvent { name };
+                fn update_account(name: String) -> AccountUpdatedEvent { name };
+                @delete fn deactivate_account(reason: String) -> AccountDeactivatedEvent { reason };
+                @delete @actor(Admin)
+                fn admin_delete_account(reason: String) -> AccountAdminDeletedEvent { reason };
+            }
+        }
+
+        fn make_admin(role: &str) -> AggregateRoot<Admin> {
+            let entity = Admin {
+                id: EntityId::new(),
+                role: role.to_string(),
+            };
+            AggregateRoot::from_snapshot(AggregateVersion::new(1), entity)
+        }
+
+        // --- define_events! @delete tests ---
+
+        #[test]
+        fn test_delete_event_struct_generated() {
+            let _event = AccountDeactivatedEvent {
+                reason: "goodbye".to_string(),
+                timestamp: Utc::now(),
+            };
+            let _event = AccountAdminDeletedEvent {
+                reason: "policy".to_string(),
+                timestamp: Utc::now(),
+            };
+        }
+
+        #[test]
+        fn test_delete_event_trait_generated() {
+            let event = AccountDeactivatedEvent {
+                reason: "goodbye".to_string(),
+                timestamp: Utc::now(),
+            };
+            let account = Account {
+                id: EntityId::new(),
+                name: "Alice".to_string(),
+                active: true,
+            };
+            assert!(event.validate_delete(&account).is_ok());
+        }
+
+        #[test]
+        fn test_delete_event_validation_rejects() {
+            let event = AccountDeactivatedEvent {
+                reason: "goodbye".to_string(),
+                timestamp: Utc::now(),
+            };
+            let account = Account {
+                id: EntityId::new(),
+                name: "Alice".to_string(),
+                active: false,
+            };
+            let result = event.validate_delete(&account);
+            assert!(result.is_err());
+            assert_eq!(result.unwrap_err().to_string(), "Already deactivated");
+        }
+
+        #[test]
+        fn test_delete_event_delete_fn() {
+            let event = AccountDeactivatedEvent {
+                reason: "goodbye".to_string(),
+                timestamp: Utc::now(),
+            };
+            let account = Account {
+                id: EntityId::new(),
+                name: "Alice".to_string(),
+                active: true,
+            };
+            let deleted = event.delete(account);
+            assert!(!deleted.active);
+        }
+
+        #[test]
+        fn test_actor_delete_event_trait_generated() {
+            let event = AccountAdminDeletedEvent {
+                reason: "policy".to_string(),
+                timestamp: Utc::now(),
+            };
+            let account = Account {
+                id: EntityId::new(),
+                name: "Alice".to_string(),
+                active: true,
+            };
+            let admin = Admin {
+                id: EntityId::new(),
+                role: "superadmin".to_string(),
+            };
+            assert!(event.validate_delete_actor(&account, &admin).is_ok());
+        }
+
+        #[test]
+        fn test_actor_delete_event_validation_rejects_non_superadmin() {
+            let event = AccountAdminDeletedEvent {
+                reason: "policy".to_string(),
+                timestamp: Utc::now(),
+            };
+            let account = Account {
+                id: EntityId::new(),
+                name: "Alice".to_string(),
+                active: true,
+            };
+            let admin = Admin {
+                id: EntityId::new(),
+                role: "regular".to_string(),
+            };
+            let result = event.validate_delete_actor(&account, &admin);
+            assert!(result.is_err());
+            assert_eq!(result.unwrap_err().to_string(), "Not authorized");
+        }
+
+        #[test]
+        fn test_actor_delete_event_delete_fn_clears_name() {
+            let event = AccountAdminDeletedEvent {
+                reason: "policy".to_string(),
+                timestamp: Utc::now(),
+            };
+            let account = Account {
+                id: EntityId::new(),
+                name: "Alice".to_string(),
+                active: true,
+            };
+            let deleted = event.delete(account);
+            assert!(!deleted.active);
+            assert!(deleted.name.is_empty());
+        }
+
+        // --- EventApplicator tests ---
+
+        #[test]
+        fn test_event_applicator_is_delete() {
+            let delete_event = AccountEvent::AccountDeactivated {
+                reason: "bye".to_string(),
+                timestamp: Utc::now(),
+            };
+            let actor_delete_event = AccountEvent::AccountAdminDeleted {
+                reason: "admin".to_string(),
+                timestamp: Utc::now(),
+            };
+            let regular_event = AccountEvent::AccountUpdated {
+                name: "Bob".to_string(),
+                timestamp: Utc::now(),
+            };
+            let init_event = AccountEvent::AccountCreated {
+                name: "Alice".to_string(),
+                timestamp: Utc::now(),
+            };
+
+            assert!(delete_event.is_delete());
+            assert!(actor_delete_event.is_delete());
+            assert!(!regular_event.is_delete());
+            assert!(!init_event.is_delete());
+        }
+
+        #[test]
+        fn test_event_applicator_is_init_false_for_delete() {
+            let delete_event = AccountEvent::AccountDeactivated {
+                reason: "bye".to_string(),
+                timestamp: Utc::now(),
+            };
+            assert!(!delete_event.is_init());
+        }
+
+        #[test]
+        fn test_event_applicator_dispatch_delete() {
+            let event = AccountEvent::AccountDeactivated {
+                reason: "bye".to_string(),
+                timestamp: Utc::now(),
+            };
+            let account = Account {
+                id: EntityId::new(),
+                name: "Alice".to_string(),
+                active: true,
+            };
+            let deleted = event.dispatch_delete(account).unwrap();
+            assert!(!deleted.active);
+        }
+
+        #[test]
+        fn test_event_applicator_dispatch_delete_unchecked() {
+            let event = AccountEvent::AccountDeactivated {
+                reason: "bye".to_string(),
+                timestamp: Utc::now(),
+            };
+            let account = Account {
+                id: EntityId::new(),
+                name: "Alice".to_string(),
+                active: true,
+            };
+            let deleted = event.dispatch_delete_unchecked(account);
+            assert!(!deleted.active);
+        }
+
+        // --- AggregateRoot::apply_delete tests ---
+
+        #[test]
+        fn test_apply_delete_type_state_transition() {
+            let agg = Account::create_account("Alice".to_string()).unwrap();
+            let event = AccountDeactivatedEvent {
+                reason: "goodbye".to_string(),
+                timestamp: Utc::now(),
+            };
+            let deleted: DeletedAggregateRoot<Account> = agg.apply_delete(event).unwrap();
+            assert!(!deleted.active);
+            assert_eq!(deleted.pending_events().len(), 2); // init + delete
+        }
+
+        #[test]
+        fn test_apply_delete_validation_fails() {
+            let agg = Account::create_account("Alice".to_string()).unwrap();
+            // Deactivate first
+            let event = AccountDeactivatedEvent {
+                reason: "first".to_string(),
+                timestamp: Utc::now(),
+            };
+            let deleted = agg.apply_delete(event).unwrap();
+            assert!(!deleted.active);
+            // Can't create a second delete from the same aggregate since it's consumed
+            // The type-state pattern enforces this at compile time
+        }
+
+        #[test]
+        fn test_apply_delete_with_actor() {
+            let agg = Account::create_account("Alice".to_string()).unwrap();
+            let admin = make_admin("superadmin");
+            let event = AccountAdminDeletedEvent {
+                reason: "policy".to_string(),
+                timestamp: Utc::now(),
+            };
+            let deleted = agg
+                .apply_delete_with_actor(event, admin.entity_id())
+                .unwrap();
+            assert!(!deleted.active);
+            assert!(deleted.name.is_empty());
+        }
+
+        // --- command_handler! @delete tests ---
+
+        #[test]
+        fn test_delete_command_event_helper() {
+            let account = Account {
+                id: EntityId::new(),
+                name: "Alice".to_string(),
+                active: true,
+            };
+            let event = account.deactivate_account_event("goodbye".to_string());
+            assert_eq!(event.reason, "goodbye");
+        }
+
+        #[test]
+        fn test_actor_delete_command_event_helper() {
+            let account = Account {
+                id: EntityId::new(),
+                name: "Alice".to_string(),
+                active: true,
+            };
+            let event = account.admin_delete_account_event("policy".to_string());
+            assert_eq!(event.reason, "policy");
+        }
+
+        #[test]
+        fn test_delete_command_on_aggregate_root() {
+            use crate::macros::tests::delete_tests::AccountDeleteCommands;
+            let agg = Account::create_account("Alice".to_string()).unwrap();
+            let deleted = agg.deactivate_account("goodbye".to_string()).unwrap();
+            assert!(!deleted.active);
+        }
+
+        #[test]
+        fn test_delete_command_validation_rejects() {
+            use crate::macros::tests::delete_tests::AccountDeleteCommands;
+            // Build an inactive account via snapshot
+            let entity = Account {
+                id: EntityId::new(),
+                name: "Alice".to_string(),
+                active: false,
+            };
+            let agg = AggregateRoot::from_snapshot(AggregateVersion::new(1), entity);
+            let result = agg.deactivate_account("again".to_string());
+            assert!(result.is_err());
+            assert_eq!(result.unwrap_err().to_string(), "Already deactivated");
+        }
+
+        #[test]
+        fn test_actor_delete_command_on_aggregate_root() {
+            use crate::macros::tests::delete_tests::AccountDeleteCommands;
+            let agg = Account::create_account("Alice".to_string()).unwrap();
+            let admin = make_admin("superadmin");
+            let deleted = agg
+                .admin_delete_account(&admin, "policy".to_string())
+                .unwrap();
+            assert!(!deleted.active);
+            assert!(deleted.name.is_empty());
+        }
+
+        #[test]
+        fn test_actor_delete_command_validation_rejects() {
+            use crate::macros::tests::delete_tests::AccountDeleteCommands;
+            let agg = Account::create_account("Alice".to_string()).unwrap();
+            let non_admin = make_admin("regular");
+            let result = agg.admin_delete_account(&non_admin, "policy".to_string());
+            assert!(result.is_err());
+            assert_eq!(result.unwrap_err().to_string(), "Not authorized");
+        }
+
+        #[test]
+        fn test_delete_command_full_lifecycle() {
+            use crate::macros::tests::delete_tests::AccountDeleteCommands;
+            // Create -> Update -> Delete
+            let mut agg = Account::create_account("Alice".to_string()).unwrap();
+            agg.update_account("Bob".to_string()).unwrap();
+            assert_eq!(agg.entity().name, "Bob");
+            let deleted = agg.deactivate_account("leaving".to_string()).unwrap();
+            assert!(!deleted.active);
+            assert_eq!(deleted.pending_events().len(), 3); // create + update + delete
+        }
+
+        #[test]
+        fn test_delete_event_from_conversion() {
+            let event = AccountDeactivatedEvent {
+                reason: "bye".to_string(),
+                timestamp: Utc::now(),
+            };
+            let enum_event: AccountEvent = event.into();
+            assert!(matches!(
+                enum_event,
+                AccountEvent::AccountDeactivated { .. }
+            ));
+        }
+
+        #[test]
+        fn test_delete_event_domain_event_type() {
+            let event = AccountEvent::AccountDeactivated {
+                reason: "bye".to_string(),
+                timestamp: Utc::now(),
+            };
+            assert_eq!(event.event_type(), "Account.AccountDeactivated");
+        }
+
+        #[test]
+        fn test_delete_event_envelope_roundtrip() {
+            let event = AccountEvent::AccountDeactivated {
+                reason: "bye".to_string(),
+                timestamp: Utc::now(),
+            };
+            let envelope = event.to_envelope(uuid::Uuid::new_v4()).unwrap();
+            let restored = AccountEvent::from_envelope(&envelope).unwrap();
+            assert!(matches!(restored, AccountEvent::AccountDeactivated { .. }));
         }
     }
 }
