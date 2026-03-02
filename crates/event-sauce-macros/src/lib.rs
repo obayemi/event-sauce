@@ -734,6 +734,8 @@ fn generate_unit_spec(
                 #error_message_body
             }
         }
+
+        event_sauce_core::__impl_spec_ops!(#struct_name, #candidate_type);
     };
 
     gen.into()
@@ -798,6 +800,8 @@ fn generate_parameterized_spec(
                 #error_message_body
             }
         }
+
+        event_sauce_core::__impl_spec_ops!(#struct_name, #candidate_type);
     };
 
     gen.into()

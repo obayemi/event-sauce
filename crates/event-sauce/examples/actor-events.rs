@@ -8,7 +8,7 @@
 //! ## Key Concepts
 //!
 //! - **`@actor(Type)`** in `define_events!`: marks events as requiring an actor
-//! - **`@validate_actor`**: validates actor permissions at command time
+//! - **`@validate |agg, actor, evt|`**: 3-arg arity validates actor permissions at command time
 //! - **`@actor(Type)`** in `command_handler!`: generates methods requiring an actor parameter
 //! - Actor validation is **skipped during replay** (events are historical facts)
 //! - Actor ID flows into `EventEnvelope::created_by` at commit time
@@ -168,16 +168,13 @@ define_events! {
         }
         @init
         @actor(User)
-        @validate_actor |actor| {
+        @validate |actor, evt| {
             if actor.role != UserRole::Admin && actor.role != UserRole::Editor {
                 return Err(DocumentError::PermissionDenied(
                     "Only editors and admins can create documents".to_string()
                 ));
             }
-            return Ok(());
-        }
-        @validate |event| {
-            if event.title.is_empty() {
+            if evt.title.is_empty() {
                 return Err(DocumentError::EmptyTitle);
             }
             return Ok(());
@@ -196,7 +193,7 @@ define_events! {
             new_content: String,
         }
         @actor(User)
-        @validate_actor |_doc, actor| {
+        @validate |_doc, actor, _evt| {
             if actor.role == UserRole::Viewer {
                 return Err(DocumentError::PermissionDenied(
                     "Viewers cannot edit documents".to_string()
@@ -213,7 +210,7 @@ define_events! {
             publisher_note: String,
         }
         @actor(User)
-        @validate_actor |doc, actor| {
+        @validate |doc, actor, _evt| {
             if actor.role != UserRole::Admin {
                 return Err(DocumentError::PermissionDenied(
                     "Only admins can publish documents".to_string()
@@ -278,7 +275,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Event Sauce - Actor Events Example\n");
     println!("This example demonstrates:");
     println!("  - @actor(Type) annotations for permission-validated events");
-    println!("  - @validate_actor closures for permission checks");
+    println!("  - @validate with arity-based dispatch for permission checks");
     println!("  - Actor ID tracking through to EventEnvelope::created_by");
     println!("  - Mixed actor and non-actor events in the same aggregate");
     println!("  - Replay skips actor validation (events are historical facts)\n");
@@ -401,7 +398,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n  Demo complete!");
     println!("\n  Key Takeaways:");
     println!("   - @actor(Type) enforces type-safe actor requirements");
-    println!("   - @validate_actor checks permissions at command time");
+    println!("   - @validate arity dispatch checks permissions at command time");
     println!("   - Actor ID is stored in pending events for commit");
     println!("   - Non-actor events work alongside actor events");
     println!("   - Replay skips actor validation (historical facts)");

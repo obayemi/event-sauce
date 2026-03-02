@@ -204,13 +204,10 @@ define_events! {
             price: i64,
         }
         @actor(User)
-        @validate_actor |order, actor| {
-            IsOrderOwner { actor_id: actor.entity_id() }.validate_or(order, |msg| {
+        @validate |agg, actor, evt| {
+            IsOrderOwner { actor_id: actor.entity_id() }.validate_or(agg, |msg| {
                 OrderError::PermissionDenied(msg)
             })?;
-            Ok(())
-        }
-        @validate |agg, evt| {
             ValidItemPrice.validate_or(evt, |_| OrderError::InvalidAmount(evt.price))?;
             OrderIsPending.check(agg)?;
             Ok(())
@@ -227,7 +224,7 @@ define_events! {
 
         OrderCompleted {}
         @actor(User)
-        @validate_actor |order, actor| {
+        @validate |order, actor, _evt| {
             IsOrderOwner { actor_id: actor.entity_id() }.validate_or(order, |msg| {
                 OrderError::PermissionDenied(msg)
             })?;

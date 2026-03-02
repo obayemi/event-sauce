@@ -674,116 +674,135 @@ macro_rules! projection {
     };
 }
 
-/// Generate event structs, enum, and trait implementations with validation support.
+// =========================================================================
+// Arity-dispatch helper macros for @validate and @validate_spec
+//
+// These macros receive context variables (aggregate, self, actor) from the
+// calling macro to work around macro hygiene — `#[macro_export]` macros
+// cannot directly access the caller's `self` or local variables.
+// =========================================================================
+
+/// Dispatch `@validate` closure in `validate()` context: runs 2-arg, skips 3-arg.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __validate {
+    (|$a:ident, $b:ident| $body:block, $agg_ty:ty, $evt_ty:ty, $agg:expr, $evt:expr) => {
+        return (|$a: &$agg_ty, $b: &$evt_ty| $body)($agg, $evt);
+    };
+    (|$a:ident, $b:ident, $c:ident| $body:block, $agg_ty:ty, $evt_ty:ty, $agg:expr, $evt:expr) => {};
+}
+
+/// Dispatch `@validate` closure in `validate_actor()` context: runs 3-arg, skips 2-arg.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __validate_actor {
+    (|$a:ident, $b:ident, $c:ident| $body:block, $agg_ty:ty, $actor_ty:ty, $evt_ty:ty, $agg:expr, $actor:expr, $evt:expr) => {
+        return (|$a: &$agg_ty, $b: &$actor_ty, $c: &$evt_ty| $body)($agg, $actor, $evt);
+    };
+    (|$a:ident, $b:ident| $body:block, $agg_ty:ty, $actor_ty:ty, $evt_ty:ty, $agg:expr, $actor:expr, $evt:expr) => {};
+}
+
+/// Dispatch `@validate` closure in `validate_init()` context: runs 1-arg, skips 2-arg.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __validate_init {
+    (|$a:ident| $body:block, $evt_ty:ty, $evt:expr) => {
+        return (|$a: &$evt_ty| $body)($evt);
+    };
+    (|$a:ident, $b:ident| $body:block, $evt_ty:ty, $evt:expr) => {};
+}
+
+/// Dispatch `@validate` closure in `validate_init_actor()` context: runs 2-arg, skips 1-arg.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __validate_init_actor {
+    (|$a:ident, $b:ident| $body:block, $actor_ty:ty, $evt_ty:ty, $actor:expr, $evt:expr) => {
+        return (|$a: &$actor_ty, $b: &$evt_ty| $body)($actor, $evt);
+    };
+    (|$a:ident| $body:block, $actor_ty:ty, $evt_ty:ty, $actor:expr, $evt:expr) => {};
+}
+
+/// Dispatch `@validate_spec` in `validate()`/`post_validate()` context:
+/// runs simple exprs and 2-arg closures, skips 3-arg closures.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __check_spec {
+    (|$a:ident, $b:ident, $c:ident| $body:expr, $agg_ty:ty, $evt_ty:ty, $agg:expr, $evt:expr) => {};
+    (|$a:ident, $b:ident| $body:expr, $agg_ty:ty, $evt_ty:ty, $agg:expr, $evt:expr) => {
+        $crate::Specification::check(&(|$a: &$agg_ty, $b: &$evt_ty| $body)($agg, $evt), $agg)?;
+    };
+    (|$a:ident| $body:expr, $agg_ty:ty, $evt_ty:ty, $agg:expr, $evt:expr) => {};
+    ($spec:expr, $agg_ty:ty, $evt_ty:ty, $agg:expr, $evt:expr) => {
+        $crate::Specification::check(&$spec, $agg)?;
+    };
+}
+
+/// Dispatch `@validate_spec` in `validate_actor()` context:
+/// runs 3-arg closures only, skips everything else.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __check_spec_actor {
+    (|$a:ident, $b:ident, $c:ident| $body:expr, $agg_ty:ty, $actor_ty:ty, $evt_ty:ty, $agg:expr, $actor:expr, $evt:expr) => {
+        $crate::Specification::check(
+            &(|$a: &$agg_ty, $b: &$actor_ty, $c: &$evt_ty| $body)($agg, $actor, $evt),
+            $agg,
+        )?;
+    };
+    (|$a:ident, $b:ident| $body:expr, $agg_ty:ty, $actor_ty:ty, $evt_ty:ty, $agg:expr, $actor:expr, $evt:expr) => {};
+    (|$a:ident| $body:expr, $agg_ty:ty, $actor_ty:ty, $evt_ty:ty, $agg:expr, $actor:expr, $evt:expr) => {};
+    ($spec:expr, $agg_ty:ty, $actor_ty:ty, $evt_ty:ty, $agg:expr, $actor:expr, $evt:expr) => {};
+}
+
+/// Dispatch `@validate_spec` in `validate_init()` context:
+/// runs simple exprs and 1-arg closures, skips 2-arg closures.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __check_spec_init {
+    (|$a:ident, $b:ident| $body:expr, $evt_ty:ty, $evt:expr) => {};
+    (|$a:ident| $body:expr, $evt_ty:ty, $evt:expr) => {
+        $crate::Specification::check(&(|$a: &$evt_ty| $body)($evt), $evt)?;
+    };
+    ($spec:expr, $evt_ty:ty, $evt:expr) => {
+        $crate::Specification::check(&$spec, $evt)?;
+    };
+}
+
+/// Dispatch `@validate_spec` in `validate_init_actor()` context:
+/// runs 2-arg closures only, skips everything else.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __check_spec_init_actor {
+    (|$a:ident, $b:ident| $body:expr, $actor_ty:ty, $evt_ty:ty, $actor:expr, $evt:expr) => {
+        $crate::Specification::check(
+            &(|$a: &$actor_ty, $b: &$evt_ty| $body)($actor, $evt),
+            $actor,
+        )?;
+    };
+    (|$a:ident| $body:expr, $actor_ty:ty, $evt_ty:ty, $actor:expr, $evt:expr) => {};
+    ($spec:expr, $actor_ty:ty, $evt_ty:ty, $actor:expr, $evt:expr) => {};
+}
+
+/// Declaratively define domain events for an aggregate.
 ///
-/// This macro provides a declarative way to define domain events with automatic
-/// generation of event structs, an event enum, and trait implementations including
-/// validation logic.
-///
-/// # Syntax
-///
-/// ```ignore
-/// define_events! {
-///     pub enum EventEnumName for AggregateType {
-///         VariantName {
-///             field1: Type1,
-///             field2: Type2,
-///         }
-///         [@version(n)]
-///         [@validate {
-///             // validation logic using `self` for event and `aggregate` for aggregate
-///             return Ok(());
-///         }]
-///         [@post_validate {
-///             // post-validation logic using `self` for event and `aggregate` for aggregate
-///             return Ok(());
-///         }]
-///         => |aggregate, event| {
-///             // apply logic
-///         },
-///     }
-/// }
-/// ```
-///
-/// **Note**: Validation blocks have access to `self` (the event) and `aggregate` (the aggregate instance).
-///
-/// # Generated Code
-///
-/// For each event variant, the macro generates:
-/// - An individual event struct (e.g., `VariantNameEvent`)
-/// - `ApplyEvent<Aggregate>` implementation with validation
-/// - `From<VariantNameEvent>` for the event enum
-///
-/// Additionally, it generates:
-/// - The event enum with all variants
-/// - `DomainEvent` implementation for the enum
-/// - `Clone`, `Debug`, `Serialize`, `Deserialize` derives
+/// This macro generates event structs, an event enum, and all the required trait
+/// implementations (`DomainEvent`, `EventApplicator`, `ApplyEvent`/`InitEvent`,
+/// `ActorEvent`/`ActorInitEvent`) from a concise, readable declaration.
 ///
 /// # Features
 ///
-/// - **Automatic timestamp**: Each event struct includes a `timestamp: DateTime<Utc>` field
-/// - **Versioning**: Use `@version(n)` to specify event schema version (defaults to 1)
-/// - **Pre-validation**: Use `@validate |aggregate, event| { ... }` for pre-conditions
-/// - **Post-validation**: Use `@post_validate |aggregate, event| { ... }` for invariants
-/// - **Init events**: Use `@init` for events that construct the aggregate (multiple allowed)
-/// - **Type-safe**: Full type checking of validation and apply logic
-///
-/// # Examples
-///
-/// ```ignore
-/// use event_sauce_core::define_events;
-///
-/// define_events! {
-///     pub enum OrderEvent for Order {
-///         Created {
-///             order_id: String,
-///         } => |order, event| {
-///             order.state.order_id = event.order_id.clone();
-///         },
-///
-///         ItemAdded {
-///             item_id: String,
-///             quantity: u32,
-///             price: i64,
-///         }
-///         @validate {
-///             if aggregate.state.status == OrderStatus::Completed {
-///                 return Err(OrderError::OrderAlreadyCompleted);
-///             }
-///             if self.quantity == 0 {
-///                 return Err(OrderError::InvalidQuantity);
-///             }
-///             return Ok(());
-///         }
-///         @post_validate {
-///             if aggregate.state.total_amount > 1_000_000 {
-///                 return Err(OrderError::OrderTotalExceeded);
-///             }
-///             return Ok(());
-///         }
-///         => |order, event| {
-///             order.state.items.push(OrderItem {
-///                 item_id: event.item_id.clone(),
-///                 quantity: event.quantity,
-///                 price: event.price,
-///             });
-///             order.state.total_amount += event.price * event.quantity as i64;
-///         },
-///
-///         Completed {}
-///         @version(2)
-///         @validate {
-///             if aggregate.state.status == OrderStatus::Completed {
-///                 return Err(OrderError::OrderAlreadyCompleted);
-///             }
-///             return Ok(());
-///         }
-///         => |order, _event| {
-///             order.state.status = OrderStatus::Completed;
-///         },
-///     }
-/// }
-/// ```
+/// - `@init` marks a variant as an initialisation event (type-state pattern)
+/// - `@actor(Type)` marks a variant as requiring an actor for permission checks
+/// - `@validate |...|` inline validation with arity-based dispatch:
+///   - `|agg, evt|` → `validate()` (runs on replay)
+///   - `|agg, actor, evt|` → `validate_actor()` (command-time only)
+///   - `|evt|` → `validate_init()` (init, runs on replay)
+///   - `|actor, evt|` → `validate_init_actor()` (actor-init, command-time only)
+/// - `@validate_spec(Expr)` / `@validate_spec(|..| Expr)` specification-based validation
+/// - `@post_validate |agg, evt|` post-apply validation
+/// - `@post_validate_spec(Expr)` post-apply specification validation
+/// - `@version(n)` explicit event version
+/// - `@encrypted_fields(f1, f2)` field-level encryption
+/// - `=> |agg, evt|` apply logic (or `=> |id, evt|` for init events)
 ///
 /// # Benefits
 ///
@@ -824,12 +843,11 @@ macro_rules! define_events {
                 $($field:ident: $field_ty:ty),* $(,)?
             }
             @actor($actor_type:ty)
-            $(@validate_actor |$va_agg:ident, $va_actor:ident| $va_body:block)?
             $(@version($version:literal))?
-            $(@validate |$val_agg:ident, $val_evt:ident| $val_body:block)?
-            $(@validate_spec($val_spec:expr))?
+            $(@validate |$($val_args:ident),+| $val_body:block)?
+            $(@validate_spec($($val_spec:tt)*))?
             $(@post_validate |$post_val_agg:ident, $post_val_evt:ident| $post_val_body:block)?
-            $(@post_validate_spec($post_val_spec:expr))?
+            $(@post_validate_spec($($post_val_spec:tt)*))?
             $(@encrypted_fields($($enc_field:ident),+ $(,)?))?
             => $apply:expr,
             $($rest:tt)*
@@ -845,12 +863,11 @@ macro_rules! define_events {
                     fields: { $($field: $field_ty),* },
                     kind: actor,
                     actor_type: [$actor_type],
-                    validate_actor: [$([$va_agg, $va_actor, $va_body])?],
                     version: [$([$version])?],
-                    validate: [$([$val_agg, $val_evt, $val_body])?],
-                    validate_spec: [$([$val_spec])?],
+                    validate: [$([|$($val_args),+| $val_body])?],
+                    validate_spec: [$([$($val_spec)*])?],
                     post_validate: [$([$post_val_agg, $post_val_evt, $post_val_body])?],
-                    post_validate_spec: [$([$post_val_spec])?],
+                    post_validate_spec: [$([$($post_val_spec)*])?],
                     encrypted_fields: [$([$($enc_field),+])?],
                     apply: $apply,
                 }
@@ -872,12 +889,11 @@ macro_rules! define_events {
             }
             @init
             @actor($actor_type:ty)
-            $(@validate_actor |$va_actor:ident| $va_body:block)?
             $(@version($version:literal))?
-            $(@validate |$val_evt:ident| $val_body:block)?
-            $(@validate_spec($val_spec:expr))?
+            $(@validate |$($val_args:ident),+| $val_body:block)?
+            $(@validate_spec($($val_spec:tt)*))?
             $(@post_validate |$post_val_agg:ident, $post_val_evt:ident| $post_val_body:block)?
-            $(@post_validate_spec($post_val_spec:expr))?
+            $(@post_validate_spec($($post_val_spec:tt)*))?
             $(@encrypted_fields($($enc_field:ident),+ $(,)?))?
             => $apply:expr,
             $($rest:tt)*
@@ -893,12 +909,11 @@ macro_rules! define_events {
                     fields: { $($field: $field_ty),* },
                     kind: actor_init,
                     actor_type: [$actor_type],
-                    validate_actor: [$([$va_actor, $va_body])?],
                     version: [$([$version])?],
-                    validate: [$([$val_evt, $val_body])?],
-                    validate_spec: [$([$val_spec])?],
+                    validate: [$([|$($val_args),+| $val_body])?],
+                    validate_spec: [$([$($val_spec)*])?],
                     post_validate: [$([$post_val_agg, $post_val_evt, $post_val_body])?],
-                    post_validate_spec: [$([$post_val_spec])?],
+                    post_validate_spec: [$([$($post_val_spec)*])?],
                     encrypted_fields: [$([$($enc_field),+])?],
                     apply: $apply,
                 }
@@ -919,10 +934,10 @@ macro_rules! define_events {
                 $($field:ident: $field_ty:ty),* $(,)?
             }
             $(@version($version:literal))?
-            $(@validate |$val_agg:ident, $val_evt:ident| $val_body:block)?
-            $(@validate_spec($val_spec:expr))?
+            $(@validate |$($val_args:ident),+| $val_body:block)?
+            $(@validate_spec($($val_spec:tt)*))?
             $(@post_validate |$post_val_agg:ident, $post_val_evt:ident| $post_val_body:block)?
-            $(@post_validate_spec($post_val_spec:expr))?
+            $(@post_validate_spec($($post_val_spec:tt)*))?
             $(@encrypted_fields($($enc_field:ident),+ $(,)?))?
             => $apply:expr,
             $($rest:tt)*
@@ -938,12 +953,11 @@ macro_rules! define_events {
                     fields: { $($field: $field_ty),* },
                     kind: regular,
                     actor_type: [],
-                    validate_actor: [],
                     version: [$([$version])?],
-                    validate: [$([$val_agg, $val_evt, $val_body])?],
-                    validate_spec: [$([$val_spec])?],
+                    validate: [$([|$($val_args),+| $val_body])?],
+                    validate_spec: [$([$($val_spec)*])?],
                     post_validate: [$([$post_val_agg, $post_val_evt, $post_val_body])?],
-                    post_validate_spec: [$([$post_val_spec])?],
+                    post_validate_spec: [$([$($post_val_spec)*])?],
                     encrypted_fields: [$([$($enc_field),+])?],
                     apply: $apply,
                 }
@@ -965,10 +979,10 @@ macro_rules! define_events {
             }
             @init
             $(@version($version:literal))?
-            $(@validate |$val_evt:ident| $val_body:block)?
-            $(@validate_spec($val_spec:expr))?
+            $(@validate |$($val_args:ident),+| $val_body:block)?
+            $(@validate_spec($($val_spec:tt)*))?
             $(@post_validate |$post_val_agg:ident, $post_val_evt:ident| $post_val_body:block)?
-            $(@post_validate_spec($post_val_spec:expr))?
+            $(@post_validate_spec($($post_val_spec:tt)*))?
             $(@encrypted_fields($($enc_field:ident),+ $(,)?))?
             => $apply:expr,
             $($rest:tt)*
@@ -984,12 +998,11 @@ macro_rules! define_events {
                     fields: { $($field: $field_ty),* },
                     kind: init,
                     actor_type: [],
-                    validate_actor: [],
                     version: [$([$version])?],
-                    validate: [$([$val_evt, $val_body])?],
-                    validate_spec: [$([$val_spec])?],
+                    validate: [$([|$($val_args),+| $val_body])?],
+                    validate_spec: [$([$($val_spec)*])?],
                     post_validate: [$([$post_val_agg, $post_val_evt, $post_val_body])?],
-                    post_validate_spec: [$([$post_val_spec])?],
+                    post_validate_spec: [$([$($post_val_spec)*])?],
                     encrypted_fields: [$([$($enc_field),+])?],
                     apply: $apply,
                 }
@@ -1027,7 +1040,6 @@ macro_rules! define_events {
                     fields: { $($field:ident: $field_ty:ty),* },
                     kind: $kind:ident,
                     actor_type: [$($actor_type:ty)?],
-                    validate_actor: [$($validate_actor:tt)*],
                     version: [$($version:tt)*],
                     validate: [$($validate:tt)*],
                     validate_spec: [$($validate_spec:tt)*],
@@ -1073,7 +1085,6 @@ macro_rules! define_events {
                 [{ $($field: $field_ty,)* }]
                 kind: $kind,
                 actor_type: [$($actor_type)?],
-                validate_actor: [$($validate_actor)*],
                 validate: [$($validate)*],
                 validate_spec: [$($validate_spec)*],
                 post_validate: [$($post_validate)*],
@@ -1249,11 +1260,10 @@ macro_rules! define_events {
         [{ $($field:ident: $field_ty:ty,)* }]
         kind: regular,
         actor_type: [],
-        validate_actor: [],
-        validate: [$([$val_agg:ident, $val_evt:ident, $val_body:block])?],
-        validate_spec: [$([$val_spec:expr])?],
+        validate: [$([|$($val_args:ident),+| $val_body:block])?],
+        validate_spec: [$([$($val_spec:tt)*])?],
         post_validate: [$([$post_val_agg:ident, $post_val_evt:ident, $post_val_body:block])?],
-        post_validate_spec: [$([$post_val_spec:expr])?],
+        post_validate_spec: [$([$($post_val_spec:tt)*])?],
         apply: $apply:expr,
     ) => {
         paste::paste! {
@@ -1263,10 +1273,10 @@ macro_rules! define_events {
                     -> ::std::result::Result<(), <$aggregate as $crate::Aggregate>::Error>
                 {
                     $(
-                        return (|$val_agg: &$aggregate, $val_evt: &Self| $val_body)(aggregate, self);
+                        $crate::__validate!(|$($val_args),+| $val_body, $aggregate, Self, aggregate, self);
                     )?
                     $(
-                        $crate::Specification::check(&$val_spec, aggregate)?;
+                        $crate::__check_spec!($($val_spec)*, $aggregate, Self, aggregate, self);
                     )?
                     ::std::result::Result::Ok(())
                 }
@@ -1284,7 +1294,7 @@ macro_rules! define_events {
                         return (|$post_val_agg: &$aggregate, $post_val_evt: &Self| $post_val_body)(aggregate, self);
                     )?
                     $(
-                        $crate::Specification::check(&$post_val_spec, aggregate)?;
+                        $crate::__check_spec!($($post_val_spec)*, $aggregate, Self, aggregate, self);
                     )?
                     ::std::result::Result::Ok(())
                 }
@@ -1301,25 +1311,24 @@ macro_rules! define_events {
         [{ $($field:ident: $field_ty:ty,)* }]
         kind: actor,
         actor_type: [$actor_type:ty],
-        validate_actor: [$([$va_agg:ident, $va_actor:ident, $va_body:block])?],
-        validate: [$([$val_agg:ident, $val_evt:ident, $val_body:block])?],
-        validate_spec: [$([$val_spec:expr])?],
+        validate: [$([|$($val_args:ident),+| $val_body:block])?],
+        validate_spec: [$([$($val_spec:tt)*])?],
         post_validate: [$([$post_val_agg:ident, $post_val_evt:ident, $post_val_body:block])?],
-        post_validate_spec: [$([$post_val_spec:expr])?],
+        post_validate_spec: [$([$($post_val_spec:tt)*])?],
         apply: $apply:expr,
     ) => {
         paste::paste! {
-            // ApplyEvent impl (same as regular — for replay, no actor validation)
+            // ApplyEvent impl (for replay — dispatches 2-arg @validate, skips 3-arg)
             impl $crate::ApplyEvent<$aggregate> for [<$variant Event>] {
                 #[allow(unused_variables, unreachable_code, clippy::redundant_closure_call)]
                 fn validate(&self, aggregate: &$aggregate)
                     -> ::std::result::Result<(), <$aggregate as $crate::Aggregate>::Error>
                 {
                     $(
-                        return (|$val_agg: &$aggregate, $val_evt: &Self| $val_body)(aggregate, self);
+                        $crate::__validate!(|$($val_args),+| $val_body, $aggregate, Self, aggregate, self);
                     )?
                     $(
-                        $crate::Specification::check(&$val_spec, aggregate)?;
+                        $crate::__check_spec!($($val_spec)*, $aggregate, Self, aggregate, self);
                     )?
                     ::std::result::Result::Ok(())
                 }
@@ -1337,13 +1346,13 @@ macro_rules! define_events {
                         return (|$post_val_agg: &$aggregate, $post_val_evt: &Self| $post_val_body)(aggregate, self);
                     )?
                     $(
-                        $crate::Specification::check(&$post_val_spec, aggregate)?;
+                        $crate::__check_spec!($($post_val_spec)*, $aggregate, Self, aggregate, self);
                     )?
                     ::std::result::Result::Ok(())
                 }
             }
 
-            // ActorEvent impl (for command-time actor validation)
+            // ActorEvent impl (for command-time — dispatches 3-arg @validate, skips 2-arg)
             impl $crate::ActorEvent<$aggregate> for [<$variant Event>] {
                 type Actor = $actor_type;
 
@@ -1352,7 +1361,10 @@ macro_rules! define_events {
                     -> ::std::result::Result<(), <$aggregate as $crate::Aggregate>::Error>
                 {
                     $(
-                        return (|$va_agg: &$aggregate, $va_actor: &$actor_type| $va_body)(aggregate, actor);
+                        $crate::__validate_actor!(|$($val_args),+| $val_body, $aggregate, $actor_type, Self, aggregate, actor, self);
+                    )?
+                    $(
+                        $crate::__check_spec_actor!($($val_spec)*, $aggregate, $actor_type, Self, aggregate, actor, self);
                     )?
                     ::std::result::Result::Ok(())
                 }
@@ -1369,11 +1381,10 @@ macro_rules! define_events {
         [{ $($field:ident: $field_ty:ty,)* }]
         kind: init,
         actor_type: [],
-        validate_actor: [],
-        validate: [$([$val_evt:ident, $val_body:block])?],
-        validate_spec: [$([$val_spec:expr])?],
+        validate: [$([|$($val_args:ident),+| $val_body:block])?],
+        validate_spec: [$([$($val_spec:tt)*])?],
         post_validate: [$([$post_val_agg:ident, $post_val_evt:ident, $post_val_body:block])?],
-        post_validate_spec: [$([$post_val_spec:expr])?],
+        post_validate_spec: [$([$($post_val_spec:tt)*])?],
         apply: $apply:expr,
     ) => {
         paste::paste! {
@@ -1381,10 +1392,10 @@ macro_rules! define_events {
                 #[allow(unused_variables, unreachable_code, clippy::redundant_closure_call)]
                 fn validate_init(&self) -> ::std::result::Result<(), <$aggregate as $crate::Aggregate>::Error> {
                     $(
-                        return (|$val_evt: &Self| $val_body)(self);
+                        $crate::__validate_init!(|$($val_args),+| $val_body, Self, self);
                     )?
                     $(
-                        $crate::Specification::check(&$val_spec, self)?;
+                        $crate::__check_spec_init!($($val_spec)*, Self, self);
                     )?
                     ::std::result::Result::Ok(())
                 }
@@ -1400,7 +1411,7 @@ macro_rules! define_events {
                         return (|$post_val_agg: &$aggregate, $post_val_evt: &Self| $post_val_body)(aggregate, self);
                     )?
                     $(
-                        $crate::Specification::check(&$post_val_spec, aggregate)?;
+                        $crate::__check_spec!($($post_val_spec)*, $aggregate, Self, aggregate, self);
                     )?
                     ::std::result::Result::Ok(())
                 }
@@ -1417,23 +1428,22 @@ macro_rules! define_events {
         [{ $($field:ident: $field_ty:ty,)* }]
         kind: actor_init,
         actor_type: [$actor_type:ty],
-        validate_actor: [$([$va_actor:ident, $va_body:block])?],
-        validate: [$([$val_evt:ident, $val_body:block])?],
-        validate_spec: [$([$val_spec:expr])?],
+        validate: [$([|$($val_args:ident),+| $val_body:block])?],
+        validate_spec: [$([$($val_spec:tt)*])?],
         post_validate: [$([$post_val_agg:ident, $post_val_evt:ident, $post_val_body:block])?],
-        post_validate_spec: [$([$post_val_spec:expr])?],
+        post_validate_spec: [$([$($post_val_spec:tt)*])?],
         apply: $apply:expr,
     ) => {
         paste::paste! {
-            // InitEvent impl (for replay, no actor validation)
+            // InitEvent impl (for replay — dispatches 1-arg @validate, skips 2-arg)
             impl $crate::InitEvent<$aggregate> for [<$variant Event>] {
                 #[allow(unused_variables, unreachable_code, clippy::redundant_closure_call)]
                 fn validate_init(&self) -> ::std::result::Result<(), <$aggregate as $crate::Aggregate>::Error> {
                     $(
-                        return (|$val_evt: &Self| $val_body)(self);
+                        $crate::__validate_init!(|$($val_args),+| $val_body, Self, self);
                     )?
                     $(
-                        $crate::Specification::check(&$val_spec, self)?;
+                        $crate::__check_spec_init!($($val_spec)*, Self, self);
                     )?
                     ::std::result::Result::Ok(())
                 }
@@ -1449,13 +1459,13 @@ macro_rules! define_events {
                         return (|$post_val_agg: &$aggregate, $post_val_evt: &Self| $post_val_body)(aggregate, self);
                     )?
                     $(
-                        $crate::Specification::check(&$post_val_spec, aggregate)?;
+                        $crate::__check_spec!($($post_val_spec)*, $aggregate, Self, aggregate, self);
                     )?
                     ::std::result::Result::Ok(())
                 }
             }
 
-            // ActorInitEvent impl (for command-time actor validation)
+            // ActorInitEvent impl (for command-time — dispatches 2-arg @validate, skips 1-arg)
             impl $crate::ActorInitEvent<$aggregate> for [<$variant Event>] {
                 type Actor = $actor_type;
 
@@ -1464,7 +1474,10 @@ macro_rules! define_events {
                     -> ::std::result::Result<(), <$aggregate as $crate::Aggregate>::Error>
                 {
                     $(
-                        return (|$va_actor: &$actor_type| $va_body)(actor);
+                        $crate::__validate_init_actor!(|$($val_args),+| $val_body, $actor_type, Self, actor, self);
+                    )?
+                    $(
+                        $crate::__check_spec_init_actor!($($val_spec)*, $actor_type, Self, actor, self);
                     )?
                     ::std::result::Result::Ok(())
                 }
@@ -1647,38 +1660,63 @@ macro_rules! define_events {
     };
 }
 
+/// Generates `BitAnd`, `BitOr`, and `Not` operator impls for a specification struct.
+///
+/// This is an internal helper macro used by [`spec!`] and `#[specification]`.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __impl_spec_ops {
+    ($name:ident, $target:ty) => {
+        impl<__SpecR> ::std::ops::BitAnd<__SpecR> for $name {
+            type Output = $crate::specification::Spec<$crate::specification::And<$name, __SpecR>>;
+
+            #[inline]
+            fn bitand(self, rhs: __SpecR) -> Self::Output {
+                $crate::specification::Spec::__new($crate::specification::And::__new(self, rhs))
+            }
+        }
+
+        impl<__SpecR> ::std::ops::BitOr<__SpecR> for $name {
+            type Output = $crate::specification::Spec<$crate::specification::Or<$name, __SpecR>>;
+
+            #[inline]
+            fn bitor(self, rhs: __SpecR) -> Self::Output {
+                $crate::specification::Spec::__new($crate::specification::Or::__new(self, rhs))
+            }
+        }
+
+        impl ::std::ops::Not for $name {
+            type Output = $crate::specification::Spec<$crate::specification::Not<$name>>;
+
+            #[inline]
+            fn not(self) -> Self::Output {
+                $crate::specification::Spec::__new($crate::specification::Not::__new(self))
+            }
+        }
+    };
+}
+
 /// Create a specification struct or inline specification value.
 ///
-/// This macro provides a concise way to define specifications that implement
-/// the `Specification<T>` trait.
-///
-/// # Named Struct Form (Static Message)
-///
-/// Creates a struct that implements `Specification<T>`:
+/// Named-struct forms generate `&` (AND), `|` (OR), and `!` (NOT)
+/// operator impls, so specs can be composed directly:
 ///
 /// ```ignore
-/// spec!(pub IsActive for Account, "Account must be active",
+/// // Operator syntax
+/// let combined = (IsActive | HasFunds | IsAdmin) & GeneralSpec;
+///
+/// // Named struct with static message
+/// spec!(IsActive for Account, "Account must be active",
 ///     |account| { account.status == "active" }
 /// );
-/// ```
 ///
-/// # Named Struct Form (With Context Fields)
-///
-/// Adds key=value context to the error message:
-///
-/// ```ignore
-/// spec!(pub HasPositiveBalance for Account,
+/// // Named struct with context fields
+/// spec!(HasPositiveBalance for Account,
 ///     "Balance must be positive", balance = candidate.balance,
 ///     |candidate| { candidate.balance > 0 }
 /// );
-/// // error_message: "Balance must be positive: balance=<value>"
-/// ```
 ///
-/// # Inline Form
-///
-/// Creates a `FnSpec` value for one-off specifications:
-///
-/// ```ignore
+/// // Inline form (closure-based, no operator support)
 /// let s = spec!("Must be positive", |val: &i64| { *val > 0 });
 /// ```
 #[macro_export]
@@ -1705,6 +1743,8 @@ macro_rules! spec {
                 format!("{base}: {ctx}")
             }
         }
+
+        $crate::__impl_spec_ops!($name, $target);
     };
 
     // Named struct form with static message:
@@ -1725,6 +1765,8 @@ macro_rules! spec {
                 $msg.to_string()
             }
         }
+
+        $crate::__impl_spec_ops!($name, $target);
     };
 
     // Inline form:
@@ -3420,7 +3462,7 @@ mod tests {
     }
 
     // Named struct form with static message
-    spec!(pub IsAccountActive for BankAccount, "Account must be active",
+    spec!(IsAccountActive for BankAccount, "Account must be active",
         |account| { account.status == "active" }
     );
 
@@ -3650,6 +3692,71 @@ mod tests {
         let result: Result<(), String> = IsAccountActive.validate_or(&account, |msg| msg);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "Account must be active");
+    }
+
+    // ===== spec! Operator Tests =====
+
+    #[test]
+    fn test_spec_macro_bitand_operator() {
+        let account = BankAccount {
+            balance: 100,
+            status: "active",
+        };
+        let spec = IsAccountActive & HasSufficientBalance;
+        assert!(spec.check(&account).is_ok());
+    }
+
+    #[test]
+    fn test_spec_macro_bitor_operator() {
+        let account = BankAccount {
+            balance: -50,
+            status: "active",
+        };
+        let spec = IsAccountActive | HasSufficientBalance;
+        assert!(spec.check(&account).is_ok());
+    }
+
+    #[test]
+    fn test_spec_macro_not_operator() {
+        let account = BankAccount {
+            balance: 100,
+            status: "frozen",
+        };
+        let spec = !IsAccountActive;
+        assert!(spec.check(&account).is_ok());
+    }
+
+    #[test]
+    fn test_spec_macro_operator_chaining() {
+        let account = BankAccount {
+            balance: 100,
+            status: "active",
+        };
+        // (active | has balance) & in range
+        let spec = (IsAccountActive | HasSufficientBalance) & HasMinMaxBalance;
+        assert!(spec.check(&account).is_ok());
+    }
+
+    #[test]
+    fn test_spec_macro_operator_triple_or() {
+        let account = BankAccount {
+            balance: -50,
+            status: "frozen",
+        };
+        // All three fail → combined fails
+        let spec = IsAccountActive | HasSufficientBalance | HasMinMaxBalance;
+        assert!(spec.check(&account).is_err());
+    }
+
+    #[test]
+    fn test_spec_macro_operator_not_and_chain() {
+        let account = BankAccount {
+            balance: 100,
+            status: "frozen",
+        };
+        // !active & has balance
+        let spec = !IsAccountActive & HasSufficientBalance;
+        assert!(spec.check(&account).is_ok());
     }
 
     // ===== @validate_spec / @post_validate_spec Tests =====
@@ -4914,14 +5021,11 @@ mod tests {
                 }
                 @init
                 @actor(Operator)
-                @validate_actor |actor| {
+                @validate |actor, evt| {
                     if !actor.is_admin {
                         return Err(TicketError::NotAuthorized);
                     }
-                    return Ok(());
-                }
-                @validate |event| {
-                    if event.title.is_empty() {
+                    if evt.title.is_empty() {
                         return Err(TicketError::EmptyTitle);
                     }
                     return Ok(());
@@ -4939,7 +5043,7 @@ mod tests {
                     assignee: String,
                 }
                 @actor(Operator)
-                @validate_actor |ticket, actor| {
+                @validate |_ticket, actor, _evt| {
                     if !actor.is_admin {
                         return Err(TicketError::NotAuthorized);
                     }
@@ -5349,6 +5453,107 @@ mod tests {
             };
             EventApplicator::dispatch_unchecked(&assigned, &mut ticket);
             assert_eq!(ticket.assignee.as_deref(), Some("Alice"));
+        }
+
+        // --- Arity-based @validate dispatch tests ---
+
+        #[test]
+        fn test_3arg_validate_runs_in_validate_actor_context() {
+            // TicketAssigned has @validate |_ticket, actor, _evt| { ... }
+            // This 3-arg closure should run in validate_actor(), rejecting non-admins
+            use crate::ActorEvent;
+            let event = TicketAssignedEvent {
+                assignee: "Alice".to_string(),
+                timestamp: Utc::now(),
+            };
+            let ticket = Ticket {
+                id: EntityId::new(),
+                title: "Bug".to_string(),
+                assignee: None,
+                closed: false,
+            };
+            let non_admin = Operator::new(EntityId::new());
+            assert!(event.validate_actor(&ticket, &non_admin).is_err());
+        }
+
+        #[test]
+        fn test_3arg_validate_skipped_in_replay_validate_context() {
+            // TicketAssigned has a 3-arg @validate — should be skipped during replay
+            use crate::ApplyEvent;
+            let event = TicketAssignedEvent {
+                assignee: "Alice".to_string(),
+                timestamp: Utc::now(),
+            };
+            let ticket = Ticket {
+                id: EntityId::new(),
+                title: "Bug".to_string(),
+                assignee: None,
+                closed: false,
+            };
+            // validate() should pass even without actor check (3-arg is skipped)
+            assert!(event.validate(&ticket).is_ok());
+        }
+
+        #[test]
+        fn test_2arg_validate_runs_in_validate_init_actor_context() {
+            // TicketOpened has @validate |actor, evt| { ... }
+            // This 2-arg closure should run in validate_init_actor()
+            use crate::ActorInitEvent;
+            let event = TicketOpenedEvent {
+                title: "Bug".to_string(),
+                timestamp: Utc::now(),
+            };
+            let non_admin = Operator::new(EntityId::new());
+            assert!(event.validate_init_actor(&non_admin).is_err());
+        }
+
+        #[test]
+        fn test_2arg_validate_skipped_in_replay_validate_init_context() {
+            // TicketOpened has a 2-arg @validate — should be skipped during replay
+            use crate::InitEvent;
+            let event = TicketOpenedEvent {
+                title: "Bug".to_string(),
+                timestamp: Utc::now(),
+            };
+            // validate_init() should pass (2-arg actor closure is skipped)
+            assert!(event.validate_init().is_ok());
+        }
+
+        #[test]
+        fn test_2arg_validate_on_regular_event_runs_in_validate_context() {
+            // TicketClosed has @validate |ticket, _event| { ... }
+            // This 2-arg closure should run in validate() (replay)
+            use crate::ApplyEvent;
+            let event = TicketClosedEvent {
+                reason: "done".to_string(),
+                timestamp: Utc::now(),
+            };
+            let closed_ticket = Ticket {
+                id: EntityId::new(),
+                title: "Bug".to_string(),
+                assignee: None,
+                closed: true,
+            };
+            assert!(event.validate(&closed_ticket).is_err());
+        }
+
+        #[test]
+        fn test_actor_init_validates_event_data_in_actor_context() {
+            // TicketOpened validates both actor.is_admin AND evt.title.is_empty()
+            // With 2-arg |actor, evt|, both checks run in validate_init_actor
+            use crate::ActorInitEvent;
+            let event = TicketOpenedEvent {
+                title: String::new(), // empty title
+                timestamp: Utc::now(),
+            };
+            let admin = Operator {
+                id: EntityId::new(),
+                is_admin: true,
+            };
+            // Admin passes actor check but event data check fails
+            let result = event.validate_init_actor(&admin);
+            assert!(result.is_err());
+            assert_eq!(result.unwrap_err().to_string(), "Empty title");
         }
     }
 

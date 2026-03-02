@@ -305,3 +305,63 @@ fn test_specification_public_visibility() {
     };
     assert!(IsNonNegative.is_satisfied_by(&account));
 }
+
+// ============================================================================
+// Operator syntax
+// ============================================================================
+
+#[event_sauce_macros::specification("Must have positive balance")]
+fn has_positive_balance_op(account: &Account) -> bool {
+    account.balance > 0
+}
+
+#[test]
+fn test_specification_bitand_operator() {
+    let account = Account {
+        balance: 100,
+        status: AccountStatus::Active,
+    };
+    let spec = IsActive & HasPositiveBalanceOp;
+    assert!(spec.check(&account).is_ok());
+}
+
+#[test]
+fn test_specification_bitor_operator() {
+    let account = Account {
+        balance: -50,
+        status: AccountStatus::Active,
+    };
+    let spec = IsActive | HasPositiveBalanceOp;
+    assert!(spec.check(&account).is_ok());
+}
+
+#[test]
+fn test_specification_not_operator() {
+    let account = Account {
+        balance: 100,
+        status: AccountStatus::Frozen,
+    };
+    let spec = !IsActive;
+    assert!(spec.check(&account).is_ok());
+}
+
+#[test]
+fn test_specification_operator_chaining() {
+    let account = Account {
+        balance: 100,
+        status: AccountStatus::Active,
+    };
+    // (active | positive balance) & non-negative
+    let spec = (IsActive | HasPositiveBalanceOp) & IsNonNegative;
+    assert!(spec.check(&account).is_ok());
+}
+
+#[test]
+fn test_specification_operator_with_parameterized() {
+    let account = Account {
+        balance: 100,
+        status: AccountStatus::Active,
+    };
+    let spec = IsActive & HasSufficientFunds { amount: 50 };
+    assert!(spec.check(&account).is_ok());
+}

@@ -29,6 +29,7 @@
 
 use std::fmt;
 use std::marker::PhantomData;
+use std::ops;
 
 /// Generic error type for specification failures, parameterized on the model type.
 ///
@@ -163,55 +164,97 @@ pub trait Specification<T: ?Sized>: Send + Sync {
     /// Combines this specification with another using logical AND.
     ///
     /// Both specifications must be satisfied for the combined specification to pass.
-    fn and<S: Specification<T>>(self, other: S) -> And<Self, S, T>
+    fn and<S: Specification<T>>(self, other: S) -> And<Self, S>
     where
         Self: Sized,
     {
         And {
             left: self,
             right: other,
-            _marker: PhantomData,
         }
     }
 
     /// Combines this specification with another using logical OR.
     ///
     /// At least one specification must be satisfied for the combined specification to pass.
-    fn or<S: Specification<T>>(self, other: S) -> Or<Self, S, T>
+    fn or<S: Specification<T>>(self, other: S) -> Or<Self, S>
     where
         Self: Sized,
     {
         Or {
             left: self,
             right: other,
-            _marker: PhantomData,
         }
     }
 
     /// Negates this specification.
     ///
     /// The negated specification is satisfied when the original is not.
-    fn not(self) -> Not<Self, T>
+    fn not(self) -> Not<Self>
     where
         Self: Sized,
     {
-        Not {
-            inner: self,
-            _marker: PhantomData,
-        }
+        Not { inner: self }
+    }
+
+    /// Wraps this specification in [`Spec`] to enable operator syntax.
+    ///
+    /// Once wrapped, you can use `&` (AND), `|` (OR), and `!` (NOT) operators.
+    /// Only the first operand needs wrapping — subsequent operands are accepted
+    /// directly.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use event_sauce_core::specification::Specification;
+    ///
+    /// struct IsPositive;
+    /// impl Specification<i64> for IsPositive {
+    ///     fn is_satisfied_by(&self, val: &i64) -> bool { *val > 0 }
+    ///     fn error_message(&self, val: &i64) -> String {
+    ///         format!("Must be positive, got {val}")
+    ///     }
+    /// }
+    ///
+    /// struct IsEven;
+    /// impl Specification<i64> for IsEven {
+    ///     fn is_satisfied_by(&self, val: &i64) -> bool { *val % 2 == 0 }
+    ///     fn error_message(&self, val: &i64) -> String {
+    ///         format!("Must be even, got {val}")
+    ///     }
+    /// }
+    ///
+    /// let spec = IsPositive.spec() & IsEven;
+    /// assert!(spec.is_satisfied_by(&42));
+    /// assert!(!spec.is_satisfied_by(&3));
+    /// ```
+    fn spec(self) -> Spec<Self>
+    where
+        Self: Sized,
+    {
+        Spec::__new(self)
     }
 }
 
 /// Logical AND combinator for two specifications.
 ///
 /// Both the left and right specifications must be satisfied.
-pub struct And<L, R, T: ?Sized> {
+pub struct And<L, R> {
     left: L,
     right: R,
-    _marker: PhantomData<fn() -> T>,
 }
 
-impl<L, R, T> Specification<T> for And<L, R, T>
+impl<L, R> And<L, R> {
+    /// Constructs an `And` combinator. Used by macro-generated code.
+    #[doc(hidden)]
+    #[inline]
+    #[must_use]
+    pub fn __new(left: L, right: R) -> Self {
+        Self { left, right }
+    }
+}
+
+impl<L, R, T> Specification<T> for And<L, R>
 where
     L: Specification<T>,
     R: Specification<T>,
@@ -228,20 +271,25 @@ where
     }
 }
 
-// SAFETY: And is Send+Sync when its components are
-unsafe impl<L: Send, R: Send, T: ?Sized> Send for And<L, R, T> {}
-unsafe impl<L: Sync, R: Sync, T: ?Sized> Sync for And<L, R, T> {}
-
 /// Logical OR combinator for two specifications.
 ///
 /// At least one of the left or right specifications must be satisfied.
-pub struct Or<L, R, T: ?Sized> {
+pub struct Or<L, R> {
     left: L,
     right: R,
-    _marker: PhantomData<fn() -> T>,
 }
 
-impl<L, R, T> Specification<T> for Or<L, R, T>
+impl<L, R> Or<L, R> {
+    /// Constructs an `Or` combinator. Used by macro-generated code.
+    #[doc(hidden)]
+    #[inline]
+    #[must_use]
+    pub fn __new(left: L, right: R) -> Self {
+        Self { left, right }
+    }
+}
+
+impl<L, R, T> Specification<T> for Or<L, R>
 where
     L: Specification<T>,
     R: Specification<T>,
@@ -258,19 +306,24 @@ where
     }
 }
 
-// SAFETY: Or is Send+Sync when its components are
-unsafe impl<L: Send, R: Send, T: ?Sized> Send for Or<L, R, T> {}
-unsafe impl<L: Sync, R: Sync, T: ?Sized> Sync for Or<L, R, T> {}
-
 /// Logical NOT combinator for a specification.
 ///
 /// Satisfied when the inner specification is *not* satisfied.
-pub struct Not<S, T: ?Sized> {
+pub struct Not<S> {
     inner: S,
-    _marker: PhantomData<fn() -> T>,
 }
 
-impl<S, T> Specification<T> for Not<S, T>
+impl<S> Not<S> {
+    /// Constructs a `Not` combinator. Used by macro-generated code.
+    #[doc(hidden)]
+    #[inline]
+    #[must_use]
+    pub fn __new(inner: S) -> Self {
+        Self { inner }
+    }
+}
+
+impl<S, T> Specification<T> for Not<S>
 where
     S: Specification<T>,
     T: ?Sized,
@@ -284,10 +337,6 @@ where
         format!("NOT ({inner_msg})")
     }
 }
-
-// SAFETY: Not is Send+Sync when its component is
-unsafe impl<S: Send, T: ?Sized> Send for Not<S, T> {}
-unsafe impl<S: Sync, T: ?Sized> Sync for Not<S, T> {}
 
 /// A specification built from closures.
 ///
@@ -339,6 +388,112 @@ where
 
     fn error_message(&self, candidate: &T) -> String {
         (self.message_fn)(candidate)
+    }
+}
+
+/// Wrapper enabling operator syntax (`&`, `|`, `!`) for specifications.
+///
+/// Created via [`Specification::spec()`] or automatically by the [`spec!`] and
+/// `#[specification]` macros. Only the leftmost operand needs wrapping —
+/// subsequent operands in an operator chain are accepted directly.
+///
+/// # Examples
+///
+/// ```
+/// use event_sauce_core::specification::Specification;
+///
+/// struct IsPositive;
+/// impl Specification<i64> for IsPositive {
+///     fn is_satisfied_by(&self, val: &i64) -> bool { *val > 0 }
+///     fn error_message(&self, val: &i64) -> String {
+///         format!("Must be positive, got {val}")
+///     }
+/// }
+///
+/// struct IsEven;
+/// impl Specification<i64> for IsEven {
+///     fn is_satisfied_by(&self, val: &i64) -> bool { *val % 2 == 0 }
+///     fn error_message(&self, val: &i64) -> String {
+///         format!("Must be even, got {val}")
+///     }
+/// }
+///
+/// struct LessThan { max: i64 }
+/// impl Specification<i64> for LessThan {
+///     fn is_satisfied_by(&self, val: &i64) -> bool { *val < self.max }
+///     fn error_message(&self, val: &i64) -> String {
+///         format!("{val} must be < {}", self.max)
+///     }
+/// }
+///
+/// // Operator chaining: (IsPositive | IsEven) & LessThan
+/// let spec = (IsPositive.spec() | IsEven) & LessThan { max: 100 };
+/// assert!(spec.is_satisfied_by(&42));  // positive, even, < 100
+/// assert!(spec.is_satisfied_by(&3));   // positive (OR branch), < 100
+/// assert!(!spec.is_satisfied_by(&-3)); // neither positive nor even
+/// assert!(!spec.is_satisfied_by(&102)); // >= 100
+/// ```
+pub struct Spec<S> {
+    inner: S,
+}
+
+impl<S> Spec<S> {
+    /// Constructs a `Spec` wrapper. Used by macro-generated code.
+    #[doc(hidden)]
+    #[inline]
+    #[must_use]
+    pub fn __new(inner: S) -> Self {
+        Self { inner }
+    }
+}
+
+impl<S, T> Specification<T> for Spec<S>
+where
+    S: Specification<T>,
+    T: ?Sized,
+{
+    fn is_satisfied_by(&self, candidate: &T) -> bool {
+        self.inner.is_satisfied_by(candidate)
+    }
+
+    fn error_message(&self, candidate: &T) -> String {
+        self.inner.error_message(candidate)
+    }
+}
+
+impl<L, R> ops::BitAnd<R> for Spec<L> {
+    type Output = Spec<And<L, R>>;
+
+    fn bitand(self, rhs: R) -> Self::Output {
+        Spec {
+            inner: And {
+                left: self.inner,
+                right: rhs,
+            },
+        }
+    }
+}
+
+impl<L, R> ops::BitOr<R> for Spec<L> {
+    type Output = Spec<Or<L, R>>;
+
+    fn bitor(self, rhs: R) -> Self::Output {
+        Spec {
+            inner: Or {
+                left: self.inner,
+                right: rhs,
+            },
+        }
+    }
+}
+
+impl<S> ops::Not for Spec<S> {
+    type Output = Spec<Not<S>>;
+
+    fn not(self) -> Self::Output {
+        Spec {
+            inner: Not { inner: self.inner },
+        }
     }
 }
 
@@ -911,5 +1066,157 @@ mod tests {
         };
         let spec = AccountIsActive.or(AccountHasFunds { amount: 500 });
         assert!(spec.check(&account).is_ok());
+    }
+
+    // ===== Operator Syntax Tests =====
+
+    #[test]
+    fn test_spec_wrapper_delegates_is_satisfied_by() {
+        let spec = IsPositive.spec();
+        assert!(spec.is_satisfied_by(&42));
+        assert!(!spec.is_satisfied_by(&-1));
+    }
+
+    #[test]
+    fn test_spec_wrapper_delegates_error_message() {
+        let spec = IsPositive.spec();
+        assert_eq!(spec.error_message(&-5), "Value must be positive, got -5");
+    }
+
+    #[test]
+    fn test_spec_wrapper_delegates_check() {
+        let spec = IsPositive.spec();
+        assert!(spec.check(&42).is_ok());
+        assert!(spec.check(&-1).is_err());
+    }
+
+    #[test]
+    fn test_bitand_operator() {
+        let spec = IsPositive.spec() & IsEven;
+        assert!(spec.is_satisfied_by(&42));
+        assert!(!spec.is_satisfied_by(&3)); // odd
+        assert!(!spec.is_satisfied_by(&-2)); // negative
+    }
+
+    #[test]
+    fn test_bitor_operator() {
+        let spec = IsPositive.spec() | IsEven;
+        assert!(spec.is_satisfied_by(&42)); // both
+        assert!(spec.is_satisfied_by(&3)); // positive only
+        assert!(spec.is_satisfied_by(&-2)); // even only
+        assert!(!spec.is_satisfied_by(&-3)); // neither
+    }
+
+    #[test]
+    fn test_not_operator() {
+        let spec = !IsPositive.spec();
+        assert!(spec.is_satisfied_by(&-1));
+        assert!(!spec.is_satisfied_by(&42));
+    }
+
+    #[test]
+    fn test_operator_chaining_or_then_and() {
+        // (IsPositive | IsEven) & LessThan { max: 100 }
+        let spec = (IsPositive.spec() | IsEven) & LessThan { max: 100 };
+        assert!(spec.is_satisfied_by(&42)); // positive, even, < 100
+        assert!(spec.is_satisfied_by(&3)); // positive, < 100
+        assert!(spec.is_satisfied_by(&-2)); // even, < 100
+        assert!(!spec.is_satisfied_by(&-3)); // neither positive nor even
+        assert!(!spec.is_satisfied_by(&102)); // positive but >= 100
+    }
+
+    #[test]
+    fn test_operator_chaining_and_then_or() {
+        // (IsPositive & IsEven) | LessThan { max: 0 }
+        let spec = (IsPositive.spec() & IsEven) | LessThan { max: 0 };
+        assert!(spec.is_satisfied_by(&42)); // positive and even
+        assert!(spec.is_satisfied_by(&-5)); // less than 0
+        assert!(!spec.is_satisfied_by(&3)); // positive but odd, not < 0
+    }
+
+    #[test]
+    fn test_operator_triple_or() {
+        // IsPositive | IsEven | LessThan { max: -10 }
+        let spec = IsPositive.spec() | IsEven | LessThan { max: -10 };
+        assert!(spec.is_satisfied_by(&1)); // positive
+        assert!(spec.is_satisfied_by(&-2)); // even
+        assert!(spec.is_satisfied_by(&-11)); // < -10
+        assert!(!spec.is_satisfied_by(&-3)); // none
+    }
+
+    #[test]
+    fn test_operator_not_with_and() {
+        // !IsPositive & IsEven
+        let spec = !IsPositive.spec() & IsEven;
+        assert!(spec.is_satisfied_by(&-2)); // not positive, even
+        assert!(spec.is_satisfied_by(&0)); // not positive, even
+        assert!(!spec.is_satisfied_by(&2)); // positive
+        assert!(!spec.is_satisfied_by(&-3)); // odd
+    }
+
+    #[test]
+    fn test_operator_check_returns_error() {
+        let spec = IsPositive.spec() & IsEven;
+        let result = spec.check(&3);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().message,
+            "Value must be positive, got 3 AND Value must be even, got 3"
+        );
+    }
+
+    #[test]
+    fn test_operator_with_parameterized_specs() {
+        let spec = HasMinBalance { min: 100 }.spec() & LessThan { max: 10000 };
+        assert!(spec.is_satisfied_by(&500));
+        assert!(!spec.is_satisfied_by(&50)); // below min
+        assert!(!spec.is_satisfied_by(&20000)); // above max
+    }
+
+    #[test]
+    fn test_operator_with_complex_types() {
+        let account = Account {
+            balance: 500,
+            status: "active",
+        };
+        let spec = AccountIsActive.spec() & AccountHasFunds { amount: 200 };
+        assert!(spec.check(&account).is_ok());
+    }
+
+    #[test]
+    fn test_operator_result_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<Spec<IsPositive>>();
+        assert_send_sync::<Spec<And<IsPositive, IsEven>>>();
+    }
+
+    #[test]
+    fn test_operator_with_fn_spec() {
+        let positive = FnSpec::new(
+            |val: &i64| *val > 0,
+            |val: &i64| format!("Must be positive, got {val}"),
+        );
+        let even = FnSpec::new(
+            |val: &i64| *val % 2 == 0,
+            |val: &i64| format!("Must be even, got {val}"),
+        );
+        let spec = positive.spec() | even;
+        assert!(spec.is_satisfied_by(&3));
+        assert!(spec.is_satisfied_by(&-2));
+        assert!(!spec.is_satisfied_by(&-3));
+    }
+
+    #[test]
+    fn test_operator_double_negation() {
+        let spec = !(!IsPositive.spec());
+        assert!(spec.is_satisfied_by(&42));
+        assert!(!spec.is_satisfied_by(&-1));
+    }
+
+    #[test]
+    fn test_operator_validate_or() {
+        let spec = IsPositive.spec() & IsEven;
+        let result: Result<(), String> = spec.validate_or(&-3, |msg| msg);
+        assert!(result.is_err());
     }
 }

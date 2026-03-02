@@ -70,7 +70,7 @@ pub use projection::Projection;
 pub use repository::Repository;
 pub use snapshot_config::{SnapshotConfig, SnapshotConfigBuilder};
 pub use snapshot_strategy::{AlwaysSnapshot, EveryNEvents, NeverSnapshot, SnapshotStrategy};
-pub use specification::{Specification, SpecificationError};
+pub use specification::{Spec, Specification, SpecificationError};
 pub use subscription::{
     CheckpointStore, CheckpointStrategy, ErrorPolicy, EventFilter, Subscription,
     SubscriptionBuilder, SubscriptionConfig,

@@ -651,6 +651,8 @@ fn has_sufficient_funds(account: &Account, amount: i64) -> bool {
 
 ### Composing Specifications
 
+#### Method syntax
+
 ```rust
 // AND: both must be satisfied
 let spec = IsActive.and(HasPositiveBalance);
@@ -663,6 +665,24 @@ let spec = IsActive.not();
 
 // Complex composition
 let spec = IsActive.and(HasSufficientFunds { amount: 100 }).or(IsAdmin);
+```
+
+#### Operator syntax
+
+Call `.spec()` on the first operand to enable `&` (AND), `|` (OR), and `!` (NOT) operators. Subsequent operands don't need wrapping:
+
+```rust
+// AND
+let spec = IsActive.spec() & HasPositiveBalance;
+
+// OR
+let spec = IsActive.spec() | HasPositiveBalance;
+
+// NOT
+let spec = !IsActive.spec();
+
+// Complex composition with grouping
+let spec = (AllowedRole1.spec() | AllowedRole2 | AllowedRole3) & IsActive;
 ```
 
 ### Integration with Error Types
@@ -702,15 +722,46 @@ define_events! {
 }
 ```
 
-You can also use specifications inside `@validate` closures for more control:
+#### Closure-based `@validate_spec`
+
+You can also pass a closure to `@validate_spec` to build specs dynamically from event/actor data:
 
 ```rust
+// 2-arg closure: builds spec from aggregate and event, runs in validate()
+@validate_spec(|_agg, evt| HasSufficientFunds { amount: evt.amount })
+
+// 3-arg closure: builds spec from aggregate, actor, and event, runs in validate_actor()
+@validate_spec(|order, actor, _evt| IsOrderOwner { actor_id: actor.entity_id() })
+```
+
+Simple spec expressions (e.g., `@validate_spec(OrderIsPending)`) always run in `validate()` / `validate_init()`.
+
+#### Arity-based `@validate` dispatch
+
+The number of closure arguments in `@validate` determines where the check runs:
+
+| Event kind   | `@validate` closure     | Runs in                | Replay? |
+|--------------|-------------------------|------------------------|---------|
+| regular      | `\|agg, evt\|`         | `validate()`           | yes     |
+| actor        | `\|agg, evt\|`         | `validate()`           | yes     |
+| actor        | `\|agg, actor, evt\|`  | `validate_actor()`     | no      |
+| init         | `\|evt\|`              | `validate_init()`      | yes     |
+| actor_init   | `\|evt\|`              | `validate_init()`      | yes     |
+| actor_init   | `\|actor, evt\|`       | `validate_init_actor()`| no      |
+
+For actor events needing both replay-time and command-time checks, use `@validate` for one and `@validate_spec` for the other:
+
+```rust
+// Replay-time event validation (2-arg → validate)
 @validate |agg, evt| {
-    HasSufficientFunds { amount: evt.amount }
-        .check(agg)?; // SpecificationError -> OrderError via From
+    HasSufficientFunds { amount: evt.amount }.check(agg)?;
     Ok(())
 }
+// Command-time actor check (3-arg closure → validate_actor)
+@validate_spec(|order, actor, _evt| IsOrderOwner { actor_id: actor.entity_id() })
 ```
+
+`@post_validate` / `@post_validate_spec` remain 2-arg only — they check aggregate state invariants after apply, not actor permissions.
 
 ### Custom Error Mapping
 
