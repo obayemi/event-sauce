@@ -353,7 +353,6 @@ impl<A: Aggregate> AggregateRoot<A> {
     ///
     /// Uses `EventApplicator::dispatch_delete_unchecked` which skips validation.
     /// Consumes the aggregate root.
-    #[allow(dead_code)]
     pub(crate) fn apply_delete_unchecked(self, event: &A::Event) -> DeletedAggregateRoot<A> {
         let entity_id = self.entity.entity_id();
         let version = self.version.next();

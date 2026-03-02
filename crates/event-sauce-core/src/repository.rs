@@ -6,9 +6,9 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use crate::{
-    event_store::{count_events, load},
-    Aggregate, AggregateRoot, AggregateVersion, DefaultEntity, EntityId, EventStore, InitEvent,
-    Result, StreamId, UninitAggregateRoot,
+    event_store::{count_events, load, load_any, load_deleted},
+    Aggregate, AggregateRoot, AggregateVersion, DefaultEntity, DeletedAggregateRoot, EntityId,
+    EventStore, InitEvent, Loaded, Result, StreamId, UninitAggregateRoot,
 };
 
 /// Repository provides a high-level API for aggregate persistence.
@@ -46,6 +46,7 @@ impl<S, A> Repository<S, A>
 where
     S: EventStore + 'static,
     A: Aggregate + serde::Serialize + serde::de::DeserializeOwned,
+    A::DeletedState: serde::Serialize + serde::de::DeserializeOwned,
     A::Event: serde::Serialize + serde::de::DeserializeOwned,
 {
     /// Creates a new repository wrapping the given event store.
@@ -153,6 +154,42 @@ where
         event: E,
     ) -> std::result::Result<AggregateRoot<A>, A::Error> {
         UninitAggregateRoot::new(id).apply_init(event)
+    }
+
+    /// Loads an aggregate, returning its lifecycle state.
+    ///
+    /// Returns `Loaded::Active` for active aggregates or
+    /// `Loaded::Deleted` for deleted ones.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the aggregate doesn't exist or deserialization fails.
+    pub async fn load_any(&self, id: EntityId) -> Result<Loaded<A>> {
+        load_any(&*self.store, id).await
+    }
+
+    /// Loads a deleted aggregate from the event store.
+    ///
+    /// Returns `DeletedAggregateRoot<A>` if the aggregate has been deleted.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::InvalidState` if the aggregate is still active.
+    /// Returns an error if the aggregate doesn't exist or deserialization fails.
+    pub async fn load_deleted(&self, id: EntityId) -> Result<DeletedAggregateRoot<A>> {
+        load_deleted(&*self.store, id).await
+    }
+
+    /// Saves a deleted aggregate root to the event store.
+    ///
+    /// Commits all pending events and clears them on success.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if serialization, the event store operation,
+    /// or concurrency control fails.
+    pub async fn save_deleted(&self, aggregate: &mut DeletedAggregateRoot<A>) -> Result<()> {
+        self.store.commit_deleted(aggregate).await
     }
 }
 
@@ -350,5 +387,59 @@ mod tests {
         // Load through the cloned repository — should see the same data
         let loaded = repo_clone.load(test_id).await.unwrap();
         assert_eq!(loaded.value, 42);
+    }
+
+    #[tokio::test]
+    async fn test_repository_load_any_returns_active() {
+        let store = Arc::new(MockEventStore::new());
+        let repo = store.repository::<SimpleTestEntity>();
+
+        let id = EntityId::new();
+        let mut aggregate = AggregateRoot::<SimpleTestEntity>::new(id);
+        aggregate
+            .apply(SimpleTestEvent::Created { value: 10 })
+            .unwrap();
+        repo.save(&mut aggregate).await.unwrap();
+
+        let loaded = repo.load_any(id).await.unwrap();
+        assert!(loaded.is_active());
+    }
+
+    #[tokio::test]
+    async fn test_repository_load_deleted_errors_for_active() {
+        let store = Arc::new(MockEventStore::new());
+        let repo = store.repository::<SimpleTestEntity>();
+
+        let id = EntityId::new();
+        let mut aggregate = AggregateRoot::<SimpleTestEntity>::new(id);
+        aggregate
+            .apply(SimpleTestEvent::Created { value: 10 })
+            .unwrap();
+        repo.save(&mut aggregate).await.unwrap();
+
+        let result = repo.load_deleted(id).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_repository_save_deleted() {
+        let store = Arc::new(MockEventStore::new());
+        let repo = store.repository::<SimpleTestEntity>();
+
+        let id = EntityId::new();
+        let entity = SimpleTestEntity { id, value: 42 };
+        let pending = vec![crate::aggregate_root::PendingEvent {
+            event: SimpleTestEvent::Updated { value: 0 },
+            actor_id: None,
+        }];
+        let mut deleted = DeletedAggregateRoot::from_delete_with_pending(
+            entity,
+            id,
+            AggregateVersion::new(1),
+            pending,
+        );
+
+        repo.save_deleted(&mut deleted).await.unwrap();
+        assert!(deleted.pending_events().is_empty());
     }
 }

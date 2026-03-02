@@ -9,8 +9,8 @@ use futures::Stream;
 use uuid::Uuid;
 
 use crate::{
-    Aggregate, AggregateRoot, AggregateType, AggregateVersion, DomainEvent, EntityId,
-    EventEnvelope, Repository, Result, SnapshotConfig,
+    Aggregate, AggregateRoot, AggregateType, AggregateVersion, DeletedAggregateRoot, DomainEvent,
+    EntityId, EventEnvelope, Loaded, Repository, Result, SnapshotConfig,
 };
 
 /// Stream ID uniquely identifying an event stream.
@@ -293,6 +293,7 @@ pub trait EventStore: Send + Sync {
     where
         Self: Sized + 'static,
         A: Aggregate + serde::Serialize + serde::de::DeserializeOwned,
+        A::DeletedState: serde::Serialize + serde::de::DeserializeOwned,
         A::Event: serde::Serialize + serde::de::DeserializeOwned,
     {
         Repository::new(Arc::clone(self))
@@ -441,6 +442,148 @@ pub trait EventStore: Send + Sync {
 
         Ok(())
     }
+
+    /// Commits pending events from a deleted aggregate root to the event store.
+    ///
+    /// This method works like [`commit()`](Self::commit), but operates on a
+    /// `DeletedAggregateRoot<A>` instead of `AggregateRoot<A>`.
+    ///
+    /// The snapshot for a deleted aggregate stores the `DeletedState`, not `A`,
+    /// and is encrypted if the aggregate uses encryption.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::ConcurrencyConflict` if another process modified the aggregate.
+    /// Returns `Error::Encryption` if encryption fails for an encrypted aggregate.
+    /// Returns `Error::InvalidState` if an encrypted aggregate lacks crypto configuration.
+    #[allow(clippy::too_many_lines)]
+    async fn commit_deleted<A>(&self, aggregate: &mut DeletedAggregateRoot<A>) -> Result<()>
+    where
+        A: Aggregate + serde::Serialize,
+        A::DeletedState: serde::Serialize,
+        A::Event: serde::Serialize,
+    {
+        let pending = aggregate.pending_events_with_actors();
+        if pending.is_empty() {
+            return Ok(());
+        }
+
+        let aggregate_id = aggregate.entity_id().as_uuid();
+        let aggregate_type = DeletedAggregateRoot::<A>::aggregate_type();
+        #[allow(clippy::cast_possible_wrap)]
+        let pending_count = pending.len() as i64;
+        let expected_version =
+            AggregateVersion::new(aggregate.version().as_i64().saturating_sub(pending_count));
+
+        let envelopes: Result<Vec<EventEnvelope>> = pending
+            .iter()
+            .map(|pe| {
+                let mut envelope = pe.event.to_envelope(aggregate_id)?;
+                if let Some(actor_id) = pe.actor_id {
+                    envelope = envelope.with_created_by(actor_id.as_uuid());
+                }
+                Ok(envelope)
+            })
+            .collect();
+        let mut envelopes = envelopes?;
+
+        // Encrypt event data for encrypted aggregates
+        if A::is_encrypted() {
+            let crypto_key = ensure_crypto_key(self, aggregate_id).await?;
+            let provider = require_crypto_provider(self)?;
+
+            for envelope in &mut envelopes {
+                envelope.event_data =
+                    crate::crypto::encrypt_value(provider, &crypto_key, &envelope.event_data)?;
+            }
+        } else if A::Event::has_any_encrypted_fields() {
+            let crypto_key = ensure_crypto_key(self, aggregate_id).await?;
+            let provider = require_crypto_provider(self)?;
+
+            for (envelope, pe) in envelopes.iter_mut().zip(pending.iter()) {
+                let fields = pe.event.encrypted_fields();
+                if !fields.is_empty() {
+                    crate::crypto::encrypt_fields(
+                        provider,
+                        &crypto_key,
+                        &mut envelope.event_data,
+                        fields,
+                    )?;
+                }
+            }
+        }
+
+        self.append(
+            StreamId::new(aggregate_type.clone(), aggregate_id),
+            envelopes.clone(),
+            expected_version,
+        )
+        .await?;
+
+        // Create snapshot if strategy indicates we should
+        let config = self.snapshot_config();
+        let strategy = config.strategy_for_type(aggregate_type.as_str());
+        let current_version = aggregate.version();
+
+        if strategy.should_snapshot(current_version) {
+            match serde_json::to_value(aggregate.state()) {
+                Ok(mut snapshot_data) => {
+                    // Encrypt snapshot data for encrypted or field-encrypted aggregates
+                    if A::is_encrypted() || A::Event::has_any_encrypted_fields() {
+                        if let (Some(key_store), Some(provider)) =
+                            (self.crypto_key_store(), self.crypto_provider())
+                        {
+                            if let Ok(Some(crypto_key)) = key_store.get_key(aggregate_id).await {
+                                match crate::crypto::encrypt_value(
+                                    provider,
+                                    &crypto_key,
+                                    &snapshot_data,
+                                ) {
+                                    Ok(encrypted) => snapshot_data = encrypted,
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            aggregate_type = %aggregate_type,
+                                            aggregate_id = %aggregate_id,
+                                            error = %e,
+                                            "Failed to encrypt snapshot data"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    let snapshot = Snapshot::new(
+                        aggregate_id,
+                        aggregate_type.clone(),
+                        current_version,
+                        snapshot_data,
+                    );
+
+                    if let Err(e) = self.save_snapshot(snapshot).await {
+                        tracing::warn!(
+                            aggregate_type = %aggregate_type,
+                            aggregate_id = %aggregate_id,
+                            error = %e,
+                            "Failed to save snapshot"
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        aggregate_type = %aggregate_type,
+                        aggregate_id = %aggregate_id,
+                        error = %e,
+                        "Failed to serialize deleted state for snapshot"
+                    );
+                }
+            }
+        }
+
+        aggregate.clear_pending_events();
+
+        Ok(())
+    }
 }
 
 /// Gets or creates a crypto key for an aggregate.
@@ -492,22 +635,24 @@ fn decrypt_event_data<S: EventStore + ?Sized>(
     Ok(())
 }
 
-/// Loads an aggregate from the event store by its ID.
+/// Loads an aggregate from the event store, returning its lifecycle state.
 ///
-/// Returns an `AggregateRoot<A>` reconstructed by replaying events,
-/// optionally using a snapshot for optimization.
+/// Returns `Loaded::Active(AggregateRoot<A>)` for active aggregates, or
+/// `Loaded::Deleted(DeletedAggregateRoot<A>)` for deleted ones.
 ///
-/// This function handles both `DefaultEntity` aggregates (legacy) and
-/// init-event aggregates. It detects which pattern is used by checking
-/// `is_init()` on the first event.
+/// This function handles `DefaultEntity` aggregates (legacy), init-event
+/// aggregates, and delete events. It detects which pattern is used by
+/// checking `is_init()` and `is_delete()` on events during replay.
 ///
 /// # Errors
 ///
 /// Returns an error if events cannot be deserialized or replay fails.
-pub(crate) async fn load<S, A>(store: &S, id: EntityId) -> Result<AggregateRoot<A>>
+#[allow(clippy::too_many_lines)]
+pub(crate) async fn load_any<S, A>(store: &S, id: EntityId) -> Result<Loaded<A>>
 where
     S: EventStore,
     A: Aggregate + serde::de::DeserializeOwned,
+    A::DeletedState: serde::de::DeserializeOwned,
     A::Event: serde::de::DeserializeOwned,
 {
     use crate::{EventApplicator, UninitAggregateRoot};
@@ -558,10 +703,16 @@ where
                 let mut envelope = envelope?;
                 decrypt_event_data(store, crypto_key.as_deref(), &mut envelope.event_data)?;
                 let event = A::Event::from_envelope(&envelope)?;
+
+                if EventApplicator::is_delete(&event) {
+                    let deleted = aggregate.apply_delete_unchecked(&event);
+                    return Ok(Loaded::Deleted(deleted));
+                }
+
                 aggregate.apply_unchecked(&event);
             }
 
-            return Ok(aggregate);
+            return Ok(Loaded::Active(aggregate));
         }
     }
 
@@ -574,7 +725,7 @@ where
     let Some(first_envelope) = event_stream.next().await else {
         // No events: backward compat — returns default-state aggregate.
         // For init-event aggregates, Entity::new panics (data integrity issue).
-        return Ok(AggregateRoot::new_for_replay(id));
+        return Ok(Loaded::Active(AggregateRoot::new_for_replay(id)));
     };
     let mut first_envelope = first_envelope?;
 
@@ -593,15 +744,62 @@ where
         agg
     };
 
-    // Replay remaining events (all regular)
+    // Replay remaining events
     while let Some(envelope) = event_stream.next().await {
         let mut envelope = envelope?;
         decrypt_event_data(store, crypto_key.as_deref(), &mut envelope.event_data)?;
         let event = A::Event::from_envelope(&envelope)?;
+
+        if EventApplicator::is_delete(&event) {
+            let deleted = aggregate.apply_delete_unchecked(&event);
+            return Ok(Loaded::Deleted(deleted));
+        }
+
         aggregate.apply_unchecked(&event);
     }
 
-    Ok(aggregate)
+    Ok(Loaded::Active(aggregate))
+}
+
+/// Loads an aggregate from the event store by its ID.
+///
+/// Returns an `AggregateRoot<A>` reconstructed by replaying events,
+/// optionally using a snapshot for optimization.
+///
+/// If the aggregate has been deleted, returns `Error::AggregateDeleted`.
+/// Use [`load_any()`] to handle both active and deleted aggregates.
+///
+/// # Errors
+///
+/// Returns `Error::AggregateDeleted` if the aggregate has been deleted.
+/// Returns an error if events cannot be deserialized or replay fails.
+pub(crate) async fn load<S, A>(store: &S, id: EntityId) -> Result<AggregateRoot<A>>
+where
+    S: EventStore,
+    A: Aggregate + serde::de::DeserializeOwned,
+    A::DeletedState: serde::de::DeserializeOwned,
+    A::Event: serde::de::DeserializeOwned,
+{
+    load_any(store, id).await?.into_active()
+}
+
+/// Loads a deleted aggregate from the event store by its ID.
+///
+/// Returns `DeletedAggregateRoot<A>` if the aggregate has been deleted.
+/// Returns `Error::InvalidState` if the aggregate is still active.
+///
+/// # Errors
+///
+/// Returns `Error::InvalidState` if the aggregate is not deleted.
+/// Returns an error if events cannot be deserialized or replay fails.
+pub(crate) async fn load_deleted<S, A>(store: &S, id: EntityId) -> Result<DeletedAggregateRoot<A>>
+where
+    S: EventStore,
+    A: Aggregate + serde::de::DeserializeOwned,
+    A::DeletedState: serde::de::DeserializeOwned,
+    A::Event: serde::de::DeserializeOwned,
+{
+    load_any(store, id).await?.into_deleted()
 }
 
 /// Counts the number of events in a stream.
@@ -1433,5 +1631,381 @@ mod tests {
 
         // Only "UserCreated" should be processed (filter from Projection)
         assert_eq!(projection.count, 1);
+    }
+
+    // === Tests for load_any(), load_deleted(), commit_deleted() ===
+
+    /// Entity that supports delete events for testing.
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+    struct DeletableEntity {
+        id: EntityId,
+        value: i32,
+    }
+
+    impl crate::Entity for DeletableEntity {
+        fn new(id: EntityId) -> Self {
+            Self { id, value: 0 }
+        }
+        fn entity_id(&self) -> EntityId {
+            self.id
+        }
+    }
+
+    impl crate::DefaultEntity for DeletableEntity {}
+
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+    enum DeletableEvent {
+        Created { value: i32 },
+        Updated { value: i32 },
+        Deleted { reason: String },
+    }
+
+    impl crate::DomainEvent for DeletableEvent {
+        type Aggregate = DeletableEntity;
+        fn event_type(&self) -> &'static str {
+            match self {
+                Self::Created { .. } => "DeletableEntity.Created",
+                Self::Updated { .. } => "DeletableEntity.Updated",
+                Self::Deleted { .. } => "DeletableEntity.Deleted",
+            }
+        }
+        fn event_version(&self) -> crate::EventVersion {
+            crate::EventVersion::new(1)
+        }
+        fn occurred_at(&self) -> chrono::DateTime<chrono::Utc> {
+            chrono::Utc::now()
+        }
+    }
+
+    impl crate::EventApplicator<DeletableEntity> for DeletableEvent {
+        fn dispatch(
+            &self,
+            entity: &mut DeletableEntity,
+        ) -> std::result::Result<(), DeletableError> {
+            match self {
+                Self::Created { value } | Self::Updated { value } => entity.value = *value,
+                Self::Deleted { .. } => {}
+            }
+            Ok(())
+        }
+
+        fn dispatch_unchecked(&self, entity: &mut DeletableEntity) {
+            match self {
+                Self::Created { value } | Self::Updated { value } => entity.value = *value,
+                Self::Deleted { .. } => {}
+            }
+        }
+
+        fn is_delete(&self) -> bool {
+            matches!(self, Self::Deleted { .. })
+        }
+
+        fn dispatch_delete(
+            &self,
+            mut aggregate: DeletableEntity,
+        ) -> std::result::Result<DeletableEntity, DeletableError> {
+            if let Self::Deleted { .. } = self {
+                aggregate.value = -1; // Mark as deleted
+            }
+            Ok(aggregate)
+        }
+
+        fn dispatch_delete_unchecked(&self, mut aggregate: DeletableEntity) -> DeletableEntity {
+            if let Self::Deleted { .. } = self {
+                aggregate.value = -1; // Mark as deleted
+            }
+            aggregate
+        }
+    }
+
+    impl crate::DeleteEvent<DeletableEntity> for DeletableEvent {
+        fn delete(&self, mut entity: DeletableEntity) -> DeletableEntity {
+            entity.value = -1;
+            entity
+        }
+    }
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("deletable error")]
+    struct DeletableError;
+
+    impl crate::AggregateError for DeletableError {}
+
+    impl crate::Aggregate for DeletableEntity {
+        type Event = DeletableEvent;
+        type Error = DeletableError;
+        type DeletedState = Self;
+    }
+
+    #[tokio::test]
+    async fn test_load_any_returns_active_for_regular_aggregate() {
+        let store = CommitTestStore::new(SnapshotConfig::disabled());
+        let id = crate::EntityId::new();
+
+        let mut agg = AggregateRoot::<DeletableEntity>::new(id);
+        agg.apply(DeletableEvent::Created { value: 10 }).unwrap();
+        agg.apply(DeletableEvent::Updated { value: 20 }).unwrap();
+        store.commit(&mut agg).await.unwrap();
+
+        let loaded = load_any::<_, DeletableEntity>(&store, id).await.unwrap();
+        assert!(loaded.is_active());
+        let active = loaded.into_active().unwrap();
+        assert_eq!(active.value, 20);
+    }
+
+    #[tokio::test]
+    async fn test_load_any_returns_deleted_when_delete_event_present() {
+        let store = CommitTestStore::new(SnapshotConfig::disabled());
+        let id = crate::EntityId::new();
+
+        // Commit regular events
+        let mut agg = AggregateRoot::<DeletableEntity>::new(id);
+        agg.apply(DeletableEvent::Created { value: 10 }).unwrap();
+        store.commit(&mut agg).await.unwrap();
+
+        // Now commit a delete event via manual envelope
+        let delete_event = DeletableEvent::Deleted {
+            reason: "test".to_string(),
+        };
+        let envelope = EventEnvelope::new(
+            Uuid::new_v4(),
+            id.as_uuid(),
+            "DeletableEntity".to_string(),
+            "DeletableEntity.Deleted".to_string(),
+            crate::EventVersion::new(1),
+            serde_json::to_value(&delete_event).unwrap(),
+        );
+        store
+            .streams
+            .lock()
+            .unwrap()
+            .get_mut(&StreamId::new("DeletableEntity", id.as_uuid()))
+            .unwrap()
+            .push(envelope);
+
+        let loaded = load_any::<_, DeletableEntity>(&store, id).await.unwrap();
+        assert!(loaded.is_deleted());
+        let deleted = loaded.into_deleted().unwrap();
+        assert_eq!(deleted.state().value, -1);
+        assert_eq!(deleted.entity_id(), id);
+    }
+
+    #[tokio::test]
+    async fn test_load_errors_on_deleted_aggregate() {
+        let store = CommitTestStore::new(SnapshotConfig::disabled());
+        let id = crate::EntityId::new();
+
+        // Commit regular events + delete event
+        let mut agg = AggregateRoot::<DeletableEntity>::new(id);
+        agg.apply(DeletableEvent::Created { value: 10 }).unwrap();
+        store.commit(&mut agg).await.unwrap();
+
+        let delete_event = DeletableEvent::Deleted {
+            reason: "gone".to_string(),
+        };
+        let envelope = EventEnvelope::new(
+            Uuid::new_v4(),
+            id.as_uuid(),
+            "DeletableEntity".to_string(),
+            "DeletableEntity.Deleted".to_string(),
+            crate::EventVersion::new(1),
+            serde_json::to_value(&delete_event).unwrap(),
+        );
+        store
+            .streams
+            .lock()
+            .unwrap()
+            .get_mut(&StreamId::new("DeletableEntity", id.as_uuid()))
+            .unwrap()
+            .push(envelope);
+
+        let result = load::<_, DeletableEntity>(&store, id).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().is_aggregate_deleted());
+    }
+
+    #[tokio::test]
+    async fn test_load_deleted_succeeds_for_deleted_aggregate() {
+        let store = CommitTestStore::new(SnapshotConfig::disabled());
+        let id = crate::EntityId::new();
+
+        let mut agg = AggregateRoot::<DeletableEntity>::new(id);
+        agg.apply(DeletableEvent::Created { value: 42 }).unwrap();
+        store.commit(&mut agg).await.unwrap();
+
+        let delete_event = DeletableEvent::Deleted {
+            reason: "bye".to_string(),
+        };
+        let envelope = EventEnvelope::new(
+            Uuid::new_v4(),
+            id.as_uuid(),
+            "DeletableEntity".to_string(),
+            "DeletableEntity.Deleted".to_string(),
+            crate::EventVersion::new(1),
+            serde_json::to_value(&delete_event).unwrap(),
+        );
+        store
+            .streams
+            .lock()
+            .unwrap()
+            .get_mut(&StreamId::new("DeletableEntity", id.as_uuid()))
+            .unwrap()
+            .push(envelope);
+
+        let deleted = load_deleted::<_, DeletableEntity>(&store, id)
+            .await
+            .unwrap();
+        assert_eq!(deleted.state().value, -1);
+        assert_eq!(deleted.version(), AggregateVersion::new(2));
+    }
+
+    #[tokio::test]
+    async fn test_load_deleted_errors_for_active_aggregate() {
+        let store = CommitTestStore::new(SnapshotConfig::disabled());
+        let id = crate::EntityId::new();
+
+        let mut agg = AggregateRoot::<DeletableEntity>::new(id);
+        agg.apply(DeletableEvent::Created { value: 10 }).unwrap();
+        store.commit(&mut agg).await.unwrap();
+
+        let result = load_deleted::<_, DeletableEntity>(&store, id).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_commit_deleted_persists_events() {
+        let store = CommitTestStore::new(SnapshotConfig::disabled());
+        let id = crate::EntityId::new();
+
+        let mut agg = AggregateRoot::<DeletableEntity>::new(id);
+        agg.apply(DeletableEvent::Created { value: 10 }).unwrap();
+
+        let mut deleted = agg
+            .apply_delete(DeletableEvent::Deleted {
+                reason: "test".to_string(),
+            })
+            .unwrap();
+
+        assert_eq!(deleted.pending_events().len(), 2);
+
+        store.commit_deleted(&mut deleted).await.unwrap();
+
+        assert!(
+            deleted.pending_events().is_empty(),
+            "Pending events should be cleared after commit"
+        );
+
+        // Verify events were stored
+        let stream_id = StreamId::new("DeletableEntity", id.as_uuid());
+        let streams = store.streams.lock().unwrap();
+        let stored = streams.get(&stream_id).unwrap();
+        assert_eq!(stored.len(), 2, "Both create and delete events stored");
+    }
+
+    #[tokio::test]
+    async fn test_commit_deleted_with_no_pending_events_is_noop() {
+        let store = CommitTestStore::new(SnapshotConfig::disabled());
+        let id = crate::EntityId::new();
+
+        let mut agg = AggregateRoot::<DeletableEntity>::new(id);
+        agg.apply(DeletableEvent::Created { value: 10 }).unwrap();
+
+        let mut deleted = agg
+            .apply_delete(DeletableEvent::Deleted {
+                reason: "test".to_string(),
+            })
+            .unwrap();
+
+        // Clear pending to simulate already-committed
+        deleted.clear_pending_events();
+        store.commit_deleted(&mut deleted).await.unwrap();
+
+        assert_eq!(store.append_count(), 0, "No append for empty pending");
+    }
+
+    #[tokio::test]
+    async fn test_commit_deleted_triggers_snapshot() {
+        let store = CommitTestStore::new(SnapshotConfig::always());
+        let id = crate::EntityId::new();
+
+        let mut agg = AggregateRoot::<DeletableEntity>::new(id);
+        agg.apply(DeletableEvent::Created { value: 10 }).unwrap();
+
+        let mut deleted = agg
+            .apply_delete(DeletableEvent::Deleted {
+                reason: "test".to_string(),
+            })
+            .unwrap();
+
+        store.commit_deleted(&mut deleted).await.unwrap();
+
+        assert_eq!(store.save_snapshot_count(), 1);
+
+        // Verify snapshot contains deleted state
+        let stream_id = StreamId::new("DeletableEntity", id.as_uuid());
+        let snapshots = store.snapshots.lock().unwrap();
+        let snapshot = snapshots.get(&stream_id).expect("Snapshot should exist");
+        let state: DeletableEntity =
+            serde_json::from_value(snapshot.snapshot_data.clone()).unwrap();
+        assert_eq!(state.value, -1, "Snapshot should contain deleted state");
+    }
+
+    #[tokio::test]
+    async fn test_commit_deleted_propagates_actor_id() {
+        let store = CommitTestStore::new(SnapshotConfig::disabled());
+        let id = crate::EntityId::new();
+        let actor_id = crate::EntityId::new();
+
+        let mut agg = AggregateRoot::<DeletableEntity>::new(id);
+        agg.apply(DeletableEvent::Created { value: 10 }).unwrap();
+
+        let mut deleted = agg
+            .apply_delete_with_actor(
+                DeletableEvent::Deleted {
+                    reason: "test".to_string(),
+                },
+                actor_id,
+            )
+            .unwrap();
+
+        store.commit_deleted(&mut deleted).await.unwrap();
+
+        let stream_id = StreamId::new("DeletableEntity", id.as_uuid());
+        let streams = store.streams.lock().unwrap();
+        let stored = streams.get(&stream_id).unwrap();
+        // The delete event (last one) should have the actor ID
+        let last = stored.last().unwrap();
+        assert_eq!(last.created_by, Some(actor_id.as_uuid()));
+    }
+
+    #[tokio::test]
+    async fn test_load_any_active_then_commit_delete_then_load_any_deleted() {
+        let store = CommitTestStore::new(SnapshotConfig::disabled());
+        let id = crate::EntityId::new();
+
+        // Create and save
+        let mut agg = AggregateRoot::<DeletableEntity>::new(id);
+        agg.apply(DeletableEvent::Created { value: 42 }).unwrap();
+        store.commit(&mut agg).await.unwrap();
+
+        // Load — should be active
+        let loaded = load_any::<_, DeletableEntity>(&store, id).await.unwrap();
+        assert!(loaded.is_active());
+        let agg = loaded.into_active().unwrap();
+
+        // Delete and save
+        let mut deleted = agg
+            .apply_delete(DeletableEvent::Deleted {
+                reason: "done".to_string(),
+            })
+            .unwrap();
+        store.commit_deleted(&mut deleted).await.unwrap();
+
+        // Load again — should be deleted
+        let loaded = load_any::<_, DeletableEntity>(&store, id).await.unwrap();
+        assert!(loaded.is_deleted());
+        let deleted = loaded.into_deleted().unwrap();
+        assert_eq!(deleted.state().value, -1);
+        assert_eq!(deleted.version(), AggregateVersion::new(2));
     }
 }

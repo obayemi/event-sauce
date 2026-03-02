@@ -65,7 +65,6 @@ impl<A: Aggregate> DeletedAggregateRoot<A> {
     }
 
     /// Returns uncommitted events with actor information (for commit).
-    #[allow(dead_code)]
     pub(crate) fn pending_events_with_actors(&self) -> &[PendingEvent<A::Event>] {
         &self.pending_events
     }
@@ -97,7 +96,6 @@ impl<A: Aggregate> DeletedAggregateRoot<A> {
     /// Creates a deleted aggregate root from replay (no pending events).
     ///
     /// Used by `load_any()` when replaying events that include a delete event.
-    #[allow(dead_code)]
     pub(crate) fn from_delete_replay(
         state: A::DeletedState,
         entity_id: EntityId,
