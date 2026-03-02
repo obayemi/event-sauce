@@ -4,7 +4,10 @@
 //! for any type implementing `Aggregate`. Access entity fields via `Deref`
 //! (read-only); state changes must go through `apply()`.
 
-use crate::{Aggregate, AggregateVersion, DefaultEntity, EntityId, EventApplicator};
+use crate::{
+    Aggregate, AggregateVersion, DefaultEntity, DeleteEvent, DeletedAggregateRoot, EntityId,
+    EventApplicator,
+};
 
 /// A pending event with optional actor information.
 ///
@@ -288,6 +291,74 @@ impl<A: Aggregate> AggregateRoot<A> {
     #[must_use]
     pub fn aggregate_type() -> crate::AggregateType {
         A::aggregate_type()
+    }
+
+    /// Applies a delete event, consuming self and returning a deleted aggregate root.
+    ///
+    /// This is a type-state transition: `AggregateRoot<A>` → `DeletedAggregateRoot<A>`.
+    /// The entity is consumed by `DeleteEvent::delete()`, producing `A::DeletedState`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if validation (pre or post) fails.
+    pub fn apply_delete<E: DeleteEvent<A> + Into<A::Event>>(
+        mut self,
+        event: E,
+    ) -> Result<DeletedAggregateRoot<A>, A::Error> {
+        event.validate_delete(&self.entity)?;
+        let entity_id = self.entity.entity_id();
+        let state = event.delete(self.entity);
+        event.post_validate_delete(&state)?;
+        let version = self.version.next();
+        let mut pending = std::mem::take(&mut self.pending_events);
+        pending.push(PendingEvent {
+            event: event.into(),
+            actor_id: None,
+        });
+        Ok(DeletedAggregateRoot::from_delete_with_pending(
+            state, entity_id, version, pending,
+        ))
+    }
+
+    /// Applies a delete event with actor tracking.
+    ///
+    /// Like [`apply_delete()`](Self::apply_delete), but records the actor's entity ID
+    /// alongside the event. At commit time, the actor ID flows into
+    /// `EventEnvelope::created_by`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if validation (pre or post) fails.
+    pub fn apply_delete_with_actor<E: DeleteEvent<A> + Into<A::Event>>(
+        mut self,
+        event: E,
+        actor_id: EntityId,
+    ) -> Result<DeletedAggregateRoot<A>, A::Error> {
+        event.validate_delete(&self.entity)?;
+        let entity_id = self.entity.entity_id();
+        let state = event.delete(self.entity);
+        event.post_validate_delete(&state)?;
+        let version = self.version.next();
+        let mut pending = std::mem::take(&mut self.pending_events);
+        pending.push(PendingEvent {
+            event: event.into(),
+            actor_id: Some(actor_id),
+        });
+        Ok(DeletedAggregateRoot::from_delete_with_pending(
+            state, entity_id, version, pending,
+        ))
+    }
+
+    /// Applies a delete event without validation (for event replay).
+    ///
+    /// Uses `EventApplicator::dispatch_delete_unchecked` which skips validation.
+    /// Consumes the aggregate root.
+    #[allow(dead_code)]
+    pub(crate) fn apply_delete_unchecked(self, event: &A::Event) -> DeletedAggregateRoot<A> {
+        let entity_id = self.entity.entity_id();
+        let version = self.version.next();
+        let state = EventApplicator::dispatch_delete_unchecked(event, self.entity);
+        DeletedAggregateRoot::from_delete_replay(state, entity_id, version)
     }
 }
 
@@ -706,5 +777,131 @@ mod tests {
             cloned.pending_events().len(),
             counter.pending_events().len()
         );
+    }
+
+    // === Delete event tests ===
+
+    struct ClosedEvent {
+        timestamp: chrono::DateTime<Utc>,
+    }
+
+    impl crate::DeleteEvent<CounterEntity> for ClosedEvent {
+        fn delete(&self, mut entity: CounterEntity) -> CounterEntity {
+            entity.value = -1; // Mark as closed
+            entity
+        }
+    }
+
+    impl From<ClosedEvent> for CounterEvent {
+        fn from(e: ClosedEvent) -> Self {
+            CounterEvent::Reset(ResetEvent {
+                timestamp: e.timestamp,
+            })
+        }
+    }
+
+    #[test]
+    fn test_aggregate_root_apply_delete() {
+        let mut counter = AggregateRoot::<CounterEntity>::new(EntityId::new());
+        counter.increment(10).unwrap();
+
+        let id = counter.entity_id();
+        let deleted = counter
+            .apply_delete(ClosedEvent {
+                timestamp: Utc::now(),
+            })
+            .unwrap();
+
+        assert_eq!(deleted.entity_id(), id);
+        assert_eq!(deleted.state().value, -1);
+        assert_eq!(deleted.version(), AggregateVersion::new(2));
+        // Pending events include the increment + the delete event
+        assert_eq!(deleted.pending_events().len(), 2);
+    }
+
+    #[test]
+    fn test_aggregate_root_apply_delete_transfers_pending_events() {
+        let mut counter = AggregateRoot::<CounterEntity>::new(EntityId::new());
+        counter.increment(5).unwrap();
+        counter.increment(3).unwrap();
+
+        let deleted = counter
+            .apply_delete(ClosedEvent {
+                timestamp: Utc::now(),
+            })
+            .unwrap();
+
+        // 2 increments + 1 delete = 3 pending events
+        assert_eq!(deleted.pending_events().len(), 3);
+        assert_eq!(deleted.version(), AggregateVersion::new(3));
+    }
+
+    #[test]
+    fn test_aggregate_root_apply_delete_with_actor() {
+        let mut counter = AggregateRoot::<CounterEntity>::new(EntityId::new());
+        counter.increment(10).unwrap();
+
+        let actor_id = EntityId::new();
+        let deleted = counter
+            .apply_delete_with_actor(
+                ClosedEvent {
+                    timestamp: Utc::now(),
+                },
+                actor_id,
+            )
+            .unwrap();
+
+        assert_eq!(deleted.version(), AggregateVersion::new(2));
+        let pending = deleted.pending_events_with_actors();
+        // First event (increment) has no actor
+        assert_eq!(pending[0].actor_id, None);
+        // Delete event has actor
+        assert_eq!(pending[1].actor_id, Some(actor_id));
+    }
+
+    // Delete event with validation
+    struct ValidatedCloseEvent {
+        timestamp: chrono::DateTime<Utc>,
+    }
+
+    impl crate::DeleteEvent<CounterEntity> for ValidatedCloseEvent {
+        fn validate_delete(&self, entity: &CounterEntity) -> Result<(), TestError> {
+            if entity.value > 0 {
+                return Err(TestError);
+            }
+            Ok(())
+        }
+    }
+
+    impl From<ValidatedCloseEvent> for CounterEvent {
+        fn from(e: ValidatedCloseEvent) -> Self {
+            CounterEvent::Reset(ResetEvent {
+                timestamp: e.timestamp,
+            })
+        }
+    }
+
+    #[test]
+    fn test_aggregate_root_apply_delete_validation_fails() {
+        let mut counter = AggregateRoot::<CounterEntity>::new(EntityId::new());
+        counter.increment(10).unwrap();
+
+        let result = counter.apply_delete(ValidatedCloseEvent {
+            timestamp: Utc::now(),
+        });
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_aggregate_root_apply_delete_validation_succeeds() {
+        let counter = AggregateRoot::<CounterEntity>::new(EntityId::new());
+
+        let deleted = counter
+            .apply_delete(ValidatedCloseEvent {
+                timestamp: Utc::now(),
+            })
+            .unwrap();
+
+        assert_eq!(deleted.version(), AggregateVersion::new(1));
     }
 }

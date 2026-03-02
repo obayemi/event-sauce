@@ -80,7 +80,6 @@ impl<A: Aggregate> DeletedAggregateRoot<A> {
     /// Creates a deleted aggregate root from a delete operation with pending events.
     ///
     /// Used by `AggregateRoot::apply_delete()` at command time.
-    #[allow(dead_code)]
     pub(crate) fn from_delete_with_pending(
         state: A::DeletedState,
         entity_id: EntityId,

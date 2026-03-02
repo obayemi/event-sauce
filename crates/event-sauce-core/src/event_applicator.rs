@@ -99,6 +99,42 @@ pub trait EventApplicator<A: Aggregate> {
     fn dispatch_init_unchecked(&self, _id: crate::EntityId) -> A {
         unreachable!("dispatch_init_unchecked called on non-init event")
     }
+
+    /// Returns whether this event variant is a delete event.
+    ///
+    /// Only returns true for events that terminate the aggregate.
+    /// The default returns false (regular events).
+    fn is_delete(&self) -> bool {
+        false
+    }
+
+    /// Dispatches a delete event with full validation, consuming the entity.
+    ///
+    /// Called by the framework after checking `is_delete()`. The default panics
+    /// because regular events should never reach this path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if validation fails.
+    ///
+    /// # Panics
+    ///
+    /// The default implementation panics. Only delete event variants override this.
+    fn dispatch_delete(&self, _aggregate: A) -> Result<A::DeletedState, A::Error> {
+        unreachable!("dispatch_delete called on non-delete event")
+    }
+
+    /// Dispatches a delete event without validation (for replay).
+    ///
+    /// Called by the framework after checking `is_delete()`. The default panics
+    /// because regular events should never reach this path.
+    ///
+    /// # Panics
+    ///
+    /// The default implementation panics. Only delete event variants override this.
+    fn dispatch_delete_unchecked(&self, _aggregate: A) -> A::DeletedState {
+        unreachable!("dispatch_delete_unchecked called on non-delete event")
+    }
 }
 
 #[cfg(test)]
