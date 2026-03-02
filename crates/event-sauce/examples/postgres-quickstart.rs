@@ -3,6 +3,7 @@
 //! This example demonstrates:
 //! - **Private User aggregate** with crypto-shredding for GDPR compliance
 //! - **Actor-validated Order commands** requiring an authenticated User
+//! - **Delete events** for order cancellation (`@delete @actor(User)`)
 //! - **Function-based specifications** with `#[specification]` for validation
 //! - Init creation functions for ergonomic aggregate construction
 //! - Repository pattern for type-safe aggregate persistence
@@ -20,7 +21,7 @@ use std::sync::Arc;
 
 use event_sauce_core::{
     command_handler, crypto, define_events, Aggregate, AggregateVersion, CryptoKeyStore, Entity,
-    EntityId, EventStore, Specification, StreamId,
+    EntityId, EventStore, Loaded, Specification, StreamId,
 };
 use event_sauce_crypto::Aes256GcmProvider;
 use event_sauce_macros::{aggregate, aggregate_error, specification, AggregateError};
@@ -183,7 +184,7 @@ fn is_order_owner(order: &Order, actor_id: EntityId) -> bool {
 // Order events with @actor — require an authenticated User for permission checks
 define_events! {
     enum OrderEvent for Order {
-        OrderCreated {
+        Placed {
             user_id: EntityId,
         }
         @init
@@ -222,7 +223,7 @@ define_events! {
             order.total += item_total;
         },
 
-        OrderCompleted {}
+        Completed {}
         @actor(User)
         @validate |order, actor, _evt| {
             IsOrderOwner { actor_id: actor.entity_id() }.validate_or(order, |msg| {
@@ -233,6 +234,23 @@ define_events! {
         @validate_spec(OrderIsPending)
         => |order, _event| {
             order.status = OrderStatus::Completed;
+        },
+
+        Cancelled {
+            reason: String,
+        }
+        @delete
+        @actor(User)
+        @validate |order, actor, _evt| {
+            IsOrderOwner { actor_id: actor.entity_id() }.validate_or(order, |msg| {
+                OrderError::PermissionDenied(msg)
+            })?;
+            OrderIsPending.check(order)?;
+            Ok(())
+        }
+        => |mut order, _event| {
+            order.status = OrderStatus::Cancelled;
+            order
         },
     }
 }
@@ -255,7 +273,7 @@ command_handler! {
     impl Order {
         /// Create a new order (requires authenticated user)
         @init @actor(User)
-        fn create_order(user_id: EntityId) -> OrderCreatedEvent { user_id };
+        fn create_order(user_id: EntityId) -> PlacedEvent { user_id };
 
         /// Add an item to the order (requires order owner)
         @actor(User)
@@ -265,7 +283,11 @@ command_handler! {
 
         /// Complete the order (requires order owner)
         @actor(User)
-        fn complete() -> OrderCompletedEvent { };
+        fn complete() -> CompletedEvent { };
+
+        /// Cancel the order (requires order owner, delete transition)
+        @delete @actor(User)
+        fn cancel_order(reason: String) -> CancelledEvent { reason };
     }
 }
 
@@ -296,7 +318,7 @@ event_sauce_core::projection! {
     struct OrderSummaryProjection {
         state: ProjectionState,
 
-        on OrderEvent::OrderCreated |proj, event, aggregate_id| {
+        on OrderEvent::Placed |proj, event, aggregate_id| {
             let order_id = EntityId::from(aggregate_id);
             proj.state.orders.insert(
                 order_id,
@@ -318,10 +340,17 @@ event_sauce_core::projection! {
             }
         },
 
-        on OrderEvent::OrderCompleted |proj, _event, aggregate_id| {
+        on OrderEvent::Completed |proj, _event, aggregate_id| {
             let order_id = EntityId::from(aggregate_id);
             if let Some(order) = proj.state.orders.get_mut(&order_id) {
                 order.status = OrderStatus::Completed;
+            }
+        },
+
+        on OrderEvent::Cancelled |proj, _event, aggregate_id| {
+            let order_id = EntityId::from(aggregate_id);
+            if let Some(order) = proj.state.orders.get_mut(&order_id) {
+                order.status = OrderStatus::Cancelled;
             }
         },
     }
@@ -343,6 +372,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("This example demonstrates:");
     println!("  - Private User aggregate with crypto-shredding (GDPR)");
     println!("  - Actor-validated Order commands (permission checks)");
+    println!("  - Delete events for order cancellation (@delete @actor)");
     println!("  - Init creation functions: User::create_user(), Order::create_order()");
     println!("  - Repository pattern for type-safe persistence");
     println!("  - Projection over Order data (User PII stays encrypted)");
@@ -480,6 +510,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Order {} completed by Alice", order1.entity_id());
 
     // ========================================================================
+    // Step 4b: Cancel an Order (Delete Event)
+    // ========================================================================
+
+    println!("\n=== Cancelling Order (Delete Event) ===\n");
+
+    {
+        use OrderDeleteCommands;
+
+        // Bob cancels his order — type-state transition to DeletedAggregateRoot
+        let order2_id = order2.entity_id();
+        println!("  Bob cancels his order...");
+        let mut deleted_order = order2.cancel_order(&bob, "changed my mind".to_string())?;
+        println!(
+            "    Cancelled: status={:?}, type=DeletedAggregateRoot",
+            deleted_order.status
+        );
+        order_repo.save_deleted(&mut deleted_order).await?;
+
+        // Verify: load() errors on cancelled order
+        println!("\n  Verifying load() errors on cancelled order...");
+        match order_repo.load(order2_id).await {
+            Ok(_) => println!("    ERROR: Should have failed!"),
+            Err(e) => println!("    Error (expected): {e}"),
+        }
+
+        // load_any() returns Loaded::Deleted
+        let loaded = order_repo.load_any(order2_id).await?;
+        match loaded {
+            Loaded::Deleted(d) => println!("    load_any() → Deleted (status={:?})", d.status),
+            Loaded::Active(_) => println!("    ERROR: Should be Deleted!"),
+        }
+    }
+
+    // ========================================================================
     // Step 5: Update User (transparent decrypt + re-encrypt)
     // ========================================================================
 
@@ -570,15 +634,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Err(e) => println!("    Unexpected error: {e}"),
     }
 
-    // Bob's order is still accessible (Order is NOT private)
-    println!("\n  Bob's order is still accessible (Order is not private):");
-    let loaded_order2 = order_repo.load(order2.entity_id()).await?;
-    println!(
-        "    Order {}: user_id={}, total=${:.2}",
-        loaded_order2.entity_id(),
-        loaded_order2.user_id,
-        loaded_order2.total as f64 / 100.0
-    );
+    // Bob's order is still accessible via load_any() (cancelled, not encrypted)
+    println!("\n  Bob's order data is still accessible via load_any():");
+    let loaded_order2 = order_repo.load_any(order2_id).await?;
+    match loaded_order2 {
+        Loaded::Deleted(d) => {
+            println!(
+                "    Order {}: user_id={}, total=${:.2}, status={:?} (cancelled)",
+                d.entity_id(),
+                d.user_id,
+                d.total as f64 / 100.0,
+                d.status
+            );
+        }
+        Loaded::Active(a) => {
+            println!(
+                "    Order {}: user_id={}, total=${:.2} (active)",
+                a.entity_id(),
+                a.user_id,
+                a.total as f64 / 100.0
+            );
+        }
+    }
 
     println!("\n  Demo complete!");
 

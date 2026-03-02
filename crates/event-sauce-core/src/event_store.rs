@@ -514,71 +514,16 @@ pub trait EventStore: Send + Sync {
         }
 
         self.append(
-            StreamId::new(aggregate_type.clone(), aggregate_id),
+            StreamId::new(aggregate_type, aggregate_id),
             envelopes.clone(),
             expected_version,
         )
         .await?;
 
-        // Create snapshot if strategy indicates we should
-        let config = self.snapshot_config();
-        let strategy = config.strategy_for_type(aggregate_type.as_str());
-        let current_version = aggregate.version();
-
-        if strategy.should_snapshot(current_version) {
-            match serde_json::to_value(aggregate.state()) {
-                Ok(mut snapshot_data) => {
-                    // Encrypt snapshot data for encrypted or field-encrypted aggregates
-                    if A::is_encrypted() || A::Event::has_any_encrypted_fields() {
-                        if let (Some(key_store), Some(provider)) =
-                            (self.crypto_key_store(), self.crypto_provider())
-                        {
-                            if let Ok(Some(crypto_key)) = key_store.get_key(aggregate_id).await {
-                                match crate::crypto::encrypt_value(
-                                    provider,
-                                    &crypto_key,
-                                    &snapshot_data,
-                                ) {
-                                    Ok(encrypted) => snapshot_data = encrypted,
-                                    Err(e) => {
-                                        tracing::warn!(
-                                            aggregate_type = %aggregate_type,
-                                            aggregate_id = %aggregate_id,
-                                            error = %e,
-                                            "Failed to encrypt snapshot data"
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    let snapshot = Snapshot::new(
-                        aggregate_id,
-                        aggregate_type.clone(),
-                        current_version,
-                        snapshot_data,
-                    );
-
-                    if let Err(e) = self.save_snapshot(snapshot).await {
-                        tracing::warn!(
-                            aggregate_type = %aggregate_type,
-                            aggregate_id = %aggregate_id,
-                            error = %e,
-                            "Failed to save snapshot"
-                        );
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        aggregate_type = %aggregate_type,
-                        aggregate_id = %aggregate_id,
-                        error = %e,
-                        "Failed to serialize deleted state for snapshot"
-                    );
-                }
-            }
-        }
+        // No snapshot for deleted aggregates: the delete event must be replayed
+        // during load_any() to detect the deleted state. Saving a snapshot here
+        // would serialize A::DeletedState but load would deserialize as A,
+        // causing type mismatch or masking the deletion.
 
         aggregate.clear_pending_events();
 
@@ -1924,7 +1869,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_commit_deleted_triggers_snapshot() {
+    async fn test_commit_deleted_skips_snapshot() {
         let store = CommitTestStore::new(SnapshotConfig::always());
         let id = crate::EntityId::new();
 
@@ -1939,15 +1884,9 @@ mod tests {
 
         store.commit_deleted(&mut deleted).await.unwrap();
 
-        assert_eq!(store.save_snapshot_count(), 1);
-
-        // Verify snapshot contains deleted state
-        let stream_id = StreamId::new("DeletableEntity", id.as_uuid());
-        let snapshots = store.snapshots.lock().unwrap();
-        let snapshot = snapshots.get(&stream_id).expect("Snapshot should exist");
-        let state: DeletableEntity =
-            serde_json::from_value(snapshot.snapshot_data.clone()).unwrap();
-        assert_eq!(state.value, -1, "Snapshot should contain deleted state");
+        // Deleted aggregates should NOT save snapshots — the delete event
+        // must be replayed during load to detect the deleted state.
+        assert_eq!(store.save_snapshot_count(), 0);
     }
 
     #[tokio::test]

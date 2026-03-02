@@ -36,7 +36,7 @@ use crate::Aggregate;
 /// use chrono::Utc;
 /// use serde::{Serialize, Deserialize};
 ///
-/// #[derive(Serialize, Deserialize)]
+/// #[derive(Debug, Serialize, Deserialize)]
 /// struct Counter { id: EntityId, value: i32 }
 ///
 /// impl Entity for Counter {

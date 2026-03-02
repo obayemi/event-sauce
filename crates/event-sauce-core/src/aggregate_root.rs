@@ -39,7 +39,7 @@ pub(crate) struct PendingEvent<E> {
 /// use thiserror::Error;
 /// use chrono::Utc;
 ///
-/// #[derive(Serialize, Deserialize)]
+/// #[derive(Debug, Serialize, Deserialize)]
 /// struct Counter {
 ///     id: EntityId,
 ///     value: i32,

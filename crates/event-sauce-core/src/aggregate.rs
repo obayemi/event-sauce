@@ -29,7 +29,7 @@ use crate::{AggregateError, AggregateType, DomainEvent, Entity, EventApplicator}
 /// use thiserror::Error;
 /// use chrono::Utc;
 ///
-/// #[derive(Serialize, Deserialize)]
+/// #[derive(Debug, Serialize, Deserialize)]
 /// struct Counter {
 ///     id: EntityId,
 ///     value: i32,
