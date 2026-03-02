@@ -669,20 +669,20 @@ let spec = IsActive.and(HasSufficientFunds { amount: 100 }).or(IsAdmin);
 
 #### Operator syntax
 
-Call `.spec()` on the first operand to enable `&` (AND), `|` (OR), and `!` (NOT) operators. Subsequent operands don't need wrapping:
+Specifications defined with `spec!` or `#[specification]` support `&` (AND), `|` (OR), and `!` (NOT) operators directly:
 
 ```rust
 // AND
-let spec = IsActive.spec() & HasPositiveBalance;
+let spec = IsActive & HasPositiveBalance;
 
 // OR
-let spec = IsActive.spec() | HasPositiveBalance;
+let spec = IsActive | HasPositiveBalance;
 
 // NOT
-let spec = !IsActive.spec();
+let spec = !IsActive;
 
 // Complex composition with grouping
-let spec = (AllowedRole1.spec() | AllowedRole2 | AllowedRole3) & IsActive;
+let spec = (AllowedRole1 | AllowedRole2 | AllowedRole3) & IsActive;
 ```
 
 ### Integration with Error Types
