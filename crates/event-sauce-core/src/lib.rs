@@ -23,6 +23,7 @@
 mod actor_event;
 mod aggregate;
 mod aggregate_error;
+mod aggregate_id;
 mod aggregate_root;
 mod aggregate_type;
 mod apply_event;
@@ -57,6 +58,7 @@ pub mod test_fixtures;
 pub use actor_event::{ActorDeleteEvent, ActorEvent, ActorInitEvent};
 pub use aggregate::Aggregate;
 pub use aggregate_error::AggregateError;
+pub use aggregate_id::{AggregateId, EntityIdFor};
 pub use aggregate_root::AggregateRoot;
 pub use aggregate_type::AggregateType;
 pub use apply_event::ApplyEvent;

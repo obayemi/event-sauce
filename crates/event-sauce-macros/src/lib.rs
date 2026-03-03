@@ -15,6 +15,7 @@ use proc_macro::TokenStream;
 use quote::quote;
 use syn::{parse_macro_input, Attribute, Data, DeriveInput, Fields, Ident, Meta};
 
+
 /// Attributes for the #[aggregate(...)] container attribute
 #[derive(Debug, FromMeta)]
 struct AggregateAttrs {
@@ -1193,4 +1194,144 @@ pub fn aggregate(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     gen.into()
+}
+
+/// Derive macro for implementing `AggregateId` and `EntityIdFor` on a newtype ID.
+///
+/// Generates type-safe ID wrappers that carry aggregate type information,
+/// enabling compile-time validation when loading aggregates.
+///
+/// # Usage
+///
+/// ```ignore
+/// use event_sauce_macros::AggregateId;
+/// use event_sauce_core::EntityId;
+///
+/// #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, AggregateId)]
+/// #[aggregate_id(Group)]
+/// pub struct GroupId(pub EntityId);
+/// ```
+///
+/// Generates:
+/// - `impl AggregateId for GroupId` with `type Aggregate = Group`
+/// - `impl From<EntityId> for GroupId` and `impl From<GroupId> for EntityId`
+/// - `impl Deref<Target = EntityId> for GroupId`
+/// - `impl Display for GroupId` (delegates to inner UUID)
+///
+/// # Requirements
+///
+/// - Must be a tuple struct with exactly one field of type `EntityId`
+/// - Must have `#[aggregate_id(AggregateType)]` attribute specifying the aggregate
+///
+/// # Panics
+///
+/// Will fail to compile if not a tuple struct with one field.
+#[proc_macro_derive(AggregateId, attributes(aggregate_id))]
+pub fn derive_aggregate_id(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    let name = &input.ident;
+
+    // Extract the aggregate type from #[aggregate_id(Type)]
+    let aggregate_type = match extract_aggregate_id_type(&input.attrs) {
+        Ok(t) => t,
+        Err(err) => return err,
+    };
+
+    // Verify it's a tuple struct with exactly one field
+    match &input.data {
+        Data::Struct(data) => match &data.fields {
+            Fields::Unnamed(fields) if fields.unnamed.len() == 1 => {}
+            _ => {
+                return syn::Error::new_spanned(
+                    name,
+                    "AggregateId can only be derived for tuple structs with exactly one EntityId field",
+                )
+                .to_compile_error()
+                .into();
+            }
+        },
+        _ => {
+            return syn::Error::new_spanned(
+                name,
+                "AggregateId can only be derived for tuple structs",
+            )
+            .to_compile_error()
+            .into();
+        }
+    }
+
+    let aggregate_ident = Ident::new(&aggregate_type, proc_macro2::Span::call_site());
+
+    let gen = quote! {
+        impl event_sauce_core::AggregateId for #name {
+            type Aggregate = #aggregate_ident;
+
+            fn as_entity_id(&self) -> event_sauce_core::EntityId {
+                self.0
+            }
+        }
+
+        impl From<event_sauce_core::EntityId> for #name {
+            fn from(id: event_sauce_core::EntityId) -> Self {
+                Self(id)
+            }
+        }
+
+        impl From<#name> for event_sauce_core::EntityId {
+            fn from(id: #name) -> Self {
+                id.0
+            }
+        }
+
+        impl std::ops::Deref for #name {
+            type Target = event_sauce_core::EntityId;
+
+            fn deref(&self) -> &Self::Target {
+                &self.0
+            }
+        }
+
+        impl std::fmt::Display for #name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                std::fmt::Display::fmt(&self.0, f)
+            }
+        }
+    };
+
+    gen.into()
+}
+
+/// Extract the aggregate type name from `#[aggregate_id(Type)]` attribute.
+fn extract_aggregate_id_type(attrs: &[Attribute]) -> Result<String, TokenStream> {
+    for attr in attrs {
+        if attr.path().is_ident("aggregate_id") {
+            // Parse the tokens inside the parentheses
+            let tokens = match &attr.meta {
+                Meta::List(list) => list.tokens.clone(),
+                _ => {
+                    return Err(syn::Error::new_spanned(
+                        attr,
+                        "Expected #[aggregate_id(AggregateType)]",
+                    )
+                    .to_compile_error()
+                    .into());
+                }
+            };
+
+            // The tokens should be a single ident
+            let ident: Ident = match syn::parse2(tokens) {
+                Ok(ident) => ident,
+                Err(err) => return Err(err.to_compile_error().into()),
+            };
+
+            return Ok(ident.to_string());
+        }
+    }
+
+    Err(syn::Error::new(
+        proc_macro2::Span::call_site(),
+        "Missing #[aggregate_id(AggregateType)] attribute",
+    )
+    .to_compile_error()
+    .into())
 }

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use crate::{
     event_store::{count_events, load, load_any, load_deleted},
     Aggregate, AggregateRoot, AggregateVersion, DefaultEntity, DeletedAggregateRoot, EntityId,
-    EventStore, InitEvent, Loaded, Result, StreamId, UninitAggregateRoot,
+    EntityIdFor, EventStore, InitEvent, Loaded, Result, StreamId, UninitAggregateRoot,
 };
 
 /// Repository provides a high-level API for aggregate persistence.
@@ -76,39 +76,50 @@ where
     /// potentially using a snapshot for optimization. Works for both
     /// `DefaultEntity` aggregates and init-event aggregates.
     ///
+    /// Accepts both raw `EntityId` and typed IDs implementing `EntityIdFor<A>`.
+    ///
     /// # Errors
     ///
     /// Returns an error if the aggregate doesn't exist or deserialization fails.
-    pub async fn load(&self, id: EntityId) -> Result<AggregateRoot<A>> {
-        load(&*self.store, id).await
+    pub async fn load(&self, id: impl EntityIdFor<A>) -> Result<AggregateRoot<A>> {
+        load(&*self.store, id.entity_id()).await
     }
 
     /// Checks if an aggregate exists in the event store.
     ///
+    /// Accepts both raw `EntityId` and typed IDs implementing `EntityIdFor<A>`.
+    ///
     /// # Errors
     ///
     /// Returns an error if the event store operation fails.
-    pub async fn exists(&self, id: EntityId) -> Result<bool> {
+    pub async fn exists(&self, id: impl EntityIdFor<A>) -> Result<bool> {
+        let id = id.entity_id();
         let stream_id = StreamId::new(A::aggregate_type(), id.as_uuid());
         self.store.stream_exists(stream_id).await
     }
 
     /// Gets the current version of an aggregate without loading it.
     ///
+    /// Accepts both raw `EntityId` and typed IDs implementing `EntityIdFor<A>`.
+    ///
     /// # Errors
     ///
     /// Returns an error if the event store operation fails.
-    pub async fn get_version(&self, id: EntityId) -> Result<AggregateVersion> {
+    pub async fn get_version(&self, id: impl EntityIdFor<A>) -> Result<AggregateVersion> {
+        let id = id.entity_id();
         let stream_id = StreamId::new(A::aggregate_type(), id.as_uuid());
         self.store.get_version(stream_id).await
     }
 
     /// Counts the number of events for an aggregate.
     ///
+    /// Accepts both raw `EntityId` and typed IDs implementing `EntityIdFor<A>`.
+    ///
     /// # Errors
     ///
     /// Returns an error if the event store operation fails.
-    pub async fn count_events(&self, id: EntityId) -> Result<usize> {
+    pub async fn count_events(&self, id: impl EntityIdFor<A>) -> Result<usize> {
+        let id = id.entity_id();
         let stream_id = StreamId::new(A::aggregate_type(), id.as_uuid());
         count_events(&*self.store, stream_id).await
     }
@@ -161,23 +172,27 @@ where
     /// Returns `Loaded::Active` for active aggregates or
     /// `Loaded::Deleted` for deleted ones.
     ///
+    /// Accepts both raw `EntityId` and typed IDs implementing `EntityIdFor<A>`.
+    ///
     /// # Errors
     ///
     /// Returns an error if the aggregate doesn't exist or deserialization fails.
-    pub async fn load_any(&self, id: EntityId) -> Result<Loaded<A>> {
-        load_any(&*self.store, id).await
+    pub async fn load_any(&self, id: impl EntityIdFor<A>) -> Result<Loaded<A>> {
+        load_any(&*self.store, id.entity_id()).await
     }
 
     /// Loads a deleted aggregate from the event store.
     ///
     /// Returns `DeletedAggregateRoot<A>` if the aggregate has been deleted.
     ///
+    /// Accepts both raw `EntityId` and typed IDs implementing `EntityIdFor<A>`.
+    ///
     /// # Errors
     ///
     /// Returns `Error::InvalidState` if the aggregate is still active.
     /// Returns an error if the aggregate doesn't exist or deserialization fails.
-    pub async fn load_deleted(&self, id: EntityId) -> Result<DeletedAggregateRoot<A>> {
-        load_deleted(&*self.store, id).await
+    pub async fn load_deleted(&self, id: impl EntityIdFor<A>) -> Result<DeletedAggregateRoot<A>> {
+        load_deleted(&*self.store, id.entity_id()).await
     }
 
     /// Saves a deleted aggregate root to the event store.
