@@ -3,6 +3,7 @@
 //! This module provides declarative macros that simplify common patterns in event sourcing:
 //! - `command_handler!` - Automatic command method generation
 //! - `projection!` - Declarative projection/read model definition
+//! - `reactor!` - Declarative reactor definition for cross-aggregate event reactions
 
 /// Generate command handler methods for an aggregate.
 ///
@@ -2283,6 +2284,112 @@ macro_rules! spec {
             |$candidate: &$target| -> bool { $body },
             |_: &$target| -> String { $msg.to_string() },
         )
+    };
+}
+
+/// Define a reactor that handles events by issuing commands on other aggregates.
+///
+/// This macro generates a struct implementing [`Reactor<S>`](crate::reactor::Reactor)
+/// that routes events to handler closures based on event type. Each handler receives
+/// a deserialized event struct and a [`ReactorContext`](crate::reactor::ReactorContext)
+/// for loading and committing aggregates with automatic causation tracking.
+///
+/// # Syntax
+///
+/// ```ignore
+/// reactor! {
+///     /// Optional doc comment
+///     ReactorName {
+///         on EventStruct |event, ctx| {
+///             // Handle the event
+///         },
+///         on AnotherEventStruct |event, ctx| {
+///             // Handle another event
+///         },
+///     }
+/// }
+/// ```
+///
+/// Each `EventStruct` must implement [`EventType`](crate::EventType) (which provides
+/// the event type string for filtering) and [`serde::de::DeserializeOwned`] (for
+/// deserialization from the event envelope).
+///
+/// When using [`define_events!`](crate::define_events), each variant `Foo` generates
+/// a `FooEvent` struct that implements both traits automatically.
+///
+/// # Generated Code
+///
+/// For `reactor! { MyReactor { on FooEvent |e, ctx| { ... }, on BarEvent |e, ctx| { ... } } }`:
+///
+/// 1. `struct MyReactor;`
+/// 2. `impl<S: EventStore + 'static> Reactor<S> for MyReactor` with:
+///    - `name()` → `"MyReactor"`
+///    - `event_filter()` → `EventFilter::any_of_event_types([FooEvent::EVENT_TYPE, BarEvent::EVENT_TYPE])`
+///    - `handle()` → match on `event_type`, deserialize `event_data` to the struct, call handler
+///
+/// # Examples
+///
+/// ```ignore
+/// use event_sauce::reactor;
+///
+/// reactor! {
+///     /// Reacts to user kicks by removing them from groups.
+///     KickUserReactor {
+///         on KickedUserEvent |event, ctx| {
+///             let mut group = ctx.load(event.group_id).await?;
+///             group.remove_user(event.user_id, "kicked")?;
+///             ctx.commit(&mut group).await?;
+///         },
+///     }
+/// }
+///
+/// // Register with a runner:
+/// let runner = ReactorRunner::new(store)
+///     .register(Arc::new(KickUserReactor));
+/// ```
+#[macro_export]
+macro_rules! reactor {
+    // Entry point: with doc comments
+    (
+        $(#[$meta:meta])*
+        $vis:vis $name:ident {
+            $(
+                on $event_struct:ty |$event:ident, $ctx:ident| $handler:block
+            ),+ $(,)?
+        }
+    ) => {
+        $(#[$meta])*
+        $vis struct $name;
+
+        #[async_trait::async_trait]
+        impl<S: $crate::EventStore + 'static> $crate::reactor::Reactor<S> for $name {
+            fn name(&self) -> &str {
+                stringify!($name)
+            }
+
+            fn event_filter(&self) -> $crate::EventFilter {
+                $crate::EventFilter::any_of_event_types([
+                    $(<$event_struct as $crate::EventType>::EVENT_TYPE),+
+                ])
+            }
+
+            async fn handle(
+                &self,
+                event: &$crate::EventEnvelope,
+                ctx: &$crate::reactor::ReactorContext<S>,
+            ) -> $crate::Result<()> {
+                $(
+                    if event.event_type == <$event_struct as $crate::EventType>::EVENT_TYPE {
+                        let $event: $event_struct = ::serde_json::from_value(event.event_data.clone())?;
+                        let $ctx = ctx;
+                        return $handler;
+                    }
+                )+
+
+                // No matching handler — should not happen due to event_filter
+                Ok(())
+            }
+        }
     };
 }
 

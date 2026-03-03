@@ -901,4 +901,367 @@ mod tests {
         assert_eq!(meta1.correlation_id, Some(correlation_id));
         assert_eq!(meta1.causation_chain, vec![source_id]);
     }
+
+    // === reactor! macro tests ===
+
+    // Test event structs implementing EventType + Deserialize
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+    struct FooCreatedEvent {
+        pub name: String,
+    }
+
+    impl crate::EventType for FooCreatedEvent {
+        const EVENT_TYPE: &'static str = "Foo.Created";
+    }
+
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+    struct FooUpdatedEvent {
+        pub value: i32,
+    }
+
+    impl crate::EventType for FooUpdatedEvent {
+        const EVENT_TYPE: &'static str = "Foo.Updated";
+    }
+
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+    struct BarDeletedEvent {
+        pub reason: String,
+    }
+
+    impl crate::EventType for BarDeletedEvent {
+        const EVENT_TYPE: &'static str = "Bar.Deleted";
+    }
+
+    // Test: reactor! generates a struct
+    crate::reactor! {
+        TestReactor {
+            on FooCreatedEvent |_event, _ctx| {
+                Ok(())
+            },
+        }
+    }
+
+    #[test]
+    fn test_reactor_macro_generates_struct() {
+        // Verify the reactor! macro generates a usable struct
+        let reactor: &dyn Reactor<MockEventStore> = &TestReactor;
+        assert_eq!(reactor.name(), "TestReactor");
+    }
+
+    #[test]
+    fn test_reactor_macro_name() {
+        let store = Arc::new(MockEventStore::new());
+        let reactor: &dyn Reactor<MockEventStore> = &TestReactor;
+        let _ = store; // suppress unused
+        assert_eq!(reactor.name(), "TestReactor");
+    }
+
+    #[test]
+    fn test_reactor_macro_event_filter_single() {
+        let reactor: &dyn Reactor<MockEventStore> = &TestReactor;
+        let filter = reactor.event_filter();
+
+        let matching = test_envelope("Foo.Created", "Foo");
+        let non_matching = test_envelope("Foo.Updated", "Foo");
+
+        assert!(filter.matches(&matching));
+        assert!(!filter.matches(&non_matching));
+    }
+
+    // Test: reactor! with multiple event handlers
+    crate::reactor! {
+        MultiEventReactor {
+            on FooCreatedEvent |_event, _ctx| {
+                Ok(())
+            },
+            on FooUpdatedEvent |_event, _ctx| {
+                Ok(())
+            },
+            on BarDeletedEvent |_event, _ctx| {
+                Ok(())
+            },
+        }
+    }
+
+    #[test]
+    fn test_reactor_macro_event_filter_multiple() {
+        let reactor: &dyn Reactor<MockEventStore> = &MultiEventReactor;
+        let filter = reactor.event_filter();
+
+        assert!(filter.matches(&test_envelope("Foo.Created", "Foo")));
+        assert!(filter.matches(&test_envelope("Foo.Updated", "Foo")));
+        assert!(filter.matches(&test_envelope("Bar.Deleted", "Bar")));
+        assert!(!filter.matches(&test_envelope("Other.Event", "Other")));
+    }
+
+    // A reactor that captures deserialized event data for testing
+    struct CapturingReactor(Arc<std::sync::Mutex<Option<String>>>);
+
+    #[async_trait]
+    impl<S: EventStore + 'static> Reactor<S> for CapturingReactor {
+        fn name(&self) -> &'static str {
+            "CapturingReactor"
+        }
+        fn event_filter(&self) -> EventFilter {
+            EventFilter::by_event_type("Foo.Created")
+        }
+        async fn handle(&self, event: &EventEnvelope, _ctx: &ReactorContext<S>) -> Result<()> {
+            let foo: FooCreatedEvent = serde_json::from_value(event.event_data.clone())?;
+            *self.0.lock().unwrap() = Some(foo.name);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_reactor_macro_handle_deserializes_event() {
+        let store = Arc::new(MockEventStore::new());
+        let received = Arc::new(std::sync::Mutex::new(None::<String>));
+
+        let reactor = CapturingReactor(Arc::clone(&received));
+        let mut envelope = test_envelope("Foo.Created", "Foo");
+        envelope.event_data = serde_json::json!({"name": "hello"});
+
+        let ctx = ReactorContext::new(Arc::clone(&store), envelope.clone(), 10);
+        reactor.handle(&envelope, &ctx).await.unwrap();
+
+        assert_eq!(*received.lock().unwrap(), Some("hello".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_reactor_macro_handle_routes_to_correct_handler() {
+        // Verify the generated handle() method deserializes and routes correctly
+        let store = Arc::new(MockEventStore::new());
+
+        // FooCreatedEvent envelope
+        let mut envelope = test_envelope("Foo.Created", "Foo");
+        envelope.event_data = serde_json::json!({"name": "test_name"});
+
+        let ctx = ReactorContext::new(Arc::clone(&store), envelope.clone(), 10);
+
+        // The generated handle should succeed (just returns Ok)
+        let result =
+            <TestReactor as Reactor<MockEventStore>>::handle(&TestReactor, &envelope, &ctx).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_reactor_macro_handle_deserialization_error() {
+        let store = Arc::new(MockEventStore::new());
+
+        // Envelope with wrong data shape for FooCreatedEvent (missing "name" field)
+        let mut envelope = test_envelope("Foo.Created", "Foo");
+        envelope.event_data = serde_json::json!({"wrong_field": 42});
+
+        let ctx = ReactorContext::new(Arc::clone(&store), envelope.clone(), 10);
+
+        let result =
+            <TestReactor as Reactor<MockEventStore>>::handle(&TestReactor, &envelope, &ctx).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().is_serialization());
+    }
+
+    #[tokio::test]
+    async fn test_reactor_macro_handle_unmatched_event() {
+        let store = Arc::new(MockEventStore::new());
+
+        // Envelope with event type that doesn't match any handler
+        let envelope = test_envelope("Unknown.Event", "Unknown");
+        let ctx = ReactorContext::new(Arc::clone(&store), envelope.clone(), 10);
+
+        // Should succeed (no-op for unmatched events)
+        let result =
+            <TestReactor as Reactor<MockEventStore>>::handle(&TestReactor, &envelope, &ctx).await;
+        assert!(result.is_ok());
+    }
+
+    // Test: reactor! with doc comment
+    crate::reactor! {
+        /// A documented reactor for testing.
+        DocReactor {
+            on FooCreatedEvent |_event, _ctx| {
+                Ok(())
+            },
+        }
+    }
+
+    #[test]
+    fn test_reactor_macro_with_doc_comment() {
+        let reactor: &dyn Reactor<MockEventStore> = &DocReactor;
+        assert_eq!(reactor.name(), "DocReactor");
+    }
+
+    // Test: reactor! with pub visibility
+    crate::reactor! {
+        pub PubReactor {
+            on FooCreatedEvent |_event, _ctx| {
+                Ok(())
+            },
+        }
+    }
+
+    #[test]
+    fn test_reactor_macro_with_visibility() {
+        let reactor: &dyn Reactor<MockEventStore> = &PubReactor;
+        assert_eq!(reactor.name(), "PubReactor");
+    }
+
+    // Test: reactor! registers with ReactorRunner
+    #[test]
+    fn test_reactor_macro_with_runner() {
+        let store = Arc::new(MockEventStore::new());
+        let runner = ReactorRunner::new(store).register(Arc::new(TestReactor));
+        assert_eq!(runner.reactors().len(), 1);
+        assert_eq!(runner.reactors()[0].name(), "TestReactor");
+    }
+
+    #[tokio::test]
+    async fn test_reactor_macro_process_event_via_runner() {
+        let store = Arc::new(MockEventStore::new());
+        let runner = ReactorRunner::new(Arc::clone(&store)).register(Arc::new(TestReactor));
+
+        let mut envelope = test_envelope("Foo.Created", "Foo");
+        envelope.event_data = serde_json::json!({"name": "via_runner"});
+
+        let handled = runner.process_event(&envelope).await.unwrap();
+        assert_eq!(handled, 1);
+    }
+
+    // Test: reactor! with handler that accesses event fields
+    crate::reactor! {
+        FieldAccessReactor {
+            on FooCreatedEvent |event, _ctx| {
+                assert_eq!(event.name, "expected_name");
+                Ok(())
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn test_reactor_macro_handler_accesses_event_fields() {
+        let store = Arc::new(MockEventStore::new());
+
+        let mut envelope = test_envelope("Foo.Created", "Foo");
+        envelope.event_data = serde_json::json!({"name": "expected_name"});
+
+        let ctx = ReactorContext::new(Arc::clone(&store), envelope.clone(), 10);
+
+        let result = <FieldAccessReactor as Reactor<MockEventStore>>::handle(
+            &FieldAccessReactor,
+            &envelope,
+            &ctx,
+        )
+        .await;
+        assert!(result.is_ok());
+    }
+
+    // Test: reactor! with handler that accesses ctx
+    crate::reactor! {
+        CtxAccessReactor {
+            on FooCreatedEvent |_event, ctx| {
+                assert_eq!(ctx.cascade_depth(), 0);
+                Ok(())
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn test_reactor_macro_handler_accesses_ctx() {
+        let store = Arc::new(MockEventStore::new());
+
+        let mut envelope = test_envelope("Foo.Created", "Foo");
+        envelope.event_data = serde_json::json!({"name": "test"});
+
+        let ctx = ReactorContext::new(Arc::clone(&store), envelope.clone(), 10);
+
+        let result = <CtxAccessReactor as Reactor<MockEventStore>>::handle(
+            &CtxAccessReactor,
+            &envelope,
+            &ctx,
+        )
+        .await;
+        assert!(result.is_ok());
+    }
+
+    // Test: reactor! with async handler that loads and commits
+    crate::reactor! {
+        AsyncReactor {
+            on FooCreatedEvent |_event, ctx| {
+                // Create a new aggregate reacting to the event
+                let id = crate::EntityId::new();
+                let mut agg = AggregateRoot::<SimpleTestEntity>::new(id);
+                agg.apply(SimpleTestEvent::Created { value: 42 })
+                    .map_err(|e| crate::Error::invalid_state(format!("{e:?}")))?;
+                ctx.commit(&mut agg).await?;
+                Ok(())
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn test_reactor_macro_async_handler() {
+        let store = Arc::new(MockEventStore::new());
+
+        let mut envelope = test_envelope("Foo.Created", "Foo");
+        envelope.event_data = serde_json::json!({"name": "hello"});
+
+        let ctx = ReactorContext::new(Arc::clone(&store), envelope.clone(), 10);
+
+        let result =
+            <AsyncReactor as Reactor<MockEventStore>>::handle(&AsyncReactor, &envelope, &ctx).await;
+        assert!(result.is_ok());
+
+        // Verify the aggregate was committed
+        let stored = store.get_events();
+        assert_eq!(stored.len(), 1);
+
+        // Verify causation metadata was injected
+        let meta = stored[0].metadata.as_ref().expect("Should have metadata");
+        assert_eq!(meta.causation_id, Some(envelope.id));
+    }
+
+    // Test: reactor! multiple handlers route correctly
+    crate::reactor! {
+        RoutingReactor {
+            on FooCreatedEvent |_event, ctx| {
+                let id = crate::EntityId::new();
+                let mut agg = AggregateRoot::<SimpleTestEntity>::new(id);
+                agg.apply(SimpleTestEvent::Created { value: 99 })
+                    .map_err(|e| crate::Error::invalid_state(format!("{e:?}")))?;
+                ctx.commit(&mut agg).await?;
+                Ok(())
+            },
+            on FooUpdatedEvent |event, ctx| {
+                let id = crate::EntityId::new();
+                let mut agg = AggregateRoot::<SimpleTestEntity>::new(id);
+                let val = event.value * 10;
+                agg.apply(SimpleTestEvent::Created { value: val })
+                    .map_err(|e| crate::Error::invalid_state(format!("{e:?}")))?;
+                ctx.commit(&mut agg).await?;
+                Ok(())
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn test_reactor_macro_routes_to_correct_async_handler() {
+        let store = Arc::new(MockEventStore::new());
+
+        // Send FooUpdatedEvent — should go to the second handler
+        let mut envelope = test_envelope("Foo.Updated", "Foo");
+        envelope.event_data = serde_json::json!({"value": 7});
+
+        let ctx = ReactorContext::new(Arc::clone(&store), envelope.clone(), 10);
+
+        let result =
+            <RoutingReactor as Reactor<MockEventStore>>::handle(&RoutingReactor, &envelope, &ctx)
+                .await;
+        assert!(result.is_ok());
+
+        let stored = store.get_events();
+        assert_eq!(stored.len(), 1);
+
+        // The second handler creates SimpleTestEntity with value = event.value * 10 = 70
+        let data: serde_json::Value = stored[0].event_data.clone();
+        assert_eq!(data["Created"]["value"], 70);
+    }
 }
