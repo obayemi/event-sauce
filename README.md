@@ -266,21 +266,14 @@ define_events! {
 }
 ```
 
-**Setup with a crypto provider:**
-
-```rust
-use event_sauce_crypto::Aes256GcmProvider;
-
-let store = InMemoryEventStore::builder()
-    .crypto_key_store(Arc::new(InMemoryCryptoKeyStore::new()))
-    .crypto_provider(Arc::new(Aes256GcmProvider))
-    .build();
-```
+All store builders include **AES-256-GCM encryption** by default — no extra setup needed.
 
 **Crypto-shredding** (right to be forgotten) — delete the key to make data permanently unreadable:
 
 ```rust
-key_store.delete_key(user_id.as_uuid()).await?;
+store.crypto_key_store()
+    .expect("crypto key store configured")
+    .delete_key(user_id.as_uuid()).await?;
 // Subsequent loads return Error::KeyNotFound
 ```
 

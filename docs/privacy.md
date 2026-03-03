@@ -7,7 +7,7 @@ event-sauce supports GDPR-style "crypto-shredding" for encrypted aggregates. Whe
 See the complete runnable example: [`examples/crypto-shredding.rs`](../crates/event-sauce/examples/crypto-shredding.rs)
 
 ```bash
-cargo run --example crypto-shredding --features crypto
+cargo run --example crypto-shredding
 ```
 
 ## Quick Start
@@ -58,72 +58,55 @@ The `__encrypted` key signals that the value needs decryption. Unencrypted value
 
 ## Setup
 
-### Dependencies
-
-Enable the `crypto` feature in your `Cargo.toml`:
-
-```toml
-[dependencies]
-event-sauce = { version = "0.1", features = ["crypto", "memory"] }
-# Or for PostgreSQL:
-event-sauce = { version = "0.1", features = ["crypto", "postgres"] }
-```
+All store builders include **AES-256-GCM encryption** and a key store by default — no extra setup needed.
 
 ### In-Memory (Testing)
 
 ```rust
-use event_sauce_memory::{InMemoryEventStore, InMemoryCryptoKeyStore};
-use event_sauce_crypto::Aes256GcmProvider;
-use event_sauce_core::SnapshotConfig;
-use std::sync::Arc;
+use event_sauce_memory::InMemoryEventStore;
 
-let key_store = Arc::new(InMemoryCryptoKeyStore::new());
-let provider = Arc::new(Aes256GcmProvider);
-
-let store = InMemoryEventStore::builder()
-    .snapshot_config(SnapshotConfig::disabled())
-    .crypto_key_store(key_store.clone())
-    .crypto_provider(provider)
-    .build();
+// Crypto is included by default (AES-256-GCM + InMemoryCryptoKeyStore)
+let store = InMemoryEventStore::new();
 ```
 
 ### PostgreSQL (Production)
 
 ```rust
-use event_sauce_postgres::{PostgresEventStore, PostgresCryptoKeyStore};
-use event_sauce_crypto::Aes256GcmProvider;
-use std::sync::Arc;
+use event_sauce_postgres::PostgresEventStore;
 
-let key_store = Arc::new(PostgresCryptoKeyStore::new(pool.clone()));
-key_store.migrate().await?;
-
-let provider = Arc::new(Aes256GcmProvider);
-
+// Crypto is included by default (AES-256-GCM + PostgresCryptoKeyStore)
 let store = PostgresEventStore::builder()
     .pool(pool)
-    .crypto_key_store(key_store.clone())
-    .crypto_provider(provider)
     .build()?;
 
-store.migrate().await?;
+store.migrate().await?; // Creates events, snapshots, and crypto_keys tables
 ```
 
 Or using `PostgresBackend`:
 
 ```rust
-use event_sauce_postgres::{PostgresBackend, PostgresCryptoKeyStore};
+use event_sauce_postgres::PostgresBackend;
+
+// Crypto is included by default
+let backend = PostgresBackend::builder()
+    .database_url("postgresql://localhost/events")
+    .build()
+    .await?;
+```
+
+### Custom Crypto Provider
+
+You can override the default crypto provider and key store if needed:
+
+```rust
+use event_sauce_memory::{InMemoryEventStore, InMemoryCryptoKeyStore};
 use event_sauce_crypto::Aes256GcmProvider;
 use std::sync::Arc;
 
-let key_store = Arc::new(PostgresCryptoKeyStore::new(pool.clone()));
-key_store.migrate().await?;
-
-let backend = PostgresBackend::builder()
-    .database_url("postgresql://localhost/events")
-    .crypto_key_store(key_store)
+let store = InMemoryEventStore::builder()
+    .crypto_key_store(Arc::new(InMemoryCryptoKeyStore::new()))
     .crypto_provider(Arc::new(Aes256GcmProvider))
-    .build()
-    .await?;
+    .build();
 ```
 
 ## Defining Encrypted Aggregates
