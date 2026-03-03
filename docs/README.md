@@ -12,6 +12,7 @@ Welcome to the event-sauce documentation! This directory contains comprehensive 
 - **[Events](events.md)** - Domain events and event modeling
 - **[Event Store](event-store.md)** - Persisting and loading event streams
 - **[Projections & Subscriptions](projections.md)** - Building read models with durable, guaranteed delivery
+- **[Reactors](reactors.md)** - Cross-aggregate event orchestration with causation tracking
 - **[Validation](validation.md)** - Event validation and business rules
 
 ## Production Deployment
@@ -33,6 +34,7 @@ The [`../crates/event-sauce/examples/`](../crates/event-sauce/examples/) directo
 3. **bank-account.rs** - Full workflow with derive macros
 4. **task-projections.rs** - Building read models from events
 5. **crypto-shredding.rs** - Privacy & crypto-shredding for GDPR compliance (requires `crypto` feature)
+6. **reactor.rs** - Cross-aggregate event orchestration with cascading reactions and causation tracking
 
 ## Quick Links
 
