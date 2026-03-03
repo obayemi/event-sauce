@@ -1,15 +1,18 @@
 //! # PostgreSQL Quick Start Example
 //!
 //! This example demonstrates:
+//! - **Typed aggregate IDs** with `#[derive(AggregateId)]` for compile-time safety
 //! - **Private User aggregate** with crypto-shredding for GDPR compliance
 //! - **Actor-validated Order commands** requiring an authenticated User
 //! - **Delete events** for order cancellation (`@delete @actor(User)`)
+//! - **Reactor system** for cross-aggregate event orchestration
 //! - **Function-based specifications** with `#[specification]` for validation
 //! - Init creation functions for ergonomic aggregate construction
 //! - Repository pattern for type-safe aggregate persistence
 //! - A projection that combines Order data (User PII stays encrypted)
 //! - PostgreSQL backend with testcontainers
 //! - Subscription system for real-time projection updates
+//! - **Causation chain tracking** across reactor-produced events
 //!
 //! Run with:
 //! ```bash
@@ -20,16 +23,31 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use event_sauce_core::{
-    command_handler, crypto, define_events, Aggregate, AggregateVersion, CryptoKeyStore, Entity,
-    EntityId, EventStore, Loaded, Specification, StreamId,
+    command_handler, crypto, define_events, reactor, Aggregate, AggregateRoot, AggregateVersion,
+    CryptoKeyStore, Entity, EntityId, EventStore, Loaded, Position, ReactorRunner, Specification,
+    StreamId,
 };
 use event_sauce_crypto::Aes256GcmProvider;
-use event_sauce_macros::{aggregate, aggregate_error, specification, AggregateError};
+use event_sauce_macros::{aggregate, aggregate_error, specification, AggregateError, AggregateId};
 use event_sauce_postgres::{PostgresBackend, PostgresCryptoKeyStore};
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
+
+// ============================================================================
+// Typed Aggregate IDs
+// ============================================================================
+
+/// Type-safe User ID — prevents accidentally loading a Group with a User's ID.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, AggregateId)]
+#[aggregate_id(User)]
+struct UserId(EntityId);
+
+/// Type-safe Order ID — enables `order_repo.load(order_id)` with no type annotation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, AggregateId)]
+#[aggregate_id(Order)]
+struct OrderId(EntityId);
 
 // ============================================================================
 // User Aggregate (Private — encrypted at rest for GDPR compliance)
@@ -292,6 +310,78 @@ command_handler! {
 }
 
 // ============================================================================
+// Notification Aggregate (created by reactor on order completion)
+// ============================================================================
+
+#[derive(Debug, thiserror::Error)]
+#[error("notification error")]
+struct NotificationError;
+
+impl event_sauce_core::AggregateError for NotificationError {}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Notification {
+    id: EntityId,
+    message: String,
+}
+
+impl Entity for Notification {
+    fn new(id: EntityId) -> Self {
+        Self {
+            id,
+            message: String::new(),
+        }
+    }
+    fn entity_id(&self) -> EntityId {
+        self.id
+    }
+}
+
+impl event_sauce_core::DefaultEntity for Notification {}
+
+impl Aggregate for Notification {
+    type Event = NotificationEvent;
+    type Error = NotificationError;
+    type DeletedState = Self;
+}
+
+define_events! {
+    enum NotificationEvent for Notification {
+        Sent {
+            message: String,
+        } => |n, event| {
+            n.message = event.message.clone();
+        },
+    }
+}
+
+command_handler! {
+    impl Notification {
+        fn send_notification(message: String) -> SentEvent { message };
+    }
+}
+
+// ============================================================================
+// Reactor: Send notification when an order is completed
+// ============================================================================
+
+reactor! {
+    /// Sends a notification when an order is completed.
+    OrderCompletedReactor {
+        on CompletedEvent |_event, ctx| {
+            let order_id = EntityId::from(ctx.source_event().aggregate_id);
+            let id = EntityId::new();
+            let mut notification = AggregateRoot::<Notification>::new(id);
+            let msg = format!("Order {order_id} has been completed!");
+            notification.send_notification(msg)
+                .map_err(|e| event_sauce_core::Error::invalid_state(format!("{e}")))?;
+            ctx.commit(&mut notification).await?;
+            Ok(())
+        },
+    }
+}
+
+// ============================================================================
 // Order Summary Projection
 // ============================================================================
 
@@ -370,9 +460,11 @@ impl OrderSummaryProjection {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Event Sauce - PostgreSQL Quick Start\n");
     println!("This example demonstrates:");
+    println!("  - Typed aggregate IDs (#[derive(AggregateId)]) for compile-time safety");
     println!("  - Private User aggregate with crypto-shredding (GDPR)");
     println!("  - Actor-validated Order commands (permission checks)");
     println!("  - Delete events for order cancellation (@delete @actor)");
+    println!("  - Reactor system: auto-notify on order completion");
     println!("  - Init creation functions: User::create_user(), Order::create_order()");
     println!("  - Repository pattern for type-safe persistence");
     println!("  - Projection over Order data (User PII stays encrypted)");
@@ -421,8 +513,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Alice Smith".to_string(),
         UserRole::Customer,
     )?;
+    // Typed ID: UserId wraps EntityId with compile-time aggregate association
+    let alice_id = UserId(alice.entity_id());
     println!(
-        "  Created user: {} ({}) [role: {:?}]",
+        "  Created user: {} ({}) [role: {:?}] [id: {alice_id}]",
         alice.name, alice.email, alice.role
     );
     user_repo.save(&mut alice).await?;
@@ -432,8 +526,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Bob Jones".to_string(),
         UserRole::Customer,
     )?;
+    let bob_id = UserId(bob.entity_id());
     println!(
-        "  Created user: {} ({}) [role: {:?}]",
+        "  Created user: {} ({}) [role: {:?}] [id: {bob_id}]",
         bob.name, bob.email, bob.role
     );
     user_repo.save(&mut bob).await?;
@@ -464,11 +559,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Alice creates an order — she's the actor providing permission
     let mut order1 = Order::create_order(&alice, alice.entity_id())?;
+    let order1_id = OrderId(order1.entity_id());
     order1.add_item(&alice, "laptop".to_string(), 1, 120_000)?;
     order1.add_item(&alice, "mouse".to_string(), 2, 2500)?;
     println!(
-        "  Order {} created by Alice (${:.2})",
-        order1.entity_id(),
+        "  Order {order1_id} created by Alice (${:.2})",
         order1.total as f64 / 100.0
     );
     order_repo.save(&mut order1).await?;
@@ -481,12 +576,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Bob creates his own order
-    let order2_id = EntityId::new();
-    let mut order2 = Order::create_order_with_id(order2_id, &bob, bob.entity_id())?;
+    let order2_eid = EntityId::new();
+    let order2_id = OrderId(order2_eid);
+    let mut order2 = Order::create_order_with_id(order2_eid, &bob, bob.entity_id())?;
     order2.add_item(&bob, "keyboard".to_string(), 1, 8500)?;
     println!(
-        "\n  Order {} created by Bob (${:.2})",
-        order2.entity_id(),
+        "\n  Order {order2_id} created by Bob (${:.2})",
         order2.total as f64 / 100.0
     );
     order_repo.save(&mut order2).await?;
@@ -507,7 +602,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Alice completes her own order
     order1.complete(&alice)?;
     order_repo.save(&mut order1).await?;
-    println!("  Order {} completed by Alice", order1.entity_id());
+    println!("  Order {order1_id} completed by Alice");
 
     // ========================================================================
     // Step 4b: Cancel an Order (Delete Event)
@@ -519,7 +614,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         use OrderDeleteCommands;
 
         // Bob cancels his order — type-state transition to DeletedAggregateRoot
-        let order2_id = order2.entity_id();
         println!("  Bob cancels his order...");
         let mut deleted_order = order2.cancel_order(&bob, "changed my mind".to_string())?;
         println!(
@@ -528,14 +622,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
         order_repo.save_deleted(&mut deleted_order).await?;
 
-        // Verify: load() errors on cancelled order
+        // Verify: load() errors on cancelled order — typed ID for type-safe loading
         println!("\n  Verifying load() errors on cancelled order...");
         match order_repo.load(order2_id).await {
             Ok(_) => println!("    ERROR: Should have failed!"),
             Err(e) => println!("    Error (expected): {e}"),
         }
 
-        // load_any() returns Loaded::Deleted
+        // load_any() returns Loaded::Deleted — typed ID works here too
         let loaded = order_repo.load_any(order2_id).await?;
         match loaded {
             Loaded::Deleted(d) => println!("    load_any() → Deleted (status={:?})", d.status),
@@ -557,7 +651,51 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // ========================================================================
-    // Step 6: Build Projection
+    // Step 6: Run Reactor (Cross-Aggregate Event Orchestration)
+    // ========================================================================
+
+    println!("\n=== Running Reactor (Order Completion → Notification) ===\n");
+
+    let runner = ReactorRunner::new(store.clone()).register(Arc::new(OrderCompletedReactor));
+
+    let processed = runner.process_pending().await?;
+    println!("  Processed {processed} event-reactor matches");
+
+    // ========================================================================
+    // Step 7: Show Causation Chain
+    // ========================================================================
+
+    println!("\n=== Event Causation Chain ===\n");
+
+    let stream = store.stream_all(Position::start()).await?;
+    futures::pin_mut!(stream);
+
+    while let Some(Ok(envelope)) = stream.next().await {
+        // Only show events with causation metadata (i.e., reactor-produced)
+        if let Some(ref meta) = envelope.metadata {
+            if meta.causation_id.is_some() {
+                println!(
+                    "  Event: {} (aggregate: {}, id: {})",
+                    envelope.event_type, envelope.aggregate_type, envelope.id
+                );
+                if let Some(causation_id) = meta.causation_id {
+                    println!("    causation_id: {causation_id}");
+                }
+                if let Some(correlation_id) = meta.correlation_id {
+                    println!("    correlation_id: {correlation_id}");
+                }
+                if !meta.causation_chain.is_empty() {
+                    println!(
+                        "    causation_chain: {} event(s) deep",
+                        meta.causation_chain.len()
+                    );
+                }
+            }
+        }
+    }
+
+    // ========================================================================
+    // Step 8: Build Projection
     // ========================================================================
 
     println!("\n=== Building Projection ===\n");
@@ -585,27 +723,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // ========================================================================
-    // Step 7: Repository Features
+    // Step 9: Repository Features with Typed IDs
     // ========================================================================
 
-    println!("\n=== Repository Features ===\n");
+    println!("\n=== Repository Features (Typed IDs) ===\n");
 
-    // Load user (transparent decryption)
-    let loaded_alice = user_repo.load(alice.entity_id()).await?;
+    // Load user with typed ID — no type annotation needed
+    let loaded_alice = user_repo.load(alice_id).await?;
     println!(
         "  Loaded Alice (decrypted): {} ({})",
         loaded_alice.name, loaded_alice.email
     );
 
-    // Check existence and version
-    let alice_exists = user_repo.exists(alice.entity_id()).await?;
+    // Check existence with typed ID
+    let alice_exists = user_repo.exists(alice_id).await?;
     println!("  Alice exists: {alice_exists}");
 
-    let alice_version = user_repo.get_version(alice.entity_id()).await?;
+    let alice_version = user_repo.get_version(alice_id).await?;
     println!("  Alice version: {}", alice_version.as_i64());
 
-    // Load Order
-    let loaded_order = order_repo.load(order1.entity_id()).await?;
+    // Load Order with typed ID
+    let loaded_order = order_repo.load(order1_id).await?;
     println!(
         "  Loaded Order: user_id={}, total=${:.2}",
         loaded_order.user_id,
@@ -613,7 +751,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // ========================================================================
-    // Step 8: Crypto-Shredding (GDPR Right to Be Forgotten)
+    // Step 10: Crypto-Shredding (GDPR Right to Be Forgotten)
     // ========================================================================
 
     println!("\n=== Crypto-Shredding (GDPR Right to Be Forgotten) ===\n");
@@ -625,7 +763,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Attempt to load Bob — should fail
     println!("  Attempting to load Bob after key deletion...");
-    match user_repo.load(bob.entity_id()).await {
+    match user_repo.load(bob_id).await {
         Ok(_) => println!("    ERROR: Should have failed!"),
         Err(e) if e.is_key_not_found() => {
             println!("    KeyNotFound (expected): {e}");
