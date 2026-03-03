@@ -1,17 +1,18 @@
-//! # Reactor Example - Cross-Aggregate Event Orchestration
+//! # Policy Example - Cross-Aggregate Event Orchestration
 //!
-//! This example demonstrates the reactor system for handling events that trigger
+//! This example demonstrates the policy system for handling events that trigger
 //! effects on other aggregates. A user getting kicked from a chat produces an event
-//! that a reactor picks up to remove them from their group, which in turn produces
-//! an event that another reactor picks up to send a notification.
+//! that a policy picks up to remove them from their group, which in turn produces
+//! an event that another policy picks up to send a notification.
 //!
 //! ## Key Concepts
 //!
-//! - **`reactor!` macro**: Declaratively define event handlers that react to events
-//! - **`ReactorRunner`**: Registers and routes events to matching reactors
-//! - **Causation tracking**: Every event produced by a reactor carries full provenance
+//! - **`policy!` macro**: Declaratively define event handlers that react to events
+//! - **`PolicyRunner`**: Registers and routes events to matching policies with checkpoint-based resumption
+//! - **Causation tracking**: Every event produced by a policy carries full provenance
 //!   (`causation_id`, `correlation_id`, `causation_chain`)
 //! - **Cascading reactions**: Reactions can trigger further reactions with configurable depth limits
+//! - **Error handling**: Configurable `OnError::Fail`, `OnError::Skip`, or `OnError::Retry` with exponential backoff
 //!
 //! ## Architecture
 //!
@@ -19,24 +20,24 @@
 //!   User.Kicked event
 //!       │
 //!       ▼
-//!   KickUserReactor ─────► Group.MemberRemoved event
+//!   KickUserPolicy ─────► Group.MemberRemoved event
 //!                               │
 //!                               ▼
-//!                       NotifyOnRemovalReactor ─────► Notification.Sent event
+//!                       NotifyOnRemovalPolicy ─────► Notification.Sent event
 //! ```
 //!
 //! Run with:
 //! ```bash
-//! cargo run --example reactor
+//! cargo run --example policy
 //! ```
 
 use std::sync::Arc;
 
 use event_sauce_core::{
-    command_handler, define_events, reactor, Aggregate, AggregateError, AggregateRoot,
-    DefaultEntity, Entity, EntityId, EventStore, Position, ReactorRunner, Repository,
+    command_handler, define_events, policy, Aggregate, AggregateError, AggregateRoot,
+    DefaultEntity, Entity, EntityId, EventStore, PolicyRunner, Position, Repository,
 };
-use event_sauce_memory::InMemoryEventStore;
+use event_sauce_memory::{InMemoryCheckpointStore, InMemoryEventStore};
 use serde::{Deserialize, Serialize};
 
 // ============================================================================
@@ -242,13 +243,13 @@ command_handler! {
 }
 
 // ============================================================================
-// Reactors
+// Policies
 // ============================================================================
 
 // When a user is kicked, remove them from the group they were kicked from.
-reactor! {
+policy! {
     /// Removes kicked users from their groups.
-    KickUserReactor {
+    KickUserPolicy {
         on KickedEvent |event, ctx| {
             let user_id = EntityId::from(ctx.source_event().aggregate_id);
             let mut group = ctx.load_as::<Group>(event.group_id).await?;
@@ -261,9 +262,9 @@ reactor! {
 }
 
 // When a member is removed from a group, send a notification.
-reactor! {
+policy! {
     /// Sends a notification when a member is removed from a group.
-    NotifyOnRemovalReactor {
+    NotifyOnRemovalPolicy {
         on MemberRemovedEvent |event, ctx| {
             let id = EntityId::new();
             let mut notification = AggregateRoot::<Notification>::new(id);
@@ -282,7 +283,13 @@ reactor! {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let store = Arc::new(InMemoryEventStore::new());
+    let checkpoint_store: Arc<dyn event_sauce_core::CheckpointStore> =
+        Arc::new(InMemoryCheckpointStore::new());
+    let store = Arc::new(
+        InMemoryEventStore::builder()
+            .checkpoint_store(Arc::clone(&checkpoint_store))
+            .build(),
+    );
 
     // --- Step 1: Set up the world ---
 
@@ -317,23 +324,23 @@ async fn main() -> anyhow::Result<()> {
     store.commit(&mut alice).await?;
     println!("Alice kicked from group (reason: spamming)");
 
-    // --- Step 3: Run reactors ---
+    // --- Step 3: Run policies ---
 
     println!("\n=== Processing Reactions ===");
-    let runner = ReactorRunner::new(Arc::clone(&store))
+    let runner = PolicyRunner::new(Arc::clone(&store), checkpoint_store)
         .with_max_cascade_depth(5)
-        .register(Arc::new(KickUserReactor))
-        .register(Arc::new(NotifyOnRemovalReactor));
+        .register(Arc::new(KickUserPolicy))
+        .register(Arc::new(NotifyOnRemovalPolicy));
 
     let processed = runner.process_pending().await?;
-    println!("Processed {processed} event-reactor matches");
+    println!("Processed {processed} event-policy matches");
 
     // --- Step 4: Verify results ---
 
     println!("\n=== Final State ===");
     let loaded_group = group_repo.load(group_id).await?;
     println!(
-        "Group '{}' members: {:?} (Alice removed by reactor)",
+        "Group '{}' members: {:?} (Alice removed by policy)",
         loaded_group.name, loaded_group.members
     );
 
@@ -363,10 +370,10 @@ async fn main() -> anyhow::Result<()> {
     }
 
     println!("\n=== Done ===");
-    println!("The reactor system automatically:");
+    println!("The policy system automatically:");
     println!("  1. Detected User.Kicked event");
-    println!("  2. Removed Alice from the group (KickUserReactor)");
-    println!("  3. Sent a notification about the removal (NotifyOnRemovalReactor)");
+    println!("  2. Removed Alice from the group (KickUserPolicy)");
+    println!("  3. Sent a notification about the removal (NotifyOnRemovalPolicy)");
     println!("  4. All with full causation tracking through the chain!");
 
     Ok(())

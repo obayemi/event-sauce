@@ -5,14 +5,14 @@
 //! - **Private User aggregate** with crypto-shredding for GDPR compliance
 //! - **Actor-validated Order commands** requiring an authenticated User
 //! - **Delete events** for order cancellation (`@delete @actor(User)`)
-//! - **Reactor system** for cross-aggregate event orchestration
+//! - **Policy system** for cross-aggregate event orchestration
 //! - **Function-based specifications** with `#[specification]` for validation
 //! - Init creation functions for ergonomic aggregate construction
 //! - Repository pattern for type-safe aggregate persistence
 //! - A projection that combines Order data (User PII stays encrypted)
 //! - PostgreSQL backend with testcontainers
 //! - Subscription system for real-time projection updates
-//! - **Causation chain tracking** across reactor-produced events
+//! - **Causation chain tracking** across policy-produced events
 //!
 //! Run with:
 //! ```bash
@@ -23,8 +23,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use event_sauce_core::{
-    command_handler, crypto, define_events, reactor, Aggregate, AggregateRoot, AggregateVersion,
-    EntityId, EventStore, Loaded, Position, ReactorRunner, Specification, StreamId,
+    command_handler, crypto, define_events, policy, Aggregate, AggregateRoot, AggregateVersion,
+    EntityId, EventStore, Loaded, Position, Specification, StreamId,
 };
 use event_sauce_macros::{aggregate, aggregate_error, specification, AggregateError, AggregateId};
 use event_sauce_postgres::PostgresBackend;
@@ -309,7 +309,7 @@ command_handler! {
 }
 
 // ============================================================================
-// Notification Aggregate (created by reactor on order completion)
+// Notification Aggregate (created by policy on order completion)
 // ============================================================================
 
 #[derive(Debug, thiserror::Error, AggregateError)]
@@ -341,12 +341,12 @@ command_handler! {
 }
 
 // ============================================================================
-// Reactor: Send notification when an order is completed
+// Policy: Send notification when an order is completed
 // ============================================================================
 
-reactor! {
+policy! {
     /// Sends a notification when an order is completed.
-    OrderCompletedReactor {
+    OrderCompletedPolicy {
         on CompletedEvent |_event, ctx| {
             let order_id = EntityId::from(ctx.source_event().aggregate_id);
             let id = EntityId::new();
@@ -443,7 +443,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  - Private User aggregate with crypto-shredding (GDPR)");
     println!("  - Actor-validated Order commands (permission checks)");
     println!("  - Delete events for order cancellation (@delete @actor)");
-    println!("  - Reactor system: auto-notify on order completion");
+    println!("  - Policy system: auto-notify on order completion");
     println!("  - Init creation functions: User::create_user(), Order::create_order()");
     println!("  - Repository pattern for type-safe persistence");
     println!("  - Projection over Order data (User PII stays encrypted)");
@@ -620,15 +620,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // ========================================================================
-    // Step 6: Run Reactor (Cross-Aggregate Event Orchestration)
+    // Step 6: Run Policy (Cross-Aggregate Event Orchestration)
     // ========================================================================
 
-    println!("\n=== Running Reactor (Order Completion → Notification) ===\n");
+    println!("\n=== Running Policy (Order Completion → Notification) ===\n");
 
-    let runner = ReactorRunner::new(store.clone()).register(Arc::new(OrderCompletedReactor));
+    let runner = store
+        .policy_runner()?
+        .register(Arc::new(OrderCompletedPolicy));
 
     let processed = runner.process_pending().await?;
-    println!("  Processed {processed} event-reactor matches");
+    println!("  Processed {processed} event-policy matches");
 
     // ========================================================================
     // Step 7: Show Causation Chain
@@ -640,7 +642,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     futures::pin_mut!(stream);
 
     while let Some(Ok(envelope)) = stream.next().await {
-        // Only show events with causation metadata (i.e., reactor-produced)
+        // Only show events with causation metadata (i.e., policy-produced)
         if let Some(ref meta) = envelope.metadata {
             if meta.causation_id.is_some() {
                 println!(

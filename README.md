@@ -24,7 +24,7 @@
 - 🔐 **Encryption & Crypto-Shredding**: Full-aggregate or field-level encryption with pluggable providers
 - 🚪 **Init Events**: Type-state aggregate construction — no more invalid uninitialized states
 - 👤 **Actor Events**: Permission validation tied to actor identity, with automatic audit trails
-- 🔗 **Reactors**: Cross-aggregate event orchestration with causation tracking and cascade depth limits
+- 🔗 **Policies**: Cross-aggregate event orchestration with causation tracking, checkpoint-based resumption, and configurable error handling
 
 ### Modern Event Sourcing Features
 
@@ -200,37 +200,38 @@ doc.update_content(&editor, "new content".into())?;
 
 Actor validation is **skipped during replay** — events are historical facts, only fresh commands validate permissions.
 
-### Reactors (Cross-Aggregate Orchestration)
+### Policies (Cross-Aggregate Orchestration)
 
-React to events on one aggregate to trigger commands on another, with full causation tracking:
+React to events on one aggregate to trigger commands on another, with full causation tracking and checkpoint-based resumption:
 
 ```rust
-use event_sauce::reactor;
+use event_sauce::policy;
 
-// Declarative reactor — reacts to UserKickedEvent, removes them from their group
-reactor! {
-    pub struct KickUserReactor;
-
-    on KickedEvent |event, ctx| {
-        let mut group: AggregateRoot<Group> = ctx.load(event.group_id).await?;
-        group.remove_member(event.user_id)?;
-        ctx.commit(&mut group).await?;
-        // Committed events automatically carry causation metadata:
-        //   causation_id, correlation_id, causation_chain
-        Ok(())
+// Declarative policy — reacts to UserKickedEvent, removes them from their group
+policy! {
+    KickUserPolicy {
+        on KickedEvent |event, ctx| {
+            let mut group: AggregateRoot<Group> = ctx.load(event.group_id).await?;
+            group.remove_member(event.user_id)?;
+            ctx.commit(&mut group).await?;
+            // Committed events automatically carry causation metadata:
+            //   causation_id, correlation_id, causation_chain
+            Ok(())
+        },
     }
 }
 
-// Register reactors and process pending events
-let mut runner = ReactorRunner::new(&store);
-runner.register(KickUserReactor);
-runner.with_max_cascade_depth(5); // prevent infinite loops
+// Register policies and process pending events
+let runner = PolicyRunner::new(store, checkpoint_store)
+    .with_max_cascade_depth(5)  // prevent infinite loops
+    .on_error(OnError::Retry(RetryConfig::default()))  // retry transient failures
+    .register(Arc::new(KickUserPolicy));
 let processed = runner.process_pending().await?;
 ```
 
-Cascading reactions are supported — a reactor's output events can trigger further reactors, with configurable depth limits.
+Cascading reactions are supported — a policy's output events can trigger further policies, with configurable depth limits. Checkpoint-based resumption prevents duplicate processing on restart.
 
-See the **[Reactors Guide](docs/reactors.md)** for full details.
+See the **[Policies Guide](docs/policies.md)** for full details.
 
 ### Encryption & Crypto-Shredding
 
@@ -596,7 +597,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 - **[Privacy & Encryption](docs/privacy.md)** - Full-aggregate and field-level encryption, crypto-shredding
 - **[Projections & Subscriptions](docs/projections.md)** - Building read models with durable, guaranteed delivery
 - **[PostgreSQL Production Setup](docs/postgres-production.md)** - Complete production deployment guide
-- **[Reactors Guide](docs/reactors.md)** - Cross-aggregate event orchestration and causation tracking
+- **[Policies Guide](docs/policies.md)** - Cross-aggregate event orchestration, causation tracking, and error handling
 - **[Architecture Overview](docs/architecture.md)** - System design and patterns
 - **[TDD Workflow](docs/tdd-workflow.md)** - Test-driven development for event sourcing
 
@@ -615,7 +616,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
   - **[crypto-shredding.rs](crates/event-sauce/examples/crypto-shredding.rs)** - Full-aggregate encryption and right-to-be-forgotten
   - **[field-encryption.rs](crates/event-sauce/examples/field-encryption.rs)** - Selective field-level encryption for sensitive data
   - **[delete-events.rs](crates/event-sauce/examples/delete-events.rs)** - Type-state delete lifecycle with terminal state
-  - **[reactor.rs](crates/event-sauce/examples/reactor.rs)** - Cross-aggregate event orchestration with causation tracking
+  - **[policy.rs](crates/event-sauce/examples/policy.rs)** - Cross-aggregate event orchestration with causation tracking
 - **CLAUDE.md** - Development guidelines and principles
 
 ## Roadmap

@@ -49,7 +49,7 @@ pub struct EventMetadata {
     ///
     /// Each entry is the `id` of an ancestor event, ordered from the root
     /// (first element) to the direct parent (last element). An empty chain
-    /// means this event was not produced by a reactor.
+    /// means this event was not produced by a policy.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub causation_chain: Vec<Uuid>,
 
@@ -347,7 +347,7 @@ impl EventEnvelope {
     /// Sets causation tracking fields on the metadata.
     ///
     /// Creates or updates the metadata with causation ID, correlation ID,
-    /// and the full causation chain. Used by the reactor system to propagate
+    /// and the full causation chain. Used by the policy system to propagate
     /// causation tracking through event reactions.
     #[must_use]
     pub fn with_causation(

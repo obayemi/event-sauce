@@ -78,7 +78,7 @@ impl<A: Aggregate> DeletedAggregateRoot<A> {
 
     /// Sets metadata on all pending events that don't already have metadata.
     ///
-    /// Used by `ReactorContext::commit_deleted()` to inject causation tracking
+    /// Used by `PolicyContext::commit_deleted()` to inject causation tracking
     /// into pending events before delegating to the event store.
     pub(crate) fn set_pending_metadata(&mut self, metadata: &crate::EventMetadata) {
         for pe in &mut self.pending_events {

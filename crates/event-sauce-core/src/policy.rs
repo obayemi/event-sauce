@@ -1,36 +1,41 @@
-//! Reactor system for cross-aggregate event reactions.
+//! Policy system for cross-aggregate event reactions.
 //!
-//! Provides the [`Reactor`] trait for defining event handlers that react to events
-//! by issuing commands on other aggregates, and [`ReactorContext`] for safe event
+//! Provides the [`Policy`] trait for defining event handlers that react to events
+//! by issuing commands on other aggregates, and [`PolicyContext`] for safe event
 //! store access with automatic causation tracking.
 //!
 //! # Overview
 //!
 //! In an event-sourced system, a single command may produce events that should
 //! trigger effects on other aggregates. For example, kicking a user may need to
-//! update a group aggregate. Reactors provide this cross-aggregate orchestration.
+//! update a group aggregate. Policies provide this cross-aggregate orchestration.
 //!
 //! # Design Principles
 //!
-//! - **Async/eventually consistent**: Reactors process events outside the original
+//! - **Async/eventually consistent**: Policies process events outside the original
 //!   transaction.
-//! - **Forced causation tracking**: All interactions go through [`ReactorContext`],
+//! - **Forced causation tracking**: All interactions go through [`PolicyContext`],
 //!   which guarantees causation metadata is always set.
 //! - **Cascade depth limits**: Reactions can trigger further reactions; depth is
 //!   bounded to prevent infinite loops.
+//! - **Checkpoint-based resumption**: Policies track their position via
+//!   [`CheckpointStore`](crate::CheckpointStore), preventing duplicate processing
+//!   on restart.
+//! - **Configurable error handling**: [`OnError`] controls whether failures abort,
+//!   skip, or retry with exponential backoff.
 //!
 //! # Examples
 //!
 //! ```ignore
-//! use event_sauce_core::reactor::{Reactor, ReactorContext, ReactorRunner};
+//! use event_sauce_core::policy::{Policy, PolicyContext, PolicyRunner};
 //!
-//! struct MyReactor;
+//! struct MyPolicy;
 //!
 //! #[async_trait::async_trait]
-//! impl<S: EventStore + 'static> Reactor<S> for MyReactor {
-//!     fn name(&self) -> &str { "MyReactor" }
+//! impl<S: EventStore + 'static> Policy<S> for MyPolicy {
+//!     fn name(&self) -> &str { "MyPolicy" }
 //!     fn event_filter(&self) -> EventFilter { EventFilter::by_event_type("User.Kicked") }
-//!     async fn handle(&self, event: &EventEnvelope, ctx: &ReactorContext<S>) -> Result<()> {
+//!     async fn handle(&self, event: &EventEnvelope, ctx: &PolicyContext<S>) -> Result<()> {
 //!         // Load, modify, and commit another aggregate
 //!         Ok(())
 //!     }
@@ -38,51 +43,54 @@
 //! ```
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
+use futures::StreamExt;
 
 use crate::{
-    Aggregate, AggregateId, AggregateRoot, DeletedAggregateRoot, EntityIdFor, EventEnvelope,
-    EventFilter, EventMetadata, EventStore, Loaded, Result,
+    Aggregate, AggregateId, AggregateRoot, CheckpointStoreRef, DeletedAggregateRoot, EntityIdFor,
+    EventEnvelope, EventFilter, EventMetadata, EventStore, Loaded, Position, Result,
 };
 
-/// A reactor handles events by issuing commands on other aggregates.
+/// A policy handles events by issuing commands on other aggregates.
 ///
-/// Reactors are the mechanism for cross-aggregate event orchestration.
-/// Each reactor declares which events it handles via [`event_filter()`](Reactor::event_filter)
-/// and processes matching events in [`handle()`](Reactor::handle).
+/// Policies are the mechanism for cross-aggregate event orchestration
+/// (known as "process managers" or "sagas" in some literature).
+/// Each policy declares which events it handles via [`event_filter()`](Policy::event_filter)
+/// and processes matching events in [`handle()`](Policy::handle).
 ///
-/// The type parameter `S` is the event store type, allowing the reactor to
+/// The type parameter `S` is the event store type, allowing the policy to
 /// work with any `EventStore` implementation while remaining dyn-compatible.
 ///
-/// # Implementing a Reactor
+/// # Implementing a Policy
 ///
 /// ```ignore
 /// struct NotifyOnKick;
 ///
 /// #[async_trait]
-/// impl<S: EventStore + 'static> Reactor<S> for NotifyOnKick {
+/// impl<S: EventStore + 'static> Policy<S> for NotifyOnKick {
 ///     fn name(&self) -> &str { "NotifyOnKick" }
 ///
 ///     fn event_filter(&self) -> EventFilter {
 ///         EventFilter::by_event_type("User.Kicked")
 ///     }
 ///
-///     async fn handle(&self, event: &EventEnvelope, ctx: &ReactorContext<S>) -> Result<()> {
+///     async fn handle(&self, event: &EventEnvelope, ctx: &PolicyContext<S>) -> Result<()> {
 ///         // React to the event by loading and modifying other aggregates
 ///         Ok(())
 ///     }
 /// }
 /// ```
 #[async_trait]
-pub trait Reactor<S: EventStore + 'static>: Send + Sync {
-    /// Unique name for this reactor.
+pub trait Policy<S: EventStore + 'static>: Send + Sync {
+    /// Unique name for this policy.
     ///
-    /// Used for subscription checkpoint tracking, so each reactor resumes
+    /// Used for checkpoint tracking, so each policy resumes
     /// from where it left off after restarts.
     fn name(&self) -> &str;
 
-    /// Which events this reactor handles.
+    /// Which events this policy handles.
     ///
     /// Only events matching this filter will be passed to [`handle()`](Self::handle).
     fn event_filter(&self) -> EventFilter;
@@ -95,12 +103,12 @@ pub trait Reactor<S: EventStore + 'static>: Send + Sync {
     /// # Errors
     ///
     /// Returns an error if loading, applying, or committing fails.
-    async fn handle(&self, event: &EventEnvelope, ctx: &ReactorContext<S>) -> Result<()>;
+    async fn handle(&self, event: &EventEnvelope, ctx: &PolicyContext<S>) -> Result<()>;
 }
 
 /// Provides event store access with automatic causation tracking.
 ///
-/// `ReactorContext` wraps an event store and a source event. All load operations
+/// `PolicyContext` wraps an event store and a source event. All load operations
 /// delegate to the store, while commit operations automatically inject causation
 /// metadata (correlation ID, causation ID, causation chain) into every pending
 /// event before persisting.
@@ -116,21 +124,21 @@ pub trait Reactor<S: EventStore + 'static>: Send + Sync {
 /// # Examples
 ///
 /// ```ignore
-/// async fn handle(&self, event: &EventEnvelope, ctx: &ReactorContext<impl EventStore>) -> Result<()> {
+/// async fn handle(&self, event: &EventEnvelope, ctx: &PolicyContext<impl EventStore>) -> Result<()> {
 ///     let mut group = ctx.load_as::<Group>(some_entity_id).await?;
 ///     group.apply(SomeEvent { ... })?;
 ///     ctx.commit(&mut group).await?;
 ///     Ok(())
 /// }
 /// ```
-pub struct ReactorContext<S: EventStore> {
+pub struct PolicyContext<S: EventStore> {
     store: Arc<S>,
     source_event: EventEnvelope,
     max_cascade_depth: usize,
 }
 
-impl<S: EventStore + 'static> ReactorContext<S> {
-    /// Creates a new reactor context.
+impl<S: EventStore + 'static> PolicyContext<S> {
+    /// Creates a new policy context.
     ///
     /// # Arguments
     ///
@@ -323,9 +331,9 @@ impl<S: EventStore + 'static> ReactorContext<S> {
     }
 }
 
-impl<S: EventStore + 'static> std::fmt::Debug for ReactorContext<S> {
+impl<S: EventStore + 'static> std::fmt::Debug for PolicyContext<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ReactorContext")
+        f.debug_struct("PolicyContext")
             .field("source_event_id", &self.source_event.id)
             .field("max_cascade_depth", &self.max_cascade_depth)
             .field("cascade_depth", &self.cascade_depth())
@@ -333,33 +341,96 @@ impl<S: EventStore + 'static> std::fmt::Debug for ReactorContext<S> {
     }
 }
 
-/// Runs reactors by routing events to matching handlers.
+/// What to do when a policy handler returns an error.
+#[derive(Debug, Clone)]
+pub enum OnError {
+    /// Abort processing immediately. Checkpoint NOT advanced past failed event.
+    Fail,
+    /// Log warning, skip the event, advance checkpoint, continue processing.
+    Skip,
+    /// Retry with exponential backoff before giving up.
+    Retry(RetryConfig),
+}
+
+/// Configuration for exponential backoff retry.
+#[derive(Debug, Clone)]
+pub struct RetryConfig {
+    /// Base delay between retries — doubles each attempt (default: 100ms).
+    pub base_delay: Duration,
+    /// Maximum delay cap (default: 30s).
+    pub max_delay: Duration,
+    /// When to stop retrying.
+    pub limit: RetryLimit,
+    /// What to do when all retries are exhausted.
+    pub on_exhausted: OnRetryExhausted,
+}
+
+impl Default for RetryConfig {
+    fn default() -> Self {
+        Self {
+            base_delay: Duration::from_millis(100),
+            max_delay: Duration::from_secs(30),
+            limit: RetryLimit::MaxRetries(3),
+            on_exhausted: OnRetryExhausted::Fail,
+        }
+    }
+}
+
+/// When to stop retrying.
+#[derive(Debug, Clone)]
+pub enum RetryLimit {
+    /// Stop after N retry attempts.
+    MaxRetries(usize),
+    /// Stop after total elapsed time exceeds this duration.
+    MaxDuration(Duration),
+    /// Retry indefinitely until success (blocks processing on this event).
+    Indefinite,
+}
+
+/// What to do when retry limit is reached.
+#[derive(Debug, Clone)]
+pub enum OnRetryExhausted {
+    /// Return error, stop processing. Checkpoint NOT advanced.
+    Fail,
+    /// Log warning, skip the event, advance checkpoint, continue.
+    Skip,
+}
+
+/// Runs policies by routing events to matching handlers.
 ///
-/// `ReactorRunner` manages a set of reactors and provides methods for
-/// processing events either continuously or in one-shot mode
-/// (`process_pending()`).
+/// `PolicyRunner` manages a set of policies and provides methods for
+/// processing events with checkpoint-based resumption and configurable
+/// error handling.
 ///
 /// # Builder Pattern
 ///
 /// ```ignore
-/// let runner = ReactorRunner::new(store)
+/// let runner = PolicyRunner::new(store, checkpoint_store)
 ///     .with_max_cascade_depth(5)
-///     .register(Arc::new(MyReactor));
+///     .on_error(OnError::Skip)
+///     .register(Arc::new(MyPolicy));
 /// ```
-pub struct ReactorRunner<S: EventStore> {
+pub struct PolicyRunner<S: EventStore> {
     store: Arc<S>,
-    reactors: Vec<Arc<dyn Reactor<S>>>,
+    policies: Vec<Arc<dyn Policy<S>>>,
+    checkpoint_store: CheckpointStoreRef,
     max_cascade_depth: usize,
+    on_error: OnError,
 }
 
-impl<S: EventStore + 'static> ReactorRunner<S> {
-    /// Creates a new reactor runner.
+impl<S: EventStore + 'static> PolicyRunner<S> {
+    /// Creates a new policy runner.
+    ///
+    /// Checkpoint store is required — policies track their position
+    /// to prevent duplicate processing on restart.
     #[must_use]
-    pub fn new(store: Arc<S>) -> Self {
+    pub fn new(store: Arc<S>, checkpoint_store: CheckpointStoreRef) -> Self {
         Self {
             store,
-            reactors: Vec::new(),
+            policies: Vec::new(),
+            checkpoint_store,
             max_cascade_depth: 10,
+            on_error: OnError::Fail,
         }
     }
 
@@ -370,35 +441,85 @@ impl<S: EventStore + 'static> ReactorRunner<S> {
         self
     }
 
-    /// Registers a reactor.
+    /// Sets the error handling strategy (default: `OnError::Fail`).
     #[must_use]
-    pub fn register(mut self, reactor: Arc<dyn Reactor<S>>) -> Self {
-        self.reactors.push(reactor);
+    pub fn on_error(mut self, on_error: OnError) -> Self {
+        self.on_error = on_error;
         self
     }
 
-    /// Returns the registered reactors.
+    /// Registers a policy.
     #[must_use]
-    pub fn reactors(&self) -> &[Arc<dyn Reactor<S>>] {
-        &self.reactors
+    pub fn register(mut self, policy: Arc<dyn Policy<S>>) -> Self {
+        self.policies.push(policy);
+        self
     }
 
-    /// Processes all pending events in one-shot mode.
+    /// Returns the registered policies.
+    #[must_use]
+    pub fn policies(&self) -> &[Arc<dyn Policy<S>>] {
+        &self.policies
+    }
+
+    /// Resolves the starting position for a policy from its checkpoint.
     ///
-    /// Loads all events from the store, routes them to matching reactors,
-    /// and processes cascading reactions until no new events are produced
-    /// or the max depth is reached.
+    /// If a checkpoint exists, returns it. If no checkpoint exists (new policy),
+    /// resolves to the current max position in the store by streaming all events.
+    async fn resolve_checkpoint(&self, policy_name: &str) -> Result<Position> {
+        if let Some(pos) = self.checkpoint_store.load_checkpoint(policy_name).await? {
+            return Ok(pos);
+        }
+
+        // New policy: skip all existing events by finding the current max position
+        let stream = self.store.stream_all(Position::start()).await?;
+        futures::pin_mut!(stream);
+
+        let mut max_pos: i64 = 0;
+        while let Some(result) = stream.next().await {
+            result?;
+            max_pos += 1;
+        }
+        Ok(Position::new(max_pos))
+    }
+
+    /// Processes all pending events in one-shot mode with checkpoint support.
+    ///
+    /// For each registered policy:
+    /// 1. Loads the checkpoint (or resolves to current max for new policies)
+    /// 2. Streams events from the earliest checkpoint position
+    /// 3. Routes matching events to policies, respecting their individual checkpoints
+    /// 4. Handles cascading reactions until no new events are produced
+    /// 5. Saves updated checkpoints
     ///
     /// Returns the total number of events processed.
     ///
     /// # Errors
     ///
-    /// Returns an error if event loading, reactor handling, or committing fails.
+    /// Returns an error if event loading, policy handling, or committing fails
+    /// (depending on the [`OnError`] configuration).
+    #[allow(clippy::too_many_lines)]
     pub async fn process_pending(&self) -> Result<usize> {
         use futures::StreamExt;
 
+        if self.policies.is_empty() {
+            return Ok(0);
+        }
+
+        // Resolve checkpoints for all policies
+        let mut policy_checkpoints: Vec<Position> = Vec::with_capacity(self.policies.len());
+        for policy in &self.policies {
+            let checkpoint = self.resolve_checkpoint(policy.name()).await?;
+            policy_checkpoints.push(checkpoint);
+        }
+
+        // Start from the minimum checkpoint across all policies
+        let mut from_position = policy_checkpoints
+            .iter()
+            .copied()
+            .min()
+            .unwrap_or_else(Position::start);
+
         let mut total_processed = 0;
-        let mut from_position = crate::Position::start();
 
         // Process events in rounds to handle cascading
         loop {
@@ -412,19 +533,49 @@ impl<S: EventStore + 'static> ReactorRunner<S> {
                 let envelope = envelope_result?;
 
                 // Track position for next round
-                last_position = crate::Position::new(last_position.as_i64() + 1);
+                last_position = Position::new(last_position.as_i64() + 1);
 
-                // Route to matching reactors
-                for reactor in &self.reactors {
-                    if reactor.event_filter().matches(&envelope) {
-                        let ctx = ReactorContext::new(
+                // Route to matching policies, respecting per-policy checkpoints
+                for (i, policy) in self.policies.iter().enumerate() {
+                    // Skip if this policy has already processed past this position
+                    if last_position.as_i64() <= policy_checkpoints[i].as_i64() {
+                        continue;
+                    }
+
+                    if policy.event_filter().matches(&envelope) {
+                        let ctx = PolicyContext::new(
                             Arc::clone(&self.store),
                             envelope.clone(),
                             self.max_cascade_depth,
                         );
-                        reactor.handle(&envelope, &ctx).await?;
-                        round_processed += 1;
+
+                        match policy.handle(&envelope, &ctx).await {
+                            Ok(()) => {
+                                round_processed += 1;
+                            }
+                            Err(e) => match &self.on_error {
+                                OnError::Fail => return Err(e),
+                                OnError::Skip => {
+                                    tracing::warn!(
+                                        policy = policy.name(),
+                                        event_id = %envelope.id,
+                                        error = %e,
+                                        "Skipping event due to policy error"
+                                    );
+                                }
+                                OnError::Retry(config) => {
+                                    let should_skip =
+                                        self.retry_handler(policy, &envelope, config).await?;
+                                    if !should_skip {
+                                        round_processed += 1;
+                                    }
+                                }
+                            },
+                        }
                     }
+
+                    // Advance this policy's checkpoint
+                    policy_checkpoints[i] = last_position;
                 }
             }
 
@@ -439,28 +590,132 @@ impl<S: EventStore + 'static> ReactorRunner<S> {
             from_position = last_position;
         }
 
+        // Save checkpoints for all policies
+        for (i, policy) in self.policies.iter().enumerate() {
+            self.checkpoint_store
+                .save_checkpoint(policy.name(), policy_checkpoints[i])
+                .await?;
+        }
+
         Ok(total_processed)
     }
 
-    /// Processes a single event envelope through matching reactors.
+    /// Retries a failed handler with exponential backoff.
     ///
-    /// Returns the number of reactors that handled the event.
+    /// Returns `Ok(false)` if the retry succeeded (event was processed),
+    /// `Ok(true)` if the retries were exhausted and the event was skipped,
+    /// or `Err` if the retries were exhausted and the policy is `OnRetryExhausted::Fail`.
+    async fn retry_handler(
+        &self,
+        policy: &Arc<dyn Policy<S>>,
+        envelope: &EventEnvelope,
+        config: &RetryConfig,
+    ) -> Result<bool> {
+        let started = std::time::Instant::now();
+        let mut attempt = 0;
+        let mut last_error;
+
+        // Initial attempt already failed before this function is called.
+        // Now we do retries.
+        loop {
+            attempt += 1;
+
+            // Check limit
+            let exhausted = match config.limit {
+                RetryLimit::MaxRetries(n) => attempt > n,
+                RetryLimit::MaxDuration(d) => started.elapsed() > d,
+                RetryLimit::Indefinite => false,
+            };
+
+            if exhausted {
+                return match config.on_exhausted {
+                    OnRetryExhausted::Fail => Err(crate::Error::custom(format!(
+                        "Policy '{}' retry exhausted for event {}",
+                        policy.name(),
+                        envelope.id
+                    ))),
+                    OnRetryExhausted::Skip => {
+                        tracing::warn!(
+                            policy = policy.name(),
+                            event_id = %envelope.id,
+                            "Retry exhausted, skipping event"
+                        );
+                        Ok(true) // skipped
+                    }
+                };
+            }
+
+            // Exponential backoff: base_delay * 2^(attempt-1), capped at max_delay
+            let delay = config
+                .base_delay
+                .saturating_mul(1 << (attempt - 1).min(30))
+                .min(config.max_delay);
+            tokio::time::sleep(delay).await;
+
+            let ctx = PolicyContext::new(
+                Arc::clone(&self.store),
+                envelope.clone(),
+                self.max_cascade_depth,
+            );
+
+            match policy.handle(envelope, &ctx).await {
+                Ok(()) => return Ok(false), // success
+                Err(e) => {
+                    tracing::warn!(
+                        policy = policy.name(),
+                        attempt,
+                        event_id = %envelope.id,
+                        error = %e,
+                        "Policy handler retry failed"
+                    );
+                    last_error = e;
+                    let _ = last_error; // suppress unused warning
+                }
+            }
+        }
+    }
+
+    /// Processes a single event envelope through matching policies.
+    ///
+    /// Returns the number of policies that handled the event.
+    /// Error handling ([`OnError`]) applies per-event.
     ///
     /// # Errors
     ///
-    /// Returns an error if reactor handling fails.
+    /// Returns an error if policy handling fails (depending on [`OnError`] configuration).
     pub async fn process_event(&self, envelope: &EventEnvelope) -> Result<usize> {
         let mut handled = 0;
 
-        for reactor in &self.reactors {
-            if reactor.event_filter().matches(envelope) {
-                let ctx = ReactorContext::new(
+        for policy in &self.policies {
+            if policy.event_filter().matches(envelope) {
+                let ctx = PolicyContext::new(
                     Arc::clone(&self.store),
                     envelope.clone(),
                     self.max_cascade_depth,
                 );
-                reactor.handle(envelope, &ctx).await?;
-                handled += 1;
+
+                match policy.handle(envelope, &ctx).await {
+                    Ok(()) => {
+                        handled += 1;
+                    }
+                    Err(e) => match &self.on_error {
+                        OnError::Fail => return Err(e),
+                        OnError::Skip => {
+                            tracing::warn!(
+                                policy = policy.name(),
+                                event_id = %envelope.id,
+                                error = %e,
+                                "Skipping event due to policy error"
+                            );
+                        }
+                        OnError::Retry(config) => {
+                            let skipped = self.retry_handler(policy, envelope, config).await?;
+                            if !skipped {
+                                handled += 1;
+                            }
+                        }
+                    },
+                }
             }
         }
 
@@ -468,11 +723,11 @@ impl<S: EventStore + 'static> ReactorRunner<S> {
     }
 }
 
-impl<S: EventStore + 'static> std::fmt::Debug for ReactorRunner<S> {
+impl<S: EventStore + 'static> std::fmt::Debug for PolicyRunner<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let reactor_names: Vec<&str> = self.reactors.iter().map(|r| r.name()).collect();
-        f.debug_struct("ReactorRunner")
-            .field("reactors", &reactor_names)
+        let policy_names: Vec<&str> = self.policies.iter().map(|p| p.name()).collect();
+        f.debug_struct("PolicyRunner")
+            .field("policies", &policy_names)
             .field("max_cascade_depth", &self.max_cascade_depth)
             .finish_non_exhaustive()
     }
@@ -481,8 +736,10 @@ impl<S: EventStore + 'static> std::fmt::Debug for ReactorRunner<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_fixtures::{MockEventStore, SimpleTestEntity, SimpleTestEvent};
-    use crate::{AggregateRoot, AggregateVersion, EventVersion};
+    use crate::test_fixtures::{
+        MockCheckpointStore, MockEventStore, SimpleTestEntity, SimpleTestEvent,
+    };
+    use crate::{AggregateRoot, AggregateVersion, CheckpointStore, EventVersion};
     use serde_json::json;
     use uuid::Uuid;
 
@@ -498,37 +755,41 @@ mod tests {
         )
     }
 
-    // === ReactorContext tests ===
+    fn test_checkpoint_store() -> Arc<MockCheckpointStore> {
+        Arc::new(MockCheckpointStore::new())
+    }
+
+    // === PolicyContext tests ===
 
     #[test]
-    fn test_reactor_context_new() {
+    fn test_policy_context_new() {
         let store = Arc::new(MockEventStore::new());
         let envelope = test_envelope("TestEvent", "TestAggregate");
-        let ctx = ReactorContext::new(store, envelope.clone(), 10);
+        let ctx = PolicyContext::new(store, envelope.clone(), 10);
 
         assert_eq!(ctx.source_event().id, envelope.id);
         assert_eq!(ctx.cascade_depth(), 0);
     }
 
     #[test]
-    fn test_reactor_context_cascade_depth_from_metadata() {
+    fn test_policy_context_cascade_depth_from_metadata() {
         let store = Arc::new(MockEventStore::new());
         let chain = vec![Uuid::new_v4(), Uuid::new_v4()];
         let metadata = EventMetadata::new().with_causation_chain(chain);
         let envelope = test_envelope("TestEvent", "TestAggregate").with_metadata(metadata);
-        let ctx = ReactorContext::new(store, envelope, 10);
+        let ctx = PolicyContext::new(store, envelope, 10);
 
         assert_eq!(ctx.cascade_depth(), 2);
     }
 
     #[test]
-    fn test_reactor_context_build_causation_metadata() {
+    fn test_policy_context_build_causation_metadata() {
         let store = Arc::new(MockEventStore::new());
         let correlation_id = Uuid::new_v4();
         let metadata = EventMetadata::new().with_correlation_id(correlation_id);
         let envelope = test_envelope("TestEvent", "TestAggregate").with_metadata(metadata);
         let source_id = envelope.id;
-        let ctx = ReactorContext::new(store, envelope, 10);
+        let ctx = PolicyContext::new(store, envelope, 10);
 
         let child = ctx.build_causation_metadata().unwrap();
 
@@ -539,11 +800,11 @@ mod tests {
     }
 
     #[test]
-    fn test_reactor_context_build_causation_metadata_no_parent_metadata() {
+    fn test_policy_context_build_causation_metadata_no_parent_metadata() {
         let store = Arc::new(MockEventStore::new());
         let envelope = test_envelope("TestEvent", "TestAggregate");
         let source_id = envelope.id;
-        let ctx = ReactorContext::new(store, envelope, 10);
+        let ctx = PolicyContext::new(store, envelope, 10);
 
         let child = ctx.build_causation_metadata().unwrap();
 
@@ -554,7 +815,7 @@ mod tests {
     }
 
     #[test]
-    fn test_reactor_context_build_causation_metadata_extends_chain() {
+    fn test_policy_context_build_causation_metadata_extends_chain() {
         let store = Arc::new(MockEventStore::new());
         let root_id = Uuid::new_v4();
         let parent_id = Uuid::new_v4();
@@ -567,7 +828,7 @@ mod tests {
 
         let envelope = test_envelope("TestEvent", "TestAggregate").with_metadata(metadata);
         let source_id = envelope.id;
-        let ctx = ReactorContext::new(store, envelope, 10);
+        let ctx = PolicyContext::new(store, envelope, 10);
 
         let child = ctx.build_causation_metadata().unwrap();
 
@@ -580,12 +841,12 @@ mod tests {
     }
 
     #[test]
-    fn test_reactor_context_cascade_depth_exceeded() {
+    fn test_policy_context_cascade_depth_exceeded() {
         let store = Arc::new(MockEventStore::new());
         let chain = vec![Uuid::new_v4(); 5];
         let metadata = EventMetadata::new().with_causation_chain(chain);
         let envelope = test_envelope("TestEvent", "TestAggregate").with_metadata(metadata);
-        let ctx = ReactorContext::new(store, envelope, 5);
+        let ctx = PolicyContext::new(store, envelope, 5);
 
         // Chain has 5 elements, adding 1 more = 6, which exceeds max of 5
         let result = ctx.build_causation_metadata();
@@ -594,12 +855,12 @@ mod tests {
     }
 
     #[test]
-    fn test_reactor_context_cascade_depth_at_limit_succeeds() {
+    fn test_policy_context_cascade_depth_at_limit_succeeds() {
         let store = Arc::new(MockEventStore::new());
         let chain = vec![Uuid::new_v4(); 4];
         let metadata = EventMetadata::new().with_causation_chain(chain);
         let envelope = test_envelope("TestEvent", "TestAggregate").with_metadata(metadata);
-        let ctx = ReactorContext::new(store, envelope, 5);
+        let ctx = PolicyContext::new(store, envelope, 5);
 
         // Chain has 4 elements, adding 1 more = 5, which equals max of 5
         let result = ctx.build_causation_metadata();
@@ -608,11 +869,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_reactor_context_commit_injects_metadata() {
+    async fn test_policy_context_commit_injects_metadata() {
         let store = Arc::new(MockEventStore::new());
         let envelope = test_envelope("TestEvent", "TestAggregate");
         let source_id = envelope.id;
-        let ctx = ReactorContext::new(Arc::clone(&store), envelope, 10);
+        let ctx = PolicyContext::new(Arc::clone(&store), envelope, 10);
 
         let id = crate::EntityId::new();
         let mut agg = AggregateRoot::<SimpleTestEntity>::new(id);
@@ -647,12 +908,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_reactor_context_commit_cascade_depth_exceeded() {
+    async fn test_policy_context_commit_cascade_depth_exceeded() {
         let store = Arc::new(MockEventStore::new());
         let chain = vec![Uuid::new_v4(); 3];
         let metadata = EventMetadata::new().with_causation_chain(chain);
         let envelope = test_envelope("TestEvent", "TestAggregate").with_metadata(metadata);
-        let ctx = ReactorContext::new(Arc::clone(&store), envelope, 3);
+        let ctx = PolicyContext::new(Arc::clone(&store), envelope, 3);
 
         let id = crate::EntityId::new();
         let mut agg = AggregateRoot::<SimpleTestEntity>::new(id);
@@ -664,7 +925,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_reactor_context_load_as() {
+    async fn test_policy_context_load_as() {
         let store = Arc::new(MockEventStore::new());
 
         // Commit an aggregate first
@@ -673,52 +934,94 @@ mod tests {
         agg.apply(SimpleTestEvent::Created { value: 99 }).unwrap();
         store.commit(&mut agg).await.unwrap();
 
-        // Load via reactor context
+        // Load via policy context
         let envelope = test_envelope("TestEvent", "TestAggregate");
-        let ctx = ReactorContext::new(Arc::clone(&store), envelope, 10);
+        let ctx = PolicyContext::new(Arc::clone(&store), envelope, 10);
 
         let loaded = ctx.load_as::<SimpleTestEntity>(id).await.unwrap();
         assert_eq!(loaded.value, 99);
     }
 
     #[test]
-    fn test_reactor_context_debug() {
+    fn test_policy_context_debug() {
         let store = Arc::new(MockEventStore::new());
         let envelope = test_envelope("TestEvent", "TestAggregate");
-        let ctx = ReactorContext::new(store, envelope, 10);
+        let ctx = PolicyContext::new(store, envelope, 10);
 
         let debug = format!("{ctx:?}");
-        assert!(debug.contains("ReactorContext"));
+        assert!(debug.contains("PolicyContext"));
         assert!(debug.contains("max_cascade_depth: 10"));
         assert!(debug.contains("cascade_depth: 0"));
     }
 
-    // === ReactorRunner tests ===
+    // === PolicyRunner tests ===
 
     #[test]
-    fn test_reactor_runner_new() {
+    fn test_policy_runner_new() {
         let store = Arc::new(MockEventStore::new());
-        let runner = ReactorRunner::new(store);
+        let cp = test_checkpoint_store();
+        let runner = PolicyRunner::new(store, cp);
 
-        assert!(runner.reactors().is_empty());
+        assert!(runner.policies().is_empty());
     }
 
     #[test]
-    fn test_reactor_runner_with_max_cascade_depth() {
+    fn test_policy_runner_with_max_cascade_depth() {
         let store = Arc::new(MockEventStore::new());
-        let runner = ReactorRunner::new(store).with_max_cascade_depth(5);
+        let cp = test_checkpoint_store();
+        let runner = PolicyRunner::new(store, cp).with_max_cascade_depth(5);
 
         assert_eq!(runner.max_cascade_depth, 5);
     }
 
-    struct CountingReactor {
+    #[test]
+    fn test_policy_runner_default_on_error_is_fail() {
+        let store = Arc::new(MockEventStore::new());
+        let cp = test_checkpoint_store();
+        let runner = PolicyRunner::new(store, cp);
+
+        assert!(matches!(runner.on_error, OnError::Fail));
+    }
+
+    #[test]
+    fn test_policy_runner_on_error_builder() {
+        let store = Arc::new(MockEventStore::new());
+        let cp = test_checkpoint_store();
+        let runner = PolicyRunner::new(store, cp).on_error(OnError::Skip);
+
+        assert!(matches!(runner.on_error, OnError::Skip));
+    }
+
+    #[test]
+    fn test_retry_config_default() {
+        let config = RetryConfig::default();
+
+        assert_eq!(config.base_delay, Duration::from_millis(100));
+        assert_eq!(config.max_delay, Duration::from_secs(30));
+        assert!(matches!(config.limit, RetryLimit::MaxRetries(3)));
+        assert!(matches!(config.on_exhausted, OnRetryExhausted::Fail));
+    }
+
+    #[test]
+    fn test_retry_limit_variants() {
+        let max_retries = RetryLimit::MaxRetries(5);
+        assert!(matches!(max_retries, RetryLimit::MaxRetries(5)));
+
+        let max_duration = RetryLimit::MaxDuration(Duration::from_secs(60));
+        assert!(matches!(max_duration, RetryLimit::MaxDuration(_)));
+
+        let indefinite = RetryLimit::Indefinite;
+        assert!(matches!(indefinite, RetryLimit::Indefinite));
+    }
+
+    struct CountingPolicy {
         name: String,
         filter: EventFilter,
         count: Arc<std::sync::Mutex<usize>>,
     }
 
     #[async_trait]
-    impl<S: EventStore + 'static> Reactor<S> for CountingReactor {
+    impl<S: EventStore + 'static> Policy<S> for CountingPolicy {
         fn name(&self) -> &str {
             &self.name
         }
@@ -727,37 +1030,39 @@ mod tests {
             self.filter.clone()
         }
 
-        async fn handle(&self, _event: &EventEnvelope, _ctx: &ReactorContext<S>) -> Result<()> {
+        async fn handle(&self, _event: &EventEnvelope, _ctx: &PolicyContext<S>) -> Result<()> {
             *self.count.lock().unwrap() += 1;
             Ok(())
         }
     }
 
     #[test]
-    fn test_reactor_runner_register() {
+    fn test_policy_runner_register() {
         let store = Arc::new(MockEventStore::new());
+        let cp = test_checkpoint_store();
         let count = Arc::new(std::sync::Mutex::new(0));
-        let reactor = Arc::new(CountingReactor {
+        let policy = Arc::new(CountingPolicy {
             name: "test".to_string(),
             filter: EventFilter::all(),
             count,
         });
 
-        let runner = ReactorRunner::new(store).register(reactor);
-        assert_eq!(runner.reactors().len(), 1);
+        let runner = PolicyRunner::new(store, cp).register(policy);
+        assert_eq!(runner.policies().len(), 1);
     }
 
     #[tokio::test]
-    async fn test_reactor_runner_process_event() {
+    async fn test_policy_runner_process_event() {
         let store = Arc::new(MockEventStore::new());
+        let cp = test_checkpoint_store();
         let count = Arc::new(std::sync::Mutex::new(0));
-        let reactor = Arc::new(CountingReactor {
+        let policy = Arc::new(CountingPolicy {
             name: "test".to_string(),
             filter: EventFilter::by_event_type("MatchMe"),
             count: Arc::clone(&count),
         });
 
-        let runner = ReactorRunner::new(store).register(reactor);
+        let runner = PolicyRunner::new(store, cp).register(policy);
 
         // Matching event
         let envelope = test_envelope("MatchMe", "TestAggregate");
@@ -773,25 +1078,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_reactor_runner_process_event_multiple_reactors() {
+    async fn test_policy_runner_process_event_multiple_policies() {
         let store = Arc::new(MockEventStore::new());
+        let cp = test_checkpoint_store();
         let count1 = Arc::new(std::sync::Mutex::new(0));
         let count2 = Arc::new(std::sync::Mutex::new(0));
 
-        let reactor1 = Arc::new(CountingReactor {
-            name: "reactor1".to_string(),
+        let policy1 = Arc::new(CountingPolicy {
+            name: "policy1".to_string(),
             filter: EventFilter::by_event_type("TestEvent"),
             count: Arc::clone(&count1),
         });
-        let reactor2 = Arc::new(CountingReactor {
-            name: "reactor2".to_string(),
+        let policy2 = Arc::new(CountingPolicy {
+            name: "policy2".to_string(),
             filter: EventFilter::by_event_type("TestEvent"),
             count: Arc::clone(&count2),
         });
 
-        let runner = ReactorRunner::new(store)
-            .register(reactor1)
-            .register(reactor2);
+        let runner = PolicyRunner::new(store, cp)
+            .register(policy1)
+            .register(policy2);
 
         let envelope = test_envelope("TestEvent", "TestAggregate");
         let handled = runner.process_event(&envelope).await.unwrap();
@@ -802,17 +1108,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_reactor_runner_process_pending_no_events() {
+    async fn test_policy_runner_process_pending_no_events() {
         let store = Arc::new(MockEventStore::new());
-        let runner: ReactorRunner<MockEventStore> = ReactorRunner::new(store);
+        let cp = test_checkpoint_store();
+        let runner: PolicyRunner<MockEventStore> = PolicyRunner::new(store, cp);
 
         let processed = runner.process_pending().await.unwrap();
         assert_eq!(processed, 0);
     }
 
     #[tokio::test]
-    async fn test_reactor_runner_process_pending_with_events() {
+    async fn test_policy_runner_process_pending_with_events() {
         let store = Arc::new(MockEventStore::new());
+        let cp = test_checkpoint_store();
+
+        // Pre-set checkpoint so policy processes from the beginning
+        cp.save_checkpoint("test", Position::start()).await.unwrap();
 
         // Add some events to the store
         store.add_event(test_envelope("TestEvent", "TestAggregate"));
@@ -820,13 +1131,13 @@ mod tests {
         store.add_event(test_envelope("TestEvent", "TestAggregate"));
 
         let count = Arc::new(std::sync::Mutex::new(0));
-        let reactor = Arc::new(CountingReactor {
+        let policy = Arc::new(CountingPolicy {
             name: "test".to_string(),
             filter: EventFilter::by_event_type("TestEvent"),
             count: Arc::clone(&count),
         });
 
-        let runner = ReactorRunner::new(Arc::clone(&store)).register(reactor);
+        let runner = PolicyRunner::new(Arc::clone(&store), cp).register(policy);
         let processed = runner.process_pending().await.unwrap();
 
         // 2 matching events out of 3 total
@@ -835,24 +1146,25 @@ mod tests {
     }
 
     #[test]
-    fn test_reactor_runner_debug() {
+    fn test_policy_runner_debug() {
         let store = Arc::new(MockEventStore::new());
+        let cp = test_checkpoint_store();
         let count = Arc::new(std::sync::Mutex::new(0));
-        let reactor = Arc::new(CountingReactor {
-            name: "my_reactor".to_string(),
+        let policy = Arc::new(CountingPolicy {
+            name: "my_policy".to_string(),
             filter: EventFilter::all(),
             count,
         });
 
-        let runner = ReactorRunner::new(store).register(reactor);
+        let runner = PolicyRunner::new(store, cp).register(policy);
         let debug = format!("{runner:?}");
-        assert!(debug.contains("ReactorRunner"));
-        assert!(debug.contains("my_reactor"));
+        assert!(debug.contains("PolicyRunner"));
+        assert!(debug.contains("my_policy"));
         assert!(debug.contains("max_cascade_depth: 10"));
     }
 
     #[tokio::test]
-    async fn test_reactor_context_load_any_as() {
+    async fn test_policy_context_load_any_as() {
         let store = Arc::new(MockEventStore::new());
 
         let id = crate::EntityId::new();
@@ -861,20 +1173,20 @@ mod tests {
         store.commit(&mut agg).await.unwrap();
 
         let envelope = test_envelope("TestEvent", "TestAggregate");
-        let ctx = ReactorContext::new(Arc::clone(&store), envelope, 10);
+        let ctx = PolicyContext::new(Arc::clone(&store), envelope, 10);
 
         let loaded = ctx.load_any_as::<SimpleTestEntity>(id).await.unwrap();
         assert!(loaded.is_active());
     }
 
     #[tokio::test]
-    async fn test_reactor_context_commit_preserves_existing_metadata() {
+    async fn test_policy_context_commit_preserves_existing_metadata() {
         let store = Arc::new(MockEventStore::new());
         let correlation_id = Uuid::new_v4();
         let parent_metadata = EventMetadata::new().with_correlation_id(correlation_id);
         let envelope = test_envelope("TestEvent", "TestAggregate").with_metadata(parent_metadata);
         let source_id = envelope.id;
-        let ctx = ReactorContext::new(Arc::clone(&store), envelope, 10);
+        let ctx = PolicyContext::new(Arc::clone(&store), envelope, 10);
 
         let id = crate::EntityId::new();
         let mut agg = AggregateRoot::<SimpleTestEntity>::new(id);
@@ -895,14 +1207,14 @@ mod tests {
         let meta0 = stored[0].metadata.as_ref().unwrap();
         assert_eq!(meta0.causation_id, existing.causation_id);
 
-        // Second event gets reactor causation metadata
+        // Second event gets policy causation metadata
         let meta1 = stored[1].metadata.as_ref().unwrap();
         assert_eq!(meta1.causation_id, Some(source_id));
         assert_eq!(meta1.correlation_id, Some(correlation_id));
         assert_eq!(meta1.causation_chain, vec![source_id]);
     }
 
-    // === reactor! macro tests ===
+    // === policy! macro tests ===
 
     // Test event structs implementing EventType + Deserialize
     #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -932,9 +1244,9 @@ mod tests {
         const EVENT_TYPE: &'static str = "Bar.Deleted";
     }
 
-    // Test: reactor! generates a struct
-    crate::reactor! {
-        TestReactor {
+    // Test: policy! generates a struct
+    crate::policy! {
+        TestPolicy {
             on FooCreatedEvent |_event, _ctx| {
                 Ok(())
             },
@@ -942,24 +1254,24 @@ mod tests {
     }
 
     #[test]
-    fn test_reactor_macro_generates_struct() {
-        // Verify the reactor! macro generates a usable struct
-        let reactor: &dyn Reactor<MockEventStore> = &TestReactor;
-        assert_eq!(reactor.name(), "TestReactor");
+    fn test_policy_macro_generates_struct() {
+        // Verify the policy! macro generates a usable struct
+        let policy: &dyn Policy<MockEventStore> = &TestPolicy;
+        assert_eq!(policy.name(), "TestPolicy");
     }
 
     #[test]
-    fn test_reactor_macro_name() {
+    fn test_policy_macro_name() {
         let store = Arc::new(MockEventStore::new());
-        let reactor: &dyn Reactor<MockEventStore> = &TestReactor;
+        let policy: &dyn Policy<MockEventStore> = &TestPolicy;
         let _ = store; // suppress unused
-        assert_eq!(reactor.name(), "TestReactor");
+        assert_eq!(policy.name(), "TestPolicy");
     }
 
     #[test]
-    fn test_reactor_macro_event_filter_single() {
-        let reactor: &dyn Reactor<MockEventStore> = &TestReactor;
-        let filter = reactor.event_filter();
+    fn test_policy_macro_event_filter_single() {
+        let policy: &dyn Policy<MockEventStore> = &TestPolicy;
+        let filter = policy.event_filter();
 
         let matching = test_envelope("Foo.Created", "Foo");
         let non_matching = test_envelope("Foo.Updated", "Foo");
@@ -968,9 +1280,9 @@ mod tests {
         assert!(!filter.matches(&non_matching));
     }
 
-    // Test: reactor! with multiple event handlers
-    crate::reactor! {
-        MultiEventReactor {
+    // Test: policy! with multiple event handlers
+    crate::policy! {
+        MultiEventPolicy {
             on FooCreatedEvent |_event, _ctx| {
                 Ok(())
             },
@@ -984,9 +1296,9 @@ mod tests {
     }
 
     #[test]
-    fn test_reactor_macro_event_filter_multiple() {
-        let reactor: &dyn Reactor<MockEventStore> = &MultiEventReactor;
-        let filter = reactor.event_filter();
+    fn test_policy_macro_event_filter_multiple() {
+        let policy: &dyn Policy<MockEventStore> = &MultiEventPolicy;
+        let filter = policy.event_filter();
 
         assert!(filter.matches(&test_envelope("Foo.Created", "Foo")));
         assert!(filter.matches(&test_envelope("Foo.Updated", "Foo")));
@@ -994,18 +1306,18 @@ mod tests {
         assert!(!filter.matches(&test_envelope("Other.Event", "Other")));
     }
 
-    // A reactor that captures deserialized event data for testing
-    struct CapturingReactor(Arc<std::sync::Mutex<Option<String>>>);
+    // A policy that captures deserialized event data for testing
+    struct CapturingPolicy(Arc<std::sync::Mutex<Option<String>>>);
 
     #[async_trait]
-    impl<S: EventStore + 'static> Reactor<S> for CapturingReactor {
+    impl<S: EventStore + 'static> Policy<S> for CapturingPolicy {
         fn name(&self) -> &'static str {
-            "CapturingReactor"
+            "CapturingPolicy"
         }
         fn event_filter(&self) -> EventFilter {
             EventFilter::by_event_type("Foo.Created")
         }
-        async fn handle(&self, event: &EventEnvelope, _ctx: &ReactorContext<S>) -> Result<()> {
+        async fn handle(&self, event: &EventEnvelope, _ctx: &PolicyContext<S>) -> Result<()> {
             let foo: FooCreatedEvent = serde_json::from_value(event.event_data.clone())?;
             *self.0.lock().unwrap() = Some(foo.name);
             Ok(())
@@ -1013,22 +1325,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_reactor_macro_handle_deserializes_event() {
+    async fn test_policy_macro_handle_deserializes_event() {
         let store = Arc::new(MockEventStore::new());
         let received = Arc::new(std::sync::Mutex::new(None::<String>));
 
-        let reactor = CapturingReactor(Arc::clone(&received));
+        let policy = CapturingPolicy(Arc::clone(&received));
         let mut envelope = test_envelope("Foo.Created", "Foo");
         envelope.event_data = serde_json::json!({"name": "hello"});
 
-        let ctx = ReactorContext::new(Arc::clone(&store), envelope.clone(), 10);
-        reactor.handle(&envelope, &ctx).await.unwrap();
+        let ctx = PolicyContext::new(Arc::clone(&store), envelope.clone(), 10);
+        policy.handle(&envelope, &ctx).await.unwrap();
 
         assert_eq!(*received.lock().unwrap(), Some("hello".to_string()));
     }
 
     #[tokio::test]
-    async fn test_reactor_macro_handle_routes_to_correct_handler() {
+    async fn test_policy_macro_handle_routes_to_correct_handler() {
         // Verify the generated handle() method deserializes and routes correctly
         let store = Arc::new(MockEventStore::new());
 
@@ -1036,48 +1348,48 @@ mod tests {
         let mut envelope = test_envelope("Foo.Created", "Foo");
         envelope.event_data = serde_json::json!({"name": "test_name"});
 
-        let ctx = ReactorContext::new(Arc::clone(&store), envelope.clone(), 10);
+        let ctx = PolicyContext::new(Arc::clone(&store), envelope.clone(), 10);
 
         // The generated handle should succeed (just returns Ok)
         let result =
-            <TestReactor as Reactor<MockEventStore>>::handle(&TestReactor, &envelope, &ctx).await;
+            <TestPolicy as Policy<MockEventStore>>::handle(&TestPolicy, &envelope, &ctx).await;
         assert!(result.is_ok());
     }
 
     #[tokio::test]
-    async fn test_reactor_macro_handle_deserialization_error() {
+    async fn test_policy_macro_handle_deserialization_error() {
         let store = Arc::new(MockEventStore::new());
 
         // Envelope with wrong data shape for FooCreatedEvent (missing "name" field)
         let mut envelope = test_envelope("Foo.Created", "Foo");
         envelope.event_data = serde_json::json!({"wrong_field": 42});
 
-        let ctx = ReactorContext::new(Arc::clone(&store), envelope.clone(), 10);
+        let ctx = PolicyContext::new(Arc::clone(&store), envelope.clone(), 10);
 
         let result =
-            <TestReactor as Reactor<MockEventStore>>::handle(&TestReactor, &envelope, &ctx).await;
+            <TestPolicy as Policy<MockEventStore>>::handle(&TestPolicy, &envelope, &ctx).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().is_serialization());
     }
 
     #[tokio::test]
-    async fn test_reactor_macro_handle_unmatched_event() {
+    async fn test_policy_macro_handle_unmatched_event() {
         let store = Arc::new(MockEventStore::new());
 
         // Envelope with event type that doesn't match any handler
         let envelope = test_envelope("Unknown.Event", "Unknown");
-        let ctx = ReactorContext::new(Arc::clone(&store), envelope.clone(), 10);
+        let ctx = PolicyContext::new(Arc::clone(&store), envelope.clone(), 10);
 
         // Should succeed (no-op for unmatched events)
         let result =
-            <TestReactor as Reactor<MockEventStore>>::handle(&TestReactor, &envelope, &ctx).await;
+            <TestPolicy as Policy<MockEventStore>>::handle(&TestPolicy, &envelope, &ctx).await;
         assert!(result.is_ok());
     }
 
-    // Test: reactor! with doc comment
-    crate::reactor! {
-        /// A documented reactor for testing.
-        DocReactor {
+    // Test: policy! with doc comment
+    crate::policy! {
+        /// A documented policy for testing.
+        DocPolicy {
             on FooCreatedEvent |_event, _ctx| {
                 Ok(())
             },
@@ -1085,14 +1397,14 @@ mod tests {
     }
 
     #[test]
-    fn test_reactor_macro_with_doc_comment() {
-        let reactor: &dyn Reactor<MockEventStore> = &DocReactor;
-        assert_eq!(reactor.name(), "DocReactor");
+    fn test_policy_macro_with_doc_comment() {
+        let policy: &dyn Policy<MockEventStore> = &DocPolicy;
+        assert_eq!(policy.name(), "DocPolicy");
     }
 
-    // Test: reactor! with pub visibility
-    crate::reactor! {
-        pub PubReactor {
+    // Test: policy! with pub visibility
+    crate::policy! {
+        pub PubPolicy {
             on FooCreatedEvent |_event, _ctx| {
                 Ok(())
             },
@@ -1100,24 +1412,26 @@ mod tests {
     }
 
     #[test]
-    fn test_reactor_macro_with_visibility() {
-        let reactor: &dyn Reactor<MockEventStore> = &PubReactor;
-        assert_eq!(reactor.name(), "PubReactor");
+    fn test_policy_macro_with_visibility() {
+        let policy: &dyn Policy<MockEventStore> = &PubPolicy;
+        assert_eq!(policy.name(), "PubPolicy");
     }
 
-    // Test: reactor! registers with ReactorRunner
+    // Test: policy! registers with PolicyRunner
     #[test]
-    fn test_reactor_macro_with_runner() {
+    fn test_policy_macro_with_runner() {
         let store = Arc::new(MockEventStore::new());
-        let runner = ReactorRunner::new(store).register(Arc::new(TestReactor));
-        assert_eq!(runner.reactors().len(), 1);
-        assert_eq!(runner.reactors()[0].name(), "TestReactor");
+        let cp = test_checkpoint_store();
+        let runner = PolicyRunner::new(store, cp).register(Arc::new(TestPolicy));
+        assert_eq!(runner.policies().len(), 1);
+        assert_eq!(runner.policies()[0].name(), "TestPolicy");
     }
 
     #[tokio::test]
-    async fn test_reactor_macro_process_event_via_runner() {
+    async fn test_policy_macro_process_event_via_runner() {
         let store = Arc::new(MockEventStore::new());
-        let runner = ReactorRunner::new(Arc::clone(&store)).register(Arc::new(TestReactor));
+        let cp = test_checkpoint_store();
+        let runner = PolicyRunner::new(Arc::clone(&store), cp).register(Arc::new(TestPolicy));
 
         let mut envelope = test_envelope("Foo.Created", "Foo");
         envelope.event_data = serde_json::json!({"name": "via_runner"});
@@ -1126,9 +1440,9 @@ mod tests {
         assert_eq!(handled, 1);
     }
 
-    // Test: reactor! with handler that accesses event fields
-    crate::reactor! {
-        FieldAccessReactor {
+    // Test: policy! with handler that accesses event fields
+    crate::policy! {
+        FieldAccessPolicy {
             on FooCreatedEvent |event, _ctx| {
                 assert_eq!(event.name, "expected_name");
                 Ok(())
@@ -1137,16 +1451,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_reactor_macro_handler_accesses_event_fields() {
+    async fn test_policy_macro_handler_accesses_event_fields() {
         let store = Arc::new(MockEventStore::new());
 
         let mut envelope = test_envelope("Foo.Created", "Foo");
         envelope.event_data = serde_json::json!({"name": "expected_name"});
 
-        let ctx = ReactorContext::new(Arc::clone(&store), envelope.clone(), 10);
+        let ctx = PolicyContext::new(Arc::clone(&store), envelope.clone(), 10);
 
-        let result = <FieldAccessReactor as Reactor<MockEventStore>>::handle(
-            &FieldAccessReactor,
+        let result = <FieldAccessPolicy as Policy<MockEventStore>>::handle(
+            &FieldAccessPolicy,
             &envelope,
             &ctx,
         )
@@ -1154,9 +1468,9 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    // Test: reactor! with handler that accesses ctx
-    crate::reactor! {
-        CtxAccessReactor {
+    // Test: policy! with handler that accesses ctx
+    crate::policy! {
+        CtxAccessPolicy {
             on FooCreatedEvent |_event, ctx| {
                 assert_eq!(ctx.cascade_depth(), 0);
                 Ok(())
@@ -1165,26 +1479,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_reactor_macro_handler_accesses_ctx() {
+    async fn test_policy_macro_handler_accesses_ctx() {
         let store = Arc::new(MockEventStore::new());
 
         let mut envelope = test_envelope("Foo.Created", "Foo");
         envelope.event_data = serde_json::json!({"name": "test"});
 
-        let ctx = ReactorContext::new(Arc::clone(&store), envelope.clone(), 10);
+        let ctx = PolicyContext::new(Arc::clone(&store), envelope.clone(), 10);
 
-        let result = <CtxAccessReactor as Reactor<MockEventStore>>::handle(
-            &CtxAccessReactor,
-            &envelope,
-            &ctx,
-        )
-        .await;
+        let result =
+            <CtxAccessPolicy as Policy<MockEventStore>>::handle(&CtxAccessPolicy, &envelope, &ctx)
+                .await;
         assert!(result.is_ok());
     }
 
-    // Test: reactor! with async handler that loads and commits
-    crate::reactor! {
-        AsyncReactor {
+    // Test: policy! with async handler that loads and commits
+    crate::policy! {
+        AsyncPolicy {
             on FooCreatedEvent |_event, ctx| {
                 // Create a new aggregate reacting to the event
                 let id = crate::EntityId::new();
@@ -1198,16 +1509,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_reactor_macro_async_handler() {
+    async fn test_policy_macro_async_handler() {
         let store = Arc::new(MockEventStore::new());
 
         let mut envelope = test_envelope("Foo.Created", "Foo");
         envelope.event_data = serde_json::json!({"name": "hello"});
 
-        let ctx = ReactorContext::new(Arc::clone(&store), envelope.clone(), 10);
+        let ctx = PolicyContext::new(Arc::clone(&store), envelope.clone(), 10);
 
         let result =
-            <AsyncReactor as Reactor<MockEventStore>>::handle(&AsyncReactor, &envelope, &ctx).await;
+            <AsyncPolicy as Policy<MockEventStore>>::handle(&AsyncPolicy, &envelope, &ctx).await;
         assert!(result.is_ok());
 
         // Verify the aggregate was committed
@@ -1219,9 +1530,9 @@ mod tests {
         assert_eq!(meta.causation_id, Some(envelope.id));
     }
 
-    // Test: reactor! multiple handlers route correctly
-    crate::reactor! {
-        RoutingReactor {
+    // Test: policy! multiple handlers route correctly
+    crate::policy! {
+        RoutingPolicy {
             on FooCreatedEvent |_event, ctx| {
                 let id = crate::EntityId::new();
                 let mut agg = AggregateRoot::<SimpleTestEntity>::new(id);
@@ -1243,17 +1554,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_reactor_macro_routes_to_correct_async_handler() {
+    async fn test_policy_macro_routes_to_correct_async_handler() {
         let store = Arc::new(MockEventStore::new());
 
         // Send FooUpdatedEvent — should go to the second handler
         let mut envelope = test_envelope("Foo.Updated", "Foo");
         envelope.event_data = serde_json::json!({"value": 7});
 
-        let ctx = ReactorContext::new(Arc::clone(&store), envelope.clone(), 10);
+        let ctx = PolicyContext::new(Arc::clone(&store), envelope.clone(), 10);
 
         let result =
-            <RoutingReactor as Reactor<MockEventStore>>::handle(&RoutingReactor, &envelope, &ctx)
+            <RoutingPolicy as Policy<MockEventStore>>::handle(&RoutingPolicy, &envelope, &ctx)
                 .await;
         assert!(result.is_ok());
 

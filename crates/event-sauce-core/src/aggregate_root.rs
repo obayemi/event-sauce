@@ -224,7 +224,7 @@ impl<A: Aggregate> AggregateRoot<A> {
     ///
     /// Like [`apply()`](Self::apply), but attaches metadata to the pending
     /// event. At commit time, the metadata merges into `EventEnvelope::metadata`.
-    /// Used by the reactor system to propagate causation tracking.
+    /// Used by the policy system to propagate causation tracking.
     ///
     /// # Errors
     ///
@@ -247,7 +247,7 @@ impl<A: Aggregate> AggregateRoot<A> {
 
     /// Sets metadata on all pending events that don't already have metadata.
     ///
-    /// Used by `ReactorContext::commit()` to inject causation tracking
+    /// Used by `PolicyContext::commit()` to inject causation tracking
     /// into pending events before delegating to the event store.
     pub(crate) fn set_pending_metadata(&mut self, metadata: &EventMetadata) {
         for pe in &mut self.pending_events {

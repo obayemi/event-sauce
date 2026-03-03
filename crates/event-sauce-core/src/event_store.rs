@@ -264,6 +264,33 @@ pub trait EventStore: Send + Sync {
         None
     }
 
+    /// Creates a [`PolicyRunner`](crate::PolicyRunner) pre-configured with this event store.
+    ///
+    /// The checkpoint store is auto-wired from this store's
+    /// [`checkpoint_store()`](Self::checkpoint_store). Returns an error if no
+    /// checkpoint store is configured, since policies require checkpoint support.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let runner = store.policy_runner()?
+    ///     .register(Arc::new(MyPolicy));
+    /// runner.process_pending().await?;
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::InvalidState` if no checkpoint store is configured.
+    fn policy_runner(self: &Arc<Self>) -> Result<crate::PolicyRunner<Self>>
+    where
+        Self: Sized + 'static,
+    {
+        let cp = self.checkpoint_store().ok_or_else(|| {
+            crate::Error::invalid_state("PolicyRunner requires a checkpoint store")
+        })?;
+        Ok(crate::PolicyRunner::new(Arc::clone(self), cp))
+    }
+
     /// Creates a subscription builder pre-configured with this event store.
     fn subscription_builder(
         self: &std::sync::Arc<Self>,

@@ -3,7 +3,7 @@
 //! This module provides declarative macros that simplify common patterns in event sourcing:
 //! - `command_handler!` - Automatic command method generation
 //! - `projection!` - Declarative projection/read model definition
-//! - `reactor!` - Declarative reactor definition for cross-aggregate event reactions
+//! - `policy!` - Declarative policy definition for cross-aggregate event reactions
 
 /// Generate command handler methods for an aggregate.
 ///
@@ -2287,19 +2287,19 @@ macro_rules! spec {
     };
 }
 
-/// Define a reactor that handles events by issuing commands on other aggregates.
+/// Define a policy that handles events by issuing commands on other aggregates.
 ///
-/// This macro generates a struct implementing [`Reactor<S>`](crate::reactor::Reactor)
+/// This macro generates a struct implementing [`Policy<S>`](crate::policy::Policy)
 /// that routes events to handler closures based on event type. Each handler receives
-/// a deserialized event struct and a [`ReactorContext`](crate::reactor::ReactorContext)
+/// a deserialized event struct and a [`PolicyContext`](crate::policy::PolicyContext)
 /// for loading and committing aggregates with automatic causation tracking.
 ///
 /// # Syntax
 ///
 /// ```ignore
-/// reactor! {
+/// policy! {
 ///     /// Optional doc comment
-///     ReactorName {
+///     PolicyName {
 ///         on EventStruct |event, ctx| {
 ///             // Handle the event
 ///         },
@@ -2319,22 +2319,22 @@ macro_rules! spec {
 ///
 /// # Generated Code
 ///
-/// For `reactor! { MyReactor { on FooEvent |e, ctx| { ... }, on BarEvent |e, ctx| { ... } } }`:
+/// For `policy! { MyPolicy { on FooEvent |e, ctx| { ... }, on BarEvent |e, ctx| { ... } } }`:
 ///
-/// 1. `struct MyReactor;`
-/// 2. `impl<S: EventStore + 'static> Reactor<S> for MyReactor` with:
-///    - `name()` → `"MyReactor"`
+/// 1. `struct MyPolicy;`
+/// 2. `impl<S: EventStore + 'static> Policy<S> for MyPolicy` with:
+///    - `name()` → `"MyPolicy"`
 ///    - `event_filter()` → `EventFilter::any_of_event_types([FooEvent::EVENT_TYPE, BarEvent::EVENT_TYPE])`
 ///    - `handle()` → match on `event_type`, deserialize `event_data` to the struct, call handler
 ///
 /// # Examples
 ///
 /// ```ignore
-/// use event_sauce::reactor;
+/// use event_sauce::policy;
 ///
-/// reactor! {
+/// policy! {
 ///     /// Reacts to user kicks by removing them from groups.
-///     KickUserReactor {
+///     KickUserPolicy {
 ///         on KickedUserEvent |event, ctx| {
 ///             let mut group = ctx.load(event.group_id).await?;
 ///             group.remove_user(event.user_id, "kicked")?;
@@ -2344,11 +2344,11 @@ macro_rules! spec {
 /// }
 ///
 /// // Register with a runner:
-/// let runner = ReactorRunner::new(store)
-///     .register(Arc::new(KickUserReactor));
+/// let runner = PolicyRunner::new(store, checkpoint_store)
+///     .register(Arc::new(KickUserPolicy));
 /// ```
 #[macro_export]
-macro_rules! reactor {
+macro_rules! policy {
     // Entry point: with doc comments
     (
         $(#[$meta:meta])*
@@ -2362,7 +2362,7 @@ macro_rules! reactor {
         $vis struct $name;
 
         #[async_trait::async_trait]
-        impl<S: $crate::EventStore + 'static> $crate::reactor::Reactor<S> for $name {
+        impl<S: $crate::EventStore + 'static> $crate::policy::Policy<S> for $name {
             fn name(&self) -> &str {
                 stringify!($name)
             }
@@ -2376,7 +2376,7 @@ macro_rules! reactor {
             async fn handle(
                 &self,
                 event: &$crate::EventEnvelope,
-                ctx: &$crate::reactor::ReactorContext<S>,
+                ctx: &$crate::policy::PolicyContext<S>,
             ) -> $crate::Result<()> {
                 $(
                     if event.event_type == <$event_struct as $crate::EventType>::EVENT_TYPE {

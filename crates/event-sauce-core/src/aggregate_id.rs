@@ -11,7 +11,7 @@ use crate::{Aggregate, EntityId};
 
 /// A typed aggregate ID that carries type information about its aggregate.
 ///
-/// Implementing this trait allows `ReactorContext::load()` to infer the
+/// Implementing this trait allows `PolicyContext::load()` to infer the
 /// aggregate type automatically from the ID type.
 ///
 /// # Examples

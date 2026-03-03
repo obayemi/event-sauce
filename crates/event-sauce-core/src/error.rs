@@ -88,7 +88,7 @@ pub enum Error {
         aggregate_id: String,
     },
 
-    /// Reactor cascade depth exceeded.
+    /// Policy cascade depth exceeded.
     ///
     /// Occurs when an event reaction chain exceeds the configured maximum
     /// cascade depth, indicating a potential infinite loop.
