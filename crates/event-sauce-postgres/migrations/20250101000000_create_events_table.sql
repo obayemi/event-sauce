@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS snapshots (
     -- Snapshot data
     snapshot_version BIGINT NOT NULL,
     snapshot_data JSONB NOT NULL,
+    is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
 
     -- Audit
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),

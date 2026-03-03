@@ -343,9 +343,47 @@ async fn test_delete_with_snapshots() {
     let mut deleted = project.archive_project("done".to_string()).unwrap();
     repo.save_deleted(&mut deleted).await.unwrap();
 
-    // Verify load_any detects deletion during replay
+    // load_any should return Deleted (from deleted snapshot)
     let loaded = repo.load_any(project_id).await.unwrap();
     assert!(loaded.is_deleted());
+    let loaded_deleted = loaded.into_deleted().unwrap();
+    assert!(loaded_deleted.archived);
+    assert_eq!(loaded_deleted.name, "Renamed 2");
+}
+
+#[tokio::test]
+async fn test_delete_snapshot_round_trip() {
+    use ProjectDeleteCommands;
+
+    let store = create_store_with_snapshots();
+    let repo = store.repository::<Project>();
+
+    // Full lifecycle: create → rename → delete → load
+    let mut project = Project::create_project("Snapshot Test".to_string()).unwrap();
+    repo.save(&mut project).await.unwrap();
+
+    project
+        .rename_project("Snapshot Renamed".to_string())
+        .unwrap();
+    repo.save(&mut project).await.unwrap();
+
+    let project_id = project.entity_id();
+    let mut deleted = project.archive_project("done forever".to_string()).unwrap();
+    repo.save_deleted(&mut deleted).await.unwrap();
+
+    // load_any() should return the deleted state efficiently (from snapshot)
+    let loaded = repo.load_any(project_id).await.unwrap();
+    assert!(loaded.is_deleted());
+    let loaded_deleted = loaded.into_deleted().unwrap();
+    assert!(loaded_deleted.archived);
+
+    // load_deleted() should also work
+    let loaded_deleted2 = repo.load_deleted(project_id).await.unwrap();
+    assert!(loaded_deleted2.archived);
+
+    // load() should still error
+    let result = repo.load(project_id).await;
+    assert!(result.is_err());
 }
 
 #[tokio::test]

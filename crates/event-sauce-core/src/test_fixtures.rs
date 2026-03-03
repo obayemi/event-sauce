@@ -453,12 +453,12 @@ mod tests {
     #[tokio::test]
     async fn mock_event_store_save_snapshot_succeeds() {
         let store = MockEventStore::new();
-        let snapshot = crate::Snapshot {
-            aggregate_id: uuid::Uuid::new_v4(),
-            aggregate_type: "Test".into(),
-            snapshot_version: crate::AggregateVersion::new(1),
-            snapshot_data: serde_json::json!({}),
-        };
+        let snapshot = crate::Snapshot::new(
+            uuid::Uuid::new_v4(),
+            "Test",
+            crate::AggregateVersion::new(1),
+            serde_json::json!({}),
+        );
         store.save_snapshot(snapshot).await.unwrap();
     }
 

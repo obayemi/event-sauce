@@ -109,6 +109,22 @@ impl<A: Aggregate> DeletedAggregateRoot<A> {
         }
     }
 
+    /// Creates a deleted aggregate root from a snapshot (no pending events).
+    ///
+    /// Used by `load_any()` when loading a snapshot with `is_deleted = true`.
+    pub(crate) fn from_snapshot(
+        state: A::DeletedState,
+        entity_id: EntityId,
+        version: AggregateVersion,
+    ) -> Self {
+        Self {
+            state,
+            entity_id,
+            version,
+            pending_events: Vec::new(),
+        }
+    }
+
     /// Returns the aggregate type name.
     #[must_use]
     pub fn aggregate_type() -> crate::AggregateType {
@@ -322,6 +338,21 @@ mod tests {
         assert_eq!(cloned.entity_id(), deleted.entity_id());
         assert_eq!(cloned.version(), deleted.version());
         assert_eq!(cloned.state().value, deleted.state().value);
+    }
+
+    #[test]
+    fn test_deleted_aggregate_root_from_snapshot() {
+        let id = EntityId::new();
+        let entity = SimpleTestEntity { id, value: 77 };
+        let deleted = DeletedAggregateRoot::<SimpleTestEntity>::from_snapshot(
+            entity,
+            id,
+            AggregateVersion::new(10),
+        );
+        assert_eq!(deleted.entity_id(), id);
+        assert_eq!(deleted.version(), AggregateVersion::new(10));
+        assert_eq!(deleted.state().value, 77);
+        assert!(deleted.pending_events().is_empty());
     }
 
     #[test]

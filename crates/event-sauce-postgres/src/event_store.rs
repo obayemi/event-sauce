@@ -319,6 +319,7 @@ impl PostgresEventStore {
                 aggregate_type VARCHAR(255) NOT NULL,
                 snapshot_version BIGINT NOT NULL,
                 snapshot_data JSONB NOT NULL,
+                is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
                 created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
                 PRIMARY KEY (aggregate_id, aggregate_type)
             )"
@@ -695,10 +696,10 @@ impl EventStore for PostgresEventStore {
     async fn save_snapshot(&self, snapshot: Snapshot) -> Result<()> {
         let snapshots_table = self.qualify_table("snapshots");
         let query = format!(
-            "INSERT INTO {snapshots_table} (aggregate_id, aggregate_type, snapshot_version, snapshot_data)
-             VALUES ($1, $2, $3, $4)
+            "INSERT INTO {snapshots_table} (aggregate_id, aggregate_type, snapshot_version, snapshot_data, is_deleted)
+             VALUES ($1, $2, $3, $4, $5)
              ON CONFLICT (aggregate_id, aggregate_type)
-             DO UPDATE SET snapshot_version = $3, snapshot_data = $4, created_at = NOW()"
+             DO UPDATE SET snapshot_version = $3, snapshot_data = $4, is_deleted = $5, created_at = NOW()"
         );
 
         let snapshot_version_i64 = snapshot.snapshot_version.as_i64();
@@ -707,6 +708,7 @@ impl EventStore for PostgresEventStore {
             .bind(snapshot.aggregate_type.as_str())
             .bind(snapshot_version_i64)
             .bind(&snapshot.snapshot_data)
+            .bind(snapshot.is_deleted)
             .execute(&self.pool)
             .await
             .map_err(|e| Error::custom(format!("Failed to save snapshot: {e}")))?;
@@ -717,7 +719,7 @@ impl EventStore for PostgresEventStore {
     async fn load_snapshot(&self, stream_id: StreamId) -> Result<Option<Snapshot>> {
         let snapshots_table = self.qualify_table("snapshots");
         let query = format!(
-            "SELECT aggregate_id, aggregate_type, snapshot_version, snapshot_data
+            "SELECT aggregate_id, aggregate_type, snapshot_version, snapshot_data, is_deleted
              FROM {snapshots_table}
              WHERE aggregate_id = $1 AND aggregate_type = $2"
         );
@@ -837,6 +839,7 @@ struct SnapshotRow {
     aggregate_type: String,
     snapshot_version: i64,
     snapshot_data: serde_json::Value,
+    is_deleted: bool,
 }
 
 impl From<SnapshotRow> for Snapshot {
@@ -848,6 +851,7 @@ impl From<SnapshotRow> for Snapshot {
             aggregate_type: event_sauce_core::AggregateType::from_owned(row.aggregate_type),
             snapshot_version,
             snapshot_data: row.snapshot_data,
+            is_deleted: row.is_deleted,
         }
     }
 }

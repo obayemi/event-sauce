@@ -120,6 +120,8 @@ impl From<Position> for i64 {
 /// Snapshot of an aggregate's state.
 ///
 /// Used to optimize aggregate reconstruction by storing periodic state snapshots.
+/// For deleted aggregates, `is_deleted` is `true` and `snapshot_data` contains
+/// the serialized `DeletedState` rather than the aggregate itself.
 ///
 /// # Examples
 ///
@@ -134,6 +136,7 @@ impl From<Position> for i64 {
 ///     AggregateVersion::new(100),
 ///     json!({"email": "user@example.com", "status": "active"}),
 /// );
+/// assert!(!snapshot.is_deleted);
 /// ```
 #[derive(Debug, Clone)]
 pub struct Snapshot {
@@ -145,10 +148,12 @@ pub struct Snapshot {
     pub snapshot_version: AggregateVersion,
     /// Serialized entity state.
     pub snapshot_data: serde_json::Value,
+    /// Whether this snapshot represents a deleted aggregate.
+    pub is_deleted: bool,
 }
 
 impl Snapshot {
-    /// Creates a new snapshot.
+    /// Creates a new snapshot for an active aggregate.
     #[must_use]
     pub fn new(
         aggregate_id: Uuid,
@@ -161,6 +166,26 @@ impl Snapshot {
             aggregate_type: aggregate_type.into(),
             snapshot_version,
             snapshot_data,
+            is_deleted: false,
+        }
+    }
+
+    /// Creates a new snapshot for a deleted aggregate.
+    ///
+    /// The `snapshot_data` should contain the serialized `A::DeletedState`.
+    #[must_use]
+    pub fn new_deleted(
+        aggregate_id: Uuid,
+        aggregate_type: impl Into<AggregateType>,
+        snapshot_version: AggregateVersion,
+        snapshot_data: serde_json::Value,
+    ) -> Self {
+        Self {
+            aggregate_id,
+            aggregate_type: aggregate_type.into(),
+            snapshot_version,
+            snapshot_data,
+            is_deleted: true,
         }
     }
 }
@@ -448,8 +473,9 @@ pub trait EventStore: Send + Sync {
     /// This method works like [`commit()`](Self::commit), but operates on a
     /// `DeletedAggregateRoot<A>` instead of `AggregateRoot<A>`.
     ///
-    /// The snapshot for a deleted aggregate stores the `DeletedState`, not `A`,
-    /// and is encrypted if the aggregate uses encryption.
+    /// The snapshot for a deleted aggregate stores the serialized `DeletedState`
+    /// with `is_deleted = true`, so `load_any()` can deserialize it correctly.
+    /// Snapshots are encrypted if the aggregate uses encryption.
     ///
     /// # Errors
     ///
@@ -514,16 +540,71 @@ pub trait EventStore: Send + Sync {
         }
 
         self.append(
-            StreamId::new(aggregate_type, aggregate_id),
+            StreamId::new(aggregate_type.clone(), aggregate_id),
             envelopes.clone(),
             expected_version,
         )
         .await?;
 
-        // No snapshot for deleted aggregates: the delete event must be replayed
-        // during load_any() to detect the deleted state. Saving a snapshot here
-        // would serialize A::DeletedState but load would deserialize as A,
-        // causing type mismatch or masking the deletion.
+        // Create snapshot for deleted aggregate (state never changes, ideal for caching)
+        let config = self.snapshot_config();
+        let strategy = config.strategy_for_type(aggregate_type.as_str());
+        let current_version = aggregate.version();
+
+        if strategy.should_snapshot(current_version) {
+            match serde_json::to_value(aggregate.state()) {
+                Ok(mut snapshot_data) => {
+                    // Encrypt snapshot data for encrypted or field-encrypted aggregates
+                    if A::is_encrypted() || A::Event::has_any_encrypted_fields() {
+                        if let (Some(key_store), Some(provider)) =
+                            (self.crypto_key_store(), self.crypto_provider())
+                        {
+                            if let Ok(Some(crypto_key)) = key_store.get_key(aggregate_id).await {
+                                match crate::crypto::encrypt_value(
+                                    provider,
+                                    &crypto_key,
+                                    &snapshot_data,
+                                ) {
+                                    Ok(encrypted) => snapshot_data = encrypted,
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            aggregate_type = %aggregate_type,
+                                            aggregate_id = %aggregate_id,
+                                            error = %e,
+                                            "Failed to encrypt deleted snapshot data"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    let snapshot = Snapshot::new_deleted(
+                        aggregate_id,
+                        aggregate_type.clone(),
+                        current_version,
+                        snapshot_data,
+                    );
+
+                    if let Err(e) = self.save_snapshot(snapshot).await {
+                        tracing::warn!(
+                            aggregate_type = %aggregate_type,
+                            aggregate_id = %aggregate_id,
+                            error = %e,
+                            "Failed to save deleted snapshot"
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        aggregate_type = %aggregate_type,
+                        aggregate_id = %aggregate_id,
+                        error = %e,
+                        "Failed to serialize deleted state for snapshot"
+                    );
+                }
+            }
+        }
 
         aggregate.clear_pending_events();
 
@@ -633,6 +714,20 @@ where
     if config.use_snapshots_on_load() {
         if let Some(mut snapshot) = store.load_snapshot(stream_id.clone()).await? {
             decrypt_event_data(store, crypto_key.as_deref(), &mut snapshot.snapshot_data)?;
+
+            // Deleted snapshot: deserialize as DeletedState and return immediately
+            if snapshot.is_deleted {
+                let deleted_state: A::DeletedState = serde_json::from_value(snapshot.snapshot_data)
+                    .map_err(|e| {
+                        crate::Error::custom(format!("Failed to deserialize deleted snapshot: {e}"))
+                    })?;
+                let entity_id = EntityId::from(snapshot.aggregate_id);
+                return Ok(Loaded::Deleted(DeletedAggregateRoot::from_snapshot(
+                    deleted_state,
+                    entity_id,
+                    snapshot.snapshot_version,
+                )));
+            }
 
             let entity: A = serde_json::from_value(snapshot.snapshot_data).map_err(|e| {
                 crate::Error::custom(format!("Failed to deserialize snapshot entity: {e}"))
@@ -863,6 +958,26 @@ mod tests {
         assert_eq!(snapshot.aggregate_type, "Counter");
         assert_eq!(snapshot.snapshot_version, AggregateVersion::new(10));
         assert_eq!(snapshot.snapshot_data, snapshot_data);
+        assert!(!snapshot.is_deleted);
+    }
+
+    #[test]
+    fn test_snapshot_new_deleted() {
+        let aggregate_id = Uuid::new_v4();
+        let snapshot_data = serde_json::json!({"value": -1, "archived": true});
+
+        let snapshot = Snapshot::new_deleted(
+            aggregate_id,
+            "Counter".to_string(),
+            AggregateVersion::new(5),
+            snapshot_data.clone(),
+        );
+
+        assert_eq!(snapshot.aggregate_id, aggregate_id);
+        assert_eq!(snapshot.aggregate_type, "Counter");
+        assert_eq!(snapshot.snapshot_version, AggregateVersion::new(5));
+        assert_eq!(snapshot.snapshot_data, snapshot_data);
+        assert!(snapshot.is_deleted);
     }
 
     // Tests for default trait implementations (including crypto accessors)
@@ -1869,7 +1984,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_commit_deleted_skips_snapshot() {
+    async fn test_commit_deleted_saves_snapshot() {
         let store = CommitTestStore::new(SnapshotConfig::always());
         let id = crate::EntityId::new();
 
@@ -1884,9 +1999,13 @@ mod tests {
 
         store.commit_deleted(&mut deleted).await.unwrap();
 
-        // Deleted aggregates should NOT save snapshots — the delete event
-        // must be replayed during load to detect the deleted state.
-        assert_eq!(store.save_snapshot_count(), 0);
+        assert_eq!(store.save_snapshot_count(), 1);
+
+        let stream_id = StreamId::new("DeletableEntity", id.as_uuid());
+        let snapshots = store.snapshots.lock().unwrap();
+        let snapshot = snapshots.get(&stream_id).expect("Snapshot should exist");
+        assert!(snapshot.is_deleted);
+        assert_eq!(snapshot.snapshot_version, AggregateVersion::new(2));
     }
 
     #[tokio::test]
@@ -1946,5 +2065,63 @@ mod tests {
         let deleted = loaded.into_deleted().unwrap();
         assert_eq!(deleted.state().value, -1);
         assert_eq!(deleted.version(), AggregateVersion::new(2));
+    }
+
+    #[tokio::test]
+    async fn test_load_any_returns_deleted_from_deleted_snapshot() {
+        let store = CommitTestStore::new(SnapshotConfig::always());
+        let id = crate::EntityId::new();
+
+        // Pre-save a deleted snapshot
+        let deleted_entity = DeletableEntity { id, value: -1 };
+        let snapshot_data = serde_json::to_value(&deleted_entity).unwrap();
+        let stream_id = StreamId::new("DeletableEntity", id.as_uuid());
+        let snapshot = Snapshot::new_deleted(
+            id.as_uuid(),
+            "DeletableEntity".to_string(),
+            AggregateVersion::new(3),
+            snapshot_data,
+        );
+        store.snapshots.lock().unwrap().insert(stream_id, snapshot);
+
+        let loaded = load_any::<_, DeletableEntity>(&store, id).await.unwrap();
+        assert!(loaded.is_deleted());
+        let deleted = loaded.into_deleted().unwrap();
+        assert_eq!(deleted.state().value, -1);
+        assert_eq!(deleted.entity_id(), id);
+        assert_eq!(deleted.version(), AggregateVersion::new(3));
+    }
+
+    #[tokio::test]
+    async fn test_load_any_deleted_snapshot_round_trip() {
+        let store = CommitTestStore::new(SnapshotConfig::always());
+        let id = crate::EntityId::new();
+
+        // Create, then delete
+        let mut agg = AggregateRoot::<DeletableEntity>::new(id);
+        agg.apply(DeletableEvent::Created { value: 42 }).unwrap();
+
+        let mut deleted = agg
+            .apply_delete(DeletableEvent::Deleted {
+                reason: "done".to_string(),
+            })
+            .unwrap();
+
+        store.commit_deleted(&mut deleted).await.unwrap();
+
+        // Verify snapshot was saved as deleted
+        let stream_id = StreamId::new("DeletableEntity", id.as_uuid());
+        {
+            let snapshots = store.snapshots.lock().unwrap();
+            let snapshot = snapshots.get(&stream_id).expect("Snapshot should exist");
+            assert!(snapshot.is_deleted);
+        }
+
+        // Load — should come from deleted snapshot
+        let loaded = load_any::<_, DeletableEntity>(&store, id).await.unwrap();
+        assert!(loaded.is_deleted());
+        let loaded_deleted = loaded.into_deleted().unwrap();
+        assert_eq!(loaded_deleted.state().value, -1);
+        assert_eq!(loaded_deleted.version(), AggregateVersion::new(2));
     }
 }

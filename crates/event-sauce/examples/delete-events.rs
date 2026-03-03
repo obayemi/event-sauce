@@ -343,12 +343,47 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  - Attempting to apply events to a deleted aggregate is a compile error");
     println!("  - This is enforced at compile time, not runtime!");
 
+    // === Snapshot behavior for deleted aggregates ===
+    println!("\n=== Deleted Aggregate Snapshots ===\n");
+
+    let snapshot_store = Arc::new(
+        InMemoryEventStore::builder()
+            .snapshot_config(event_sauce_core::SnapshotConfig::always())
+            .build(),
+    );
+    let snapshot_repo = snapshot_store.repository::<Subscription>();
+
+    let mut sub3 = Subscription::start_subscription("team".to_string())?;
+    snapshot_repo.save(&mut sub3).await?;
+    let sub3_id = sub3.entity_id();
+    println!(
+        "  Created subscription with snapshots: plan='{}'",
+        sub3.plan
+    );
+
+    let mut deleted3 = sub3.cancel_subscription("migrating".to_string())?;
+    snapshot_repo.save_deleted(&mut deleted3).await?;
+    println!("  Deleted and snapshotted (is_deleted=true)");
+
+    let loaded3 = snapshot_repo.load_any(sub3_id).await?;
+    match loaded3 {
+        event_sauce_core::Loaded::Active(_) => println!("    ERROR: Should be Deleted!"),
+        event_sauce_core::Loaded::Deleted(d) => {
+            println!(
+                "  Loaded from deleted snapshot: plan='{}', active={}",
+                d.plan, d.active
+            );
+        }
+    }
+    println!("  Deleted aggregates are snapshotted efficiently — no event replay needed!");
+
     println!("\n  Demo complete!");
     println!("\n  Key Takeaways:");
     println!("   - @delete marks events as delete transitions");
     println!("   - @delete @actor(Type) adds permission validation");
     println!("   - DeletedAggregateRoot is a terminal type-state");
     println!("   - load_any() detects deleted aggregates during replay");
+    println!("   - Deleted aggregates are snapshotted with is_deleted flag");
     println!("   - No runtime checks needed — the type system enforces correctness");
 
     Ok(())
