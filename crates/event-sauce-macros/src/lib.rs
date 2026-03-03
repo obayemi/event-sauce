@@ -15,7 +15,6 @@ use proc_macro::TokenStream;
 use quote::quote;
 use syn::{parse_macro_input, Attribute, Data, DeriveInput, Fields, Ident, Meta};
 
-
 /// Attributes for the #[aggregate(...)] container attribute
 #[derive(Debug, FromMeta)]
 struct AggregateAttrs {

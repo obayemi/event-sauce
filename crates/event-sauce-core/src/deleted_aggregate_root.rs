@@ -245,6 +245,7 @@ mod tests {
         let pending = vec![PendingEvent {
             event: SimpleTestEvent::Updated { value: 0 },
             actor_id: None,
+            metadata: None,
         }];
         let deleted = DeletedAggregateRoot::<SimpleTestEntity>::from_delete_with_pending(
             entity,
@@ -264,6 +265,7 @@ mod tests {
         let pending = vec![PendingEvent {
             event: SimpleTestEvent::Updated { value: 0 },
             actor_id: None,
+            metadata: None,
         }];
         let mut deleted = DeletedAggregateRoot::<SimpleTestEntity>::from_delete_with_pending(
             entity,
@@ -285,6 +287,7 @@ mod tests {
         let pending = vec![PendingEvent {
             event: SimpleTestEvent::Updated { value: 0 },
             actor_id: Some(actor_id),
+            metadata: None,
         }];
         let deleted = DeletedAggregateRoot::<SimpleTestEntity>::from_delete_with_pending(
             entity,

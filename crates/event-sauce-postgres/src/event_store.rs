@@ -812,6 +812,7 @@ impl From<EventRow> for EventEnvelope {
                 Some(event_sauce_core::EventMetadata {
                     correlation_id: row.correlation_id,
                     causation_id: row.causation_id,
+                    causation_chain: Vec::new(),
                     timestamp: row.created_at,
                     additional: row.metadata,
                 })

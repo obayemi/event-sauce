@@ -88,6 +88,18 @@ pub enum Error {
         aggregate_id: String,
     },
 
+    /// Reactor cascade depth exceeded.
+    ///
+    /// Occurs when an event reaction chain exceeds the configured maximum
+    /// cascade depth, indicating a potential infinite loop.
+    #[error("Cascade depth exceeded: {depth} > {max_depth}")]
+    CascadeDepthExceeded {
+        /// The current cascade depth.
+        depth: usize,
+        /// The maximum allowed cascade depth.
+        max_depth: usize,
+    },
+
     /// Generic error with custom message.
     #[error("{0}")]
     Custom(String),
@@ -186,6 +198,21 @@ impl Error {
             aggregate_type: aggregate_type.into(),
             aggregate_id: aggregate_id.into(),
         }
+    }
+
+    /// Creates a cascade depth exceeded error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use event_sauce_core::Error;
+    ///
+    /// let error = Error::cascade_depth_exceeded(11, 10);
+    /// assert!(error.is_cascade_depth_exceeded());
+    /// ```
+    #[must_use]
+    pub fn cascade_depth_exceeded(depth: usize, max_depth: usize) -> Self {
+        Self::CascadeDepthExceeded { depth, max_depth }
     }
 
     /// Creates a custom error.
@@ -293,6 +320,21 @@ impl Error {
     #[must_use]
     pub fn is_aggregate_deleted(&self) -> bool {
         matches!(self, Self::AggregateDeleted { .. })
+    }
+
+    /// Returns true if this is a cascade depth exceeded error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use event_sauce_core::Error;
+    ///
+    /// let error = Error::cascade_depth_exceeded(11, 10);
+    /// assert!(error.is_cascade_depth_exceeded());
+    /// ```
+    #[must_use]
+    pub fn is_cascade_depth_exceeded(&self) -> bool {
+        matches!(self, Self::CascadeDepthExceeded { .. })
     }
 }
 
@@ -526,11 +568,41 @@ mod tests {
         assert!(!error.is_serialization());
         assert!(!error.is_key_not_found());
         assert!(!error.is_encryption());
+        assert!(!error.is_cascade_depth_exceeded());
 
         let message = error.to_string();
         assert!(message.contains("Aggregate deleted"));
         assert!(message.contains("User"));
         assert!(message.contains("user-123"));
+    }
+
+    #[test]
+    fn test_cascade_depth_exceeded_error() {
+        let error = Error::cascade_depth_exceeded(11, 10);
+
+        assert!(error.is_cascade_depth_exceeded());
+        assert!(!error.is_concurrency_conflict());
+        assert!(!error.is_not_found());
+
+        let message = error.to_string();
+        assert!(message.contains("Cascade depth exceeded"));
+        assert!(message.contains("11"));
+        assert!(message.contains("10"));
+    }
+
+    #[test]
+    fn test_cascade_depth_exceeded_fields() {
+        let error = Error::CascadeDepthExceeded {
+            depth: 15,
+            max_depth: 10,
+        };
+
+        if let Error::CascadeDepthExceeded { depth, max_depth } = error {
+            assert_eq!(depth, 15);
+            assert_eq!(max_depth, 10);
+        } else {
+            panic!("Expected CascadeDepthExceeded variant");
+        }
     }
 
     #[test]

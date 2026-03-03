@@ -45,6 +45,14 @@ pub struct EventMetadata {
     /// Causation ID - the event or command that caused this event.
     pub causation_id: Option<Uuid>,
 
+    /// Full causation chain from the root event to the direct parent.
+    ///
+    /// Each entry is the `id` of an ancestor event, ordered from the root
+    /// (first element) to the direct parent (last element). An empty chain
+    /// means this event was not produced by a reactor.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub causation_chain: Vec<Uuid>,
+
     /// When this metadata was created.
     pub timestamp: DateTime<Utc>,
 
@@ -69,6 +77,7 @@ impl EventMetadata {
         Self {
             correlation_id: None,
             causation_id: None,
+            causation_chain: Vec::new(),
             timestamp: Utc::now(),
             additional: None,
         }
@@ -131,6 +140,80 @@ impl EventMetadata {
     pub fn with_additional(mut self, additional: serde_json::Value) -> Self {
         self.additional = Some(additional);
         self
+    }
+
+    /// Sets the causation chain.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use event_sauce_core::EventMetadata;
+    /// use uuid::Uuid;
+    ///
+    /// let chain = vec![Uuid::new_v4(), Uuid::new_v4()];
+    /// let metadata = EventMetadata::new()
+    ///     .with_causation_chain(chain.clone());
+    ///
+    /// assert_eq!(metadata.causation_chain, chain);
+    /// ```
+    #[must_use]
+    pub fn with_causation_chain(mut self, chain: Vec<Uuid>) -> Self {
+        self.causation_chain = chain;
+        self
+    }
+
+    /// Returns the cascade depth (number of ancestors in the chain).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use event_sauce_core::EventMetadata;
+    /// use uuid::Uuid;
+    ///
+    /// let metadata = EventMetadata::new();
+    /// assert_eq!(metadata.cascade_depth(), 0);
+    ///
+    /// let metadata = metadata.with_causation_chain(vec![Uuid::new_v4()]);
+    /// assert_eq!(metadata.cascade_depth(), 1);
+    /// ```
+    #[must_use]
+    pub fn cascade_depth(&self) -> usize {
+        self.causation_chain.len()
+    }
+
+    /// Creates child metadata for a reaction event.
+    ///
+    /// The child metadata inherits the correlation ID (or uses the parent's
+    /// event ID if none), sets the causation ID to the parent event ID,
+    /// and extends the causation chain.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use event_sauce_core::EventMetadata;
+    /// use uuid::Uuid;
+    ///
+    /// let parent_event_id = Uuid::new_v4();
+    /// let parent_metadata = EventMetadata::new()
+    ///     .with_correlation_id(Uuid::new_v4());
+    ///
+    /// let child = parent_metadata.child_metadata(parent_event_id);
+    ///
+    /// assert_eq!(child.causation_id, Some(parent_event_id));
+    /// assert_eq!(child.correlation_id, parent_metadata.correlation_id);
+    /// assert_eq!(child.causation_chain.len(), 1);
+    /// assert_eq!(child.causation_chain[0], parent_event_id);
+    /// ```
+    #[must_use]
+    pub fn child_metadata(&self, parent_event_id: Uuid) -> Self {
+        let correlation_id = self.correlation_id.unwrap_or(parent_event_id);
+        let mut chain = self.causation_chain.clone();
+        chain.push(parent_event_id);
+
+        Self::new()
+            .with_correlation_id(correlation_id)
+            .with_causation_id(parent_event_id)
+            .with_causation_chain(chain)
     }
 }
 
@@ -258,6 +341,28 @@ impl EventEnvelope {
     #[must_use]
     pub fn with_created_at(mut self, timestamp: DateTime<Utc>) -> Self {
         self.created_at = timestamp;
+        self
+    }
+
+    /// Sets causation tracking fields on the metadata.
+    ///
+    /// Creates or updates the metadata with causation ID, correlation ID,
+    /// and the full causation chain. Used by the reactor system to propagate
+    /// causation tracking through event reactions.
+    #[must_use]
+    pub fn with_causation(
+        mut self,
+        causation_id: Uuid,
+        correlation_id: Uuid,
+        causation_chain: Vec<Uuid>,
+    ) -> Self {
+        let metadata = self
+            .metadata
+            .unwrap_or_default()
+            .with_causation_id(causation_id)
+            .with_correlation_id(correlation_id)
+            .with_causation_chain(causation_chain);
+        self.metadata = Some(metadata);
         self
     }
 }
@@ -477,6 +582,141 @@ mod tests {
         );
 
         assert_eq!(envelope.event_data, complex_data);
+    }
+
+    #[test]
+    fn test_metadata_with_causation_chain() {
+        let chain = vec![Uuid::new_v4(), Uuid::new_v4()];
+        let metadata = EventMetadata::new().with_causation_chain(chain.clone());
+
+        assert_eq!(metadata.causation_chain, chain);
+        assert_eq!(metadata.cascade_depth(), 2);
+    }
+
+    #[test]
+    fn test_metadata_cascade_depth_empty() {
+        let metadata = EventMetadata::new();
+        assert_eq!(metadata.cascade_depth(), 0);
+    }
+
+    #[test]
+    fn test_metadata_child_metadata() {
+        let parent_event_id = Uuid::new_v4();
+        let correlation_id = Uuid::new_v4();
+        let parent = EventMetadata::new().with_correlation_id(correlation_id);
+
+        let child = parent.child_metadata(parent_event_id);
+
+        assert_eq!(child.correlation_id, Some(correlation_id));
+        assert_eq!(child.causation_id, Some(parent_event_id));
+        assert_eq!(child.causation_chain.len(), 1);
+        assert_eq!(child.causation_chain[0], parent_event_id);
+    }
+
+    #[test]
+    fn test_metadata_child_metadata_without_correlation_uses_parent_id() {
+        let parent_event_id = Uuid::new_v4();
+        let parent = EventMetadata::new();
+
+        let child = parent.child_metadata(parent_event_id);
+
+        assert_eq!(child.correlation_id, Some(parent_event_id));
+        assert_eq!(child.causation_id, Some(parent_event_id));
+    }
+
+    #[test]
+    fn test_metadata_child_metadata_extends_chain() {
+        let root_id = Uuid::new_v4();
+        let parent_id = Uuid::new_v4();
+        let grandchild_parent_id = Uuid::new_v4();
+
+        let root = EventMetadata::new();
+        let parent = root.child_metadata(root_id);
+        let grandchild = parent.child_metadata(parent_id);
+        let great_grandchild = grandchild.child_metadata(grandchild_parent_id);
+
+        assert_eq!(great_grandchild.causation_chain.len(), 3);
+        assert_eq!(great_grandchild.causation_chain[0], root_id);
+        assert_eq!(great_grandchild.causation_chain[1], parent_id);
+        assert_eq!(great_grandchild.causation_chain[2], grandchild_parent_id);
+        assert_eq!(great_grandchild.cascade_depth(), 3);
+    }
+
+    #[test]
+    fn test_metadata_causation_chain_serialization() {
+        let chain = vec![Uuid::nil(), Uuid::new_v4()];
+        let metadata = EventMetadata::new()
+            .with_correlation_id(Uuid::nil())
+            .with_causation_chain(chain.clone());
+
+        let json = serde_json::to_string(&metadata).unwrap();
+        let deserialized: EventMetadata = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.causation_chain, chain);
+    }
+
+    #[test]
+    fn test_metadata_empty_causation_chain_not_serialized() {
+        let metadata = EventMetadata::new();
+        let json = serde_json::to_string(&metadata).unwrap();
+
+        // Empty causation_chain should be skipped
+        assert!(!json.contains("causation_chain"));
+    }
+
+    #[test]
+    fn test_metadata_deserialize_without_causation_chain() {
+        // Old-format metadata without causation_chain should deserialize fine
+        let json =
+            r#"{"correlation_id":null,"causation_id":null,"timestamp":"2024-01-01T00:00:00Z"}"#;
+        let metadata: EventMetadata = serde_json::from_str(json).unwrap();
+
+        assert!(metadata.causation_chain.is_empty());
+    }
+
+    #[test]
+    fn test_event_envelope_with_causation() {
+        let causation_id = Uuid::new_v4();
+        let correlation_id = Uuid::new_v4();
+        let chain = vec![Uuid::new_v4(), causation_id];
+
+        let envelope = EventEnvelope::new(
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            "Test".to_string(),
+            "TestEvent".to_string(),
+            crate::EventVersion::new(1),
+            json!({}),
+        )
+        .with_causation(causation_id, correlation_id, chain.clone());
+
+        let metadata = envelope.metadata.unwrap();
+        assert_eq!(metadata.causation_id, Some(causation_id));
+        assert_eq!(metadata.correlation_id, Some(correlation_id));
+        assert_eq!(metadata.causation_chain, chain);
+    }
+
+    #[test]
+    fn test_event_envelope_with_causation_preserves_existing_metadata() {
+        let causation_id = Uuid::new_v4();
+        let correlation_id = Uuid::new_v4();
+        let additional = json!({"key": "value"});
+
+        let envelope = EventEnvelope::new(
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            "Test".to_string(),
+            "TestEvent".to_string(),
+            crate::EventVersion::new(1),
+            json!({}),
+        )
+        .with_metadata(EventMetadata::new().with_additional(additional.clone()))
+        .with_causation(causation_id, correlation_id, vec![]);
+
+        let metadata = envelope.metadata.unwrap();
+        assert_eq!(metadata.causation_id, Some(causation_id));
+        assert_eq!(metadata.correlation_id, Some(correlation_id));
+        assert_eq!(metadata.additional, Some(additional));
     }
 
     #[test]

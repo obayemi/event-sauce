@@ -6,17 +6,20 @@
 
 use crate::{
     Aggregate, AggregateVersion, DefaultEntity, DeleteEvent, DeletedAggregateRoot, EntityId,
-    EventApplicator,
+    EventApplicator, EventMetadata,
 };
 
-/// A pending event with optional actor information.
+/// A pending event with optional actor and metadata information.
 ///
-/// Wraps an event with the entity ID of the actor who caused it,
-/// for propagation to `EventEnvelope::created_by` at commit time.
+/// Wraps an event with the entity ID of the actor who caused it
+/// and optional metadata for causation tracking. At commit time,
+/// `actor_id` flows to `EventEnvelope::created_by` and `metadata`
+/// merges into `EventEnvelope::metadata`.
 #[derive(Debug)]
 pub(crate) struct PendingEvent<E> {
     pub event: E,
     pub actor_id: Option<EntityId>,
+    pub metadata: Option<EventMetadata>,
 }
 
 /// Infrastructure wrapper for event-sourced aggregates.
@@ -187,6 +190,7 @@ impl<A: Aggregate> AggregateRoot<A> {
         self.pending_events.push(PendingEvent {
             event,
             actor_id: None,
+            metadata: None,
         });
         Ok(())
     }
@@ -211,8 +215,47 @@ impl<A: Aggregate> AggregateRoot<A> {
         self.pending_events.push(PendingEvent {
             event,
             actor_id: Some(actor_id),
+            metadata: None,
         });
         Ok(())
+    }
+
+    /// Applies an event with causation metadata.
+    ///
+    /// Like [`apply()`](Self::apply), but attaches metadata to the pending
+    /// event. At commit time, the metadata merges into `EventEnvelope::metadata`.
+    /// Used by the reactor system to propagate causation tracking.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if validation (pre or post) fails.
+    pub fn apply_with_metadata<E: Into<A::Event>>(
+        &mut self,
+        event: E,
+        metadata: EventMetadata,
+    ) -> Result<(), A::Error> {
+        let event = event.into();
+        EventApplicator::dispatch(&event, &mut self.entity)?;
+        self.version = self.version.next();
+        self.pending_events.push(PendingEvent {
+            event,
+            actor_id: None,
+            metadata: Some(metadata),
+        });
+        Ok(())
+    }
+
+    /// Sets metadata on all pending events that don't already have metadata.
+    ///
+    /// Used by `ReactorContext::commit()` to inject causation tracking
+    /// into pending events before delegating to the event store.
+    #[allow(dead_code)] // Will be used by ReactorContext in reactor.rs
+    pub(crate) fn set_pending_metadata(&mut self, metadata: &EventMetadata) {
+        for pe in &mut self.pending_events {
+            if pe.metadata.is_none() {
+                pe.metadata = Some(metadata.clone());
+            }
+        }
     }
 
     /// Applies an event without validation (for event replay).
@@ -246,6 +289,7 @@ impl<A: Aggregate> AggregateRoot<A> {
             pending_events: vec![PendingEvent {
                 event,
                 actor_id: None,
+                metadata: None,
             }],
         }
     }
@@ -260,6 +304,7 @@ impl<A: Aggregate> AggregateRoot<A> {
             pending_events: vec![PendingEvent {
                 event,
                 actor_id: Some(actor_id),
+                metadata: None,
             }],
         }
     }
@@ -314,6 +359,7 @@ impl<A: Aggregate> AggregateRoot<A> {
         pending.push(PendingEvent {
             event: event.into(),
             actor_id: None,
+            metadata: None,
         });
         Ok(DeletedAggregateRoot::from_delete_with_pending(
             state, entity_id, version, pending,
@@ -343,6 +389,7 @@ impl<A: Aggregate> AggregateRoot<A> {
         pending.push(PendingEvent {
             event: event.into(),
             actor_id: Some(actor_id),
+            metadata: None,
         });
         Ok(DeletedAggregateRoot::from_delete_with_pending(
             state, entity_id, version, pending,
@@ -382,6 +429,7 @@ impl<E: Clone> Clone for PendingEvent<E> {
         Self {
             event: self.event.clone(),
             actor_id: self.actor_id,
+            metadata: self.metadata.clone(),
         }
     }
 }
@@ -759,6 +807,74 @@ mod tests {
         assert_eq!(pending[0].actor_id, None);
         assert_eq!(pending[1].actor_id, Some(actor_id));
         assert_eq!(pending[2].actor_id, None);
+    }
+
+    #[test]
+    fn test_aggregate_root_apply_with_metadata() {
+        let mut counter = AggregateRoot::<CounterEntity>::new(EntityId::new());
+        let metadata = crate::EventMetadata::new()
+            .with_correlation_id(uuid::Uuid::new_v4())
+            .with_causation_id(uuid::Uuid::new_v4());
+
+        counter
+            .apply_with_metadata(
+                IncrementedEvent {
+                    amount: 5,
+                    timestamp: Utc::now(),
+                },
+                metadata.clone(),
+            )
+            .unwrap();
+
+        assert_eq!(counter.value, 5);
+        assert_eq!(counter.version(), AggregateVersion::new(1));
+
+        let pending = counter.pending_events_with_actors();
+        assert_eq!(pending[0].metadata, Some(metadata));
+    }
+
+    #[test]
+    fn test_set_pending_metadata() {
+        let mut counter = AggregateRoot::<CounterEntity>::new(EntityId::new());
+
+        // Apply without metadata
+        counter.increment(5).unwrap();
+        counter.increment(3).unwrap();
+
+        let metadata = crate::EventMetadata::new().with_correlation_id(uuid::Uuid::new_v4());
+
+        counter.set_pending_metadata(&metadata);
+
+        let pending = counter.pending_events_with_actors();
+        assert_eq!(pending[0].metadata, Some(metadata.clone()));
+        assert_eq!(pending[1].metadata, Some(metadata));
+    }
+
+    #[test]
+    fn test_set_pending_metadata_does_not_overwrite_existing() {
+        let mut counter = AggregateRoot::<CounterEntity>::new(EntityId::new());
+        let existing_metadata = crate::EventMetadata::new().with_causation_id(uuid::Uuid::new_v4());
+
+        counter
+            .apply_with_metadata(
+                IncrementedEvent {
+                    amount: 5,
+                    timestamp: Utc::now(),
+                },
+                existing_metadata.clone(),
+            )
+            .unwrap();
+        counter.increment(3).unwrap();
+
+        let new_metadata = crate::EventMetadata::new().with_correlation_id(uuid::Uuid::new_v4());
+
+        counter.set_pending_metadata(&new_metadata);
+
+        let pending = counter.pending_events_with_actors();
+        // First event keeps its existing metadata
+        assert_eq!(pending[0].metadata, Some(existing_metadata));
+        // Second event gets the new metadata
+        assert_eq!(pending[1].metadata, Some(new_metadata));
     }
 
     #[test]

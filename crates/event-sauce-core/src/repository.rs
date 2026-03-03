@@ -446,6 +446,7 @@ mod tests {
         let pending = vec![crate::aggregate_root::PendingEvent {
             event: SimpleTestEvent::Updated { value: 0 },
             actor_id: None,
+            metadata: None,
         }];
         let mut deleted = DeletedAggregateRoot::from_delete_with_pending(
             entity,

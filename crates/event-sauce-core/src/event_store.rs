@@ -364,6 +364,9 @@ pub trait EventStore: Send + Sync {
                 if let Some(actor_id) = pe.actor_id {
                     envelope = envelope.with_created_by(actor_id.as_uuid());
                 }
+                if let Some(metadata) = &pe.metadata {
+                    envelope = envelope.with_metadata(metadata.clone());
+                }
                 Ok(envelope)
             })
             .collect();
@@ -507,6 +510,9 @@ pub trait EventStore: Send + Sync {
                 let mut envelope = pe.event.to_envelope(aggregate_id)?;
                 if let Some(actor_id) = pe.actor_id {
                     envelope = envelope.with_created_by(actor_id.as_uuid());
+                }
+                if let Some(metadata) = &pe.metadata {
+                    envelope = envelope.with_metadata(metadata.clone());
                 }
                 Ok(envelope)
             })
