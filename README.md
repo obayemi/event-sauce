@@ -1,6 +1,8 @@
 # event-sauce
 
-**Production-ready event sourcing for Rust** - Simple by default, powerful when needed.
+**Event sourcing for Rust** - Simple by default, powerful when needed.
+
+> **Note**: event-sauce is **not production-ready**. The current architecture targets single-node deployments and has not been validated for horizontal scalability or high-throughput distributed workloads. Use it for prototyping, learning, and small-scale applications.
 
 [![CI](https://github.com/yourusername/event-sauce/workflows/CI/badge.svg)](https://github.com/yourusername/event-sauce/actions)
 [![Coverage](https://codecov.io/gh/yourusername/event-sauce/branch/main/graph/badge.svg)](https://codecov.io/gh/yourusername/event-sauce)
@@ -14,7 +16,7 @@
 - 🔄 **Async Streaming**: Memory-efficient event processing with backpressure
 - 🗄️ **Multiple Backends**: PostgreSQL, in-memory
 - 🎯 **Type-Safe**: Compile-time guarantees with derive macros
-- 📦 **Production Ready**: Optimistic concurrency, snapshots, distributed locking
+- 📦 **Battle-Tested Patterns**: Optimistic concurrency, snapshots, distributed locking
 - 🧪 **Testing First-Class**: Built-in test helpers and fixtures
 - 🛡️ **Rich Validation**: Aggregate-specific errors with business rule enforcement
 - 🧩 **Specification Pattern**: Composable, reusable business rules with AND/OR/NOT combinators
@@ -22,6 +24,7 @@
 - 🔐 **Encryption & Crypto-Shredding**: Full-aggregate or field-level encryption with pluggable providers
 - 🚪 **Init Events**: Type-state aggregate construction — no more invalid uninitialized states
 - 👤 **Actor Events**: Permission validation tied to actor identity, with automatic audit trails
+- 🔗 **Reactors**: Cross-aggregate event orchestration with causation tracking and cascade depth limits
 
 ### Modern Event Sourcing Features
 
@@ -196,6 +199,38 @@ doc.update_content(&editor, "new content".into())?;
 ```
 
 Actor validation is **skipped during replay** — events are historical facts, only fresh commands validate permissions.
+
+### Reactors (Cross-Aggregate Orchestration)
+
+React to events on one aggregate to trigger commands on another, with full causation tracking:
+
+```rust
+use event_sauce::reactor;
+
+// Declarative reactor — reacts to UserKickedEvent, removes them from their group
+reactor! {
+    pub struct KickUserReactor;
+
+    on KickedEvent |event, ctx| {
+        let mut group: AggregateRoot<Group> = ctx.load(event.group_id).await?;
+        group.remove_member(event.user_id)?;
+        ctx.commit(&mut group).await?;
+        // Committed events automatically carry causation metadata:
+        //   causation_id, correlation_id, causation_chain
+        Ok(())
+    }
+}
+
+// Register reactors and process pending events
+let mut runner = ReactorRunner::new(&store);
+runner.register(KickUserReactor);
+runner.with_max_cascade_depth(5); // prevent infinite loops
+let processed = runner.process_pending().await?;
+```
+
+Cascading reactions are supported — a reactor's output events can trigger further reactors, with configurable depth limits.
+
+See the **[Reactors Guide](docs/reactors.md)** for full details.
 
 ### Encryption & Crypto-Shredding
 
@@ -487,7 +522,7 @@ All contributions must:
 
 ## PostgreSQL Production Setup
 
-Event-sauce provides production-ready PostgreSQL support with **schema isolation** to avoid migration conflicts.
+Event-sauce provides PostgreSQL support with **schema isolation** to avoid migration conflicts.
 
 ### Using Builder Pattern (Recommended)
 
@@ -568,6 +603,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 - **[Privacy & Encryption](docs/privacy.md)** - Full-aggregate and field-level encryption, crypto-shredding
 - **[Projections & Subscriptions](docs/projections.md)** - Building read models with durable, guaranteed delivery
 - **[PostgreSQL Production Setup](docs/postgres-production.md)** - Complete production deployment guide
+- **[Reactors Guide](docs/reactors.md)** - Cross-aggregate event orchestration and causation tracking
 - **[Architecture Overview](docs/architecture.md)** - System design and patterns
 - **[TDD Workflow](docs/tdd-workflow.md)** - Test-driven development for event sourcing
 
@@ -585,6 +621,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
   - **[actor-events.rs](crates/event-sauce/examples/actor-events.rs)** - Role-based permission validation with actor events
   - **[crypto-shredding.rs](crates/event-sauce/examples/crypto-shredding.rs)** - Full-aggregate encryption and right-to-be-forgotten
   - **[field-encryption.rs](crates/event-sauce/examples/field-encryption.rs)** - Selective field-level encryption for sensitive data
+  - **[delete-events.rs](crates/event-sauce/examples/delete-events.rs)** - Type-state delete lifecycle with terminal state
+  - **[reactor.rs](crates/event-sauce/examples/reactor.rs)** - Cross-aggregate event orchestration with causation tracking
 - **CLAUDE.md** - Development guidelines and principles
 
 ## Roadmap
@@ -625,6 +663,6 @@ Built with inspiration from:
 
 ---
 
-**Status**: 🚀 Phase 7 Complete - Production-ready with comprehensive documentation and examples!
+**Status**: 🚧 In Development - Comprehensive feature set with documentation and examples. Not yet validated for production scalability.
 
 Built with ❤️ and strict TDD in Rust
