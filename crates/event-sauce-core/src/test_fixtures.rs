@@ -130,6 +130,12 @@ impl MockEventStore {
         }
     }
 
+    /// Returns all events in the global log (for test verification).
+    #[must_use]
+    pub fn get_events(&self) -> Vec<EventEnvelope> {
+        self.global_log.lock().unwrap().clone()
+    }
+
     /// Adds an event directly (bypassing append), useful for subscription tests.
     pub fn add_event(&self, event: EventEnvelope) {
         self.global_log.lock().unwrap().push(event.clone());
@@ -466,6 +472,28 @@ mod tests {
     fn mock_event_store_snapshot_config_is_disabled() {
         let store = MockEventStore::new();
         assert!(!store.snapshot_config().use_snapshots_on_load());
+    }
+
+    // --- MockEventStore::get_events ---
+
+    #[test]
+    fn mock_event_store_get_events_returns_all_events() {
+        let store = MockEventStore::new();
+        let env1 = create_test_envelope("Ev1", "Agg");
+        let env2 = create_test_envelope("Ev2", "Agg");
+        store.add_event(env1.clone());
+        store.add_event(env2.clone());
+
+        let events = store.get_events();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].id, env1.id);
+        assert_eq!(events[1].id, env2.id);
+    }
+
+    #[test]
+    fn mock_event_store_get_events_empty() {
+        let store = MockEventStore::new();
+        assert!(store.get_events().is_empty());
     }
 
     // --- SimpleTestEvent::dispatch_unchecked ---

@@ -76,6 +76,18 @@ impl<A: Aggregate> DeletedAggregateRoot<A> {
         self.pending_events.clear();
     }
 
+    /// Sets metadata on all pending events that don't already have metadata.
+    ///
+    /// Used by `ReactorContext::commit_deleted()` to inject causation tracking
+    /// into pending events before delegating to the event store.
+    pub(crate) fn set_pending_metadata(&mut self, metadata: &crate::EventMetadata) {
+        for pe in &mut self.pending_events {
+            if pe.metadata.is_none() {
+                pe.metadata = Some(metadata.clone());
+            }
+        }
+    }
+
     /// Creates a deleted aggregate root from a delete operation with pending events.
     ///
     /// Used by `AggregateRoot::apply_delete()` at command time.
@@ -371,5 +383,74 @@ mod tests {
         );
         let debug = format!("{deleted:?}");
         assert!(debug.contains("DeletedAggregateRoot"));
+    }
+
+    #[test]
+    fn test_deleted_aggregate_root_set_pending_metadata() {
+        let entity = SimpleTestEntity {
+            id: EntityId::new(),
+            value: 0,
+        };
+        let pending = vec![
+            PendingEvent {
+                event: SimpleTestEvent::Updated { value: 1 },
+                actor_id: None,
+                metadata: None,
+            },
+            PendingEvent {
+                event: SimpleTestEvent::Updated { value: 2 },
+                actor_id: None,
+                metadata: None,
+            },
+        ];
+        let mut deleted = DeletedAggregateRoot::<SimpleTestEntity>::from_delete_with_pending(
+            entity,
+            EntityId::new(),
+            AggregateVersion::new(2),
+            pending,
+        );
+
+        let metadata = crate::EventMetadata::new().with_correlation_id(uuid::Uuid::new_v4());
+        deleted.set_pending_metadata(&metadata);
+
+        let with_actors = deleted.pending_events_with_actors();
+        assert_eq!(with_actors[0].metadata, Some(metadata.clone()));
+        assert_eq!(with_actors[1].metadata, Some(metadata));
+    }
+
+    #[test]
+    fn test_deleted_aggregate_root_set_pending_metadata_does_not_overwrite() {
+        let entity = SimpleTestEntity {
+            id: EntityId::new(),
+            value: 0,
+        };
+        let existing = crate::EventMetadata::new().with_causation_id(uuid::Uuid::new_v4());
+        let pending = vec![
+            PendingEvent {
+                event: SimpleTestEvent::Updated { value: 1 },
+                actor_id: None,
+                metadata: Some(existing.clone()),
+            },
+            PendingEvent {
+                event: SimpleTestEvent::Updated { value: 2 },
+                actor_id: None,
+                metadata: None,
+            },
+        ];
+        let mut deleted = DeletedAggregateRoot::<SimpleTestEntity>::from_delete_with_pending(
+            entity,
+            EntityId::new(),
+            AggregateVersion::new(2),
+            pending,
+        );
+
+        let new_metadata = crate::EventMetadata::new().with_correlation_id(uuid::Uuid::new_v4());
+        deleted.set_pending_metadata(&new_metadata);
+
+        let with_actors = deleted.pending_events_with_actors();
+        // First event keeps its existing metadata
+        assert_eq!(with_actors[0].metadata, Some(existing));
+        // Second event gets the new metadata
+        assert_eq!(with_actors[1].metadata, Some(new_metadata));
     }
 }

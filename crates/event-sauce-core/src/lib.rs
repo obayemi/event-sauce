@@ -42,6 +42,8 @@ mod init_event;
 mod loaded;
 mod macros;
 mod projection;
+/// Reactor system for cross-aggregate event reactions with causation tracking.
+pub mod reactor;
 mod repository;
 mod snapshot_config;
 mod snapshot_strategy;
@@ -75,6 +77,7 @@ pub use event_store::{EventStore, Position, Snapshot, StreamId};
 pub use init_event::InitEvent;
 pub use loaded::Loaded;
 pub use projection::Projection;
+pub use reactor::{Reactor, ReactorContext, ReactorRunner};
 pub use repository::Repository;
 pub use snapshot_config::{SnapshotConfig, SnapshotConfigBuilder};
 pub use snapshot_strategy::{AlwaysSnapshot, EveryNEvents, NeverSnapshot, SnapshotStrategy};

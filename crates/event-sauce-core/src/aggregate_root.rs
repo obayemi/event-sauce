@@ -249,7 +249,6 @@ impl<A: Aggregate> AggregateRoot<A> {
     ///
     /// Used by `ReactorContext::commit()` to inject causation tracking
     /// into pending events before delegating to the event store.
-    #[allow(dead_code)] // Will be used by ReactorContext in reactor.rs
     pub(crate) fn set_pending_metadata(&mut self, metadata: &EventMetadata) {
         for pe in &mut self.pending_events {
             if pe.metadata.is_none() {
