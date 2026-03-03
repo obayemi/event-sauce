@@ -44,11 +44,10 @@ paste.workspace = true
 
 [[example]]
 name = "postgres-quickstart"
-required-features = ["postgres", "crypto"]
+required-features = ["postgres"]
 
 [[example]]
 name = "crypto-shredding"
-required-features = ["crypto"]
 
 [[bench]]
 name = "event_application"

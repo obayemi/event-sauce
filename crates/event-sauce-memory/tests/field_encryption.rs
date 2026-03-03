@@ -4,7 +4,6 @@ use event_sauce_core::{
     define_events, Aggregate, AggregateError, AggregateRoot, AggregateVersion, CryptoKeyStore,
     DomainEvent, Entity, EntityId, EventStore, SnapshotConfig, StreamId,
 };
-use event_sauce_crypto::Aes256GcmProvider;
 use event_sauce_memory::{InMemoryCryptoKeyStore, InMemoryEventStore};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -73,12 +72,10 @@ define_events! {
 
 fn create_store_with_crypto() -> (InMemoryEventStore, Arc<InMemoryCryptoKeyStore>) {
     let key_store = Arc::new(InMemoryCryptoKeyStore::new());
-    let provider = Arc::new(Aes256GcmProvider);
 
     let store = InMemoryEventStore::builder()
         .snapshot_config(SnapshotConfig::disabled())
         .crypto_key_store(key_store.clone())
-        .crypto_provider(provider)
         .build();
 
     (store, key_store)
@@ -86,12 +83,10 @@ fn create_store_with_crypto() -> (InMemoryEventStore, Arc<InMemoryCryptoKeyStore
 
 fn create_store_with_crypto_and_snapshots() -> (InMemoryEventStore, Arc<InMemoryCryptoKeyStore>) {
     let key_store = Arc::new(InMemoryCryptoKeyStore::new());
-    let provider = Arc::new(Aes256GcmProvider);
 
     let store = InMemoryEventStore::builder()
         .snapshot_config(SnapshotConfig::always())
         .crypto_key_store(key_store.clone())
-        .crypto_provider(provider)
         .build();
 
     (store, key_store)
@@ -305,8 +300,8 @@ async fn field_encrypted_snapshot_encryption() {
 }
 
 #[tokio::test]
-async fn field_encrypted_commit_without_crypto_config_fails() {
-    let store = InMemoryEventStore::new(); // No crypto configured
+async fn field_encrypted_works_with_default_crypto() {
+    let store = InMemoryEventStore::new(); // Crypto included by default
     let id = EntityId::new();
 
     let mut agg = AggregateRoot::<Patient>::new(id);
@@ -320,8 +315,8 @@ async fn field_encrypted_commit_without_crypto_config_fails() {
 
     let result = store.commit(&mut agg).await;
     assert!(
-        result.is_err(),
-        "Commit should fail without crypto config for field-encrypted events"
+        result.is_ok(),
+        "Field-encrypted events should work with default crypto"
     );
 }
 

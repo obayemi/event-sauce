@@ -5,7 +5,6 @@ use event_sauce_core::{
     DomainEvent, Entity, EntityId, EventApplicator, EventStore, EventVersion, SnapshotConfig,
     StreamId,
 };
-use event_sauce_crypto::Aes256GcmProvider;
 use event_sauce_memory::{InMemoryCryptoKeyStore, InMemoryEventStore};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -168,12 +167,10 @@ impl AggregateError for PublicUserError {}
 
 fn create_store_with_crypto() -> (InMemoryEventStore, Arc<InMemoryCryptoKeyStore>) {
     let key_store = Arc::new(InMemoryCryptoKeyStore::new());
-    let provider = Arc::new(Aes256GcmProvider);
 
     let store = InMemoryEventStore::builder()
         .snapshot_config(SnapshotConfig::disabled())
         .crypto_key_store(key_store.clone())
-        .crypto_provider(provider)
         .build();
 
     (store, key_store)
@@ -181,12 +178,10 @@ fn create_store_with_crypto() -> (InMemoryEventStore, Arc<InMemoryCryptoKeyStore
 
 fn create_store_with_crypto_and_snapshots() -> (InMemoryEventStore, Arc<InMemoryCryptoKeyStore>) {
     let key_store = Arc::new(InMemoryCryptoKeyStore::new());
-    let provider = Arc::new(Aes256GcmProvider);
 
     let store = InMemoryEventStore::builder()
         .snapshot_config(SnapshotConfig::always())
         .crypto_key_store(key_store.clone())
-        .crypto_provider(provider)
         .build();
 
     (store, key_store)
@@ -372,12 +367,10 @@ async fn snapshot_encryption_roundtrip() {
 
 #[tokio::test]
 async fn backward_compat_loading_unencrypted_events() {
-    let key_store = Arc::new(InMemoryCryptoKeyStore::new());
-    let provider = Arc::new(Aes256GcmProvider);
     let id = EntityId::new();
 
-    // First, commit plaintext events (store without crypto)
-    let plain_store = InMemoryEventStore::builder()
+    // Commit plaintext events for a non-encrypted aggregate
+    let store = InMemoryEventStore::builder()
         .snapshot_config(SnapshotConfig::disabled())
         .build();
 
@@ -386,17 +379,9 @@ async fn backward_compat_loading_unencrypted_events() {
         name: "Grace".into(),
     })
     .unwrap();
-    plain_store.commit(&mut agg).await.unwrap();
+    store.commit(&mut agg).await.unwrap();
 
-    // Load from a store WITH crypto configured — should work (non-encrypted)
-    let crypto_store = InMemoryEventStore::builder()
-        .snapshot_config(SnapshotConfig::disabled())
-        .crypto_key_store(key_store)
-        .crypto_provider(provider)
-        .build();
-
-    // We need the same events in the new store for this test;
-    // directly test decrypt_value passthrough with unencrypted data
+    // Verify decrypt_value passes through unencrypted data
     let plain_value = serde_json::json!({"name": "Grace"});
     assert!(
         !event_sauce_core::crypto::is_encrypted(&plain_value),
@@ -421,14 +406,14 @@ async fn backward_compat_loading_unencrypted_events() {
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), plain_value);
 
-    // Also verify non-encrypted loads still work
-    let store = Arc::new(crypto_store);
+    // Non-encrypted loads work with default crypto configured
+    let store = Arc::new(store);
     let _ = store.repository::<PublicUser>();
 }
 
 #[tokio::test]
-async fn commit_without_crypto_config_fails_for_encrypted_aggregate() {
-    let store = InMemoryEventStore::new(); // No crypto configured
+async fn encrypted_aggregate_works_with_default_crypto() {
+    let store = InMemoryEventStore::new(); // Crypto configured by default
     let id = EntityId::new();
 
     let mut agg = AggregateRoot::<SecretUser>::new(id);
@@ -438,8 +423,14 @@ async fn commit_without_crypto_config_fails_for_encrypted_aggregate() {
     })
     .unwrap();
 
-    let result = store.commit(&mut agg).await;
-    assert!(result.is_err(), "Commit should fail without crypto config");
+    store.commit(&mut agg).await.unwrap();
+
+    // Load and verify
+    let store = Arc::new(store);
+    let repo = store.repository::<SecretUser>();
+    let loaded = repo.load(id).await.unwrap();
+    assert_eq!(loaded.entity().name, "Hank");
+    assert_eq!(loaded.entity().email, "hank@example.com");
 }
 
 #[tokio::test]

@@ -262,7 +262,8 @@ impl PostgresEventStore {
             .map_err(|e| Error::custom(format!("Failed to check migration status: {e}")))?;
 
         if count > 0 {
-            // Migration already applied
+            // Migration 1 already applied, check for newer migrations
+            self.migrate_crypto_keys(&migrations_table).await?;
             return Ok(());
         }
 
@@ -344,6 +345,47 @@ impl PostgresEventStore {
         sqlx::query(&record_query)
             .bind(20_250_101_000_000_i64)
             .bind("create_events_table")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| Error::custom(format!("Failed to record migration: {e}")))?;
+
+        // Migration 2: Create crypto_keys table
+        self.migrate_crypto_keys(&migrations_table).await?;
+
+        Ok(())
+    }
+
+    /// Migration 2: Creates the `crypto_keys` table for per-aggregate encryption keys.
+    async fn migrate_crypto_keys(&self, migrations_table: &str) -> Result<()> {
+        let check_query = format!("SELECT COUNT(*) FROM {migrations_table} WHERE version = $1");
+        let count: i64 = sqlx::query_scalar(&check_query)
+            .bind(20_250_303_000_000_i64)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| Error::custom(format!("Failed to check migration status: {e}")))?;
+
+        if count > 0 {
+            return Ok(());
+        }
+
+        let crypto_keys_table = self.qualify_table("crypto_keys");
+        let create_crypto_keys = format!(
+            "CREATE TABLE IF NOT EXISTS {crypto_keys_table} (
+                aggregate_id UUID PRIMARY KEY,
+                key_data BYTEA NOT NULL,
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+            )"
+        );
+        sqlx::query(&create_crypto_keys)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| Error::custom(format!("Failed to create crypto_keys table: {e}")))?;
+
+        let record_query =
+            format!("INSERT INTO {migrations_table} (version, description) VALUES ($1, $2)");
+        sqlx::query(&record_query)
+            .bind(20_250_303_000_000_i64)
+            .bind("create_crypto_keys_table")
             .execute(&self.pool)
             .await
             .map_err(|e| Error::custom(format!("Failed to record migration: {e}")))?;
@@ -506,10 +548,17 @@ impl PostgresEventStoreBuilder {
     ///
     /// - **Schema**: "`event_sauce`" (isolates migrations from your app)
     /// - **Snapshot config**: Every 100 events
+    /// - **Crypto key store**: [`PostgresCryptoKeyStore`] with the same pool and schema
+    /// - **Crypto provider**: [`Aes256GcmProvider`](event_sauce_crypto::Aes256GcmProvider)
     ///
     /// # Errors
     ///
     /// Returns an error if the pool has not been set via [`pool()`](Self::pool).
+    ///
+    /// # Panics
+    ///
+    /// Cannot panic — the internal `PostgresCryptoKeyStore` builder always has its pool set
+    /// before calling `build()`.
     ///
     /// # Examples
     ///
@@ -525,17 +574,35 @@ impl PostgresEventStoreBuilder {
     ///     .build()?;
     /// ```
     pub fn build(self) -> event_sauce_core::Result<PostgresEventStore> {
+        let pool = self
+            .pool
+            .ok_or_else(|| Error::invalid_state("pool is required"))?;
+        let schema = self.schema.unwrap_or_else(|| "event_sauce".to_string());
+
+        let crypto_key_store: std::sync::Arc<dyn event_sauce_core::CryptoKeyStore> =
+            self.crypto_key_store.unwrap_or_else(|| {
+                std::sync::Arc::new(
+                    crate::PostgresCryptoKeyStore::builder()
+                        .pool(pool.clone())
+                        .schema(&schema)
+                        .build()
+                        .expect("pool was set"),
+                )
+            });
+
+        let crypto_provider: std::sync::Arc<dyn event_sauce_core::CryptoProvider> = self
+            .crypto_provider
+            .unwrap_or_else(|| std::sync::Arc::new(event_sauce_crypto::Aes256GcmProvider));
+
         Ok(PostgresEventStore {
-            pool: self
-                .pool
-                .ok_or_else(|| Error::invalid_state("pool is required"))?,
+            pool,
             snapshot_config: self
                 .snapshot_config
                 .unwrap_or_else(|| SnapshotConfig::builder().build()),
-            schema: self.schema.unwrap_or_else(|| "event_sauce".to_string()),
+            schema,
             checkpoint_store: self.checkpoint_store,
-            crypto_key_store: self.crypto_key_store,
-            crypto_provider: self.crypto_provider,
+            crypto_key_store: Some(crypto_key_store),
+            crypto_provider: Some(crypto_provider),
         })
     }
 }

@@ -17,17 +17,16 @@
 //!
 //! Run with:
 //! ```bash
-//! cargo run --example field-encryption --features crypto
+//! cargo run --example field-encryption
 //! ```
 
 use std::sync::Arc;
 
 use event_sauce_core::{
-    crypto, define_events, Aggregate, AggregateError, AggregateRoot, AggregateVersion,
-    CryptoKeyStore, Entity, EntityId, EventStore, SnapshotConfig, StreamId,
+    crypto, define_events, Aggregate, AggregateError, AggregateRoot, AggregateVersion, Entity,
+    EntityId, EventStore, SnapshotConfig, StreamId,
 };
-use event_sauce_crypto::Aes256GcmProvider;
-use event_sauce_memory::{InMemoryCryptoKeyStore, InMemoryEventStore};
+use event_sauce_memory::InMemoryEventStore;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 
@@ -109,14 +108,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  - Crypto-shredding for selective privacy\n");
 
     // -- Setup --
-    let key_store = Arc::new(InMemoryCryptoKeyStore::new());
-    let provider = Arc::new(Aes256GcmProvider);
-
+    // InMemoryEventStore includes AES-256-GCM crypto provider and key store by default.
     let store = Arc::new(
         InMemoryEventStore::builder()
             .snapshot_config(SnapshotConfig::disabled())
-            .crypto_key_store(key_store.clone())
-            .crypto_provider(provider)
             .build(),
     );
 
@@ -191,7 +186,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Step 4: Crypto-Shredding ===\n");
 
     println!("  Deleting encryption key...");
-    key_store.delete_key(id.as_uuid()).await?;
+    store
+        .crypto_key_store()
+        .expect("crypto key store configured")
+        .delete_key(id.as_uuid())
+        .await?;
     println!("  Key deleted.\n");
 
     println!("  Attempting to load patient after key deletion...");

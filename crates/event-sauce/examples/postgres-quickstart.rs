@@ -16,7 +16,7 @@
 //!
 //! Run with:
 //! ```bash
-//! cargo run --example postgres-quickstart --features "postgres,crypto"
+//! cargo run --example postgres-quickstart --features "postgres"
 //! ```
 
 use std::collections::HashMap;
@@ -24,12 +24,10 @@ use std::sync::Arc;
 
 use event_sauce_core::{
     command_handler, crypto, define_events, reactor, Aggregate, AggregateRoot, AggregateVersion,
-    CryptoKeyStore, Entity, EntityId, EventStore, Loaded, Position, ReactorRunner, Specification,
-    StreamId,
+    Entity, EntityId, EventStore, Loaded, Position, ReactorRunner, Specification, StreamId,
 };
-use event_sauce_crypto::Aes256GcmProvider;
 use event_sauce_macros::{aggregate, aggregate_error, specification, AggregateError, AggregateId};
-use event_sauce_postgres::{PostgresBackend, PostgresCryptoKeyStore};
+use event_sauce_postgres::PostgresBackend;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use testcontainers_modules::postgres::Postgres;
@@ -476,22 +474,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let port = postgres.get_host_port_ipv4(5432).await?;
     let database_url = format!("postgres://postgres:postgres@localhost:{port}/postgres");
 
-    // Create and migrate the PostgreSQL crypto key store
-    let pool = sqlx::PgPool::connect(&database_url).await?;
-    let crypto_key_store = PostgresCryptoKeyStore::builder()
-        .pool(pool)
-        .schema("event_sauce")
-        .build()?;
-    crypto_key_store.migrate().await?;
-    let crypto_key_store = Arc::new(crypto_key_store);
-
-    // Build backend with AES-256-GCM encryption for encrypted aggregates
+    // Build backend — crypto key store (PostgresCryptoKeyStore) and provider
+    // (AES-256-GCM) are included and migrated automatically.
     println!("  Initializing backend with AES-256-GCM encryption...");
     let backend = PostgresBackend::builder()
         .database_url(&database_url)
         .schema("event_sauce")
-        .crypto_key_store(crypto_key_store.clone() as Arc<dyn CryptoKeyStore>)
-        .crypto_provider(Arc::new(Aes256GcmProvider))
         .build()
         .await?;
 
@@ -758,7 +746,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let bob_uuid = bob.entity_id().as_uuid();
     println!("  Deleting encryption key for Bob ({bob_uuid})...");
-    crypto_key_store.delete_key(bob_uuid).await?;
+    store
+        .crypto_key_store()
+        .expect("crypto key store configured")
+        .delete_key(bob_uuid)
+        .await?;
     println!("  Key deleted — Bob's data is now permanently unreadable.\n");
 
     // Attempt to load Bob — should fail

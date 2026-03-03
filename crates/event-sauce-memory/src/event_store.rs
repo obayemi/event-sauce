@@ -285,6 +285,8 @@ impl InMemoryEventStoreBuilder {
     ///
     /// - **Snapshot config**: Every 100 events
     /// - **Checkpoint store**: None
+    /// - **Crypto key store**: [`InMemoryCryptoKeyStore`](super::InMemoryCryptoKeyStore)
+    /// - **Crypto provider**: [`Aes256GcmProvider`](event_sauce_crypto::Aes256GcmProvider)
     ///
     /// # Examples
     ///
@@ -305,8 +307,14 @@ impl InMemoryEventStoreBuilder {
                     .unwrap_or_else(|| SnapshotConfig::builder().build()),
             }),
             checkpoint_store: self.checkpoint_store,
-            crypto_key_store: self.crypto_key_store,
-            crypto_provider: self.crypto_provider,
+            crypto_key_store: Some(
+                self.crypto_key_store
+                    .unwrap_or_else(|| Arc::new(super::InMemoryCryptoKeyStore::new())),
+            ),
+            crypto_provider: Some(
+                self.crypto_provider
+                    .unwrap_or_else(|| Arc::new(event_sauce_crypto::Aes256GcmProvider)),
+            ),
         }
     }
 }
@@ -1099,19 +1107,25 @@ mod tests {
     // === Crypto Builder Tests ===
 
     #[tokio::test]
-    async fn test_crypto_key_store_returns_none_by_default() {
+    async fn test_crypto_key_store_available_by_default() {
         let store = InMemoryEventStore::new();
-        assert!(store.crypto_key_store().is_none());
+        assert!(
+            store.crypto_key_store().is_some(),
+            "crypto key store should be provided by default"
+        );
     }
 
     #[tokio::test]
-    async fn test_crypto_provider_returns_none_by_default() {
+    async fn test_crypto_provider_available_by_default() {
         let store = InMemoryEventStore::new();
-        assert!(store.crypto_provider().is_none());
+        assert!(
+            store.crypto_provider().is_some(),
+            "crypto provider should be provided by default"
+        );
     }
 
     #[tokio::test]
-    async fn test_builder_with_crypto_key_store() {
+    async fn test_builder_with_custom_crypto_key_store() {
         use super::super::crypto_key_store::InMemoryCryptoKeyStore;
         let key_store = Arc::new(InMemoryCryptoKeyStore::new());
         let store = InMemoryEventStore::builder()
@@ -1122,7 +1136,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_builder_with_crypto_provider() {
+    async fn test_builder_with_custom_crypto_provider() {
         /// Minimal mock provider for builder testing.
         struct MockProvider;
         impl event_sauce_core::CryptoProvider for MockProvider {
