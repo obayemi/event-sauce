@@ -24,7 +24,7 @@ use std::sync::Arc;
 
 use event_sauce_core::{
     command_handler, crypto, define_events, reactor, Aggregate, AggregateRoot, AggregateVersion,
-    Entity, EntityId, EventStore, Loaded, Position, ReactorRunner, Specification, StreamId,
+    EntityId, EventStore, Loaded, Position, ReactorRunner, Specification, StreamId,
 };
 use event_sauce_macros::{aggregate, aggregate_error, specification, AggregateError, AggregateId};
 use event_sauce_postgres::PostgresBackend;
@@ -202,14 +202,14 @@ fn is_order_owner(order: &Order, actor_id: UserId) -> bool {
 define_events! {
     enum OrderEvent for Order {
         Placed {
-            user_id: EntityId,
+            user_id: UserId,
         }
         @init
         @actor(User)
         => |id, event| {
             Order {
                 id,
-                user_id: event.user_id.into(),
+                user_id: event.user_id,
                 items: Vec::new(),
                 total: 0,
                 status: OrderStatus::Pending,
@@ -223,7 +223,7 @@ define_events! {
         }
         @actor(User)
         @validate |agg, actor, evt| {
-            IsOrderOwner { actor_id: actor.entity_id().into() }.validate_or(agg, |msg| {
+            IsOrderOwner { actor_id: actor.id() }.validate_or(agg, |msg| {
                 OrderError::PermissionDenied(msg)
             })?;
             ValidItemPrice.validate_or(evt, |_| OrderError::InvalidAmount(evt.price))?;
@@ -243,7 +243,7 @@ define_events! {
         Completed {}
         @actor(User)
         @validate |order, actor, _evt| {
-            IsOrderOwner { actor_id: actor.entity_id().into() }.validate_or(order, |msg| {
+            IsOrderOwner { actor_id: actor.id() }.validate_or(order, |msg| {
                 OrderError::PermissionDenied(msg)
             })?;
             Ok(())
@@ -259,7 +259,7 @@ define_events! {
         @delete
         @actor(User)
         @validate |order, actor, _evt| {
-            IsOrderOwner { actor_id: actor.entity_id().into() }.validate_or(order, |msg| {
+            IsOrderOwner { actor_id: actor.id() }.validate_or(order, |msg| {
                 OrderError::PermissionDenied(msg)
             })?;
             OrderIsPending.check(order)?;
@@ -290,7 +290,7 @@ command_handler! {
     impl Order {
         /// Create a new order (requires authenticated user)
         @init @actor(User)
-        fn create_order(user_id: EntityId) -> PlacedEvent { user_id };
+        fn create_order(user_id: UserId) -> PlacedEvent { user_id };
 
         /// Add an item to the order (requires order owner)
         @actor(User)
@@ -312,36 +312,16 @@ command_handler! {
 // Notification Aggregate (created by reactor on order completion)
 // ============================================================================
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, AggregateError)]
 #[error("notification error")]
 struct NotificationError;
 
-impl event_sauce_core::AggregateError for NotificationError {}
-
+#[aggregate(event = "NotificationEvent", error = "NotificationError")]
 #[derive(Debug, Serialize, Deserialize)]
 struct Notification {
+    #[id]
     id: EntityId,
     message: String,
-}
-
-impl Entity for Notification {
-    fn new(id: EntityId) -> Self {
-        Self {
-            id,
-            message: String::new(),
-        }
-    }
-    fn entity_id(&self) -> EntityId {
-        self.id
-    }
-}
-
-impl event_sauce_core::DefaultEntity for Notification {}
-
-impl Aggregate for Notification {
-    type Event = NotificationEvent;
-    type Error = NotificationError;
-    type DeletedState = Self;
 }
 
 define_events! {
@@ -389,7 +369,7 @@ reactor! {
 #[derive(Debug, Clone)]
 struct OrderSummaryView {
     order_id: EntityId,
-    user_id: EntityId,
+    user_id: UserId,
     item_count: usize,
     total_amount: i64,
     status: OrderStatus,
@@ -528,7 +508,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("\n=== Verifying User Data is Encrypted at Rest ===\n");
 
-    let alice_stream_id = StreamId::new(User::aggregate_type(), alice.entity_id().as_uuid());
+    let alice_stream_id = StreamId::new(User::aggregate_type(), alice.id().as_uuid());
     let mut alice_stream = store
         .load_stream(alice_stream_id, AggregateVersion::initial())
         .await?;
@@ -547,8 +527,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n=== Creating Orders (Actor-Validated) ===\n");
 
     // Alice creates an order — she's the actor providing permission
-    let mut order1 = Order::create_order(&alice, alice.entity_id())?;
-    let order1_id = OrderId(order1.entity_id());
+    let mut order1 = Order::create_order(&alice, alice.id())?;
+    let order1_id = OrderId(order1.id());
     order1.add_item(&alice, "laptop".to_string(), 1, 120_000)?;
     order1.add_item(&alice, "mouse".to_string(), 2, 2500)?;
     println!(
@@ -567,7 +547,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Bob creates his own order
     let order2_eid = EntityId::new();
     let order2_id = OrderId(order2_eid);
-    let mut order2 = Order::create_order_with_id(order2_eid, &bob, bob.entity_id())?;
+    let mut order2 = Order::create_order_with_id(order2_eid, &bob, bob.id())?;
     order2.add_item(&bob, "keyboard".to_string(), 1, 8500)?;
     println!(
         "\n  Order {order2_id} created by Bob (${:.2})",
@@ -745,7 +725,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("\n=== Crypto-Shredding (GDPR Right to Be Forgotten) ===\n");
 
-    let bob_uuid = bob.entity_id().as_uuid();
+    let bob_uuid = bob.id().as_uuid();
     println!("  Deleting encryption key for Bob ({bob_uuid})...");
     store
         .crypto_key_store()
@@ -781,7 +761,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Loaded::Active(a) => {
             println!(
                 "    Order {}: user_id={}, total=${:.2} (active)",
-                a.entity_id(),
+                a.id(),
                 a.user_id,
                 a.total as f64 / 100.0
             );

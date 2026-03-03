@@ -542,8 +542,9 @@ fn test_aggregate_encrypted_works_with_aggregate_root() {
 // ============================================================================
 
 // Typed ID newtype — wraps EntityId with compile-time aggregate association
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[derive(event_sauce_macros::AggregateId)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, event_sauce_macros::AggregateId,
+)]
 #[aggregate_id(TypedIdAgg)]
 struct TypedIdAggId(EntityId);
 

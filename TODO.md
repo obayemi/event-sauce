@@ -1,15 +1,16 @@
-- [ ] update postgres backend to include crypto store / provider by default
+- [ ] add a way to create non event-stored entities / aggregates. this should be a flag in the #aggregate macro, and require an other store type that does store data dyrectly instead of events
+- [ ] indexation of some form ?
+- [ ] update documentation and examples to describe and use the new AggregateId system
+- [x] update postgres backend to include crypto store / provider by default
 - [ ] add "from_actor" property to event to allow filling them with data from the actor
 - [ ] allow validate_spec to use "on event" syntax
 - [ ] find  ways  to integrate specifications more tightly with error typings to avoid needing to validate speficications manually for error types, and also to avoid requireing to use validate_or to handle errors
 - [x] update postgres example to use function based specifications instead of macro one.
         also update all validation to be based on specificationns instead of being written in the validation functions, and all specifications to be defined as functios instead of using the macro syntax
 - [x] allow "deletion" of aggregates "deleted", and provide with "deletion" events (like init ones, but return a DeletedAggregat variant)
-- [ ] add a way to create non event-stored entities / aggregates. this should be a flag in the #aggregate macro, and require an other store type that does store data dyrectly instead of events (also, should still 
 - [x] represent the "deleted" state in aggregate storage to allow snapshoting deleted aggregates
 
-- [.] plan how to implement an event orchestration system where e.g. an "admin_user.kick_user(group_id, user_id)" coudl generate a KickedUser on the UserAggregate for the admin, and
-  then be transformed in a UserLeft on the Group aggregate (with "kicked" as reason, derived from the KickedUser Event)
+- [x] plan how to implement an event orchestration system where e.g. an "admin_user.kick_user(group_id, user_id)" coudl generate a KickedUser on the UserAggregate for the admin, and then be transformed in a UserLeft on the Group aggregate (with "kicked" as reason, derived from the KickedUser Event)
 
 
 - [x] add encrypted property to events
