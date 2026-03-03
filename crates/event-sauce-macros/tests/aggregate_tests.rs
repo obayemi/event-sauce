@@ -536,3 +536,125 @@ fn test_aggregate_encrypted_works_with_aggregate_root() {
     assert_eq!(root.name, "Secret");
     assert_eq!(root.version(), AggregateVersion::new(1));
 }
+
+// ============================================================================
+// Tests for typed AggregateId in #[aggregate] struct
+// ============================================================================
+
+// Typed ID newtype — wraps EntityId with compile-time aggregate association
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(event_sauce_macros::AggregateId)]
+#[aggregate_id(TypedIdAgg)]
+struct TypedIdAggId(EntityId);
+
+#[derive(Debug, thiserror::Error)]
+#[error("typed id aggregate error")]
+struct TypedIdAggError;
+
+impl AggregateError for TypedIdAggError {}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum TypedIdAggEvent {
+    Created {
+        name: String,
+        timestamp: chrono::DateTime<chrono::Utc>,
+    },
+}
+
+impl DomainEvent for TypedIdAggEvent {
+    type Aggregate = TypedIdAgg;
+    fn event_type(&self) -> &'static str {
+        match self {
+            TypedIdAggEvent::Created { .. } => "TypedIdAgg.Created",
+        }
+    }
+    fn event_version(&self) -> event_sauce_core::EventVersion {
+        event_sauce_core::EventVersion::new(1)
+    }
+    fn occurred_at(&self) -> chrono::DateTime<chrono::Utc> {
+        match self {
+            TypedIdAggEvent::Created { timestamp, .. } => *timestamp,
+        }
+    }
+}
+
+impl ApplyEvent<TypedIdAgg> for TypedIdAggEvent {
+    fn apply(&self, entity: &mut TypedIdAgg) {
+        match self {
+            TypedIdAggEvent::Created { name, .. } => {
+                entity.name = name.clone();
+            }
+        }
+    }
+}
+
+impl EventApplicator<TypedIdAgg> for TypedIdAggEvent {
+    fn dispatch(&self, entity: &mut TypedIdAgg) -> Result<(), TypedIdAggError> {
+        self.apply(entity);
+        Ok(())
+    }
+    fn dispatch_unchecked(&self, entity: &mut TypedIdAgg) {
+        self.apply(entity);
+    }
+}
+
+/// Aggregate with a typed ID field — uses TypedIdAggId instead of EntityId.
+#[event_sauce_macros::aggregate(event = "TypedIdAggEvent", error = "TypedIdAggError")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TypedIdAgg {
+    #[id]
+    id: TypedIdAggId,
+    name: String,
+}
+
+#[test]
+fn test_typed_id_aggregate_entity_id() {
+    let raw_id = EntityId::new();
+    let agg = TypedIdAgg {
+        id: TypedIdAggId(raw_id),
+        name: "test".to_string(),
+    };
+    // entity_id() still returns EntityId
+    assert_eq!(agg.entity_id(), raw_id);
+}
+
+#[test]
+fn test_typed_id_aggregate_id_method() {
+    let raw_id = EntityId::new();
+    let agg = TypedIdAgg {
+        id: TypedIdAggId(raw_id),
+        name: "test".to_string(),
+    };
+    // id() returns the typed ID
+    let typed_id: TypedIdAggId = agg.id();
+    assert_eq!(*typed_id, raw_id);
+}
+
+#[test]
+fn test_typed_id_aggregate_new_converts_entity_id() {
+    use event_sauce_core::Entity;
+    let raw_id = EntityId::new();
+    // Entity::new() takes EntityId and converts to TypedIdAggId internally
+    let agg = TypedIdAgg::new(raw_id);
+    assert_eq!(agg.entity_id(), raw_id);
+    assert_eq!(*agg.id(), raw_id);
+}
+
+#[test]
+fn test_typed_id_aggregate_root_id_via_deref() {
+    let raw_id = EntityId::new();
+    let mut root = AggregateRoot::<TypedIdAgg>::new(raw_id);
+
+    root.apply(TypedIdAggEvent::Created {
+        name: "Alice".into(),
+        timestamp: chrono::Utc::now(),
+    })
+    .unwrap();
+
+    // entity_id() returns EntityId (from AggregateRoot directly)
+    assert_eq!(root.entity_id(), raw_id);
+    // id() returns TypedIdAggId (from TypedIdAgg::id() via Deref)
+    let typed_id: TypedIdAggId = root.id();
+    assert_eq!(*typed_id, raw_id);
+    assert_eq!(root.name, "Alice");
+}

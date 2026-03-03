@@ -101,7 +101,7 @@ define_events! {
         }
         => |id, event| {
             User {
-                id,
+                id: id.into(),
                 email: event.email.clone(),
                 name: event.name.clone(),
                 role: event.role,
@@ -123,11 +123,12 @@ define_events! {
 
 /// User aggregate — **encrypted** for GDPR: all event data is encrypted at rest.
 /// The `init` flag uses the type-state pattern; `encrypted` enables crypto-shredding.
+/// The `#[id]` field uses a typed `UserId` — compile-time safety with no separate ID definition.
 #[aggregate(event = "UserEvent", error = "UserError", init, encrypted)]
 #[derive(Debug, Serialize, Deserialize)]
 struct User {
     #[id]
-    id: EntityId,
+    id: UserId,
     email: String,
     name: String,
     role: UserRole,
@@ -193,7 +194,7 @@ fn valid_item_price(event: &ItemAddedEvent) -> bool {
 
 // Specification: Actor must be the order owner
 #[specification("Only the order owner can perform this action", actor = actor_id)]
-fn is_order_owner(order: &Order, actor_id: EntityId) -> bool {
+fn is_order_owner(order: &Order, actor_id: UserId) -> bool {
     order.user_id == *actor_id
 }
 
@@ -208,7 +209,7 @@ define_events! {
         => |id, event| {
             Order {
                 id,
-                user_id: event.user_id,
+                user_id: event.user_id.into(),
                 items: Vec::new(),
                 total: 0,
                 status: OrderStatus::Pending,
@@ -222,7 +223,7 @@ define_events! {
         }
         @actor(User)
         @validate |agg, actor, evt| {
-            IsOrderOwner { actor_id: actor.entity_id() }.validate_or(agg, |msg| {
+            IsOrderOwner { actor_id: actor.entity_id().into() }.validate_or(agg, |msg| {
                 OrderError::PermissionDenied(msg)
             })?;
             ValidItemPrice.validate_or(evt, |_| OrderError::InvalidAmount(evt.price))?;
@@ -242,7 +243,7 @@ define_events! {
         Completed {}
         @actor(User)
         @validate |order, actor, _evt| {
-            IsOrderOwner { actor_id: actor.entity_id() }.validate_or(order, |msg| {
+            IsOrderOwner { actor_id: actor.entity_id().into() }.validate_or(order, |msg| {
                 OrderError::PermissionDenied(msg)
             })?;
             Ok(())
@@ -258,7 +259,7 @@ define_events! {
         @delete
         @actor(User)
         @validate |order, actor, _evt| {
-            IsOrderOwner { actor_id: actor.entity_id() }.validate_or(order, |msg| {
+            IsOrderOwner { actor_id: actor.entity_id().into() }.validate_or(order, |msg| {
                 OrderError::PermissionDenied(msg)
             })?;
             OrderIsPending.check(order)?;
@@ -278,7 +279,7 @@ define_events! {
 struct Order {
     #[id]
     id: EntityId,
-    user_id: EntityId, // Always valid — set by init event, no Option needed
+    user_id: UserId, // Always valid — set by init event, no Option needed
     items: Vec<OrderItem>,
     total: i64,
     status: OrderStatus,
@@ -501,8 +502,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Alice Smith".to_string(),
         UserRole::Customer,
     )?;
-    // Typed ID: UserId wraps EntityId with compile-time aggregate association
-    let alice_id = UserId(alice.entity_id());
+    // Typed ID: .id() returns UserId directly (no manual conversion needed)
+    let alice_id = alice.id();
     println!(
         "  Created user: {} ({}) [role: {:?}] [id: {alice_id}]",
         alice.name, alice.email, alice.role
@@ -514,7 +515,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Bob Jones".to_string(),
         UserRole::Customer,
     )?;
-    let bob_id = UserId(bob.entity_id());
+    let bob_id = bob.id();
     println!(
         "  Created user: {} ({}) [role: {:?}] [id: {bob_id}]",
         bob.name, bob.email, bob.role

@@ -378,8 +378,9 @@ fn find_id_field_flexible(fields: &Fields) -> Result<Ident, TokenStream> {
 
 /// Derive macro for implementing the `Entity` trait.
 ///
-/// Generates `Entity` implementation for a struct that has an `EntityId` field.
+/// Generates `Entity` implementation for a struct that has an ID field.
 /// The ID field is identified by either a `#[id]` attribute or by being named `id`.
+/// The field type can be `EntityId` or a typed `AggregateId` newtype (e.g., `UserId(EntityId)`).
 /// Non-ID fields must implement `Default`.
 ///
 /// # Examples
@@ -401,7 +402,8 @@ fn find_id_field_flexible(fields: &Fields) -> Result<Ident, TokenStream> {
 /// # Requirements
 ///
 /// - Must be a struct with named fields
-/// - Must have a field of type `EntityId` (identified by `#[id]` attr or named `id`)
+/// - Must have an ID field (identified by `#[id]` attr or named `id`)
+///   that is `EntityId` or a type implementing `From<EntityId>` and `Into<EntityId>`
 /// - All non-ID fields must implement `Default`
 ///
 /// # Panics
@@ -440,11 +442,12 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
         Err(err) => return err,
     };
 
-    // Generate field initializers: id field gets the argument, others get Default::default()
+    // Generate field initializers: id field gets the argument, others get Default::default().
+    // Uses .into() for the ID field to support both EntityId and typed AggregateId fields.
     let field_inits = named_fields.iter().map(|f| {
         let fname = f.ident.as_ref().expect("Named field should have ident");
         if fname == &id_field_name {
-            quote! { #fname: id }
+            quote! { #fname: id.into() }
         } else {
             quote! { #fname: Default::default() }
         }
@@ -459,7 +462,7 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
             }
 
             fn entity_id(&self) -> event_sauce_core::EntityId {
-                self.#id_field_name
+                self.#id_field_name.into()
             }
         }
 
@@ -1022,7 +1025,8 @@ fn resolve_context_expr(
 ///
 /// # Attributes
 ///
-/// - `#[id]` - Marks the field containing the entity ID (type must be `EntityId`)
+/// - `#[id]` - Marks the field containing the entity ID (type can be `EntityId` or a
+///   typed `AggregateId` newtype like `UserId(EntityId)`)
 /// - `event = "..."` - The event enum type name
 /// - `error = "..."` - The error type name (optional, defaults to `()`)
 /// - `init` - Skip `DefaultEntity` and `Entity::new()`; aggregate uses init events
@@ -1092,6 +1096,13 @@ pub fn aggregate(attr: TokenStream, item: TokenStream) -> TokenStream {
         Err(err) => return err,
     };
 
+    // Extract ID field type for `type Id` generation
+    let id_field_type = named_fields
+        .iter()
+        .find(|f| f.ident.as_ref() == Some(&id_field_name))
+        .map(|f| &f.ty)
+        .expect("ID field must exist (already validated)");
+
     // Strip #[id] attributes from the struct fields before emitting
     let mut cleaned_input = input.clone();
     if let Data::Struct(ref mut data) = cleaned_input.data {
@@ -1105,12 +1116,13 @@ pub fn aggregate(attr: TokenStream, item: TokenStream) -> TokenStream {
     let is_init = aggregate_attrs.init;
 
     // Generate Entity impl — for init aggregates, only entity_id (default panicking new())
-    // For DefaultEntity aggregates, also override new() with field defaults
+    // For DefaultEntity aggregates, also override new() with field defaults.
+    // Uses .into() for the ID field to support both EntityId and typed AggregateId fields.
     let entity_impl = if is_init {
         quote! {
             impl event_sauce_core::Entity for #aggregate_name {
                 fn entity_id(&self) -> event_sauce_core::EntityId {
-                    self.#id_field_name
+                    self.#id_field_name.into()
                 }
             }
         }
@@ -1118,7 +1130,7 @@ pub fn aggregate(attr: TokenStream, item: TokenStream) -> TokenStream {
         let field_inits = named_fields.iter().map(|f| {
             let fname = f.ident.as_ref().expect("Named field should have ident");
             if fname == &id_field_name {
-                quote! { #fname: id }
+                quote! { #fname: id.into() }
             } else {
                 quote! { #fname: Default::default() }
             }
@@ -1133,7 +1145,7 @@ pub fn aggregate(attr: TokenStream, item: TokenStream) -> TokenStream {
                 }
 
                 fn entity_id(&self) -> event_sauce_core::EntityId {
-                    self.#id_field_name
+                    self.#id_field_name.into()
                 }
             }
 
@@ -1189,6 +1201,14 @@ pub fn aggregate(attr: TokenStream, item: TokenStream) -> TokenStream {
 
             #aggregate_type_override
             #is_encrypted_override
+        }
+
+        impl #aggregate_name {
+            /// Returns the aggregate's typed ID.
+            #[must_use]
+            pub fn id(&self) -> #id_field_type {
+                self.#id_field_name
+            }
         }
     };
 
