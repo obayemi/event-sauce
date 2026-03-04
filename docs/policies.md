@@ -100,6 +100,8 @@ ctx.commit(&mut aggregate).await?;
 ctx.commit_deleted(&mut deleted_aggregate).await?;
 ```
 
+Commits through `PolicyContext` are **buffered**: they are only persisted to the event store when the handler returns `Ok(())`. If the handler returns `Err`, all buffered commits are discarded. This prevents partially-committed events on handler failure, and avoids duplicate events when the handler is retried.
+
 ### Introspection
 
 ```rust

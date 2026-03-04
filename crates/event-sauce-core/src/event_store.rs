@@ -13,6 +13,18 @@ use crate::{
     EntityId, EventEnvelope, Loaded, Repository, Result, SnapshotConfig,
 };
 
+/// A prepared but not-yet-persisted commit.
+///
+/// Contains all the data needed to persist events and an optional snapshot.
+/// Created by [`prepare_commit()`] and flushed by [`flush_prepared()`].
+#[derive(Debug)]
+pub(crate) struct PreparedCommit {
+    pub stream_id: StreamId,
+    pub events: Vec<EventEnvelope>,
+    pub expected_version: AggregateVersion,
+    pub snapshot: Option<Snapshot>,
+}
+
 /// Stream ID uniquely identifying an event stream.
 ///
 /// Combines aggregate type and aggregate ID to create a unique stream identifier.
@@ -366,135 +378,14 @@ pub trait EventStore: Send + Sync {
     /// Returns `Error::ConcurrencyConflict` if another process modified the aggregate.
     /// Returns `Error::Encryption` if encryption fails for a encrypted aggregate.
     /// Returns `Error::InvalidState` if a encrypted aggregate lacks crypto configuration.
-    #[allow(clippy::too_many_lines)]
     async fn commit<A>(&self, aggregate: &mut AggregateRoot<A>) -> Result<()>
     where
         A: Aggregate + serde::Serialize,
         A::Event: serde::Serialize,
     {
-        let pending = aggregate.pending_events_with_actors();
-        if pending.is_empty() {
-            return Ok(());
+        if let Some(prepared) = prepare_commit(self, aggregate).await? {
+            flush_prepared(self, prepared).await?;
         }
-
-        let aggregate_id = aggregate.entity_id().as_uuid();
-        let aggregate_type = AggregateRoot::<A>::aggregate_type();
-        #[allow(clippy::cast_possible_wrap)]
-        let pending_count = pending.len() as i64;
-        let expected_version =
-            AggregateVersion::new(aggregate.version().as_i64().saturating_sub(pending_count));
-
-        let envelopes: Result<Vec<EventEnvelope>> = pending
-            .iter()
-            .map(|pe| {
-                let mut envelope = pe.event.to_envelope(aggregate_id)?;
-                if let Some(actor_id) = pe.actor_id {
-                    envelope = envelope.with_created_by(actor_id.as_uuid());
-                }
-                if let Some(metadata) = &pe.metadata {
-                    envelope = envelope.with_metadata(metadata.clone());
-                }
-                Ok(envelope)
-            })
-            .collect();
-        let mut envelopes = envelopes?;
-
-        // Encrypt event data for encrypted aggregates
-        if A::is_encrypted() {
-            let crypto_key = ensure_crypto_key(self, aggregate_id).await?;
-            let provider = require_crypto_provider(self)?;
-
-            for envelope in &mut envelopes {
-                envelope.event_data =
-                    crate::crypto::encrypt_value(provider, &crypto_key, &envelope.event_data)?;
-            }
-        } else if A::Event::has_any_encrypted_fields() {
-            // Field-level encryption: encrypt only specific fields per event
-            let crypto_key = ensure_crypto_key(self, aggregate_id).await?;
-            let provider = require_crypto_provider(self)?;
-
-            for (envelope, pe) in envelopes.iter_mut().zip(pending.iter()) {
-                let fields = pe.event.encrypted_fields();
-                if !fields.is_empty() {
-                    crate::crypto::encrypt_fields(
-                        provider,
-                        &crypto_key,
-                        &mut envelope.event_data,
-                        fields,
-                    )?;
-                }
-            }
-        }
-
-        self.append(
-            StreamId::new(aggregate_type.clone(), aggregate_id),
-            envelopes.clone(),
-            expected_version,
-        )
-        .await?;
-
-        // Create snapshot if strategy indicates we should
-        let config = self.snapshot_config();
-        let strategy = config.strategy_for_type(aggregate_type.as_str());
-        let current_version = aggregate.version();
-
-        if strategy.should_snapshot(current_version) {
-            match serde_json::to_value(aggregate.entity()) {
-                Ok(mut snapshot_data) => {
-                    // Encrypt snapshot data for encrypted or field-encrypted aggregates
-                    if A::is_encrypted() || A::Event::has_any_encrypted_fields() {
-                        if let (Some(key_store), Some(provider)) =
-                            (self.crypto_key_store(), self.crypto_provider())
-                        {
-                            if let Ok(Some(crypto_key)) = key_store.get_key(aggregate_id).await {
-                                match crate::crypto::encrypt_value(
-                                    provider,
-                                    &crypto_key,
-                                    &snapshot_data,
-                                ) {
-                                    Ok(encrypted) => snapshot_data = encrypted,
-                                    Err(e) => {
-                                        tracing::warn!(
-                                            aggregate_type = %aggregate_type,
-                                            aggregate_id = %aggregate_id,
-                                            error = %e,
-                                            "Failed to encrypt snapshot data"
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    let snapshot = Snapshot::new(
-                        aggregate_id,
-                        aggregate_type.clone(),
-                        current_version,
-                        snapshot_data,
-                    );
-
-                    if let Err(e) = self.save_snapshot(snapshot).await {
-                        tracing::warn!(
-                            aggregate_type = %aggregate_type,
-                            aggregate_id = %aggregate_id,
-                            error = %e,
-                            "Failed to save snapshot"
-                        );
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        aggregate_type = %aggregate_type,
-                        aggregate_id = %aggregate_id,
-                        error = %e,
-                        "Failed to serialize entity for snapshot"
-                    );
-                }
-            }
-        }
-
-        aggregate.clear_pending_events();
-
         Ok(())
     }
 
@@ -512,136 +403,329 @@ pub trait EventStore: Send + Sync {
     /// Returns `Error::ConcurrencyConflict` if another process modified the aggregate.
     /// Returns `Error::Encryption` if encryption fails for an encrypted aggregate.
     /// Returns `Error::InvalidState` if an encrypted aggregate lacks crypto configuration.
-    #[allow(clippy::too_many_lines)]
     async fn commit_deleted<A>(&self, aggregate: &mut DeletedAggregateRoot<A>) -> Result<()>
     where
         A: Aggregate + serde::Serialize,
         A::DeletedState: serde::Serialize,
         A::Event: serde::Serialize,
     {
-        let pending = aggregate.pending_events_with_actors();
-        if pending.is_empty() {
-            return Ok(());
+        if let Some(prepared) = prepare_commit_deleted(self, aggregate).await? {
+            flush_prepared(self, prepared).await?;
         }
+        Ok(())
+    }
+}
 
-        let aggregate_id = aggregate.entity_id().as_uuid();
-        let aggregate_type = DeletedAggregateRoot::<A>::aggregate_type();
-        #[allow(clippy::cast_possible_wrap)]
-        let pending_count = pending.len() as i64;
-        let expected_version =
-            AggregateVersion::new(aggregate.version().as_i64().saturating_sub(pending_count));
+/// Prepares a commit without persisting it.
+///
+/// Extracts pending events from the aggregate root, serializes and encrypts
+/// them, computes a snapshot if needed, and clears the pending events.
+/// Returns `None` if there are no pending events.
+#[allow(clippy::too_many_lines)]
+pub(crate) async fn prepare_commit<S: EventStore + ?Sized, A>(
+    store: &S,
+    aggregate: &mut AggregateRoot<A>,
+) -> Result<Option<PreparedCommit>>
+where
+    A: Aggregate + serde::Serialize,
+    A::Event: serde::Serialize,
+{
+    let pending = aggregate.pending_events_with_actors();
+    if pending.is_empty() {
+        return Ok(None);
+    }
 
-        let envelopes: Result<Vec<EventEnvelope>> = pending
-            .iter()
-            .map(|pe| {
-                let mut envelope = pe.event.to_envelope(aggregate_id)?;
-                if let Some(actor_id) = pe.actor_id {
-                    envelope = envelope.with_created_by(actor_id.as_uuid());
-                }
-                if let Some(metadata) = &pe.metadata {
-                    envelope = envelope.with_metadata(metadata.clone());
-                }
-                Ok(envelope)
-            })
-            .collect();
-        let mut envelopes = envelopes?;
+    let aggregate_id = aggregate.entity_id().as_uuid();
+    let aggregate_type = AggregateRoot::<A>::aggregate_type();
+    #[allow(clippy::cast_possible_wrap)]
+    let pending_count = pending.len() as i64;
+    let expected_version =
+        AggregateVersion::new(aggregate.version().as_i64().saturating_sub(pending_count));
 
-        // Encrypt event data for encrypted aggregates
-        if A::is_encrypted() {
-            let crypto_key = ensure_crypto_key(self, aggregate_id).await?;
-            let provider = require_crypto_provider(self)?;
-
-            for envelope in &mut envelopes {
-                envelope.event_data =
-                    crate::crypto::encrypt_value(provider, &crypto_key, &envelope.event_data)?;
+    let envelopes: Result<Vec<EventEnvelope>> = pending
+        .iter()
+        .map(|pe| {
+            let mut envelope = pe.event.to_envelope(aggregate_id)?;
+            if let Some(actor_id) = pe.actor_id {
+                envelope = envelope.with_created_by(actor_id.as_uuid());
             }
-        } else if A::Event::has_any_encrypted_fields() {
-            let crypto_key = ensure_crypto_key(self, aggregate_id).await?;
-            let provider = require_crypto_provider(self)?;
+            if let Some(metadata) = &pe.metadata {
+                envelope = envelope.with_metadata(metadata.clone());
+            }
+            Ok(envelope)
+        })
+        .collect();
+    let mut envelopes = envelopes?;
 
-            for (envelope, pe) in envelopes.iter_mut().zip(pending.iter()) {
-                let fields = pe.event.encrypted_fields();
-                if !fields.is_empty() {
-                    crate::crypto::encrypt_fields(
-                        provider,
-                        &crypto_key,
-                        &mut envelope.event_data,
-                        fields,
-                    )?;
-                }
+    // Encrypt event data for encrypted aggregates
+    if A::is_encrypted() {
+        let crypto_key = ensure_crypto_key(store, aggregate_id).await?;
+        let provider = require_crypto_provider(store)?;
+
+        for envelope in &mut envelopes {
+            envelope.event_data =
+                crate::crypto::encrypt_value(provider, &crypto_key, &envelope.event_data)?;
+        }
+    } else if A::Event::has_any_encrypted_fields() {
+        // Field-level encryption: encrypt only specific fields per event
+        let crypto_key = ensure_crypto_key(store, aggregate_id).await?;
+        let provider = require_crypto_provider(store)?;
+
+        for (envelope, pe) in envelopes.iter_mut().zip(pending.iter()) {
+            let fields = pe.event.encrypted_fields();
+            if !fields.is_empty() {
+                crate::crypto::encrypt_fields(
+                    provider,
+                    &crypto_key,
+                    &mut envelope.event_data,
+                    fields,
+                )?;
             }
         }
+    }
 
-        self.append(
-            StreamId::new(aggregate_type.clone(), aggregate_id),
-            envelopes.clone(),
-            expected_version,
+    // Compute snapshot if strategy indicates we should
+    let config = store.snapshot_config();
+    let strategy = config.strategy_for_type(aggregate_type.as_str());
+    let current_version = aggregate.version();
+
+    let snapshot = if strategy.should_snapshot(current_version) {
+        build_snapshot::<S, A>(
+            store,
+            aggregate_id,
+            &aggregate_type,
+            current_version,
+            || serde_json::to_value(aggregate.entity()),
+        )
+        .await
+    } else {
+        None
+    };
+
+    let stream_id = StreamId::new(aggregate_type, aggregate_id);
+
+    aggregate.clear_pending_events();
+
+    Ok(Some(PreparedCommit {
+        stream_id,
+        events: envelopes,
+        expected_version,
+        snapshot,
+    }))
+}
+
+/// Prepares a commit for a deleted aggregate without persisting it.
+///
+/// Works like [`prepare_commit()`] but operates on a `DeletedAggregateRoot<A>`.
+/// The snapshot stores the serialized `DeletedState` with `is_deleted = true`.
+#[allow(clippy::too_many_lines)]
+pub(crate) async fn prepare_commit_deleted<S: EventStore + ?Sized, A>(
+    store: &S,
+    aggregate: &mut DeletedAggregateRoot<A>,
+) -> Result<Option<PreparedCommit>>
+where
+    A: Aggregate + serde::Serialize,
+    A::DeletedState: serde::Serialize,
+    A::Event: serde::Serialize,
+{
+    let pending = aggregate.pending_events_with_actors();
+    if pending.is_empty() {
+        return Ok(None);
+    }
+
+    let aggregate_id = aggregate.entity_id().as_uuid();
+    let aggregate_type = DeletedAggregateRoot::<A>::aggregate_type();
+    #[allow(clippy::cast_possible_wrap)]
+    let pending_count = pending.len() as i64;
+    let expected_version =
+        AggregateVersion::new(aggregate.version().as_i64().saturating_sub(pending_count));
+
+    let envelopes: Result<Vec<EventEnvelope>> = pending
+        .iter()
+        .map(|pe| {
+            let mut envelope = pe.event.to_envelope(aggregate_id)?;
+            if let Some(actor_id) = pe.actor_id {
+                envelope = envelope.with_created_by(actor_id.as_uuid());
+            }
+            if let Some(metadata) = &pe.metadata {
+                envelope = envelope.with_metadata(metadata.clone());
+            }
+            Ok(envelope)
+        })
+        .collect();
+    let mut envelopes = envelopes?;
+
+    // Encrypt event data for encrypted aggregates
+    if A::is_encrypted() {
+        let crypto_key = ensure_crypto_key(store, aggregate_id).await?;
+        let provider = require_crypto_provider(store)?;
+
+        for envelope in &mut envelopes {
+            envelope.event_data =
+                crate::crypto::encrypt_value(provider, &crypto_key, &envelope.event_data)?;
+        }
+    } else if A::Event::has_any_encrypted_fields() {
+        let crypto_key = ensure_crypto_key(store, aggregate_id).await?;
+        let provider = require_crypto_provider(store)?;
+
+        for (envelope, pe) in envelopes.iter_mut().zip(pending.iter()) {
+            let fields = pe.event.encrypted_fields();
+            if !fields.is_empty() {
+                crate::crypto::encrypt_fields(
+                    provider,
+                    &crypto_key,
+                    &mut envelope.event_data,
+                    fields,
+                )?;
+            }
+        }
+    }
+
+    // Create snapshot for deleted aggregate
+    let config = store.snapshot_config();
+    let strategy = config.strategy_for_type(aggregate_type.as_str());
+    let current_version = aggregate.version();
+
+    let snapshot = if strategy.should_snapshot(current_version) {
+        build_deleted_snapshot::<S, A>(
+            store,
+            aggregate_id,
+            &aggregate_type,
+            current_version,
+            || serde_json::to_value(aggregate.state()),
+        )
+        .await
+    } else {
+        None
+    };
+
+    let stream_id = StreamId::new(aggregate_type, aggregate_id);
+
+    aggregate.clear_pending_events();
+
+    Ok(Some(PreparedCommit {
+        stream_id,
+        events: envelopes,
+        expected_version,
+        snapshot,
+    }))
+}
+
+/// Flushes a prepared commit to the event store.
+///
+/// Appends events and saves the snapshot (best-effort for snapshot failures).
+pub(crate) async fn flush_prepared<S: EventStore + ?Sized>(
+    store: &S,
+    prepared: PreparedCommit,
+) -> Result<()> {
+    store
+        .append(
+            prepared.stream_id.clone(),
+            prepared.events,
+            prepared.expected_version,
         )
         .await?;
 
-        // Create snapshot for deleted aggregate (state never changes, ideal for caching)
-        let config = self.snapshot_config();
-        let strategy = config.strategy_for_type(aggregate_type.as_str());
-        let current_version = aggregate.version();
+    if let Some(snapshot) = prepared.snapshot {
+        if let Err(e) = store.save_snapshot(snapshot).await {
+            tracing::warn!(
+                stream_id = %prepared.stream_id,
+                error = %e,
+                "Failed to save snapshot"
+            );
+        }
+    }
 
-        if strategy.should_snapshot(current_version) {
-            match serde_json::to_value(aggregate.state()) {
-                Ok(mut snapshot_data) => {
-                    // Encrypt snapshot data for encrypted or field-encrypted aggregates
-                    if A::is_encrypted() || A::Event::has_any_encrypted_fields() {
-                        if let (Some(key_store), Some(provider)) =
-                            (self.crypto_key_store(), self.crypto_provider())
-                        {
-                            if let Ok(Some(crypto_key)) = key_store.get_key(aggregate_id).await {
-                                match crate::crypto::encrypt_value(
-                                    provider,
-                                    &crypto_key,
-                                    &snapshot_data,
-                                ) {
-                                    Ok(encrypted) => snapshot_data = encrypted,
-                                    Err(e) => {
-                                        tracing::warn!(
-                                            aggregate_type = %aggregate_type,
-                                            aggregate_id = %aggregate_id,
-                                            error = %e,
-                                            "Failed to encrypt deleted snapshot data"
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                    }
+    Ok(())
+}
 
-                    let snapshot = Snapshot::new_deleted(
-                        aggregate_id,
-                        aggregate_type.clone(),
-                        current_version,
-                        snapshot_data,
-                    );
+/// Builds an active-aggregate snapshot, encrypting if needed.
+async fn build_snapshot<S: EventStore + ?Sized, A: Aggregate>(
+    store: &S,
+    aggregate_id: uuid::Uuid,
+    aggregate_type: &AggregateType,
+    current_version: AggregateVersion,
+    serialize: impl FnOnce() -> std::result::Result<serde_json::Value, serde_json::Error>,
+) -> Option<Snapshot> {
+    match serialize() {
+        Ok(mut snapshot_data) => {
+            if A::is_encrypted() || A::Event::has_any_encrypted_fields() {
+                encrypt_snapshot_data(store, aggregate_id, aggregate_type, &mut snapshot_data)
+                    .await;
+            }
+            Some(Snapshot::new(
+                aggregate_id,
+                aggregate_type.clone(),
+                current_version,
+                snapshot_data,
+            ))
+        }
+        Err(e) => {
+            tracing::warn!(
+                aggregate_type = %aggregate_type,
+                aggregate_id = %aggregate_id,
+                error = %e,
+                "Failed to serialize entity for snapshot"
+            );
+            None
+        }
+    }
+}
 
-                    if let Err(e) = self.save_snapshot(snapshot).await {
-                        tracing::warn!(
-                            aggregate_type = %aggregate_type,
-                            aggregate_id = %aggregate_id,
-                            error = %e,
-                            "Failed to save deleted snapshot"
-                        );
-                    }
-                }
+/// Builds a deleted-aggregate snapshot, encrypting if needed.
+async fn build_deleted_snapshot<S: EventStore + ?Sized, A: Aggregate>(
+    store: &S,
+    aggregate_id: uuid::Uuid,
+    aggregate_type: &AggregateType,
+    current_version: AggregateVersion,
+    serialize: impl FnOnce() -> std::result::Result<serde_json::Value, serde_json::Error>,
+) -> Option<Snapshot> {
+    match serialize() {
+        Ok(mut snapshot_data) => {
+            if A::is_encrypted() || A::Event::has_any_encrypted_fields() {
+                encrypt_snapshot_data(store, aggregate_id, aggregate_type, &mut snapshot_data)
+                    .await;
+            }
+            Some(Snapshot::new_deleted(
+                aggregate_id,
+                aggregate_type.clone(),
+                current_version,
+                snapshot_data,
+            ))
+        }
+        Err(e) => {
+            tracing::warn!(
+                aggregate_type = %aggregate_type,
+                aggregate_id = %aggregate_id,
+                error = %e,
+                "Failed to serialize deleted state for snapshot"
+            );
+            None
+        }
+    }
+}
+
+/// Encrypts snapshot data in-place if crypto is available.
+async fn encrypt_snapshot_data<S: EventStore + ?Sized>(
+    store: &S,
+    aggregate_id: uuid::Uuid,
+    aggregate_type: &AggregateType,
+    snapshot_data: &mut serde_json::Value,
+) {
+    if let (Some(key_store), Some(provider)) = (store.crypto_key_store(), store.crypto_provider()) {
+        if let Ok(Some(crypto_key)) = key_store.get_key(aggregate_id).await {
+            match crate::crypto::encrypt_value(provider, &crypto_key, snapshot_data) {
+                Ok(encrypted) => *snapshot_data = encrypted,
                 Err(e) => {
                     tracing::warn!(
                         aggregate_type = %aggregate_type,
                         aggregate_id = %aggregate_id,
                         error = %e,
-                        "Failed to serialize deleted state for snapshot"
+                        "Failed to encrypt snapshot data"
                     );
                 }
             }
         }
-
-        aggregate.clear_pending_events();
-
-        Ok(())
     }
 }
 

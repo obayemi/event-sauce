@@ -1498,3 +1498,225 @@ async fn test_policy_runner_convenience_method_without_checkpoint_store_errors()
     let result = store.policy_runner();
     assert!(result.is_err());
 }
+
+// ============================================================================
+// Buffered commit tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_failed_handler_does_not_persist_committed_events() {
+    let store = create_store();
+    let cp = checkpoint_store(&store);
+    seed_checkpoint(&cp, "CommitThenFailPolicy").await;
+
+    // Policy that commits an aggregate then returns an error
+    struct CommitThenFailPolicy;
+
+    #[async_trait::async_trait]
+    impl<S: EventStore + 'static> event_sauce_core::Policy<S> for CommitThenFailPolicy {
+        fn name(&self) -> &'static str {
+            "CommitThenFailPolicy"
+        }
+        fn event_filter(&self) -> EventFilter {
+            EventFilter::by_event_type("User.Registered")
+        }
+        async fn handle(
+            &self,
+            _event: &EventEnvelope,
+            ctx: &PolicyContext<S>,
+        ) -> event_sauce_core::Result<()> {
+            // Commit a new aggregate
+            let id = EntityId::new();
+            let mut notification = AggregateRoot::<Notification>::new(id);
+            notification
+                .send_notification("should not persist".to_string())
+                .map_err(|e| event_sauce_core::Error::invalid_state(format!("{e}")))?;
+            ctx.commit(&mut notification).await?;
+
+            // Then fail — the commit above should NOT be persisted
+            Err(event_sauce_core::Error::custom(
+                "handler failed after commit",
+            ))
+        }
+    }
+
+    // Create a user to trigger the policy
+    let mut user = AggregateRoot::<User>::new(EntityId::new());
+    user.register("Buffered".to_string()).unwrap();
+    store.commit(&mut user).await.unwrap();
+
+    let runner = PolicyRunner::new(Arc::clone(&store), cp).register(Arc::new(CommitThenFailPolicy));
+
+    let result = runner.process_pending().await;
+    assert!(result.is_err(), "Handler should fail");
+
+    // Verify no Notification.Sent events exist
+    use futures::StreamExt;
+    let stream = store
+        .stream_all(event_sauce_core::Position::start())
+        .await
+        .unwrap();
+    futures::pin_mut!(stream);
+
+    let mut notification_count = 0;
+    while let Some(Ok(envelope)) = stream.next().await {
+        if envelope.event_type == "Notification.Sent" {
+            notification_count += 1;
+        }
+    }
+    assert_eq!(
+        notification_count, 0,
+        "Failed handler should not persist any events"
+    );
+}
+
+#[tokio::test]
+async fn test_retry_discards_failed_attempt_commits() {
+    let store = create_store();
+    let cp = checkpoint_store(&store);
+    seed_checkpoint(&cp, "RetryCommitPolicy").await;
+
+    let attempt = Arc::new(std::sync::Mutex::new(0_usize));
+
+    struct RetryCommitPolicy(Arc<std::sync::Mutex<usize>>);
+
+    #[async_trait::async_trait]
+    impl<S: EventStore + 'static> event_sauce_core::Policy<S> for RetryCommitPolicy {
+        fn name(&self) -> &'static str {
+            "RetryCommitPolicy"
+        }
+        fn event_filter(&self) -> EventFilter {
+            EventFilter::by_event_type("User.Registered")
+        }
+        async fn handle(
+            &self,
+            _event: &EventEnvelope,
+            ctx: &PolicyContext<S>,
+        ) -> event_sauce_core::Result<()> {
+            let current = {
+                let mut count = self.0.lock().unwrap();
+                *count += 1;
+                *count
+            };
+
+            // Every attempt commits a notification
+            let id = EntityId::new();
+            let mut notification = AggregateRoot::<Notification>::new(id);
+            notification
+                .send_notification(format!("attempt {current}"))
+                .map_err(|e| event_sauce_core::Error::invalid_state(format!("{e}")))?;
+            ctx.commit(&mut notification).await?;
+
+            if current <= 1 {
+                // First attempt fails
+                return Err(event_sauce_core::Error::custom("transient"));
+            }
+            // Second attempt succeeds
+            Ok(())
+        }
+    }
+
+    let mut user = AggregateRoot::<User>::new(EntityId::new());
+    user.register("RetryBuf".to_string()).unwrap();
+    store.commit(&mut user).await.unwrap();
+
+    let retry_config = RetryConfig {
+        base_delay: std::time::Duration::from_millis(1),
+        max_delay: std::time::Duration::from_millis(10),
+        limit: RetryLimit::MaxRetries(3),
+        on_exhausted: OnRetryExhausted::Fail,
+    };
+
+    let runner = PolicyRunner::new(Arc::clone(&store), cp)
+        .on_error(OnError::Retry(retry_config))
+        .register(Arc::new(RetryCommitPolicy(Arc::clone(&attempt))));
+
+    runner.process_pending().await.unwrap();
+
+    // Should have tried twice
+    assert!(
+        *attempt.lock().unwrap() >= 2,
+        "Should have retried at least once"
+    );
+
+    // Only ONE Notification.Sent event should exist (from the successful attempt)
+    use futures::StreamExt;
+    let stream = store
+        .stream_all(event_sauce_core::Position::start())
+        .await
+        .unwrap();
+    futures::pin_mut!(stream);
+
+    let mut notification_count = 0;
+    while let Some(Ok(envelope)) = stream.next().await {
+        if envelope.event_type == "Notification.Sent" {
+            notification_count += 1;
+        }
+    }
+    assert_eq!(
+        notification_count, 1,
+        "Only the successful attempt's commit should persist"
+    );
+}
+
+#[tokio::test]
+async fn test_skip_with_commit_before_fail_does_not_leak_events() {
+    let store = create_store();
+    let cp = checkpoint_store(&store);
+    seed_checkpoint(&cp, "SkipCommitPolicy").await;
+
+    struct SkipCommitPolicy;
+
+    #[async_trait::async_trait]
+    impl<S: EventStore + 'static> event_sauce_core::Policy<S> for SkipCommitPolicy {
+        fn name(&self) -> &'static str {
+            "SkipCommitPolicy"
+        }
+        fn event_filter(&self) -> EventFilter {
+            EventFilter::by_event_type("User.Registered")
+        }
+        async fn handle(
+            &self,
+            _event: &EventEnvelope,
+            ctx: &PolicyContext<S>,
+        ) -> event_sauce_core::Result<()> {
+            let id = EntityId::new();
+            let mut notification = AggregateRoot::<Notification>::new(id);
+            notification
+                .send_notification("leaked?".to_string())
+                .map_err(|e| event_sauce_core::Error::invalid_state(format!("{e}")))?;
+            ctx.commit(&mut notification).await?;
+
+            Err(event_sauce_core::Error::custom("fail after commit"))
+        }
+    }
+
+    let mut user = AggregateRoot::<User>::new(EntityId::new());
+    user.register("SkipBuf".to_string()).unwrap();
+    store.commit(&mut user).await.unwrap();
+
+    let runner = PolicyRunner::new(Arc::clone(&store), cp)
+        .on_error(OnError::Skip)
+        .register(Arc::new(SkipCommitPolicy));
+
+    runner.process_pending().await.unwrap();
+
+    // No Notification.Sent events should exist (handler failed, commit was buffered)
+    use futures::StreamExt;
+    let stream = store
+        .stream_all(event_sauce_core::Position::start())
+        .await
+        .unwrap();
+    futures::pin_mut!(stream);
+
+    let mut notification_count = 0;
+    while let Some(Ok(envelope)) = stream.next().await {
+        if envelope.event_type == "Notification.Sent" {
+            notification_count += 1;
+        }
+    }
+    assert_eq!(
+        notification_count, 0,
+        "Skipped handler should not leak committed events"
+    );
+}

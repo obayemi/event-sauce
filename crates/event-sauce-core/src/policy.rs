@@ -49,8 +49,9 @@ use async_trait::async_trait;
 use futures::StreamExt;
 
 use crate::{
-    Aggregate, AggregateId, AggregateRoot, CheckpointStoreRef, DeletedAggregateRoot, EntityIdFor,
-    EventEnvelope, EventFilter, EventMetadata, EventStore, Loaded, Position, Result,
+    event_store::PreparedCommit, Aggregate, AggregateId, AggregateRoot, CheckpointStoreRef,
+    DeletedAggregateRoot, EntityIdFor, EventEnvelope, EventFilter, EventMetadata, EventStore,
+    Loaded, Position, Result,
 };
 
 /// A policy handles events by issuing commands on other aggregates.
@@ -135,6 +136,7 @@ pub struct PolicyContext<S: EventStore> {
     store: Arc<S>,
     source_event: EventEnvelope,
     max_cascade_depth: usize,
+    pending_commits: std::sync::Mutex<Vec<PreparedCommit>>,
 }
 
 impl<S: EventStore + 'static> PolicyContext<S> {
@@ -151,6 +153,7 @@ impl<S: EventStore + 'static> PolicyContext<S> {
             store,
             source_event,
             max_cascade_depth,
+            pending_commits: std::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -253,14 +256,21 @@ impl<S: EventStore + 'static> PolicyContext<S> {
 
     /// Commits an aggregate with automatic causation tracking.
     ///
-    /// Injects causation metadata into all pending events before delegating
-    /// to the event store. Returns `Error::CascadeDepthExceeded` if the
-    /// chain is too deep.
+    /// Injects causation metadata into all pending events and buffers the
+    /// prepared commit. The buffered events are only persisted when
+    /// [`flush()`](Self::flush) is called (typically by [`PolicyRunner`] after
+    /// the handler returns `Ok`). If the handler returns `Err`, the buffer is
+    /// dropped and nothing is persisted.
     ///
     /// # Errors
     ///
     /// Returns `Error::CascadeDepthExceeded` if the cascade depth exceeds the limit.
-    /// Returns errors from the underlying event store commit.
+    /// Returns errors from serialization or encryption during preparation.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal mutex is poisoned (only possible if a prior
+    /// panic occurred while holding the lock).
     pub async fn commit<A>(&self, aggregate: &mut AggregateRoot<A>) -> Result<()>
     where
         A: Aggregate + serde::Serialize,
@@ -268,15 +278,26 @@ impl<S: EventStore + 'static> PolicyContext<S> {
     {
         let metadata = self.build_causation_metadata()?;
         aggregate.set_pending_metadata(&metadata);
-        self.store.commit(aggregate).await
+        if let Some(prepared) = crate::event_store::prepare_commit(&*self.store, aggregate).await? {
+            self.pending_commits.lock().unwrap().push(prepared);
+        }
+        Ok(())
     }
 
     /// Commits a deleted aggregate with automatic causation tracking.
     ///
+    /// Like [`commit()`](Self::commit), buffers the prepared commit for later
+    /// flushing.
+    ///
     /// # Errors
     ///
     /// Returns `Error::CascadeDepthExceeded` if the cascade depth exceeds the limit.
-    /// Returns errors from the underlying event store commit.
+    /// Returns errors from serialization or encryption during preparation.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal mutex is poisoned (only possible if a prior
+    /// panic occurred while holding the lock).
     pub async fn commit_deleted<A>(&self, aggregate: &mut DeletedAggregateRoot<A>) -> Result<()>
     where
         A: Aggregate + serde::Serialize,
@@ -285,7 +306,29 @@ impl<S: EventStore + 'static> PolicyContext<S> {
     {
         let metadata = self.build_causation_metadata()?;
         aggregate.set_pending_metadata(&metadata);
-        self.store.commit_deleted(aggregate).await
+        if let Some(prepared) =
+            crate::event_store::prepare_commit_deleted(&*self.store, aggregate).await?
+        {
+            self.pending_commits.lock().unwrap().push(prepared);
+        }
+        Ok(())
+    }
+
+    /// Flushes all buffered commits to the event store.
+    ///
+    /// Called by [`PolicyRunner`] after a handler returns `Ok(())`. If the
+    /// handler returns `Err`, this method is never called and the buffered
+    /// commits are silently dropped.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if appending events or saving snapshots fails.
+    pub(crate) async fn flush(&self) -> Result<()> {
+        let commits: Vec<PreparedCommit> = self.pending_commits.lock().unwrap().drain(..).collect();
+        for prepared in commits {
+            crate::event_store::flush_prepared(&*self.store, prepared).await?;
+        }
+        Ok(())
     }
 
     // === Introspection ===
@@ -333,10 +376,12 @@ impl<S: EventStore + 'static> PolicyContext<S> {
 
 impl<S: EventStore + 'static> std::fmt::Debug for PolicyContext<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let pending_count = self.pending_commits.lock().unwrap().len();
         f.debug_struct("PolicyContext")
             .field("source_event_id", &self.source_event.id)
             .field("max_cascade_depth", &self.max_cascade_depth)
             .field("cascade_depth", &self.cascade_depth())
+            .field("pending_commits", &pending_count)
             .finish_non_exhaustive()
     }
 }
@@ -551,6 +596,7 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
 
                         match policy.handle(&envelope, &ctx).await {
                             Ok(()) => {
+                                ctx.flush().await?;
                                 round_processed += 1;
                             }
                             Err(e) => match &self.on_error {
@@ -659,7 +705,10 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
             );
 
             match policy.handle(envelope, &ctx).await {
-                Ok(()) => return Ok(false), // success
+                Ok(()) => {
+                    ctx.flush().await?;
+                    return Ok(false); // success
+                }
                 Err(e) => {
                     tracing::warn!(
                         policy = policy.name(),
@@ -696,6 +745,7 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
 
                 match policy.handle(envelope, &ctx).await {
                     Ok(()) => {
+                        ctx.flush().await?;
                         handled += 1;
                     }
                     Err(e) => match &self.on_error {
@@ -880,6 +930,7 @@ mod tests {
         agg.apply(SimpleTestEvent::Created { value: 42 }).unwrap();
 
         ctx.commit(&mut agg).await.unwrap();
+        ctx.flush().await.unwrap();
 
         // Load and verify the committed event has causation metadata
         let loaded = crate::event_store::load::<_, SimpleTestEntity>(&*store, id)
@@ -952,6 +1003,7 @@ mod tests {
         assert!(debug.contains("PolicyContext"));
         assert!(debug.contains("max_cascade_depth: 10"));
         assert!(debug.contains("cascade_depth: 0"));
+        assert!(debug.contains("pending_commits: 0"));
     }
 
     // === PolicyRunner tests ===
@@ -1199,6 +1251,7 @@ mod tests {
         agg.apply(SimpleTestEvent::Updated { value: 2 }).unwrap();
 
         ctx.commit(&mut agg).await.unwrap();
+        ctx.flush().await.unwrap();
 
         let stored = store.get_events();
         assert_eq!(stored.len(), 2);
@@ -1520,6 +1573,7 @@ mod tests {
         let result =
             <AsyncPolicy as Policy<MockEventStore>>::handle(&AsyncPolicy, &envelope, &ctx).await;
         assert!(result.is_ok());
+        ctx.flush().await.unwrap();
 
         // Verify the aggregate was committed
         let stored = store.get_events();
@@ -1567,6 +1621,7 @@ mod tests {
             <RoutingPolicy as Policy<MockEventStore>>::handle(&RoutingPolicy, &envelope, &ctx)
                 .await;
         assert!(result.is_ok());
+        ctx.flush().await.unwrap();
 
         let stored = store.get_events();
         assert_eq!(stored.len(), 1);
@@ -1574,5 +1629,128 @@ mod tests {
         // The second handler creates SimpleTestEntity with value = event.value * 10 = 70
         let data: serde_json::Value = stored[0].event_data.clone();
         assert_eq!(data["Created"]["value"], 70);
+    }
+
+    // === Buffered commit tests ===
+
+    #[tokio::test]
+    async fn test_policy_context_commit_without_flush_does_not_persist() {
+        let store = Arc::new(MockEventStore::new());
+        let envelope = test_envelope("TestEvent", "TestAggregate");
+        let ctx = PolicyContext::new(Arc::clone(&store), envelope, 10);
+
+        let id = crate::EntityId::new();
+        let mut agg = AggregateRoot::<SimpleTestEntity>::new(id);
+        agg.apply(SimpleTestEvent::Created { value: 42 }).unwrap();
+
+        ctx.commit(&mut agg).await.unwrap();
+
+        // Events should NOT be in the store yet (buffered only)
+        let stored = store.get_events();
+        assert!(
+            stored.is_empty(),
+            "Events should be buffered, not persisted"
+        );
+
+        // But pending events should be cleared from aggregate
+        assert!(agg.pending_events().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_policy_context_commit_then_flush_persists() {
+        let store = Arc::new(MockEventStore::new());
+        let envelope = test_envelope("TestEvent", "TestAggregate");
+        let ctx = PolicyContext::new(Arc::clone(&store), envelope, 10);
+
+        let id = crate::EntityId::new();
+        let mut agg = AggregateRoot::<SimpleTestEntity>::new(id);
+        agg.apply(SimpleTestEvent::Created { value: 42 }).unwrap();
+
+        ctx.commit(&mut agg).await.unwrap();
+        ctx.flush().await.unwrap();
+
+        let stored = store.get_events();
+        assert_eq!(stored.len(), 1, "Events should be persisted after flush");
+    }
+
+    #[tokio::test]
+    async fn test_policy_context_multiple_commits_then_flush() {
+        let store = Arc::new(MockEventStore::new());
+        let envelope = test_envelope("TestEvent", "TestAggregate");
+        let ctx = PolicyContext::new(Arc::clone(&store), envelope, 10);
+
+        // First commit
+        let id1 = crate::EntityId::new();
+        let mut agg1 = AggregateRoot::<SimpleTestEntity>::new(id1);
+        agg1.apply(SimpleTestEvent::Created { value: 1 }).unwrap();
+        ctx.commit(&mut agg1).await.unwrap();
+
+        // Second commit (different aggregate)
+        let id2 = crate::EntityId::new();
+        let mut agg2 = AggregateRoot::<SimpleTestEntity>::new(id2);
+        agg2.apply(SimpleTestEvent::Created { value: 2 }).unwrap();
+        ctx.commit(&mut agg2).await.unwrap();
+
+        // Nothing persisted yet
+        assert!(store.get_events().is_empty());
+
+        // Flush all
+        ctx.flush().await.unwrap();
+
+        let stored = store.get_events();
+        assert_eq!(stored.len(), 2, "Both commits should be persisted");
+    }
+
+    #[tokio::test]
+    async fn test_policy_context_multiple_commits_dropped_on_error() {
+        let store = Arc::new(MockEventStore::new());
+        let envelope = test_envelope("TestEvent", "TestAggregate");
+
+        {
+            let ctx = PolicyContext::new(Arc::clone(&store), envelope, 10);
+
+            let id = crate::EntityId::new();
+            let mut agg = AggregateRoot::<SimpleTestEntity>::new(id);
+            agg.apply(SimpleTestEvent::Created { value: 1 }).unwrap();
+            ctx.commit(&mut agg).await.unwrap();
+
+            // Simulate handler error — ctx is dropped without flush
+        }
+
+        let stored = store.get_events();
+        assert!(
+            stored.is_empty(),
+            "Events should not be persisted when ctx is dropped without flush"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_policy_context_flush_without_commits_is_noop() {
+        let store = Arc::new(MockEventStore::new());
+        let envelope = test_envelope("TestEvent", "TestAggregate");
+        let ctx = PolicyContext::new(Arc::clone(&store), envelope, 10);
+
+        // Flush with no commits should succeed without error
+        ctx.flush().await.unwrap();
+
+        assert!(store.get_events().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_policy_context_debug_shows_pending_count() {
+        let store = Arc::new(MockEventStore::new());
+        let envelope = test_envelope("TestEvent", "TestAggregate");
+        let ctx = PolicyContext::new(Arc::clone(&store), envelope, 10);
+
+        let id = crate::EntityId::new();
+        let mut agg = AggregateRoot::<SimpleTestEntity>::new(id);
+        agg.apply(SimpleTestEvent::Created { value: 1 }).unwrap();
+        ctx.commit(&mut agg).await.unwrap();
+
+        let debug = format!("{ctx:?}");
+        assert!(
+            debug.contains("pending_commits: 1"),
+            "Debug should show 1 pending commit, got: {debug}"
+        );
     }
 }
