@@ -1,5 +1,6 @@
 - [ ] add a way to create non event-stored entities / aggregates. this should be a flag in the #aggregate macro, and require an other store type that does store data dyrectly instead of events
-- [ ] indexation of some form for aggregates ? projections ?
+- [.] indexation of some form for aggregates ? projections ?
+- [.] how about checking email unicity ?
 - [ ] update documentation and examples to describe and use the new AggregateId system
 - [x] update postgres backend to include crypto store / provider by default
 - [ ] add "from_actor" property to event to allow filling them with data from the actor

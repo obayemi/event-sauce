@@ -27,6 +27,8 @@ mod aggregate_id;
 mod aggregate_root;
 mod aggregate_type;
 mod apply_event;
+/// Aggregate claims for cross-aggregate uniqueness constraints.
+pub mod claims;
 /// Cryptographic traits and helpers for encrypted aggregate encryption (crypto-shredding).
 pub mod crypto;
 mod delete_event;
@@ -64,6 +66,7 @@ pub use aggregate_id::{AggregateId, EntityIdFor};
 pub use aggregate_root::AggregateRoot;
 pub use aggregate_type::AggregateType;
 pub use apply_event::ApplyEvent;
+pub use claims::AggregateClaim;
 pub use crypto::{CryptoKeyStore, CryptoProvider};
 pub use delete_event::DeleteEvent;
 pub use deleted_aggregate_root::DeletedAggregateRoot;

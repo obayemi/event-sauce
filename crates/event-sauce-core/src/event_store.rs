@@ -9,8 +9,9 @@ use futures::Stream;
 use uuid::Uuid;
 
 use crate::{
-    Aggregate, AggregateRoot, AggregateType, AggregateVersion, DeletedAggregateRoot, DomainEvent,
-    EntityId, EventEnvelope, Loaded, Repository, Result, SnapshotConfig,
+    Aggregate, AggregateClaim, AggregateRoot, AggregateType, AggregateVersion,
+    DeletedAggregateRoot, DomainEvent, EntityId, EventEnvelope, Loaded, Repository, Result,
+    SnapshotConfig,
 };
 
 /// A prepared but not-yet-persisted commit.
@@ -23,6 +24,8 @@ pub(crate) struct PreparedCommit {
     pub events: Vec<EventEnvelope>,
     pub expected_version: AggregateVersion,
     pub snapshot: Option<Snapshot>,
+    pub claims: Vec<AggregateClaim>,
+    pub clear_claims: bool,
 }
 
 /// Stream ID uniquely identifying an event stream.
@@ -210,14 +213,21 @@ impl Snapshot {
 pub trait EventStore: Send + Sync {
     /// Appends events to a stream with optimistic concurrency control.
     ///
+    /// The `claims` parameter specifies uniqueness claims to enforce transactionally.
+    /// When `clear_claims` is true, all existing claims for the aggregate are removed
+    /// (used for deleted aggregates).
+    ///
     /// # Errors
     ///
     /// Returns `Error::ConcurrencyConflict` if the expected version doesn't match.
+    /// Returns `Error::ClaimConflict` if a claim is already held by another aggregate.
     async fn append(
         &self,
         stream_id: StreamId,
         events: Vec<EventEnvelope>,
         expected_version: AggregateVersion,
+        claims: Vec<AggregateClaim>,
+        clear_claims: bool,
     ) -> Result<()>;
 
     /// Loads events from a stream starting at a specific version.
@@ -502,6 +512,7 @@ where
         None
     };
 
+    let claims = aggregate.entity().claims();
     let stream_id = StreamId::new(aggregate_type, aggregate_id);
 
     aggregate.clear_pending_events();
@@ -511,6 +522,8 @@ where
         events: envelopes,
         expected_version,
         snapshot,
+        claims,
+        clear_claims: false,
     }))
 }
 
@@ -608,6 +621,8 @@ where
         events: envelopes,
         expected_version,
         snapshot,
+        claims: vec![],
+        clear_claims: true,
     }))
 }
 
@@ -623,6 +638,8 @@ pub(crate) async fn flush_prepared<S: EventStore + ?Sized>(
             prepared.stream_id.clone(),
             prepared.events,
             prepared.expected_version,
+            prepared.claims,
+            prepared.clear_claims,
         )
         .await?;
 
@@ -1195,6 +1212,8 @@ mod tests {
             _stream_id: StreamId,
             _events: Vec<EventEnvelope>,
             _expected_version: AggregateVersion,
+            _claims: Vec<AggregateClaim>,
+            _clear_claims: bool,
         ) -> Result<()> {
             Ok(())
         }
@@ -1335,6 +1354,8 @@ mod tests {
             stream_id: StreamId,
             events: Vec<EventEnvelope>,
             _expected_version: AggregateVersion,
+            _claims: Vec<AggregateClaim>,
+            _clear_claims: bool,
         ) -> Result<()> {
             *self.append_count.lock().unwrap() += 1;
             let mut streams = self.streams.lock().unwrap();

@@ -6,7 +6,7 @@
 
 use std::fmt::Debug;
 
-use crate::{AggregateError, AggregateType, DomainEvent, Entity, EventApplicator};
+use crate::{AggregateClaim, AggregateError, AggregateType, DomainEvent, Entity, EventApplicator};
 
 /// Trait for event-sourced aggregates.
 ///
@@ -120,6 +120,19 @@ pub trait Aggregate: Entity + Into<Self::DeletedState> {
         false
     }
 
+    /// Returns the uniqueness claims for this aggregate's current state.
+    ///
+    /// Claims are enforced transactionally during event append. If two aggregates
+    /// attempt to claim the same `(claim_type, claim_key)`, the second will fail
+    /// with a `ClaimConflict` error.
+    ///
+    /// Defaults to an empty vec (no claims). Override by using `#[aggregate(..., claims)]`
+    /// and implementing `fn aggregate_claims(&self) -> Vec<AggregateClaim>` on the struct.
+    #[must_use]
+    fn claims(&self) -> Vec<AggregateClaim> {
+        vec![]
+    }
+
     /// Returns the aggregate type name.
     ///
     /// Defaults to the short type name (last segment of the full path),
@@ -162,6 +175,12 @@ mod tests {
     #[test]
     fn test_aggregate_is_encrypted_defaults_to_false() {
         assert!(!SimpleTestEntity::is_encrypted());
+    }
+
+    #[test]
+    fn test_aggregate_claims_defaults_to_empty() {
+        let entity = SimpleTestEntity::new(EntityId::new());
+        assert!(entity.claims().is_empty());
     }
 
     #[test]

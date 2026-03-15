@@ -158,6 +158,8 @@ impl EventStore for MockEventStore {
         stream_id: StreamId,
         events: Vec<EventEnvelope>,
         _expected_version: AggregateVersion,
+        _claims: Vec<crate::AggregateClaim>,
+        _clear_claims: bool,
     ) -> Result<()> {
         self.global_log.lock().unwrap().extend(events.clone());
         let mut streams = self.streams.lock().unwrap();
@@ -440,6 +442,8 @@ mod tests {
                 stream_id.clone(),
                 vec![env],
                 crate::AggregateVersion::new(0),
+                vec![],
+                false,
             )
             .await
             .unwrap();

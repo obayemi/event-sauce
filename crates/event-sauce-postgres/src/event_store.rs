@@ -264,6 +264,7 @@ impl PostgresEventStore {
         if count > 0 {
             // Migration 1 already applied, check for newer migrations
             self.migrate_crypto_keys(&migrations_table).await?;
+            self.migrate_aggregate_claims(&migrations_table).await?;
             return Ok(());
         }
 
@@ -352,6 +353,9 @@ impl PostgresEventStore {
         // Migration 2: Create crypto_keys table
         self.migrate_crypto_keys(&migrations_table).await?;
 
+        // Migration 3: Create aggregate_claims table
+        self.migrate_aggregate_claims(&migrations_table).await?;
+
         Ok(())
     }
 
@@ -386,6 +390,55 @@ impl PostgresEventStore {
         sqlx::query(&record_query)
             .bind(20_250_303_000_000_i64)
             .bind("create_crypto_keys_table")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| Error::custom(format!("Failed to record migration: {e}")))?;
+
+        Ok(())
+    }
+
+    /// Migration 3: Creates the `aggregate_claims` table for cross-aggregate uniqueness.
+    async fn migrate_aggregate_claims(&self, migrations_table: &str) -> Result<()> {
+        let check_query = format!("SELECT COUNT(*) FROM {migrations_table} WHERE version = $1");
+        let count: i64 = sqlx::query_scalar(&check_query)
+            .bind(20_250_315_000_000_i64)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| Error::custom(format!("Failed to check migration status: {e}")))?;
+
+        if count > 0 {
+            return Ok(());
+        }
+
+        let claims_table = self.qualify_table("aggregate_claims");
+        let create_claims = format!(
+            "CREATE TABLE IF NOT EXISTS {claims_table} (
+                aggregate_id UUID NOT NULL,
+                claim_type VARCHAR(255) NOT NULL,
+                claim_hash BYTEA NOT NULL,
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                UNIQUE (aggregate_id, claim_type),
+                UNIQUE (claim_type, claim_hash)
+            )"
+        );
+        sqlx::query(&create_claims)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| Error::custom(format!("Failed to create aggregate_claims table: {e}")))?;
+
+        let idx_query = format!(
+            "CREATE INDEX IF NOT EXISTS idx_claims_aggregate ON {claims_table} (aggregate_id)"
+        );
+        sqlx::query(&idx_query)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| Error::custom(format!("Failed to create claims index: {e}")))?;
+
+        let record_query =
+            format!("INSERT INTO {migrations_table} (version, description) VALUES ($1, $2)");
+        sqlx::query(&record_query)
+            .bind(20_250_315_000_000_i64)
+            .bind("create_aggregate_claims_table")
             .execute(&self.pool)
             .await
             .map_err(|e| Error::custom(format!("Failed to record migration: {e}")))?;
@@ -613,6 +666,103 @@ impl Default for PostgresEventStoreBuilder {
     }
 }
 
+impl PostgresEventStore {
+    async fn handle_claims(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        claims_table: &str,
+        stream_id: &StreamId,
+        claims: Vec<event_sauce_core::AggregateClaim>,
+        clear_claims: bool,
+    ) -> Result<()> {
+        if !claims.is_empty() {
+            use sha2::{Digest, Sha256};
+
+            let mut current_claim_types: Vec<String> = Vec::new();
+            for claim in &claims {
+                let key_json = serde_json::to_string(&claim.claim_key)
+                    .map_err(|e| Error::custom(format!("Failed to serialize claim key: {e}")))?;
+                let claim_hash = Sha256::digest(key_json.as_bytes()).to_vec();
+
+                current_claim_types.push(claim.claim_type.to_string());
+
+                // Try to upsert the claim
+                let upsert_query = format!(
+                    "INSERT INTO {claims_table} (aggregate_id, claim_type, claim_hash)
+                     VALUES ($1, $2, $3)
+                     ON CONFLICT (aggregate_id, claim_type)
+                     DO UPDATE SET claim_hash = EXCLUDED.claim_hash"
+                );
+
+                let result = sqlx::query(&upsert_query)
+                    .bind(stream_id.aggregate_id())
+                    .bind(claim.claim_type)
+                    .bind(&claim_hash)
+                    .execute(&mut **tx)
+                    .await;
+
+                match result {
+                    Ok(_) => {}
+                    Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => {
+                        // The UNIQUE(claim_type, claim_hash) constraint was violated —
+                        // another aggregate holds this claim.
+                        let holder_query = format!(
+                            "SELECT aggregate_id FROM {claims_table} WHERE claim_type = $1 AND claim_hash = $2"
+                        );
+                        let held_by: Option<uuid::Uuid> = sqlx::query_scalar(&holder_query)
+                            .bind(claim.claim_type)
+                            .bind(&claim_hash)
+                            .fetch_optional(&mut **tx)
+                            .await
+                            .ok()
+                            .flatten();
+
+                        return Err(Error::claim_conflict(
+                            claim.claim_type,
+                            claim.claim_key.clone(),
+                            held_by,
+                        ));
+                    }
+                    Err(e) => {
+                        return Err(Error::custom(format!("Failed to upsert claim: {e}")));
+                    }
+                }
+            }
+
+            // Clean up claims for types no longer in the current claims set
+            if !current_claim_types.is_empty() {
+                let placeholders: Vec<String> = current_claim_types
+                    .iter()
+                    .enumerate()
+                    .map(|(i, _)| format!("${}", i + 2))
+                    .collect();
+                let cleanup_query = format!(
+                    "DELETE FROM {claims_table} WHERE aggregate_id = $1 AND claim_type NOT IN ({})",
+                    placeholders.join(", ")
+                );
+                let mut query = sqlx::query(&cleanup_query).bind(stream_id.aggregate_id());
+                for ct in &current_claim_types {
+                    query = query.bind(ct);
+                }
+                query
+                    .execute(&mut **tx)
+                    .await
+                    .map_err(|e| Error::custom(format!("Failed to cleanup old claims: {e}")))?;
+            }
+        }
+
+        if clear_claims {
+            let delete_query = format!("DELETE FROM {claims_table} WHERE aggregate_id = $1");
+            sqlx::query(&delete_query)
+                .bind(stream_id.aggregate_id())
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| Error::custom(format!("Failed to clear claims: {e}")))?;
+        }
+
+        Ok(())
+    }
+}
+
 #[async_trait]
 impl EventStore for PostgresEventStore {
     async fn append(
@@ -620,8 +770,10 @@ impl EventStore for PostgresEventStore {
         stream_id: StreamId,
         events: Vec<EventEnvelope>,
         expected_version: AggregateVersion,
+        claims: Vec<event_sauce_core::AggregateClaim>,
+        clear_claims: bool,
     ) -> Result<()> {
-        if events.is_empty() {
+        if events.is_empty() && claims.is_empty() && !clear_claims {
             return Ok(());
         }
 
@@ -631,56 +783,68 @@ impl EventStore for PostgresEventStore {
             .await
             .map_err(|e| Error::custom(format!("Failed to start transaction: {e}")))?;
 
-        // Check current version
-        let events_table = self.qualify_table("events");
-        let query = format!(
-            "SELECT MAX(stream_version) FROM {events_table} WHERE aggregate_id = $1 AND aggregate_type = $2"
-        );
-        let current_version: Option<i64> = sqlx::query_scalar(&query)
-            .bind(stream_id.aggregate_id())
-            .bind(stream_id.aggregate_type().as_str())
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(|e| Error::custom(format!("Failed to check version: {e}")))?;
-
-        let current_version = AggregateVersion::new(current_version.unwrap_or(-1) + 1);
-
-        if current_version != expected_version {
-            return Err(Error::concurrency_conflict(
-                expected_version,
-                current_version,
-            ));
-        }
-
-        // Insert events
-        for (idx, event) in events.iter().enumerate() {
-            #[allow(clippy::cast_possible_wrap)]
-            let stream_version = expected_version.as_i64() + idx as i64;
-            let event_version_i64 = event.event_version.as_i64();
-
-            let insert_query = format!(
-                "INSERT INTO {events_table} (
-                    event_id, aggregate_id, aggregate_type, event_type, event_version,
-                    event_data, stream_version, created_by, correlation_id, causation_id, metadata
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)"
+        if !events.is_empty() {
+            // Check current version
+            let events_table = self.qualify_table("events");
+            let query = format!(
+                "SELECT MAX(stream_version) FROM {events_table} WHERE aggregate_id = $1 AND aggregate_type = $2"
             );
-
-            sqlx::query(&insert_query)
-                .bind(event.id)
-                .bind(event.aggregate_id)
-                .bind(event.aggregate_type.as_str())
-                .bind(&event.event_type)
-                .bind(event_version_i64)
-                .bind(&event.event_data)
-                .bind(stream_version)
-                .bind(event.created_by)
-                .bind(event.metadata.as_ref().and_then(|m| m.correlation_id))
-                .bind(event.metadata.as_ref().and_then(|m| m.causation_id))
-                .bind(event.metadata.as_ref().and_then(|m| m.additional.clone()))
-                .execute(&mut *tx)
+            let current_version: Option<i64> = sqlx::query_scalar(&query)
+                .bind(stream_id.aggregate_id())
+                .bind(stream_id.aggregate_type().as_str())
+                .fetch_one(&mut *tx)
                 .await
-                .map_err(|e| Error::custom(format!("Failed to insert event: {e}")))?;
+                .map_err(|e| Error::custom(format!("Failed to check version: {e}")))?;
+
+            let current_version = AggregateVersion::new(current_version.unwrap_or(-1) + 1);
+
+            if current_version != expected_version {
+                return Err(Error::concurrency_conflict(
+                    expected_version,
+                    current_version,
+                ));
+            }
+
+            // Insert events
+            for (idx, event) in events.iter().enumerate() {
+                #[allow(clippy::cast_possible_wrap)]
+                let stream_version = expected_version.as_i64() + idx as i64;
+                let event_version_i64 = event.event_version.as_i64();
+
+                let insert_query = format!(
+                    "INSERT INTO {events_table} (
+                        event_id, aggregate_id, aggregate_type, event_type, event_version,
+                        event_data, stream_version, created_by, correlation_id, causation_id, metadata
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)"
+                );
+
+                sqlx::query(&insert_query)
+                    .bind(event.id)
+                    .bind(event.aggregate_id)
+                    .bind(event.aggregate_type.as_str())
+                    .bind(&event.event_type)
+                    .bind(event_version_i64)
+                    .bind(&event.event_data)
+                    .bind(stream_version)
+                    .bind(event.created_by)
+                    .bind(event.metadata.as_ref().and_then(|m| m.correlation_id))
+                    .bind(event.metadata.as_ref().and_then(|m| m.causation_id))
+                    .bind(event.metadata.as_ref().and_then(|m| m.additional.clone()))
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| Error::custom(format!("Failed to insert event: {e}")))?;
+            }
         }
+
+        // Handle claims
+        Self::handle_claims(
+            &mut tx,
+            &self.qualify_table("aggregate_claims"),
+            &stream_id,
+            claims,
+            clear_claims,
+        )
+        .await?;
 
         tx.commit()
             .await
@@ -1028,7 +1192,13 @@ mod tests {
         let event = create_test_envelope("UserCreated", stream_id.aggregate_id());
 
         let result = store
-            .append(stream_id, vec![event], AggregateVersion::initial())
+            .append(
+                stream_id,
+                vec![event],
+                AggregateVersion::initial(),
+                vec![],
+                false,
+            )
             .await;
         assert!(result.is_ok());
     }
@@ -1046,6 +1216,8 @@ mod tests {
                 stream_id.clone(),
                 vec![event.clone()],
                 AggregateVersion::initial(),
+                vec![],
+                false,
             )
             .await
             .unwrap();
@@ -1081,13 +1253,25 @@ mod tests {
 
         // Append first event
         store
-            .append(stream_id.clone(), vec![event1], AggregateVersion::initial())
+            .append(
+                stream_id.clone(),
+                vec![event1],
+                AggregateVersion::initial(),
+                vec![],
+                false,
+            )
             .await
             .unwrap();
 
         // Try to append with wrong version - should fail
         let result = store
-            .append(stream_id, vec![event2], AggregateVersion::initial())
+            .append(
+                stream_id,
+                vec![event2],
+                AggregateVersion::initial(),
+                vec![],
+                false,
+            )
             .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().is_concurrency_conflict());
@@ -1107,6 +1291,8 @@ mod tests {
                 stream1,
                 vec![create_test_envelope("UserCreated", id1)],
                 AggregateVersion::initial(),
+                vec![],
+                false,
             )
             .await
             .unwrap();
@@ -1115,6 +1301,8 @@ mod tests {
                 stream2,
                 vec![create_test_envelope_with_type("OrderPlaced", "Order", id2)],
                 AggregateVersion::initial(),
+                vec![],
+                false,
             )
             .await
             .unwrap();
@@ -1160,7 +1348,13 @@ mod tests {
         ];
 
         store
-            .append(stream_id.clone(), events, AggregateVersion::initial())
+            .append(
+                stream_id.clone(),
+                events,
+                AggregateVersion::initial(),
+                vec![],
+                false,
+            )
             .await
             .unwrap();
 
@@ -1179,7 +1373,13 @@ mod tests {
         for i in 0..5 {
             let event = create_test_envelope(&format!("Event{i}"), aggregate_id);
             store
-                .append(stream_id.clone(), vec![event], AggregateVersion::new(i))
+                .append(
+                    stream_id.clone(),
+                    vec![event],
+                    AggregateVersion::new(i),
+                    vec![],
+                    false,
+                )
                 .await
                 .unwrap();
         }
@@ -1205,7 +1405,13 @@ mod tests {
             let event = create_test_envelope(&format!("Event{i}"), aggregate_id);
 
             store
-                .append(stream_id, vec![event], AggregateVersion::initial())
+                .append(
+                    stream_id,
+                    vec![event],
+                    AggregateVersion::initial(),
+                    vec![],
+                    false,
+                )
                 .await
                 .unwrap();
         }
@@ -1254,7 +1460,13 @@ mod tests {
 
         // Append via original store
         store
-            .append(stream_id.clone(), vec![event], AggregateVersion::initial())
+            .append(
+                stream_id.clone(),
+                vec![event],
+                AggregateVersion::initial(),
+                vec![],
+                false,
+            )
             .await
             .unwrap();
 
@@ -1280,6 +1492,8 @@ mod tests {
                 stream_id.clone(),
                 vec![create_test_envelope("Event1", aggregate_id)],
                 AggregateVersion::initial(),
+                vec![],
+                false,
             )
             .await
             .unwrap();
@@ -1292,6 +1506,8 @@ mod tests {
                 stream_id.clone(),
                 vec![create_test_envelope("Event2", aggregate_id)],
                 AggregateVersion::new(1),
+                vec![],
+                false,
             )
             .await
             .unwrap();
@@ -1337,7 +1553,13 @@ mod tests {
 
         // Appending empty events should succeed (no-op)
         let result = store
-            .append(stream_id, vec![], AggregateVersion::initial())
+            .append(
+                stream_id,
+                vec![],
+                AggregateVersion::initial(),
+                vec![],
+                false,
+            )
             .await;
         assert!(result.is_ok());
     }
@@ -1357,11 +1579,15 @@ mod tests {
             stream1.clone(),
             vec![create_test_envelope("Event1", id1)],
             AggregateVersion::initial(),
+            vec![],
+            false,
         );
         let result2 = store.append(
             stream2.clone(),
             vec![create_test_envelope("Event2", id2)],
             AggregateVersion::initial(),
+            vec![],
+            false,
         );
 
         let (r1, r2) = tokio::join!(result1, result2);
@@ -1439,7 +1665,13 @@ mod tests {
         let event = create_test_envelope("UserCreated", aggregate_id);
 
         let result = store
-            .append(stream_id, vec![event], AggregateVersion::initial())
+            .append(
+                stream_id,
+                vec![event],
+                AggregateVersion::initial(),
+                vec![],
+                false,
+            )
             .await;
         assert!(result.is_ok());
     }
@@ -1466,7 +1698,13 @@ mod tests {
         let event = create_test_envelope("UserCreated", aggregate_id);
 
         store
-            .append(stream_id.clone(), vec![event], AggregateVersion::initial())
+            .append(
+                stream_id.clone(),
+                vec![event],
+                AggregateVersion::initial(),
+                vec![],
+                false,
+            )
             .await
             .unwrap();
 
@@ -1604,7 +1842,13 @@ mod tests {
         let event = create_test_envelope("UserCreated", aggregate_id);
 
         store
-            .append(stream_id.clone(), vec![event], AggregateVersion::initial())
+            .append(
+                stream_id.clone(),
+                vec![event],
+                AggregateVersion::initial(),
+                vec![],
+                false,
+            )
             .await
             .unwrap();
 
@@ -1640,7 +1884,13 @@ mod tests {
         for i in 0..5 {
             let event = create_test_envelope(&format!("Event{i}"), aggregate_id);
             store
-                .append(stream_id.clone(), vec![event], AggregateVersion::new(i))
+                .append(
+                    stream_id.clone(),
+                    vec![event],
+                    AggregateVersion::new(i),
+                    vec![],
+                    false,
+                )
                 .await
                 .unwrap();
         }
@@ -1671,7 +1921,13 @@ mod tests {
         for i in 0..10 {
             let event = create_test_envelope(&format!("Event{i}"), aggregate_id);
             store
-                .append(stream_id.clone(), vec![event], AggregateVersion::new(i))
+                .append(
+                    stream_id.clone(),
+                    vec![event],
+                    AggregateVersion::new(i),
+                    vec![],
+                    false,
+                )
                 .await
                 .unwrap();
         }

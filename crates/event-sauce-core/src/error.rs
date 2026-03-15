@@ -100,6 +100,20 @@ pub enum Error {
         max_depth: usize,
     },
 
+    /// Uniqueness claim conflict.
+    ///
+    /// Occurs when an aggregate tries to claim a value that is already
+    /// held by another aggregate.
+    #[error("Claim conflict: {claim_type} value already claimed{}", held_by.map(|id| format!(" by {id}")).unwrap_or_default())]
+    ClaimConflict {
+        /// The claim type namespace (e.g., "Profile.email").
+        claim_type: String,
+        /// The claim key that was attempted (from memory, not from DB).
+        claim_key: serde_json::Value,
+        /// The aggregate that currently holds the claim, if known.
+        held_by: Option<uuid::Uuid>,
+    },
+
     /// Generic error with custom message.
     #[error("{0}")]
     Custom(String),
@@ -213,6 +227,30 @@ impl Error {
     #[must_use]
     pub fn cascade_depth_exceeded(depth: usize, max_depth: usize) -> Self {
         Self::CascadeDepthExceeded { depth, max_depth }
+    }
+
+    /// Creates a claim conflict error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use event_sauce_core::Error;
+    /// use serde_json::json;
+    ///
+    /// let error = Error::claim_conflict("Profile.email", json!("user@example.com"), None);
+    /// assert!(error.is_claim_conflict());
+    /// ```
+    #[must_use]
+    pub fn claim_conflict(
+        claim_type: impl Into<String>,
+        claim_key: serde_json::Value,
+        held_by: Option<Uuid>,
+    ) -> Self {
+        Self::ClaimConflict {
+            claim_type: claim_type.into(),
+            claim_key,
+            held_by,
+        }
     }
 
     /// Creates a custom error.
@@ -335,6 +373,22 @@ impl Error {
     #[must_use]
     pub fn is_cascade_depth_exceeded(&self) -> bool {
         matches!(self, Self::CascadeDepthExceeded { .. })
+    }
+
+    /// Returns true if this is a claim conflict error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use event_sauce_core::Error;
+    /// use serde_json::json;
+    ///
+    /// let error = Error::claim_conflict("Profile.email", json!("user@example.com"), None);
+    /// assert!(error.is_claim_conflict());
+    /// ```
+    #[must_use]
+    pub fn is_claim_conflict(&self) -> bool {
+        matches!(self, Self::ClaimConflict { .. })
     }
 }
 
@@ -602,6 +656,56 @@ mod tests {
             assert_eq!(max_depth, 10);
         } else {
             panic!("Expected CascadeDepthExceeded variant");
+        }
+    }
+
+    #[test]
+    fn test_claim_conflict_error() {
+        let error =
+            Error::claim_conflict("Profile.email", serde_json::json!("user@example.com"), None);
+
+        assert!(error.is_claim_conflict());
+        assert!(!error.is_concurrency_conflict());
+        assert!(!error.is_not_found());
+
+        let message = error.to_string();
+        assert!(message.contains("Claim conflict"));
+        assert!(message.contains("Profile.email"));
+    }
+
+    #[test]
+    fn test_claim_conflict_with_held_by() {
+        let holder_id = uuid::Uuid::new_v4();
+        let error = Error::claim_conflict(
+            "Profile.email",
+            serde_json::json!("user@example.com"),
+            Some(holder_id),
+        );
+
+        let message = error.to_string();
+        assert!(message.contains(&holder_id.to_string()));
+    }
+
+    #[test]
+    fn test_claim_conflict_fields() {
+        let holder_id = uuid::Uuid::new_v4();
+        let error = Error::ClaimConflict {
+            claim_type: "Profile.email".to_string(),
+            claim_key: serde_json::json!("test@test.com"),
+            held_by: Some(holder_id),
+        };
+
+        if let Error::ClaimConflict {
+            claim_type,
+            claim_key,
+            held_by,
+        } = error
+        {
+            assert_eq!(claim_type, "Profile.email");
+            assert_eq!(claim_key, serde_json::json!("test@test.com"));
+            assert_eq!(held_by, Some(holder_id));
+        } else {
+            panic!("Expected ClaimConflict variant");
         }
     }
 

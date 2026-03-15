@@ -431,7 +431,13 @@ mod tests {
         let store = backend.event_store();
 
         store
-            .append(stream_id.clone(), vec![event], AggregateVersion::initial())
+            .append(
+                stream_id.clone(),
+                vec![event],
+                AggregateVersion::initial(),
+                vec![],
+                false,
+            )
             .await
             .expect("append should succeed");
 
@@ -510,7 +516,13 @@ mod tests {
 
         let store = backend.event_store();
         store
-            .append(stream_id, vec![event], AggregateVersion::initial())
+            .append(
+                stream_id,
+                vec![event],
+                AggregateVersion::initial(),
+                vec![],
+                false,
+            )
             .await
             .expect("append should succeed");
 
@@ -576,7 +588,13 @@ mod tests {
 
         let store = backend.event_store();
         store
-            .append(stream_id, vec![event], AggregateVersion::initial())
+            .append(
+                stream_id,
+                vec![event],
+                AggregateVersion::initial(),
+                vec![],
+                false,
+            )
             .await
             .expect("append should succeed");
 

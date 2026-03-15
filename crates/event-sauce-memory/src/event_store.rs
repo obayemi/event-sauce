@@ -332,6 +332,8 @@ impl EventStore for InMemoryEventStore {
         stream_id: StreamId,
         events: Vec<EventEnvelope>,
         expected_version: AggregateVersion,
+        _claims: Vec<event_sauce_core::AggregateClaim>,
+        _clear_claims: bool,
     ) -> Result<()> {
         // Append events to store within a scope to ensure locks are released
         {
@@ -482,7 +484,13 @@ mod tests {
         let event = create_test_envelope("UserCreated", stream_id.aggregate_id());
 
         let result = store
-            .append(stream_id, vec![event], AggregateVersion::initial())
+            .append(
+                stream_id,
+                vec![event],
+                AggregateVersion::initial(),
+                vec![],
+                false,
+            )
             .await;
         assert!(result.is_ok());
     }
@@ -500,6 +508,8 @@ mod tests {
                 stream_id.clone(),
                 vec![event.clone()],
                 AggregateVersion::initial(),
+                vec![],
+                false,
             )
             .await
             .unwrap();
@@ -535,13 +545,25 @@ mod tests {
 
         // Append first event
         store
-            .append(stream_id.clone(), vec![event1], AggregateVersion::initial())
+            .append(
+                stream_id.clone(),
+                vec![event1],
+                AggregateVersion::initial(),
+                vec![],
+                false,
+            )
             .await
             .unwrap();
 
         // Try to append with wrong version - should fail
         let result = store
-            .append(stream_id, vec![event2], AggregateVersion::initial())
+            .append(
+                stream_id,
+                vec![event2],
+                AggregateVersion::initial(),
+                vec![],
+                false,
+            )
             .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().is_concurrency_conflict());
@@ -561,6 +583,8 @@ mod tests {
                 stream1,
                 vec![create_test_envelope("UserCreated", id1)],
                 AggregateVersion::initial(),
+                vec![],
+                false,
             )
             .await
             .unwrap();
@@ -569,6 +593,8 @@ mod tests {
                 stream2,
                 vec![create_test_envelope("OrderPlaced", id2)],
                 AggregateVersion::initial(),
+                vec![],
+                false,
             )
             .await
             .unwrap();
@@ -615,7 +641,13 @@ mod tests {
         ];
 
         store
-            .append(stream_id.clone(), events, AggregateVersion::initial())
+            .append(
+                stream_id.clone(),
+                events,
+                AggregateVersion::initial(),
+                vec![],
+                false,
+            )
             .await
             .unwrap();
 
@@ -633,7 +665,13 @@ mod tests {
         for i in 0..5 {
             let event = create_test_envelope(&format!("Event{i}"), aggregate_id);
             store
-                .append(stream_id.clone(), vec![event], AggregateVersion::new(i))
+                .append(
+                    stream_id.clone(),
+                    vec![event],
+                    AggregateVersion::new(i),
+                    vec![],
+                    false,
+                )
                 .await
                 .unwrap();
         }
@@ -658,7 +696,13 @@ mod tests {
             let event = create_test_envelope(&format!("Event{i}"), aggregate_id);
 
             store
-                .append(stream_id, vec![event], AggregateVersion::initial())
+                .append(
+                    stream_id,
+                    vec![event],
+                    AggregateVersion::initial(),
+                    vec![],
+                    false,
+                )
                 .await
                 .unwrap();
         }
@@ -704,7 +748,13 @@ mod tests {
 
         // Append via original store
         store
-            .append(stream_id.clone(), vec![event], AggregateVersion::initial())
+            .append(
+                stream_id.clone(),
+                vec![event],
+                AggregateVersion::initial(),
+                vec![],
+                false,
+            )
             .await
             .unwrap();
 
@@ -738,6 +788,8 @@ mod tests {
                 stream_id.clone(),
                 vec![create_test_envelope("Event1", aggregate_id)],
                 AggregateVersion::initial(),
+                vec![],
+                false,
             )
             .await
             .unwrap();
@@ -750,6 +802,8 @@ mod tests {
                 stream_id.clone(),
                 vec![create_test_envelope("Event2", aggregate_id)],
                 AggregateVersion::new(1),
+                vec![],
+                false,
             )
             .await
             .unwrap();
@@ -796,7 +850,13 @@ mod tests {
 
         // Should work fine without event bus
         let result = store
-            .append(stream_id.clone(), vec![event], AggregateVersion::initial())
+            .append(
+                stream_id.clone(),
+                vec![event],
+                AggregateVersion::initial(),
+                vec![],
+                false,
+            )
             .await;
         assert!(result.is_ok());
 
@@ -886,6 +946,8 @@ mod tests {
                 stream_id,
                 vec![create_test_envelope("UserCreated", aggregate_id)],
                 AggregateVersion::initial(),
+                vec![],
+                false,
             )
             .await
             .unwrap();
@@ -921,6 +983,8 @@ mod tests {
                     stream_id,
                     vec![create_test_envelope(&format!("Event{i}"), aggregate_id)],
                     AggregateVersion::initial(),
+                    vec![],
+                    false,
                 )
                 .await
                 .unwrap();
@@ -964,7 +1028,13 @@ mod tests {
         let event = create_test_envelope("UserCreated", aggregate_id);
 
         store
-            .append(stream_id.clone(), vec![event], AggregateVersion::initial())
+            .append(
+                stream_id.clone(),
+                vec![event],
+                AggregateVersion::initial(),
+                vec![],
+                false,
+            )
             .await
             .unwrap();
 
@@ -1032,11 +1102,19 @@ mod tests {
                 stream_id.clone(),
                 vec![event.clone()],
                 AggregateVersion::initial(),
+                vec![],
+                false,
             )
             .await
             .unwrap();
         store2
-            .append(stream_id.clone(), vec![event], AggregateVersion::initial())
+            .append(
+                stream_id.clone(),
+                vec![event],
+                AggregateVersion::initial(),
+                vec![],
+                false,
+            )
             .await
             .unwrap();
 
@@ -1060,11 +1138,19 @@ mod tests {
                 stream_id.clone(),
                 vec![event.clone()],
                 AggregateVersion::initial(),
+                vec![],
+                false,
             )
             .await
             .unwrap();
         store2
-            .append(stream_id.clone(), vec![event], AggregateVersion::initial())
+            .append(
+                stream_id.clone(),
+                vec![event],
+                AggregateVersion::initial(),
+                vec![],
+                false,
+            )
             .await
             .unwrap();
 
@@ -1091,11 +1177,19 @@ mod tests {
                 stream_id.clone(),
                 vec![event.clone()],
                 AggregateVersion::initial(),
+                vec![],
+                false,
             )
             .await
             .unwrap();
         store2
-            .append(stream_id.clone(), vec![event], AggregateVersion::initial())
+            .append(
+                stream_id.clone(),
+                vec![event],
+                AggregateVersion::initial(),
+                vec![],
+                false,
+            )
             .await
             .unwrap();
 

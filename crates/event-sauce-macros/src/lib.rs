@@ -37,6 +37,10 @@ struct AggregateAttrs {
     /// `type DeletedState = <type>;` instead of `type DeletedState = Self;`.
     #[darling(default)]
     deleted_state: Option<String>,
+    /// When true, the aggregate declares uniqueness claims.
+    /// Generates `fn claims(&self) -> Vec<AggregateClaim> { self.aggregate_claims() }`.
+    #[darling(default)]
+    claims: bool,
 }
 
 /// Attributes for the #[event(...)] container attribute
@@ -1180,6 +1184,17 @@ pub fn aggregate(attr: TokenStream, item: TokenStream) -> TokenStream {
         quote! {}
     };
 
+    // Generate claims() override if the `claims` flag is set
+    let claims_override = if aggregate_attrs.claims {
+        quote! {
+            fn claims(&self) -> Vec<event_sauce_core::AggregateClaim> {
+                self.aggregate_claims()
+            }
+        }
+    } else {
+        quote! {}
+    };
+
     // Generate DeletedState type
     let deleted_state_type = if let Some(ds) = &aggregate_attrs.deleted_state {
         let ds_ident = Ident::new(ds, proc_macro2::Span::call_site());
@@ -1201,6 +1216,7 @@ pub fn aggregate(attr: TokenStream, item: TokenStream) -> TokenStream {
 
             #aggregate_type_override
             #is_encrypted_override
+            #claims_override
         }
 
         impl #aggregate_name {
