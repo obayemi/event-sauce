@@ -165,6 +165,23 @@ impl InMemoryEventStore {
             .build()
     }
 
+    /// Returns a snapshot of all events in global insertion order.
+    ///
+    /// This is useful for testing and for the [`InMemoryEventLogQuery`](super::InMemoryEventLogQuery).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use event_sauce_memory::InMemoryEventStore;
+    ///
+    /// let store = InMemoryEventStore::new();
+    /// assert!(store.all_events().is_empty());
+    /// ```
+    #[must_use]
+    pub fn all_events(&self) -> Vec<EventEnvelope> {
+        self.inner.global_events.read().clone()
+    }
+
     /// Creates a builder for configuring the event store.
     ///
     /// This is the recommended way to create an `InMemoryEventStore` when you need

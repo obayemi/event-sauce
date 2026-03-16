@@ -25,6 +25,9 @@
 - 🚪 **Init Events**: Type-state aggregate construction — no more invalid uninitialized states
 - 👤 **Actor Events**: Permission validation tied to actor identity, with automatic audit trails
 - 🔗 **Policies**: Cross-aggregate event orchestration with causation tracking, checkpoint-based resumption, and configurable error handling
+- 🔒 **Uniqueness Claims**: Cross-aggregate uniqueness constraints enforced transactionally (e.g., unique emails)
+- 📋 **Audit Log**: Paginated event log query with filters by actor, aggregate, event type, and time range
+- 🔒 **Uniqueness Claims**: Cross-aggregate uniqueness constraints enforced transactionally (e.g., unique emails)
 
 ### Modern Event Sourcing Features
 
@@ -279,6 +282,81 @@ store.crypto_key_store()
 ```
 
 See the **[Privacy & Encryption Guide](docs/privacy.md)** for full details.
+
+### Uniqueness Claims
+
+Enforce cross-aggregate uniqueness constraints — like unique emails or usernames — transactionally during event commit:
+
+```rust
+#[aggregate(event = "ProfileEvent", error = "ProfileError", claims)]
+struct Profile {
+    #[id]
+    id: EntityId,
+    email: String,
+    username: String,
+}
+
+impl Profile {
+    fn aggregate_claims(&self) -> Vec<AggregateClaim> {
+        vec![
+            AggregateClaim::new("Profile.email", json!(&self.email)),
+            AggregateClaim::new("Profile.username", json!(&self.username)),
+        ]
+    }
+}
+```
+
+Claims are enforced atomically within the same transaction as events. If another aggregate already holds the claim, you get a `ClaimConflict` error:
+
+```rust
+let result = store.commit(&mut profile).await;
+match result {
+    Err(e) if e.is_claim_conflict() => println!("Email already taken!"),
+    other => other?,
+}
+```
+
+**Key features:**
+- Transactional enforcement — claims and events committed atomically
+- SHA-256 hashed storage — no plaintext leakage (crypto-shredding safe)
+- Composite keys — use structured JSON values for multi-field uniqueness
+- Automatic cleanup on delete — claims are released when aggregates are deleted
+
+See the **[Claims Guide](docs/claims.md)** for full details.
+
+### Audit Log
+
+Every event automatically captures who did what and why. Query the full event history with paginated, filtered access:
+
+```rust
+use event_sauce_core::{EventLogQuery, EventLogParams};
+
+// Find all events created by a specific user
+let params = EventLogParams {
+    created_by: Some(user_id),
+    ..Default::default()
+};
+let page = store.event_log_query().query_events(params).await?;
+println!("Found {} events by user", page.total_count);
+
+// Filter by aggregate type and time range
+let params = EventLogParams {
+    aggregate_type: Some("Order".to_string()),
+    from_date: Some(start_of_day),
+    to_date: Some(end_of_day),
+    per_page: 25,
+    ..Default::default()
+};
+let page = store.event_log_query().query_events(params).await?;
+```
+
+**Built-in traceability:**
+- **Actor tracking** — `created_by` field on every event, populated automatically from actor events
+- **Causation chain** — `causation_id`, `correlation_id`, and full `causation_chain` trace policy cascades back to the root cause
+- **Extensible metadata** — attach application-specific data (IP address, tenant ID, etc.) via `EventMetadata::additional`
+- **Filterable queries** — filter by aggregate type, event type, aggregate ID, actor, and time range
+
+See the **[Audit Log Guide](docs/audit-log.md)** for full details.
 
 ### Building Projections (Read Models)
 
@@ -598,6 +676,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 - **[Projections & Subscriptions](docs/projections.md)** - Building read models with durable, guaranteed delivery
 - **[PostgreSQL Production Setup](docs/postgres-production.md)** - Complete production deployment guide
 - **[Policies Guide](docs/policies.md)** - Cross-aggregate event orchestration, causation tracking, and error handling
+- **[Claims Guide](docs/claims.md)** - Cross-aggregate uniqueness constraints
+- **[Audit Log Guide](docs/audit-log.md)** - Event log queries, actor tracking, and causation tracing
 - **[Architecture Overview](docs/architecture.md)** - System design and patterns
 - **[TDD Workflow](docs/tdd-workflow.md)** - Test-driven development for event sourcing
 

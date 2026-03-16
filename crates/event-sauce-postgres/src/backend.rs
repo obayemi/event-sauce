@@ -122,6 +122,23 @@ impl PostgresBackend {
         self.event_store.subscription_builder(name)
     }
 
+    /// Creates a [`PostgresEventLogQuery`](crate::PostgresEventLogQuery) for this backend.
+    ///
+    /// The returned query object uses the same connection pool and schema as the event store.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use event_sauce_core::EventLogQuery;
+    ///
+    /// let log_query = backend.event_log_query();
+    /// let page = log_query.query_events(Default::default()).await?;
+    /// ```
+    #[must_use]
+    pub fn event_log_query(&self) -> crate::PostgresEventLogQuery {
+        self.event_store.event_log_query()
+    }
+
     /// Creates a subscription builder pre-configured for a projection type.
     ///
     /// Uses `P::NAME` as the subscription name. The event store, checkpoint store,

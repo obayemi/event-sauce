@@ -377,7 +377,9 @@ Now that you understand the basics, explore:
 2. **[TDD Workflow](tdd-workflow.md)** - Follow test-driven development
 3. **[PostgreSQL Backend](postgres-production.md)** - Use a production-ready store (see `PostgresBackend` for easy setup)
 4. **[Projections Guide](projections.md)** - Build read models
-5. **Complete Examples** - See real-world applications:
+5. **[Claims Guide](claims.md)** - Enforce cross-aggregate uniqueness (e.g., unique emails)
+6. **[Audit Log Guide](audit-log.md)** - Query event history with actor tracking and causation tracing
+7. **Complete Examples** - See real-world applications:
    - **[postgres-quickstart.rs](../crates/event-sauce/examples/postgres-quickstart.rs)** - User and Order aggregates with init events, creation functions, and projections (recommended approach)
    - **[apply-event.rs](../crates/event-sauce/examples/apply-event.rs)** - Bank account with manual `ApplyEvent` trait implementation (for complex validation scenarios)
 

@@ -39,6 +39,8 @@ mod entity_id;
 mod error;
 mod event_applicator;
 mod event_envelope;
+/// Event log query types and trait for paginated, filtered audit log access.
+pub mod event_log;
 mod event_store;
 mod init_event;
 mod loaded;
@@ -76,6 +78,7 @@ pub use entity_id::EntityId;
 pub use error::{Error, Result};
 pub use event_applicator::EventApplicator;
 pub use event_envelope::{EventEnvelope, EventMetadata};
+pub use event_log::{EventLogEntry, EventLogPage, EventLogParams, EventLogQuery};
 pub use event_store::{EventStore, Position, Snapshot, StreamId};
 pub use init_event::InitEvent;
 pub use loaded::Loaded;

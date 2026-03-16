@@ -983,6 +983,23 @@ impl EventStore for PostgresEventStore {
 }
 
 impl PostgresEventStore {
+    /// Creates a [`PostgresEventLogQuery`](crate::PostgresEventLogQuery) for this event store.
+    ///
+    /// The returned query object uses the same connection pool and schema as this store.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use event_sauce_core::EventLogQuery;
+    ///
+    /// let log_query = store.event_log_query();
+    /// let page = log_query.query_events(Default::default()).await?;
+    /// ```
+    #[must_use]
+    pub fn event_log_query(&self) -> crate::PostgresEventLogQuery {
+        crate::PostgresEventLogQuery::new(self.pool.clone(), self.schema.clone())
+    }
+
     /// Counts events in a stream using an optimized SQL COUNT(*) query.
     ///
     /// This is a Postgres-specific optimization that's much faster than

@@ -123,6 +123,11 @@ account.apply(some_event)?;
 
 - **`event`**: The event type for this aggregate (required)
 - **`error`**: The error type for this aggregate (optional, defaults to `()`)
+- **`init`**: Skips `DefaultEntity`; aggregate must be constructed via init events
+- **`encrypted`**: Enables full-aggregate encryption (see [Privacy](privacy.md))
+- **`claims`**: Enables uniqueness claims; delegates `claims()` to `aggregate_claims()` (see [Claims](claims.md))
+- **`deleted_state = "Type"`**: Custom type for the deleted aggregate state (see delete events)
+- **`type_name = "..."`**: Custom aggregate type name (default: struct name)
 - **`#[id]`**: Field attribute marking the `EntityId` field (or name it `id`)
 
 ### Key Features
@@ -889,5 +894,6 @@ Aggregates in event-sauce provide:
 5. **Access entity fields** via `Deref` for read-only access through `AggregateRoot`
 6. **Let `AggregateRoot` manage** version and pending events
 7. **Use `encrypted`** for GDPR-sensitive aggregates: `#[aggregate(event = "...", error = "...", encrypted)]` (see [Privacy & Crypto-Shredding](privacy.md))
+8. **Use `claims`** for cross-aggregate uniqueness: `#[aggregate(event = "...", error = "...", claims)]` (see [Claims Guide](claims.md))
 
 Next: [Events Guide](events.md) | [Validation Guide](validation.md)
