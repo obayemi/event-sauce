@@ -989,7 +989,7 @@ macro_rules! define_events {
         accumulated: [$($acc:tt)*]
         rest: [
             $variant:ident {
-                $($field:ident: $field_ty:ty),* $(,)?
+                $($(#[$field_attr:meta])* $field:ident: $field_ty:ty),* $(,)?
             }
             @actor($actor_type:ty)
             $(@version($version:literal))?
@@ -1009,7 +1009,7 @@ macro_rules! define_events {
                 $($acc)*
                 {
                     variant: $variant,
-                    fields: { $($field: $field_ty),* },
+                    fields: { $($(#[$field_attr])* $field: $field_ty),* },
                     kind: actor,
                     actor_type: [$actor_type],
                     version: [$([$version])?],
@@ -1034,7 +1034,7 @@ macro_rules! define_events {
         accumulated: [$($acc:tt)*]
         rest: [
             $variant:ident {
-                $($field:ident: $field_ty:ty),* $(,)?
+                $($(#[$field_attr:meta])* $field:ident: $field_ty:ty),* $(,)?
             }
             @init
             @actor($actor_type:ty)
@@ -1055,7 +1055,7 @@ macro_rules! define_events {
                 $($acc)*
                 {
                     variant: $variant,
-                    fields: { $($field: $field_ty),* },
+                    fields: { $($(#[$field_attr])* $field: $field_ty),* },
                     kind: actor_init,
                     actor_type: [$actor_type],
                     version: [$([$version])?],
@@ -1080,7 +1080,7 @@ macro_rules! define_events {
         accumulated: [$($acc:tt)*]
         rest: [
             $variant:ident {
-                $($field:ident: $field_ty:ty),* $(,)?
+                $($(#[$field_attr:meta])* $field:ident: $field_ty:ty),* $(,)?
             }
             @delete
             @actor($actor_type:ty)
@@ -1101,7 +1101,7 @@ macro_rules! define_events {
                 $($acc)*
                 {
                     variant: $variant,
-                    fields: { $($field: $field_ty),* },
+                    fields: { $($(#[$field_attr])* $field: $field_ty),* },
                     kind: actor_delete,
                     actor_type: [$actor_type],
                     version: [$([$version])?],
@@ -1126,7 +1126,7 @@ macro_rules! define_events {
         accumulated: [$($acc:tt)*]
         rest: [
             $variant:ident {
-                $($field:ident: $field_ty:ty),* $(,)?
+                $($(#[$field_attr:meta])* $field:ident: $field_ty:ty),* $(,)?
             }
             @delete
             $(@version($version:literal))?
@@ -1146,7 +1146,7 @@ macro_rules! define_events {
                 $($acc)*
                 {
                     variant: $variant,
-                    fields: { $($field: $field_ty),* },
+                    fields: { $($(#[$field_attr])* $field: $field_ty),* },
                     kind: delete,
                     actor_type: [],
                     version: [$([$version])?],
@@ -1171,7 +1171,7 @@ macro_rules! define_events {
         accumulated: [$($acc:tt)*]
         rest: [
             $variant:ident {
-                $($field:ident: $field_ty:ty),* $(,)?
+                $($(#[$field_attr:meta])* $field:ident: $field_ty:ty),* $(,)?
             }
             $(@version($version:literal))?
             $(@validate |$($val_args:ident),+| $val_body:block)?
@@ -1190,7 +1190,7 @@ macro_rules! define_events {
                 $($acc)*
                 {
                     variant: $variant,
-                    fields: { $($field: $field_ty),* },
+                    fields: { $($(#[$field_attr])* $field: $field_ty),* },
                     kind: regular,
                     actor_type: [],
                     version: [$([$version])?],
@@ -1215,7 +1215,7 @@ macro_rules! define_events {
         accumulated: [$($acc:tt)*]
         rest: [
             $variant:ident {
-                $($field:ident: $field_ty:ty),* $(,)?
+                $($(#[$field_attr:meta])* $field:ident: $field_ty:ty),* $(,)?
             }
             @init
             $(@version($version:literal))?
@@ -1235,7 +1235,7 @@ macro_rules! define_events {
                 $($acc)*
                 {
                     variant: $variant,
-                    fields: { $($field: $field_ty),* },
+                    fields: { $($(#[$field_attr])* $field: $field_ty),* },
                     kind: init,
                     actor_type: [],
                     version: [$([$version])?],
@@ -1277,7 +1277,7 @@ macro_rules! define_events {
             $(
                 {
                     variant: $variant:ident,
-                    fields: { $($field:ident: $field_ty:ty),* },
+                    fields: { $($(#[$field_attr:meta])* $field:ident: $field_ty:ty),* },
                     kind: $kind:ident,
                     actor_type: [$($actor_type:ty)?],
                     version: [$($version:tt)*],
@@ -1296,7 +1296,7 @@ macro_rules! define_events {
             paste::paste! {
                 #[derive(Debug, Clone, ::serde::Serialize, ::serde::Deserialize)]
                 $vis struct [<$variant Event>] {
-                    $(pub $field: $field_ty,)*
+                    $($(#[$field_attr])* pub $field: $field_ty,)*
                     pub timestamp: ::chrono::DateTime<::chrono::Utc>,
                 }
 
@@ -1322,7 +1322,7 @@ macro_rules! define_events {
             define_events! {
                 @emit_trait
                 [$vis] [$aggregate] [$event_enum] [$variant]
-                [{ $($field: $field_ty,)* }]
+                [{ $($(#[$field_attr])* $field: $field_ty,)* }]
                 kind: $kind,
                 actor_type: [$($actor_type)?],
                 validate: [$($validate)*],
@@ -1338,7 +1338,7 @@ macro_rules! define_events {
         $vis enum $event_enum {
             $(
                 $variant {
-                    $($field: $field_ty,)*
+                    $($(#[$field_attr])* $field: $field_ty,)*
                     timestamp: ::chrono::DateTime<::chrono::Utc>,
                 }
             ),*
@@ -1527,7 +1527,7 @@ macro_rules! define_events {
     (
         @emit_trait
         [$vis:vis] [$aggregate:ty] [$event_enum:ident] [$variant:ident]
-        [{ $($field:ident: $field_ty:ty,)* }]
+        [{ $($(#[$field_attr:meta])* $field:ident: $field_ty:ty,)* }]
         kind: regular,
         actor_type: [],
         validate: [$([|$($val_args:ident),+| $val_body:block])?],
@@ -1578,7 +1578,7 @@ macro_rules! define_events {
     (
         @emit_trait
         [$vis:vis] [$aggregate:ty] [$event_enum:ident] [$variant:ident]
-        [{ $($field:ident: $field_ty:ty,)* }]
+        [{ $($(#[$field_attr:meta])* $field:ident: $field_ty:ty,)* }]
         kind: actor,
         actor_type: [$actor_type:ty],
         validate: [$([|$($val_args:ident),+| $val_body:block])?],
@@ -1648,7 +1648,7 @@ macro_rules! define_events {
     (
         @emit_trait
         [$vis:vis] [$aggregate:ty] [$event_enum:ident] [$variant:ident]
-        [{ $($field:ident: $field_ty:ty,)* }]
+        [{ $($(#[$field_attr:meta])* $field:ident: $field_ty:ty,)* }]
         kind: init,
         actor_type: [],
         validate: [$([|$($val_args:ident),+| $val_body:block])?],
@@ -1695,7 +1695,7 @@ macro_rules! define_events {
     (
         @emit_trait
         [$vis:vis] [$aggregate:ty] [$event_enum:ident] [$variant:ident]
-        [{ $($field:ident: $field_ty:ty,)* }]
+        [{ $($(#[$field_attr:meta])* $field:ident: $field_ty:ty,)* }]
         kind: actor_init,
         actor_type: [$actor_type:ty],
         validate: [$([|$($val_args:ident),+| $val_body:block])?],
@@ -1761,7 +1761,7 @@ macro_rules! define_events {
     (
         @emit_trait
         [$vis:vis] [$aggregate:ty] [$event_enum:ident] [$variant:ident]
-        [{ $($field:ident: $field_ty:ty,)* }]
+        [{ $($(#[$field_attr:meta])* $field:ident: $field_ty:ty,)* }]
         kind: delete,
         actor_type: [],
         validate: [$([|$($val_args:ident),+| $val_body:block])?],
@@ -1813,7 +1813,7 @@ macro_rules! define_events {
     (
         @emit_trait
         [$vis:vis] [$aggregate:ty] [$event_enum:ident] [$variant:ident]
-        [{ $($field:ident: $field_ty:ty,)* }]
+        [{ $($(#[$field_attr:meta])* $field:ident: $field_ty:ty,)* }]
         kind: actor_delete,
         actor_type: [$actor_type:ty],
         validate: [$([|$($val_args:ident),+| $val_body:block])?],

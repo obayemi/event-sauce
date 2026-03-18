@@ -40,7 +40,11 @@
       "Bash(do echo \"=== $type ===\")",
       "Bash(done)",
       "Bash(RUSTFLAGS=\"-Z macro-backtrace\" cargo test:*)",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:api.github.com)"
     ],
     "deny": [],
     "ask": []
