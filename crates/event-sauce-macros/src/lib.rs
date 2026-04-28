@@ -1027,150 +1027,51 @@ fn resolve_context_expr(
 /// - Not applied to a struct with named fields
 /// - No ID field is found
 #[proc_macro_attribute]
-#[allow(clippy::too_many_lines)]
 pub fn aggregate(attr: TokenStream, item: TokenStream) -> TokenStream {
-    // Parse the attribute arguments
     let attr_tokens: proc_macro2::TokenStream = attr.into();
     let input = parse_macro_input!(item as DeriveInput);
-
-    // Extract aggregate name and visibility
     let aggregate_name = &input.ident;
 
-    // Parse aggregate attributes from attribute tokens
-    let nested_meta = match darling::ast::NestedMeta::parse_meta_list(attr_tokens) {
-        Ok(meta) => meta,
-        Err(err) => return err.to_compile_error().into(),
-    };
-
-    let aggregate_attrs = match AggregateAttrs::from_list(&nested_meta) {
-        Ok(attrs) => attrs,
-        Err(err) => return err.write_errors().into(),
-    };
-
-    let event_type = Ident::new(&aggregate_attrs.event, proc_macro2::Span::call_site());
-    let error_type: proc_macro2::TokenStream = if let Some(e) = aggregate_attrs.error {
-        let ident = Ident::new(&e, proc_macro2::Span::call_site());
-        quote! { #ident }
-    } else {
-        quote! { () }
-    };
-
-    // Extract fields
-    let fields = match &input.data {
-        Data::Struct(data) => &data.fields,
-        _ => {
-            return syn::Error::new_spanned(
-                aggregate_name,
-                "#[aggregate] can only be used on structs",
-            )
-            .to_compile_error()
-            .into();
-        }
-    };
-
-    let named_fields = match fields {
-        Fields::Named(named) => &named.named,
-        _ => {
-            return syn::Error::new_spanned(
-                aggregate_name,
-                "#[aggregate] only supports structs with named fields",
-            )
-            .to_compile_error()
-            .into();
-        }
-    };
-
-    // Find ID field
-    let id_field_name = match find_id_field_flexible(fields) {
-        Ok(name) => name,
+    let aggregate_attrs = match parse_aggregate_attrs(attr_tokens) {
+        Ok(a) => a,
         Err(err) => return err,
     };
 
-    // Extract ID field type for `type Id` generation
+    let named_fields = match extract_named_fields(&input) {
+        Ok(f) => f,
+        Err(err) => return err,
+    };
+
+    let struct_fields = match &input.data {
+        Data::Struct(data) => &data.fields,
+        _ => unreachable!("extract_named_fields would have errored"),
+    };
+    let id_field_name = match find_id_field_flexible(struct_fields) {
+        Ok(name) => name,
+        Err(err) => return err,
+    };
     let id_field_type = named_fields
         .iter()
         .find(|f| f.ident.as_ref() == Some(&id_field_name))
-        .map(|f| &f.ty)
+        .map(|f| f.ty.clone())
         .expect("ID field must exist (already validated)");
 
-    // Strip #[id] attributes from the struct fields before emitting
-    let mut cleaned_input = input.clone();
-    if let Data::Struct(ref mut data) = cleaned_input.data {
-        if let Fields::Named(ref mut named) = data.fields {
-            for field in &mut named.named {
-                field.attrs.retain(|attr| !attr.path().is_ident("id"));
-            }
-        }
-    }
-
-    let is_init = aggregate_attrs.init;
-
-    // Generate Entity impl — for init aggregates, only entity_id (default panicking new())
-    // For DefaultEntity aggregates, also override new() with field defaults.
-    // Uses .into() for the ID field to support both EntityId and typed AggregateId fields.
-    let entity_impl = if is_init {
-        quote! {
-            impl event_sauce_core::Entity for #aggregate_name {
-                fn entity_id(&self) -> event_sauce_core::EntityId {
-                    self.#id_field_name.into()
-                }
-            }
-        }
-    } else {
-        let field_inits = named_fields.iter().map(|f| {
-            let fname = f.ident.as_ref().expect("Named field should have ident");
-            if fname == &id_field_name {
-                quote! { #fname: id.into() }
-            } else {
-                quote! { #fname: Default::default() }
-            }
-        });
-
-        quote! {
-            impl event_sauce_core::Entity for #aggregate_name {
-                fn new(id: event_sauce_core::EntityId) -> Self {
-                    Self {
-                        #(#field_inits),*
-                    }
-                }
-
-                fn entity_id(&self) -> event_sauce_core::EntityId {
-                    self.#id_field_name.into()
-                }
-            }
-
-            impl event_sauce_core::DefaultEntity for #aggregate_name {}
-        }
-    };
-
-    // Generate aggregate_type() override using stringify! (stable, deterministic)
-    let aggregate_type_override = if let Some(custom_name) = &aggregate_attrs.type_name {
-        let name_lit = syn::LitStr::new(custom_name, proc_macro2::Span::call_site());
-        quote! {
-            fn aggregate_type() -> event_sauce_core::AggregateType {
-                event_sauce_core::AggregateType::new(#name_lit)
-            }
-        }
-    } else {
-        quote! {
-            fn aggregate_type() -> event_sauce_core::AggregateType {
-                event_sauce_core::AggregateType::new(stringify!(#aggregate_name))
-            }
-        }
-    };
-
-    // Generate is_encrypted() override if the `encrypted` flag is set
+    let cleaned_input = strip_id_attributes(&input);
+    let event_type = Ident::new(&aggregate_attrs.event, proc_macro2::Span::call_site());
+    let error_type = aggregate_error_token(aggregate_attrs.error.as_deref());
+    let entity_impl = gen_entity_impl(
+        aggregate_name,
+        &id_field_name,
+        named_fields,
+        aggregate_attrs.init,
+    );
+    let aggregate_type_override =
+        gen_aggregate_type_override(aggregate_name, aggregate_attrs.type_name.as_deref());
     let is_encrypted_override = if aggregate_attrs.encrypted {
-        quote! {
-            fn is_encrypted() -> bool {
-                true
-            }
-        }
+        quote! { fn is_encrypted() -> bool { true } }
     } else {
         quote! {}
     };
-
-    // Generate claims() override if the `claims` flag is set
     let claims_override = if aggregate_attrs.claims {
         quote! {
             fn claims(&self) -> Vec<event_sauce_core::AggregateClaim> {
@@ -1180,16 +1081,14 @@ pub fn aggregate(attr: TokenStream, item: TokenStream) -> TokenStream {
     } else {
         quote! {}
     };
+    let deleted_state_type = aggregate_attrs.deleted_state.as_deref().map_or_else(
+        || quote! { type DeletedState = Self; },
+        |ds| {
+            let ds_ident = Ident::new(ds, proc_macro2::Span::call_site());
+            quote! { type DeletedState = #ds_ident; }
+        },
+    );
 
-    // Generate DeletedState type
-    let deleted_state_type = if let Some(ds) = &aggregate_attrs.deleted_state {
-        let ds_ident = Ident::new(ds, proc_macro2::Span::call_site());
-        quote! { type DeletedState = #ds_ident; }
-    } else {
-        quote! { type DeletedState = Self; }
-    };
-
-    // Emit the cleaned struct + Entity impl + Aggregate impl
     let gen = quote! {
         #cleaned_input
 
@@ -1215,6 +1114,123 @@ pub fn aggregate(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     gen.into()
+}
+
+fn parse_aggregate_attrs(
+    attr_tokens: proc_macro2::TokenStream,
+) -> std::result::Result<AggregateAttrs, TokenStream> {
+    let nested_meta = darling::ast::NestedMeta::parse_meta_list(attr_tokens)
+        .map_err(|err| TokenStream::from(err.to_compile_error()))?;
+    AggregateAttrs::from_list(&nested_meta).map_err(|err| TokenStream::from(err.write_errors()))
+}
+
+fn extract_named_fields(
+    input: &DeriveInput,
+) -> std::result::Result<&syn::punctuated::Punctuated<syn::Field, syn::token::Comma>, TokenStream> {
+    let aggregate_name = &input.ident;
+    let fields = match &input.data {
+        Data::Struct(data) => &data.fields,
+        _ => {
+            return Err(syn::Error::new_spanned(
+                aggregate_name,
+                "#[aggregate] can only be used on structs",
+            )
+            .to_compile_error()
+            .into());
+        }
+    };
+    match fields {
+        Fields::Named(named) => Ok(&named.named),
+        _ => Err(syn::Error::new_spanned(
+            aggregate_name,
+            "#[aggregate] only supports structs with named fields",
+        )
+        .to_compile_error()
+        .into()),
+    }
+}
+
+fn strip_id_attributes(input: &DeriveInput) -> DeriveInput {
+    let mut cleaned_input = input.clone();
+    if let Data::Struct(ref mut data) = cleaned_input.data {
+        if let Fields::Named(ref mut named) = data.fields {
+            for field in &mut named.named {
+                field.attrs.retain(|attr| !attr.path().is_ident("id"));
+            }
+        }
+    }
+    cleaned_input
+}
+
+fn aggregate_error_token(error: Option<&str>) -> proc_macro2::TokenStream {
+    if let Some(e) = error {
+        let ident = Ident::new(e, proc_macro2::Span::call_site());
+        quote! { #ident }
+    } else {
+        quote! { () }
+    }
+}
+
+fn gen_entity_impl(
+    aggregate_name: &Ident,
+    id_field_name: &Ident,
+    named_fields: &syn::punctuated::Punctuated<syn::Field, syn::token::Comma>,
+    is_init: bool,
+) -> proc_macro2::TokenStream {
+    if is_init {
+        return quote! {
+            impl event_sauce_core::Entity for #aggregate_name {
+                fn entity_id(&self) -> event_sauce_core::EntityId {
+                    self.#id_field_name.into()
+                }
+            }
+        };
+    }
+
+    let field_inits = named_fields.iter().map(|f| {
+        let fname = f.ident.as_ref().expect("Named field should have ident");
+        if fname == id_field_name {
+            quote! { #fname: id.into() }
+        } else {
+            quote! { #fname: Default::default() }
+        }
+    });
+
+    quote! {
+        impl event_sauce_core::Entity for #aggregate_name {
+            fn new(id: event_sauce_core::EntityId) -> Self {
+                Self {
+                    #(#field_inits),*
+                }
+            }
+
+            fn entity_id(&self) -> event_sauce_core::EntityId {
+                self.#id_field_name.into()
+            }
+        }
+
+        impl event_sauce_core::DefaultEntity for #aggregate_name {}
+    }
+}
+
+fn gen_aggregate_type_override(
+    aggregate_name: &Ident,
+    custom_name: Option<&str>,
+) -> proc_macro2::TokenStream {
+    if let Some(name) = custom_name {
+        let name_lit = syn::LitStr::new(name, proc_macro2::Span::call_site());
+        quote! {
+            fn aggregate_type() -> event_sauce_core::AggregateType {
+                event_sauce_core::AggregateType::new(#name_lit)
+            }
+        }
+    } else {
+        quote! {
+            fn aggregate_type() -> event_sauce_core::AggregateType {
+                event_sauce_core::AggregateType::new(stringify!(#aggregate_name))
+            }
+        }
+    }
 }
 
 /// Derive macro for implementing `AggregateId` and `EntityIdFor` on a newtype ID.
