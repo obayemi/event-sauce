@@ -147,6 +147,46 @@ impl PostgresEventStore {
             .expect("pool was set")
     }
 
+    /// Creates a `PostgreSQL` event store wired with both snapshot and checkpoint storage.
+    ///
+    /// Mirrors [`InMemoryEventStore::with_checkpoint_store`](https://docs.rs/event-sauce-memory).
+    /// Equivalent to
+    /// `PostgresEventStore::builder().pool(pool).snapshot_config(config).checkpoint_store(store).build()`.
+    ///
+    /// # Panics
+    ///
+    /// Cannot panic — the pool is always set before calling `build()`.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use event_sauce_postgres::{PostgresEventStore, PostgresCheckpointStore};
+    /// use event_sauce_core::SnapshotConfig;
+    /// use sqlx::PgPool;
+    /// use std::sync::Arc;
+    ///
+    /// let pool = PgPool::connect("postgresql://localhost/events").await?;
+    /// let checkpoint_store = Arc::new(PostgresCheckpointStore::new(pool.clone()));
+    /// let store = PostgresEventStore::with_checkpoint_store(
+    ///     pool,
+    ///     SnapshotConfig::builder().build(),
+    ///     checkpoint_store,
+    /// );
+    /// ```
+    #[must_use]
+    pub fn with_checkpoint_store(
+        pool: PgPool,
+        snapshot_config: SnapshotConfig,
+        checkpoint_store: std::sync::Arc<dyn event_sauce_core::CheckpointStore>,
+    ) -> Self {
+        Self::builder()
+            .pool(pool)
+            .snapshot_config(snapshot_config)
+            .checkpoint_store(checkpoint_store)
+            .build()
+            .expect("pool was set")
+    }
+
     /// Creates a builder for configuring the event store.
     ///
     /// This is the recommended way to create a `PostgresEventStore` when you need
