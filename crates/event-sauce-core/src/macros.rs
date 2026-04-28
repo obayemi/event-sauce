@@ -1033,6 +1033,37 @@ macro_rules! __check_spec_init_actor {
 /// - Automatic timestamp handling
 /// - Clear, declarative syntax
 /// - Full integration with `ApplyEvent` trait
+// Internal architecture of `define_events!`:
+//
+// The macro runs in two phases — *parse* (TT muncher) and *emit* (per-kind
+// trait emitter):
+//
+// 1. **Parse phase** (the `@munch` arms): each variant is matched against one
+//    of six arms by its annotation prefix and pushed into a normalised
+//    metadata blob (variant name, fields, kind, optional actor type, version,
+//    validate/post_validate/spec hooks, encrypted fields, apply closure).
+//    The arms must exist as separate match patterns because macro_rules!
+//    cannot capture optional `@init` / `@delete` / `@actor(Ty)` markers in a
+//    single arm — pattern matching is structural, not based on lookahead.
+//
+//    | Annotations          | Kind tag        |
+//    |----------------------|-----------------|
+//    | `@actor(T)`          | `actor`         |
+//    | `@init @actor(T)`    | `actor_init`    |
+//    | `@delete @actor(T)`  | `actor_delete`  |
+//    | `@delete`            | `delete`        |
+//    | `@init`              | `init`          |
+//    | (none)               | `regular`       |
+//
+// 2. **Emit phase** (`@emit_trait` arms): once all variants are parsed,
+//    each variant in the accumulator is dispatched to one of six emit arms
+//    (one per kind) which produces the appropriate trait impls
+//    (`ApplyEvent`/`InitEvent`/`DeleteEvent`/`ActorEvent`/`ActorInitEvent`/
+//    `ActorDeleteEvent`) plus the per-variant struct.
+//
+// The duplication between arms within each phase is necessary in
+// macro_rules! — converting to a proc-macro would let the kind-tag drive
+// emission via runtime data, but that's a larger change than this commit.
 #[macro_export]
 macro_rules! define_events {
     // =========================================================================
