@@ -195,7 +195,7 @@ impl PostgresEventStore {
 
     /// Returns a schema-qualified table name (e.g., "schema.events").
     fn qualify_table(&self, table: &str) -> String {
-        format!("{}.{}", self.schema, table)
+        crate::migrations::qualify(&self.schema, table)
     }
 
     /// Runs database migrations to set up the event store schema.

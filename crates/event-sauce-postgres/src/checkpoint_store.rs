@@ -146,7 +146,7 @@ impl PostgresCheckpointStore {
 
     /// Returns a schema-qualified table name (e.g., "schema.checkpoints").
     fn qualify_table(&self, table: &str) -> String {
-        format!("{}.{}", self.schema, table)
+        crate::migrations::qualify(&self.schema, table)
     }
 
     /// Runs database migrations to set up the checkpoint store schema.

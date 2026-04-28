@@ -9,6 +9,11 @@ use event_sauce_core::{Error, Result};
 use sqlx::PgPool;
 use std::future::Future;
 
+/// Joins a schema and table name into a fully-qualified identifier.
+pub(crate) fn qualify(schema: &str, table: &str) -> String {
+    format!("{schema}.{table}")
+}
+
 /// Ensures the named schema exists, skipping the call for the `public` schema
 /// (which is created automatically by `PostgreSQL`).
 pub(crate) async fn ensure_schema(pool: &PgPool, schema: &str) -> Result<()> {

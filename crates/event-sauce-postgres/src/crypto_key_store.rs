@@ -87,7 +87,7 @@ impl PostgresCryptoKeyStore {
 
     /// Returns a schema-qualified table name.
     fn qualify_table(&self, table: &str) -> String {
-        format!("{}.{}", self.schema, table)
+        crate::migrations::qualify(&self.schema, table)
     }
 
     /// Runs database migrations to set up the crypto keys table.
