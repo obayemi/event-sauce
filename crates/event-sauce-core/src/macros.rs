@@ -119,6 +119,25 @@ macro_rules! command_handler {
 ///   and `Aggregate::cmd_with_id(id, params) -> Result<AggregateRoot<A>, Error>`
 ///
 /// Regular commands (no `@init`) generate the same code as before.
+// Internal TT-muncher for `command_handler!`.
+//
+// Each arm matches a distinct command shape (regular / @init / @delete /
+// @actor(Ty) / combinations) and pushes the parsed metadata into the
+// corresponding accumulator before recursing on the tail.
+//
+// | Markers                  | Accumulator             | Variant kind   |
+// |--------------------------|-------------------------|----------------|
+// | (none)                   | `regular_commands`      | regular        |
+// | `@actor(T)`              | `actor_commands`        | actor          |
+// | `@init`                  | `init_commands`         | init           |
+// | `@init @actor(T)`        | `actor_init_commands`   | actor_init     |
+// | `@delete`                | `delete_commands`       | delete         |
+// | `@delete @actor(T)`      | `actor_delete_commands` | actor_delete   |
+//
+// The arms are listed most-specific-first (combined markers before bare
+// markers) so macro_rules picks the right one for compound annotations like
+// `@init @actor(T)`. After the last command is munched, the base case fires
+// and emits the actual command-method impls keyed off each accumulator.
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __command_handler_init_internal {
