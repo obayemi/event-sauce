@@ -70,6 +70,61 @@ where
         self.store.commit(aggregate).await
     }
 
+    /// Loads an aggregate, applies a closure that mutates it, and saves the result.
+    ///
+    /// The most common command-handler pattern condensed into a single call. The
+    /// closure receives the loaded aggregate and may apply commands or events;
+    /// any aggregate-defined error is auto-converted via the blanket
+    /// `From<A::Error> for Error`.
+    ///
+    /// Accepts both raw `EntityId` and typed IDs implementing `EntityIdFor<A>`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the aggregate cannot be loaded, the closure fails,
+    /// or saving fails.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let value = repo.modify(order_id, |order| {
+    ///     order.add_item("laptop".into(), 1, 120_000)?;
+    ///     Ok(order.total())
+    /// }).await?;
+    /// ```
+    pub async fn modify<F, R>(&self, id: impl EntityIdFor<A>, f: F) -> Result<R>
+    where
+        F: FnOnce(&mut AggregateRoot<A>) -> std::result::Result<R, A::Error>,
+    {
+        let mut aggregate = self.load(id).await?;
+        let result = f(&mut aggregate)?;
+        self.save(&mut aggregate).await?;
+        Ok(result)
+    }
+
+    /// Loads a deleted aggregate, applies a closure, and saves any new pending events.
+    ///
+    /// Mirrors [`modify`](Self::modify) for the deleted-state lifecycle.
+    /// Note: deleted aggregates cannot accept further events through `apply()` —
+    /// the closure is mostly useful for inspecting state or appending metadata-only
+    /// events emitted via [`commit_deleted`](crate::EventStore::commit_deleted).
+    ///
+    /// Accepts both raw `EntityId` and typed IDs implementing `EntityIdFor<A>`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the aggregate is not deleted, the closure fails,
+    /// or saving fails.
+    pub async fn modify_deleted<F, R>(&self, id: impl EntityIdFor<A>, f: F) -> Result<R>
+    where
+        F: FnOnce(&mut DeletedAggregateRoot<A>) -> std::result::Result<R, A::Error>,
+    {
+        let mut deleted = self.load_deleted(id).await?;
+        let result = f(&mut deleted)?;
+        self.save_deleted(&mut deleted).await?;
+        Ok(result)
+    }
+
     /// Loads an aggregate from the event store.
     ///
     /// Reconstructs the aggregate by replaying all its events,
@@ -402,6 +457,54 @@ mod tests {
         // Load through the cloned repository — should see the same data
         let loaded = repo_clone.load(test_id).await.unwrap();
         assert_eq!(loaded.value, 42);
+    }
+
+    #[tokio::test]
+    async fn test_repository_modify_loads_mutates_and_saves() {
+        let store = Arc::new(MockEventStore::new());
+        let repo = store.repository::<SimpleTestEntity>();
+
+        let id = EntityId::new();
+        let mut aggregate = AggregateRoot::<SimpleTestEntity>::new(id);
+        aggregate
+            .apply(SimpleTestEvent::Created { value: 1 })
+            .unwrap();
+        repo.save(&mut aggregate).await.unwrap();
+
+        let returned = repo
+            .modify(id, |agg| {
+                agg.apply(SimpleTestEvent::Updated { value: 99 })?;
+                Ok(agg.value)
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(returned, 99);
+        let reloaded = repo.load(id).await.unwrap();
+        assert_eq!(reloaded.value, 99);
+    }
+
+    #[tokio::test]
+    async fn test_repository_modify_propagates_aggregate_error() {
+        let store = Arc::new(MockEventStore::new());
+        let repo = store.repository::<SimpleTestEntity>();
+
+        let id = EntityId::new();
+        let mut aggregate = AggregateRoot::<SimpleTestEntity>::new(id);
+        aggregate
+            .apply(SimpleTestEvent::Created { value: 1 })
+            .unwrap();
+        repo.save(&mut aggregate).await.unwrap();
+
+        let result = repo
+            .modify(id, |_agg| -> std::result::Result<(), _> {
+                Err(crate::test_fixtures::SimpleTestError)
+            })
+            .await;
+
+        assert!(result.is_err());
+        let reloaded = repo.load(id).await.unwrap();
+        assert_eq!(reloaded.value, 1, "aggregate not mutated on closure error");
     }
 
     #[tokio::test]
