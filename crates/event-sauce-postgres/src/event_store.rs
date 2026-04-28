@@ -228,222 +228,157 @@ impl PostgresEventStore {
     /// - The database connection fails
     /// - The migrations cannot be applied due to permission issues
     /// - There are SQL syntax errors in migration files
-    #[allow(clippy::too_many_lines)]
     pub async fn migrate(&self) -> Result<()> {
-        // Create schema if it doesn't exist (skip for public schema)
-        if self.schema != "public" {
-            let create_schema = format!("CREATE SCHEMA IF NOT EXISTS {}", self.schema);
-            sqlx::query(&create_schema)
-                .execute(&self.pool)
-                .await
-                .map_err(|e| Error::backend("Failed to create schema", e))?;
-        }
+        crate::migrations::ensure_schema(&self.pool, &self.schema).await?;
 
-        // Create migration tracking table in the custom schema
         let migrations_table = self.qualify_table("_event_sauce_migrations");
-        let create_migrations_table = format!(
-            "CREATE TABLE IF NOT EXISTS {migrations_table} (
-                version BIGINT PRIMARY KEY,
-                description TEXT NOT NULL,
-                applied_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
-            )"
-        );
-        sqlx::query(&create_migrations_table)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| Error::backend("Failed to create migrations table", e))?;
+        crate::migrations::ensure_migrations_table(&self.pool, &migrations_table).await?;
 
-        // Check if migration has already been applied
-        let check_query = format!("SELECT COUNT(*) FROM {migrations_table} WHERE version = $1");
-        let count: i64 = sqlx::query_scalar(&check_query)
-            .bind(20_250_101_000_000_i64)
-            .fetch_one(&self.pool)
-            .await
-            .map_err(|e| Error::backend("Failed to check migration status", e))?;
+        self.migrate_events_and_snapshots(&migrations_table).await?;
+        self.migrate_crypto_keys(&migrations_table).await?;
+        self.migrate_aggregate_claims(&migrations_table).await?;
+        Ok(())
+    }
 
-        if count > 0 {
-            // Migration 1 already applied, check for newer migrations
-            self.migrate_crypto_keys(&migrations_table).await?;
-            self.migrate_aggregate_claims(&migrations_table).await?;
-            return Ok(());
-        }
-
-        // Apply the migration with schema-qualified table names
-        // Note: Each statement must be executed separately
+    /// Migration 1: Creates the events and snapshots tables.
+    async fn migrate_events_and_snapshots(&self, migrations_table: &str) -> Result<()> {
         let events_table = self.qualify_table("events");
         let snapshots_table = self.qualify_table("snapshots");
+        crate::migrations::apply_once(
+            &self.pool,
+            migrations_table,
+            20_250_101_000_000_i64,
+            "create_events_table",
+            move |pool| async move {
+                let create_events = format!(
+                    "CREATE TABLE IF NOT EXISTS {events_table} (
+                        id BIGSERIAL PRIMARY KEY,
+                        event_id UUID NOT NULL UNIQUE,
+                        aggregate_id UUID NOT NULL,
+                        aggregate_type VARCHAR(255) NOT NULL,
+                        event_type VARCHAR(255) NOT NULL,
+                        event_version BIGINT NOT NULL,
+                        event_data JSONB NOT NULL,
+                        stream_version BIGINT NOT NULL,
+                        created_by UUID,
+                        created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                        correlation_id UUID,
+                        causation_id UUID,
+                        metadata JSONB,
+                        UNIQUE(aggregate_id, aggregate_type, stream_version)
+                    )"
+                );
+                sqlx::query(&create_events)
+                    .execute(pool)
+                    .await
+                    .map_err(|e| Error::backend("Failed to create events table", e))?;
 
-        // Create events table
-        let create_events = format!(
-            "CREATE TABLE IF NOT EXISTS {events_table} (
-                id BIGSERIAL PRIMARY KEY,
-                event_id UUID NOT NULL UNIQUE,
-                aggregate_id UUID NOT NULL,
-                aggregate_type VARCHAR(255) NOT NULL,
-                event_type VARCHAR(255) NOT NULL,
-                event_version BIGINT NOT NULL,
-                event_data JSONB NOT NULL,
-                stream_version BIGINT NOT NULL,
-                created_by UUID,
-                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-                correlation_id UUID,
-                causation_id UUID,
-                metadata JSONB,
-                UNIQUE(aggregate_id, aggregate_type, stream_version)
-            )"
-        );
-        sqlx::query(&create_events)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| Error::backend("Failed to create events table", e))?;
+                let indexes = vec![
+                    format!("CREATE INDEX IF NOT EXISTS idx_events_aggregate ON {events_table}(aggregate_id, aggregate_type)"),
+                    format!("CREATE INDEX IF NOT EXISTS idx_events_aggregate_version ON {events_table}(aggregate_id, aggregate_type, stream_version)"),
+                    format!("CREATE INDEX IF NOT EXISTS idx_events_type ON {events_table}(event_type)"),
+                    format!("CREATE INDEX IF NOT EXISTS idx_events_aggregate_type ON {events_table}(aggregate_type)"),
+                    format!("CREATE INDEX IF NOT EXISTS idx_events_created_at ON {events_table}(created_at)"),
+                    format!("CREATE INDEX IF NOT EXISTS idx_events_correlation_id ON {events_table}(correlation_id) WHERE correlation_id IS NOT NULL"),
+                ];
+                for index_sql in indexes {
+                    sqlx::query(&index_sql)
+                        .execute(pool)
+                        .await
+                        .map_err(|e| Error::backend("Failed to create index", e))?;
+                }
 
-        // Create indexes for events table
-        let indexes = vec![
-            format!("CREATE INDEX IF NOT EXISTS idx_events_aggregate ON {}(aggregate_id, aggregate_type)", events_table),
-            format!("CREATE INDEX IF NOT EXISTS idx_events_aggregate_version ON {}(aggregate_id, aggregate_type, stream_version)", events_table),
-            format!("CREATE INDEX IF NOT EXISTS idx_events_type ON {}(event_type)", events_table),
-            format!("CREATE INDEX IF NOT EXISTS idx_events_aggregate_type ON {}(aggregate_type)", events_table),
-            format!("CREATE INDEX IF NOT EXISTS idx_events_created_at ON {}(created_at)", events_table),
-            format!("CREATE INDEX IF NOT EXISTS idx_events_correlation_id ON {}(correlation_id) WHERE correlation_id IS NOT NULL", events_table),
-        ];
+                let create_snapshots = format!(
+                    "CREATE TABLE IF NOT EXISTS {snapshots_table} (
+                        aggregate_id UUID NOT NULL,
+                        aggregate_type VARCHAR(255) NOT NULL,
+                        snapshot_version BIGINT NOT NULL,
+                        snapshot_data JSONB NOT NULL,
+                        is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+                        created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                        PRIMARY KEY (aggregate_id, aggregate_type)
+                    )"
+                );
+                sqlx::query(&create_snapshots)
+                    .execute(pool)
+                    .await
+                    .map_err(|e| Error::backend("Failed to create snapshots table", e))?;
 
-        for index_sql in indexes {
-            sqlx::query(&index_sql)
-                .execute(&self.pool)
-                .await
-                .map_err(|e| Error::backend("Failed to create index", e))?;
-        }
+                let snapshots_index = format!(
+                    "CREATE INDEX IF NOT EXISTS idx_snapshots_type ON {snapshots_table}(aggregate_type)"
+                );
+                sqlx::query(&snapshots_index)
+                    .execute(pool)
+                    .await
+                    .map_err(|e| Error::backend("Failed to create snapshots index", e))?;
 
-        // Create snapshots table
-        let create_snapshots = format!(
-            "CREATE TABLE IF NOT EXISTS {snapshots_table} (
-                aggregate_id UUID NOT NULL,
-                aggregate_type VARCHAR(255) NOT NULL,
-                snapshot_version BIGINT NOT NULL,
-                snapshot_data JSONB NOT NULL,
-                is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
-                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-                PRIMARY KEY (aggregate_id, aggregate_type)
-            )"
-        );
-        sqlx::query(&create_snapshots)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| Error::backend("Failed to create snapshots table", e))?;
-
-        // Create index for snapshots table
-        let snapshots_index = format!(
-            "CREATE INDEX IF NOT EXISTS idx_snapshots_type ON {snapshots_table}(aggregate_type)"
-        );
-        sqlx::query(&snapshots_index)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| Error::backend("Failed to create snapshots index", e))?;
-
-        // Record the migration
-        let record_query =
-            format!("INSERT INTO {migrations_table} (version, description) VALUES ($1, $2)");
-        sqlx::query(&record_query)
-            .bind(20_250_101_000_000_i64)
-            .bind("create_events_table")
-            .execute(&self.pool)
-            .await
-            .map_err(|e| Error::backend("Failed to record migration", e))?;
-
-        // Migration 2: Create crypto_keys table
-        self.migrate_crypto_keys(&migrations_table).await?;
-
-        // Migration 3: Create aggregate_claims table
-        self.migrate_aggregate_claims(&migrations_table).await?;
-
-        Ok(())
+                Ok(())
+            },
+        )
+        .await
     }
 
     /// Migration 2: Creates the `crypto_keys` table for per-aggregate encryption keys.
     async fn migrate_crypto_keys(&self, migrations_table: &str) -> Result<()> {
-        let check_query = format!("SELECT COUNT(*) FROM {migrations_table} WHERE version = $1");
-        let count: i64 = sqlx::query_scalar(&check_query)
-            .bind(20_250_303_000_000_i64)
-            .fetch_one(&self.pool)
-            .await
-            .map_err(|e| Error::backend("Failed to check migration status", e))?;
-
-        if count > 0 {
-            return Ok(());
-        }
-
         let crypto_keys_table = self.qualify_table("crypto_keys");
-        let create_crypto_keys = format!(
-            "CREATE TABLE IF NOT EXISTS {crypto_keys_table} (
-                aggregate_id UUID PRIMARY KEY,
-                key_data BYTEA NOT NULL,
-                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
-            )"
-        );
-        sqlx::query(&create_crypto_keys)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| Error::backend("Failed to create crypto_keys table", e))?;
-
-        let record_query =
-            format!("INSERT INTO {migrations_table} (version, description) VALUES ($1, $2)");
-        sqlx::query(&record_query)
-            .bind(20_250_303_000_000_i64)
-            .bind("create_crypto_keys_table")
-            .execute(&self.pool)
-            .await
-            .map_err(|e| Error::backend("Failed to record migration", e))?;
-
-        Ok(())
+        crate::migrations::apply_once(
+            &self.pool,
+            migrations_table,
+            20_250_303_000_000_i64,
+            "create_crypto_keys_table",
+            move |pool| async move {
+                let create_crypto_keys = format!(
+                    "CREATE TABLE IF NOT EXISTS {crypto_keys_table} (
+                        aggregate_id UUID PRIMARY KEY,
+                        key_data BYTEA NOT NULL,
+                        created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+                    )"
+                );
+                sqlx::query(&create_crypto_keys)
+                    .execute(pool)
+                    .await
+                    .map_err(|e| Error::backend("Failed to create crypto_keys table", e))?;
+                Ok(())
+            },
+        )
+        .await
     }
 
     /// Migration 3: Creates the `aggregate_claims` table for cross-aggregate uniqueness.
     async fn migrate_aggregate_claims(&self, migrations_table: &str) -> Result<()> {
-        let check_query = format!("SELECT COUNT(*) FROM {migrations_table} WHERE version = $1");
-        let count: i64 = sqlx::query_scalar(&check_query)
-            .bind(20_250_315_000_000_i64)
-            .fetch_one(&self.pool)
-            .await
-            .map_err(|e| Error::backend("Failed to check migration status", e))?;
-
-        if count > 0 {
-            return Ok(());
-        }
-
         let claims_table = self.qualify_table("aggregate_claims");
-        let create_claims = format!(
-            "CREATE TABLE IF NOT EXISTS {claims_table} (
-                aggregate_id UUID NOT NULL,
-                claim_type VARCHAR(255) NOT NULL,
-                claim_hash BYTEA NOT NULL,
-                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-                UNIQUE (aggregate_id, claim_type),
-                UNIQUE (claim_type, claim_hash)
-            )"
-        );
-        sqlx::query(&create_claims)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| Error::backend("Failed to create aggregate_claims table", e))?;
+        crate::migrations::apply_once(
+            &self.pool,
+            migrations_table,
+            20_250_315_000_000_i64,
+            "create_aggregate_claims_table",
+            move |pool| async move {
+                let create_claims = format!(
+                    "CREATE TABLE IF NOT EXISTS {claims_table} (
+                        aggregate_id UUID NOT NULL,
+                        claim_type VARCHAR(255) NOT NULL,
+                        claim_hash BYTEA NOT NULL,
+                        created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                        UNIQUE (aggregate_id, claim_type),
+                        UNIQUE (claim_type, claim_hash)
+                    )"
+                );
+                sqlx::query(&create_claims)
+                    .execute(pool)
+                    .await
+                    .map_err(|e| Error::backend("Failed to create aggregate_claims table", e))?;
 
-        let idx_query = format!(
-            "CREATE INDEX IF NOT EXISTS idx_claims_aggregate ON {claims_table} (aggregate_id)"
-        );
-        sqlx::query(&idx_query)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| Error::backend("Failed to create claims index", e))?;
-
-        let record_query =
-            format!("INSERT INTO {migrations_table} (version, description) VALUES ($1, $2)");
-        sqlx::query(&record_query)
-            .bind(20_250_315_000_000_i64)
-            .bind("create_aggregate_claims_table")
-            .execute(&self.pool)
-            .await
-            .map_err(|e| Error::backend("Failed to record migration", e))?;
-
-        Ok(())
+                let idx_query = format!(
+                    "CREATE INDEX IF NOT EXISTS idx_claims_aggregate ON {claims_table} (aggregate_id)"
+                );
+                sqlx::query(&idx_query)
+                    .execute(pool)
+                    .await
+                    .map_err(|e| Error::backend("Failed to create claims index", e))?;
+                Ok(())
+            },
+        )
+        .await
     }
 }
 

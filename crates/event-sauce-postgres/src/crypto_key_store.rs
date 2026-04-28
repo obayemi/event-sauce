@@ -101,66 +101,33 @@ impl PostgresCryptoKeyStore {
     /// - The database connection fails
     /// - The migrations cannot be applied due to permission issues
     pub async fn migrate(&self) -> Result<()> {
-        // Create schema if it doesn't exist (skip for public schema)
-        if self.schema != "public" {
-            let create_schema = format!("CREATE SCHEMA IF NOT EXISTS {}", self.schema);
-            sqlx::query(&create_schema)
-                .execute(&self.pool)
-                .await
-                .map_err(|e| Error::backend("Failed to create schema", e))?;
-        }
+        crate::migrations::ensure_schema(&self.pool, &self.schema).await?;
 
-        // Create migration tracking table
         let migrations_table = self.qualify_table("_crypto_key_migrations");
-        let create_migrations_table = format!(
-            "CREATE TABLE IF NOT EXISTS {migrations_table} (
-                version BIGINT PRIMARY KEY,
-                description TEXT NOT NULL,
-                applied_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
-            )"
-        );
-        sqlx::query(&create_migrations_table)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| Error::backend("Failed to create migrations table", e))?;
+        crate::migrations::ensure_migrations_table(&self.pool, &migrations_table).await?;
 
-        // Check if migration has already been applied
-        let check_query = format!("SELECT COUNT(*) FROM {migrations_table} WHERE version = $1");
-        let count: i64 = sqlx::query_scalar(&check_query)
-            .bind(20_250_301_000_000_i64)
-            .fetch_one(&self.pool)
-            .await
-            .map_err(|e| Error::backend("Failed to check migration status", e))?;
-
-        if count > 0 {
-            return Ok(());
-        }
-
-        // Create crypto_keys table
         let crypto_keys_table = self.qualify_table("crypto_keys");
-        let create_crypto_keys = format!(
-            "CREATE TABLE IF NOT EXISTS {crypto_keys_table} (
-                aggregate_id UUID PRIMARY KEY,
-                key_data BYTEA NOT NULL,
-                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
-            )"
-        );
-        sqlx::query(&create_crypto_keys)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| Error::backend("Failed to create crypto_keys table", e))?;
-
-        // Record the migration
-        let record_query =
-            format!("INSERT INTO {migrations_table} (version, description) VALUES ($1, $2)");
-        sqlx::query(&record_query)
-            .bind(20_250_301_000_000_i64)
-            .bind("create_crypto_keys_table")
-            .execute(&self.pool)
-            .await
-            .map_err(|e| Error::backend("Failed to record migration", e))?;
-
-        Ok(())
+        crate::migrations::apply_once(
+            &self.pool,
+            &migrations_table,
+            20_250_301_000_000_i64,
+            "create_crypto_keys_table",
+            |pool| async move {
+                let create_crypto_keys = format!(
+                    "CREATE TABLE IF NOT EXISTS {crypto_keys_table} (
+                        aggregate_id UUID PRIMARY KEY,
+                        key_data BYTEA NOT NULL,
+                        created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+                    )"
+                );
+                sqlx::query(&create_crypto_keys)
+                    .execute(pool)
+                    .await
+                    .map_err(|e| Error::backend("Failed to create crypto_keys table", e))?;
+                Ok(())
+            },
+        )
+        .await
     }
 }
 

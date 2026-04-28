@@ -180,78 +180,41 @@ impl PostgresCheckpointStore {
     /// - The migrations cannot be applied due to permission issues
     /// - There are SQL syntax errors in migration statements
     pub async fn migrate(&self) -> Result<()> {
-        // Create schema if it doesn't exist (skip for public schema)
-        if self.schema != "public" {
-            let create_schema = format!("CREATE SCHEMA IF NOT EXISTS {}", self.schema);
-            sqlx::query(&create_schema)
-                .execute(&self.pool)
-                .await
-                .map_err(|e| Error::backend("Failed to create schema", e))?;
-        }
+        crate::migrations::ensure_schema(&self.pool, &self.schema).await?;
 
-        // Create migration tracking table in the custom schema
         let migrations_table = self.qualify_table("_checkpoint_migrations");
-        let create_migrations_table = format!(
-            "CREATE TABLE IF NOT EXISTS {migrations_table} (
-                version BIGINT PRIMARY KEY,
-                description TEXT NOT NULL,
-                applied_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
-            )"
-        );
-        sqlx::query(&create_migrations_table)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| Error::backend("Failed to create migrations table", e))?;
+        crate::migrations::ensure_migrations_table(&self.pool, &migrations_table).await?;
 
-        // Check if migration has already been applied
-        let check_query = format!("SELECT COUNT(*) FROM {migrations_table} WHERE version = $1");
-        let count: i64 = sqlx::query_scalar(&check_query)
-            .bind(20_250_101_000_001_i64)
-            .fetch_one(&self.pool)
-            .await
-            .map_err(|e| Error::backend("Failed to check migration status", e))?;
-
-        if count > 0 {
-            // Migration already applied
-            return Ok(());
-        }
-
-        // Apply the migration with schema-qualified table names
         let checkpoints_table = self.qualify_table("checkpoints");
+        crate::migrations::apply_once(
+            &self.pool,
+            &migrations_table,
+            20_250_101_000_001_i64,
+            "create_checkpoints_table",
+            |pool| async move {
+                let create_checkpoints = format!(
+                    "CREATE TABLE IF NOT EXISTS {checkpoints_table} (
+                        subscription_name VARCHAR(255) PRIMARY KEY,
+                        position BIGINT NOT NULL,
+                        updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+                    )"
+                );
+                sqlx::query(&create_checkpoints)
+                    .execute(pool)
+                    .await
+                    .map_err(|e| Error::backend("Failed to create checkpoints table", e))?;
 
-        // Create checkpoints table
-        let create_checkpoints = format!(
-            "CREATE TABLE IF NOT EXISTS {checkpoints_table} (
-                subscription_name VARCHAR(255) PRIMARY KEY,
-                position BIGINT NOT NULL,
-                updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
-            )"
-        );
-        sqlx::query(&create_checkpoints)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| Error::backend("Failed to create checkpoints table", e))?;
-
-        // Create index on updated_at
-        let index = format!(
-            "CREATE INDEX IF NOT EXISTS idx_checkpoints_updated_at ON {checkpoints_table}(updated_at)"
-        );
-        sqlx::query(&index)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| Error::backend("Failed to create index", e))?;
-
-        // Record the migration
-        let record_query =
-            format!("INSERT INTO {migrations_table} (version, description) VALUES ($1, $2)");
-        sqlx::query(&record_query)
-            .bind(20_250_101_000_001_i64)
-            .bind("create_checkpoints_table")
-            .execute(&self.pool)
-            .await
-            .map_err(|e| Error::backend("Failed to record migration", e))?;
-
-        Ok(())
+                let index = format!(
+                    "CREATE INDEX IF NOT EXISTS idx_checkpoints_updated_at ON {checkpoints_table}(updated_at)"
+                );
+                sqlx::query(&index)
+                    .execute(pool)
+                    .await
+                    .map_err(|e| Error::backend("Failed to create index", e))?;
+                Ok(())
+            },
+        )
+        .await
     }
 }
 

@@ -89,6 +89,7 @@ mod checkpoint_store;
 mod crypto_key_store;
 mod event_log;
 mod event_store;
+mod migrations;
 
 pub use backend::{PostgresBackend, PostgresBackendBuilder};
 pub use checkpoint_store::{PostgresCheckpointStore, PostgresCheckpointStoreBuilder};
