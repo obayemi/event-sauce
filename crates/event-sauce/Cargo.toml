@@ -47,6 +47,10 @@ name = "postgres-quickstart"
 required-features = ["postgres"]
 
 [[example]]
+name = "projection-worker"
+required-features = ["postgres"]
+
+[[example]]
 name = "crypto-shredding"
 
 [[bench]]

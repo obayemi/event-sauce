@@ -98,3 +98,30 @@ pub use crypto_key_store::{PostgresCryptoKeyStore, PostgresCryptoKeyStoreBuilder
 pub use event_log::PostgresEventLogQuery;
 pub use event_store::{PostgresEventStore, PostgresEventStoreBuilder};
 pub use projection::PostgresProjection;
+
+/// Outcome of a leased projection or worker run.
+///
+/// Returned by APIs like
+/// [`PostgresBackend::run_leased_projection`] to distinguish between "did
+/// the work" and "another worker has the lease, try again later".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LeaseOutcome {
+    /// The lease was acquired and the run completed (possibly with no work).
+    Completed,
+    /// Another worker already holds an active lease; nothing was done.
+    Busy,
+}
+
+impl LeaseOutcome {
+    /// Returns `true` if the run completed under this worker's lease.
+    #[must_use]
+    pub fn is_completed(self) -> bool {
+        matches!(self, Self::Completed)
+    }
+
+    /// Returns `true` if the lease was held by another worker.
+    #[must_use]
+    pub fn is_busy(self) -> bool {
+        matches!(self, Self::Busy)
+    }
+}

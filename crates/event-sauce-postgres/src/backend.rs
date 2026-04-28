@@ -149,6 +149,14 @@ impl PostgresBackend {
     /// whose materialization didn't commit, so a re-run picks up exactly where
     /// the failure occurred.
     ///
+    /// # Multi-instance safety
+    ///
+    /// This method does **not** acquire a lease. Running it from two
+    /// processes (or two tasks) at the same time will race on the checkpoint
+    /// and double-apply events. Use
+    /// [`run_leased_projection`](Self::run_leased_projection) when more than
+    /// one instance might run the same projection.
+    ///
     /// # Examples
     ///
     /// ```ignore
@@ -183,6 +191,118 @@ impl PostgresBackend {
         while let Some(event_result) = event_stream.next().await {
             let event = event_result?;
             current_position = Position::new(current_position.as_i64() + 1);
+
+            if !filter.matches(&event) {
+                continue;
+            }
+
+            let mut tx = self.pool.begin().await.map_err(|e| {
+                event_sauce_core::Error::backend("Failed to start projection transaction", e)
+            })?;
+
+            projection.handle(&event, &mut tx).await?;
+            self.checkpoint_store
+                .save_checkpoint_tx(&mut tx, P::NAME, current_position)
+                .await?;
+
+            tx.commit().await.map_err(|e| {
+                event_sauce_core::Error::backend("Failed to commit projection transaction", e)
+            })?;
+        }
+
+        Ok(())
+    }
+
+    /// Runs a [`PostgresProjection`](crate::PostgresProjection) under a lease.
+    ///
+    /// Acquires the lease for `P::NAME` on behalf of `worker_id`, drains all
+    /// currently-available events (atomically per event, identically to
+    /// [`run_postgres_projection`](Self::run_postgres_projection)), then
+    /// releases the lease and returns. If another worker holds an active
+    /// lease, this is a no-op that returns
+    /// [`LeaseOutcome::Busy`](crate::LeaseOutcome::Busy) — the caller can
+    /// retry later.
+    ///
+    /// While processing, the lease is renewed roughly every
+    /// `lease_duration / 3` to keep ownership. If renewal fails — typically
+    /// because the lease expired and was taken by another worker — the run
+    /// stops with an error rather than risk concurrent processing.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use std::time::Duration;
+    ///
+    /// let worker_id = format!("{}-{}", hostname()?, std::process::id());
+    /// let outcome = backend
+    ///     .run_leased_projection(&mut OrderTotalsProjection, &worker_id, Duration::from_secs(30))
+    ///     .await?;
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if checkpoint operations fail, the event stream
+    /// errors, the projection's `handle` returns an error, the per-event
+    /// transaction cannot be started or committed, or the lease is lost
+    /// during the run.
+    pub async fn run_leased_projection<P: crate::PostgresProjection>(
+        &self,
+        projection: &mut P,
+        worker_id: &str,
+        lease_duration: std::time::Duration,
+    ) -> event_sauce_core::Result<crate::LeaseOutcome> {
+        use event_sauce_core::CheckpointStore;
+
+        let Some(start_position) = self
+            .checkpoint_store
+            .try_acquire_lease(P::NAME, worker_id, lease_duration)
+            .await?
+        else {
+            return Ok(crate::LeaseOutcome::Busy);
+        };
+
+        let result = self
+            .run_under_lease(projection, worker_id, lease_duration, start_position)
+            .await;
+
+        // Always try to release on exit, including on error. Releasing a
+        // lease we no longer hold is a no-op.
+        let _ = self
+            .checkpoint_store
+            .release_lease(P::NAME, worker_id)
+            .await;
+
+        result.map(|()| crate::LeaseOutcome::Completed)
+    }
+
+    async fn run_under_lease<P: crate::PostgresProjection>(
+        &self,
+        projection: &mut P,
+        worker_id: &str,
+        lease_duration: std::time::Duration,
+        start_position: event_sauce_core::Position,
+    ) -> event_sauce_core::Result<()> {
+        use event_sauce_core::{CheckpointStore, EventStore, Position};
+        use futures::StreamExt;
+
+        let event_stream = self.event_store.stream_all(start_position).await?;
+        futures::pin_mut!(event_stream);
+
+        let filter = P::event_filter();
+        let mut current_position = start_position;
+        let renew_interval = lease_duration / 3;
+        let mut last_renew = std::time::Instant::now();
+
+        while let Some(event_result) = event_stream.next().await {
+            let event = event_result?;
+            current_position = Position::new(current_position.as_i64() + 1);
+
+            if last_renew.elapsed() >= renew_interval {
+                self.checkpoint_store
+                    .renew_lease(P::NAME, worker_id, lease_duration)
+                    .await?;
+                last_renew = std::time::Instant::now();
+            }
 
             if !filter.matches(&event) {
                 continue;
@@ -787,5 +907,143 @@ mod tests {
             CountingProjection::read(backend.pool(), "event_sauce").await,
             4
         );
+    }
+
+    #[tokio::test]
+    async fn test_run_leased_projection_completes_under_lease() {
+        let (url, _container) = start_postgres().await;
+        let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
+        CountingProjection::migrate(backend.pool(), "event_sauce").await;
+
+        let store = backend.event_store();
+        for _ in 0..3 {
+            append_test_event(&store, AggregateVersion::initial()).await;
+        }
+
+        let mut projection = CountingProjection {
+            fail_after: None,
+            seen: 0,
+        };
+        let outcome = backend
+            .run_leased_projection(
+                &mut projection,
+                "worker-1",
+                std::time::Duration::from_secs(30),
+            )
+            .await
+            .unwrap();
+        assert_eq!(outcome, crate::LeaseOutcome::Completed);
+        assert_eq!(
+            CountingProjection::read(backend.pool(), "event_sauce").await,
+            3
+        );
+    }
+
+    #[tokio::test]
+    async fn test_run_leased_projection_busy_when_lease_held() {
+        let (url, _container) = start_postgres().await;
+        let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
+        CountingProjection::migrate(backend.pool(), "event_sauce").await;
+
+        // Worker A grabs the lease and holds it.
+        backend
+            .checkpoint_store()
+            .try_acquire_lease(
+                <CountingProjection as crate::PostgresProjection>::NAME,
+                "worker-a",
+                std::time::Duration::from_secs(60),
+            )
+            .await
+            .unwrap();
+
+        // Worker B should see Busy.
+        let mut projection = CountingProjection {
+            fail_after: None,
+            seen: 0,
+        };
+        let outcome = backend
+            .run_leased_projection(
+                &mut projection,
+                "worker-b",
+                std::time::Duration::from_secs(30),
+            )
+            .await
+            .unwrap();
+        assert_eq!(outcome, crate::LeaseOutcome::Busy);
+        // No work was done.
+        assert_eq!(projection.seen, 0);
+    }
+
+    #[tokio::test]
+    async fn test_run_leased_projection_releases_on_exit() {
+        let (url, _container) = start_postgres().await;
+        let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
+        CountingProjection::migrate(backend.pool(), "event_sauce").await;
+
+        let mut projection = CountingProjection {
+            fail_after: None,
+            seen: 0,
+        };
+        backend
+            .run_leased_projection(
+                &mut projection,
+                "worker-a",
+                std::time::Duration::from_secs(30),
+            )
+            .await
+            .unwrap();
+
+        // Worker B should now be able to acquire the lease (worker A released it).
+        let mut projection = CountingProjection {
+            fail_after: None,
+            seen: 0,
+        };
+        let outcome = backend
+            .run_leased_projection(
+                &mut projection,
+                "worker-b",
+                std::time::Duration::from_secs(30),
+            )
+            .await
+            .unwrap();
+        assert_eq!(outcome, crate::LeaseOutcome::Completed);
+    }
+
+    #[tokio::test]
+    async fn test_run_leased_projection_releases_on_failure() {
+        let (url, _container) = start_postgres().await;
+        let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
+        CountingProjection::migrate(backend.pool(), "event_sauce").await;
+
+        let store = backend.event_store();
+        for _ in 0..3 {
+            append_test_event(&store, AggregateVersion::initial()).await;
+        }
+
+        // Worker A fails partway through.
+        let mut projection = CountingProjection {
+            fail_after: Some(2),
+            seen: 0,
+        };
+        let result = backend
+            .run_leased_projection(
+                &mut projection,
+                "worker-a",
+                std::time::Duration::from_secs(30),
+            )
+            .await;
+        assert!(result.is_err());
+
+        // Lease should have been released even on failure.
+        let acquired = backend
+            .checkpoint_store()
+            .try_acquire_lease(
+                <CountingProjection as crate::PostgresProjection>::NAME,
+                "worker-b",
+                std::time::Duration::from_secs(30),
+            )
+            .await
+            .unwrap();
+        assert!(acquired.is_some(), "lease should be released after failure");
     }
 }
