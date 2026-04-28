@@ -61,20 +61,15 @@ struct EventAttrs {
 /// - The enum variants are not in the expected format
 /// - Tuple variants do not contain exactly one field when generating `Into` implementations
 #[proc_macro_derive(Event, attributes(event))]
-#[allow(clippy::too_many_lines)]
 pub fn derive_event(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
-
-    // Extract the enum name
     let name = &input.ident;
 
-    // Parse the #[event(...)] attribute
     let attrs = match extract_event_attrs(&input.attrs) {
         Ok(attrs) => attrs,
         Err(err) => return err,
     };
 
-    // Extract variants from enum
     let variants = match &input.data {
         Data::Enum(data) => &data.variants,
         _ => {
@@ -84,7 +79,6 @@ pub fn derive_event(input: TokenStream) -> TokenStream {
         }
     };
 
-    // Generate event_type match arms
     let type_prefix = attrs.type_prefix.clone().unwrap_or_else(|| {
         // Extract the base name by removing "Event" suffix if present
         let name_str = name.to_string();
@@ -94,196 +88,33 @@ pub fn derive_event(input: TokenStream) -> TokenStream {
             .unwrap_or(name_str)
     });
 
-    let event_type_arms = variants.iter().map(|variant| {
-        let variant_name = &variant.ident;
-        let variant_str = variant_name.to_string();
-        let event_type_name = format!("{type_prefix}.{variant_str}");
-
-        // Check if this is a tuple variant or named field variant
-        match &variant.fields {
-            Fields::Unnamed(_) => {
-                quote! {
-                    #name::#variant_name(..) => #event_type_name,
-                }
-            }
-            _ => {
-                quote! {
-                    #name::#variant_name { .. } => #event_type_name,
-                }
-            }
+    let aggregate_type_decl = match &attrs.aggregate {
+        Some(aggregate_type_str) => {
+            let aggregate_ident = Ident::new(aggregate_type_str, proc_macro2::Span::call_site());
+            quote! { type Aggregate = #aggregate_ident; }
         }
-    });
-
-    // Generate occurred_at match arms
-    let occurred_at_arms = variants.iter().map(|variant| {
-        let variant_name = &variant.ident;
-
-        // Check if this is a tuple variant or named field variant
-        match &variant.fields {
-            Fields::Unnamed(_) => {
-                quote! {
-                    #name::#variant_name(event) => event.timestamp,
-                }
-            }
-            _ => {
-                quote! {
-                    #name::#variant_name { timestamp, .. } => *timestamp,
-                }
-            }
+        None => {
+            return syn::Error::new(
+                proc_macro2::Span::call_site(),
+                "Missing aggregate type. Add aggregate = \"AggregateType\" to #[event(...)] attribute",
+            )
+            .to_compile_error()
+            .into();
         }
-    });
+    };
 
+    let event_type_arms = gen_event_type_arms(name, variants, &type_prefix);
+    let occurred_at_arms = gen_occurred_at_arms(name, variants);
+    let into_impls = gen_from_impls(name, variants);
+    let event_type_impls = gen_event_type_impls(variants, &type_prefix);
+    let event_applicator_impl =
+        gen_event_applicator_impl(name, variants, attrs.aggregate.as_deref());
+    let try_from_impls = gen_try_from_impls(name);
     let version = attrs.version;
 
-    // Generate From implementations for tuple variants (Into auto-derived via blanket impl)
-    let into_impls = variants.iter().filter_map(|variant| {
-        let variant_name = &variant.ident;
-
-        // Only generate From for tuple variants with exactly one field
-        match &variant.fields {
-            Fields::Unnamed(fields) if fields.unnamed.len() == 1 => {
-                let field_type = &fields.unnamed.first().unwrap().ty;
-                Some(quote! {
-                    impl From<#field_type> for #name {
-                        fn from(value: #field_type) -> Self {
-                            #name::#variant_name(value)
-                        }
-                    }
-                })
-            }
-            _ => None,
-        }
-    });
-
-    // Generate EventType implementations for tuple variant inner types
-    let event_type_impls = variants.iter().filter_map(|variant| {
-        let variant_name = &variant.ident;
-        let variant_str = variant_name.to_string();
-        let event_type_name = format!("{type_prefix}.{variant_str}");
-
-        match &variant.fields {
-            Fields::Unnamed(fields) if fields.unnamed.len() == 1 => {
-                let field_type = &fields.unnamed.first().unwrap().ty;
-                Some(quote! {
-                    impl event_sauce_core::EventType for #field_type {
-                        const EVENT_TYPE: &'static str = #event_type_name;
-                    }
-                })
-            }
-            _ => None,
-        }
-    });
-
-    // Generate EventApplicator impl if aggregate type is specified AND there are tuple variants.
-    // Events with only named field variants need manual EventApplicator implementations.
-    let has_tuple_variants = variants
-        .iter()
-        .any(|v| matches!(&v.fields, Fields::Unnamed(_)));
-    let event_applicator_impl = if let (Some(aggregate_type_str), true) =
-        (&attrs.aggregate, has_tuple_variants)
-    {
-        let aggregate_type = Ident::new(aggregate_type_str, proc_macro2::Span::call_site());
-
-        // Generate match arms for dispatch (with validation)
-        let dispatch_arms = variants.iter().map(|variant| {
-            let variant_name = &variant.ident;
-            match &variant.fields {
-                Fields::Unnamed(_) => {
-                    quote! {
-                        #name::#variant_name(e) => {
-                            use event_sauce_core::ApplyEvent;
-                            e.validate(aggregate)?;
-                            e.apply(aggregate);
-                            e.post_validate(aggregate)?;
-                        },
-                    }
-                }
-                _ => {
-                    quote! {
-                        #name::#variant_name { .. } => {},
-                    }
-                }
-            }
-        });
-
-        // Generate match arms for dispatch_unchecked (apply only, no validation)
-        let dispatch_unchecked_arms = variants.iter().map(|variant| {
-            let variant_name = &variant.ident;
-            match &variant.fields {
-                Fields::Unnamed(_) => {
-                    quote! {
-                        #name::#variant_name(e) => {
-                            use event_sauce_core::ApplyEvent;
-                            e.apply(aggregate);
-                        },
-                    }
-                }
-                _ => {
-                    quote! {
-                        #name::#variant_name { .. } => {},
-                    }
-                }
-            }
-        });
-
-        quote! {
-            impl event_sauce_core::EventApplicator<#aggregate_type> for #name {
-                fn dispatch(&self, aggregate: &mut #aggregate_type) -> std::result::Result<(), <#aggregate_type as event_sauce_core::Aggregate>::Error> {
-                    match self {
-                        #(#dispatch_arms)*
-                    }
-                    Ok(())
-                }
-
-                fn dispatch_unchecked(&self, aggregate: &mut #aggregate_type) {
-                    match self {
-                        #(#dispatch_unchecked_arms)*
-                    }
-                }
-            }
-        }
-    } else {
-        quote! {}
-    };
-
-    // Generate aggregate type - required for the DomainEvent trait
-    let aggregate_type = if let Some(aggregate_type_str) = &attrs.aggregate {
-        let aggregate_ident = Ident::new(aggregate_type_str, proc_macro2::Span::call_site());
-        quote! { type Aggregate = #aggregate_ident; }
-    } else {
-        return syn::Error::new(
-            proc_macro2::Span::call_site(),
-            "Missing aggregate type. Add aggregate = \"AggregateType\" to #[event(...)] attribute",
-        )
-        .to_compile_error()
-        .into();
-    };
-
-    // Generate TryFrom implementations for EventEnvelope conversions
-    let try_from_impls = quote! {
-        // TryFrom<EventEnvelope> for owned conversion
-        impl TryFrom<event_sauce_core::EventEnvelope> for #name {
-            type Error = event_sauce_core::Error;
-
-            fn try_from(envelope: event_sauce_core::EventEnvelope) -> event_sauce_core::Result<Self> {
-                Self::from_envelope(&envelope)
-            }
-        }
-
-        // TryFrom<&EventEnvelope> for reference conversion
-        impl TryFrom<&event_sauce_core::EventEnvelope> for #name {
-            type Error = event_sauce_core::Error;
-
-            fn try_from(envelope: &event_sauce_core::EventEnvelope) -> event_sauce_core::Result<Self> {
-                Self::from_envelope(envelope)
-            }
-        }
-    };
-
-    // Generate the implementation
     let gen = quote! {
         impl event_sauce_core::DomainEvent for #name {
-            #aggregate_type
+            #aggregate_type_decl
 
             fn event_type(&self) -> &'static str {
                 match self {
@@ -302,20 +133,175 @@ pub fn derive_event(input: TokenStream) -> TokenStream {
             }
         }
 
-        // Generate EventApplicator impl if aggregate type is specified
         #event_applicator_impl
-
-        // Generate Into implementations for each variant
         #(#into_impls)*
-
-        // Generate EventType implementations for tuple variant inner types
         #(#event_type_impls)*
-
-        // Generate TryFrom implementations for idiomatic Rust conversions
         #try_from_impls
     };
 
     gen.into()
+}
+
+/// Yields `(variant_name, field_type)` for each tuple variant with exactly one field.
+fn tuple_variants_with_single_field(
+    variants: &syn::punctuated::Punctuated<syn::Variant, syn::token::Comma>,
+) -> impl Iterator<Item = (&syn::Ident, &syn::Type)> {
+    variants.iter().filter_map(|variant| match &variant.fields {
+        Fields::Unnamed(fields) if fields.unnamed.len() == 1 => {
+            Some((&variant.ident, &fields.unnamed.first().unwrap().ty))
+        }
+        _ => None,
+    })
+}
+
+fn gen_event_type_arms(
+    name: &Ident,
+    variants: &syn::punctuated::Punctuated<syn::Variant, syn::token::Comma>,
+    type_prefix: &str,
+) -> Vec<proc_macro2::TokenStream> {
+    variants
+        .iter()
+        .map(|variant| {
+            let variant_name = &variant.ident;
+            let event_type_name = format!("{type_prefix}.{variant_name}");
+            if matches!(&variant.fields, Fields::Unnamed(_)) {
+                quote! { #name::#variant_name(..) => #event_type_name, }
+            } else {
+                quote! { #name::#variant_name { .. } => #event_type_name, }
+            }
+        })
+        .collect()
+}
+
+fn gen_occurred_at_arms(
+    name: &Ident,
+    variants: &syn::punctuated::Punctuated<syn::Variant, syn::token::Comma>,
+) -> Vec<proc_macro2::TokenStream> {
+    variants
+        .iter()
+        .map(|variant| {
+            let variant_name = &variant.ident;
+            if matches!(&variant.fields, Fields::Unnamed(_)) {
+                quote! { #name::#variant_name(event) => event.timestamp, }
+            } else {
+                quote! { #name::#variant_name { timestamp, .. } => *timestamp, }
+            }
+        })
+        .collect()
+}
+
+fn gen_from_impls(
+    name: &Ident,
+    variants: &syn::punctuated::Punctuated<syn::Variant, syn::token::Comma>,
+) -> Vec<proc_macro2::TokenStream> {
+    tuple_variants_with_single_field(variants)
+        .map(|(variant_name, field_type)| {
+            quote! {
+                impl From<#field_type> for #name {
+                    fn from(value: #field_type) -> Self {
+                        #name::#variant_name(value)
+                    }
+                }
+            }
+        })
+        .collect()
+}
+
+fn gen_event_type_impls(
+    variants: &syn::punctuated::Punctuated<syn::Variant, syn::token::Comma>,
+    type_prefix: &str,
+) -> Vec<proc_macro2::TokenStream> {
+    tuple_variants_with_single_field(variants)
+        .map(|(variant_name, field_type)| {
+            let event_type_name = format!("{type_prefix}.{variant_name}");
+            quote! {
+                impl event_sauce_core::EventType for #field_type {
+                    const EVENT_TYPE: &'static str = #event_type_name;
+                }
+            }
+        })
+        .collect()
+}
+
+fn gen_event_applicator_impl(
+    name: &Ident,
+    variants: &syn::punctuated::Punctuated<syn::Variant, syn::token::Comma>,
+    aggregate: Option<&str>,
+) -> proc_macro2::TokenStream {
+    let has_tuple_variants = variants
+        .iter()
+        .any(|v| matches!(&v.fields, Fields::Unnamed(_)));
+    let Some(aggregate_type_str) = aggregate.filter(|_| has_tuple_variants) else {
+        return quote! {};
+    };
+    let aggregate_type = Ident::new(aggregate_type_str, proc_macro2::Span::call_site());
+
+    let dispatch_arms = variants.iter().map(|variant| {
+        let variant_name = &variant.ident;
+        if matches!(&variant.fields, Fields::Unnamed(_)) {
+            quote! {
+                #name::#variant_name(e) => {
+                    use event_sauce_core::ApplyEvent;
+                    e.validate(aggregate)?;
+                    e.apply(aggregate);
+                    e.post_validate(aggregate)?;
+                },
+            }
+        } else {
+            quote! { #name::#variant_name { .. } => {}, }
+        }
+    });
+
+    let dispatch_unchecked_arms = variants.iter().map(|variant| {
+        let variant_name = &variant.ident;
+        if matches!(&variant.fields, Fields::Unnamed(_)) {
+            quote! {
+                #name::#variant_name(e) => {
+                    use event_sauce_core::ApplyEvent;
+                    e.apply(aggregate);
+                },
+            }
+        } else {
+            quote! { #name::#variant_name { .. } => {}, }
+        }
+    });
+
+    quote! {
+        impl event_sauce_core::EventApplicator<#aggregate_type> for #name {
+            fn dispatch(&self, aggregate: &mut #aggregate_type) -> std::result::Result<(), <#aggregate_type as event_sauce_core::Aggregate>::Error> {
+                match self {
+                    #(#dispatch_arms)*
+                }
+                Ok(())
+            }
+
+            fn dispatch_unchecked(&self, aggregate: &mut #aggregate_type) {
+                match self {
+                    #(#dispatch_unchecked_arms)*
+                }
+            }
+        }
+    }
+}
+
+fn gen_try_from_impls(name: &Ident) -> proc_macro2::TokenStream {
+    quote! {
+        impl TryFrom<event_sauce_core::EventEnvelope> for #name {
+            type Error = event_sauce_core::Error;
+
+            fn try_from(envelope: event_sauce_core::EventEnvelope) -> event_sauce_core::Result<Self> {
+                Self::from_envelope(&envelope)
+            }
+        }
+
+        impl TryFrom<&event_sauce_core::EventEnvelope> for #name {
+            type Error = event_sauce_core::Error;
+
+            fn try_from(envelope: &event_sauce_core::EventEnvelope) -> event_sauce_core::Result<Self> {
+                Self::from_envelope(envelope)
+            }
+        }
+    }
 }
 
 /// Extract event attributes from the #[event(...)] attribute
