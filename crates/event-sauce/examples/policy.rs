@@ -253,8 +253,7 @@ policy! {
         on KickedEvent |event, ctx| {
             let user_id = EntityId::from(ctx.source_event().aggregate_id);
             let mut group = ctx.load_as::<Group>(event.group_id).await?;
-            group.remove_member(user_id, event.reason.clone())
-                .map_err(|e| event_sauce_core::Error::invalid_state(format!("{e}")))?;
+            group.remove_member(user_id, event.reason.clone())?;
             ctx.commit(&mut group).await?;
             Ok(())
         },
@@ -269,8 +268,7 @@ policy! {
             let id = EntityId::new();
             let mut notification = AggregateRoot::<Notification>::new(id);
             let msg = format!("Member {} was removed: {}", event.member_id, event.reason);
-            notification.send_notification(msg)
-                .map_err(|e| event_sauce_core::Error::invalid_state(format!("{e}")))?;
+            notification.send_notification(msg)?;
             ctx.commit(&mut notification).await?;
             Ok(())
         },

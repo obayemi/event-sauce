@@ -352,8 +352,7 @@ policy! {
             let id = EntityId::new();
             let mut notification = AggregateRoot::<Notification>::new(id);
             let msg = format!("Order {order_id} has been completed!");
-            notification.send_notification(msg)
-                .map_err(|e| event_sauce_core::Error::invalid_state(format!("{e}")))?;
+            notification.send_notification(msg)?;
             ctx.commit(&mut notification).await?;
             Ok(())
         },
