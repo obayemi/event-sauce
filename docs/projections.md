@@ -173,3 +173,76 @@ past the failure point.
 
 See `crates/event-sauce-postgres/src/backend.rs` (the
 `test_run_postgres_projection_*` tests) for working examples.
+
+## Scaling out: standalone workers
+
+`run_postgres_projection` is fine for in-process use, but two instances
+calling it on the same projection will race on the checkpoint and
+double-apply events. For multi-instance deployments — typically one
+projection-worker binary running on N hosts — use
+`run_leased_projection`:
+
+```rust
+use std::time::Duration;
+use event_sauce_postgres::LeaseOutcome;
+
+let worker_id = format!("{}-{}", hostname()?, std::process::id());
+let outcome = backend
+    .run_leased_projection(&mut OrderTotals, &worker_id, Duration::from_secs(30))
+    .await?;
+match outcome {
+    LeaseOutcome::Completed => { /* this worker drained available events */ }
+    LeaseOutcome::Busy => { /* another worker holds the lease; try again */ }
+}
+```
+
+Two pieces make this safe:
+
+1. **Lease on the checkpoint** — only the worker that holds the lease for
+   `P::NAME` is the active processor. Other workers see `Busy` and back off.
+   The lease is renewed automatically every `lease_duration / 3`; if the
+   active worker dies, the lease expires and another worker takes over.
+2. **`LISTEN`/`NOTIFY` for low-latency wake-up** — between leased runs a
+   worker waits on `PostgresEventStore::listen_for_events()` (which yields a
+   new `Position` for every committed transaction) instead of polling. New
+   events are picked up in milliseconds without burning CPU.
+
+A complete worker loop, including graceful shutdown:
+
+```rust
+let listener = backend.event_store().listen_for_events().await?;
+tokio::pin!(listener);
+
+loop {
+    match backend
+        .run_leased_projection(&mut OrderTotals, &worker_id, Duration::from_secs(30))
+        .await?
+    {
+        LeaseOutcome::Completed | LeaseOutcome::Busy => {}
+    }
+
+    tokio::select! {
+        _ = shutdown.notified() => break,
+        // Wake when any event commits.
+        _ = futures::StreamExt::next(&mut listener) => {}
+        // Belt-and-braces tick to recover from a missed notification.
+        () = tokio::time::sleep(Duration::from_secs(1)) => {}
+    }
+}
+```
+
+A complete runnable example lives at
+`crates/event-sauce/examples/projection-worker.rs` — it spins up two
+competing workers and demonstrates that exactly-once-across-workers holds.
+
+## Choosing checkpoint vs. queue
+
+Projections live in the **checkpoint** tier: ordering matters, replay
+matters, and write amplification is low (one row per event, regardless of
+consumer count). Stick with `PostgresProjection` + `run_leased_projection`.
+
+For *side-effecting* work (sending email, calling external APIs,
+fan-out webhooks) where per-event retry, parallel draining, and a DLQ
+matter more than ordering, see [policies.md](policies.md) — the
+`PostgresPolicyOutbox` is a queue-shaped layer derived from the same
+event log, processed via `FOR UPDATE SKIP LOCKED`.

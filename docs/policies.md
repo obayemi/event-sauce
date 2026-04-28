@@ -213,3 +213,130 @@ See [`examples/policy.rs`](../crates/event-sauce/examples/policy.rs) for a compl
 - Three aggregates (User, Group, Notification)
 - Two policies forming a cascade chain
 - Full causation tracking visible in the output
+
+## Two ways to dispatch: in-process runner vs. queue
+
+The default `PolicyRunner` runs in-process: it reads from the event log via
+a checkpoint and calls each registered handler directly. That's the right
+shape for **same-aggregate orchestration** — emitting follow-up events into
+event-sauce itself, with strict cascade depth tracking and causation
+propagation. It is *not* the right shape for fanning side-effects out to
+many parallel workers, because every policy shares one checkpoint and one
+process; a hung handler stalls everyone behind it.
+
+For side-effects (email, payment APIs, webhooks, anything non-idempotent
+where per-event retry and a DLQ matter more than ordering) event-sauce
+provides a queue-shaped alternative built on `FOR UPDATE SKIP LOCKED`:
+**`PostgresPolicyOutbox`**.
+
+### When to pick which
+
+| Concern | In-process `PolicyRunner` | Queue (`PostgresPolicyOutbox`) |
+|---|---|---|
+| Source of work | Event log directly | Outbox table populated from log |
+| Ordering | Strict | Per-claim only (workers parallelize) |
+| Per-event retry / DLQ | No (whole policy stalls on failure) | Yes (`status='failed'`, `attempts`, `last_error`) |
+| Scale-out | One active runner per process | N parallel workers per policy |
+| Replay | Reset checkpoint | Reset checkpoint + truncate outbox |
+| Best for | Cascading domain logic | External side effects |
+
+You can use both side by side: the same policy logic can be triggered by
+the in-process runner *or* drained from the outbox, depending on which
+fits the job.
+
+### Outbox in three pieces
+
+```text
+                ┌──────────────┐
+   commit ──▶   │  events      │  (source of truth, never mutated)
+                └──────┬───────┘
+                       │
+                       ▼
+                ┌──────────────┐    Dispatcher process:
+                │ checkpoint:  │    leased; reads log via stream_all,
+                │  __policy_   │    applies each registered policy filter,
+                │  outbox_     │    INSERTs matching rows into policy_outbox
+                │  dispatcher  │    inside the same tx as the checkpoint advance.
+                └──────┬───────┘
+                       │
+                       ▼
+                ┌──────────────┐    Worker processes (1..N per policy):
+                │ policy_outbox│    SELECT … FOR UPDATE SKIP LOCKED LIMIT $batch
+                │              │    → run handler → mark_done (or mark_failed)
+                └──────────────┘
+```
+
+### Setting up the outbox
+
+```rust
+use event_sauce_postgres::{PolicyDispatch, PostgresPolicyOutbox};
+use event_sauce_core::EventFilter;
+use std::time::Duration;
+
+// Migrate the outbox table once at startup.
+let outbox = PostgresPolicyOutbox::new(backend.pool().clone(), "event_sauce");
+outbox.migrate().await?;
+
+// Register the policies the dispatcher should fan out for.
+let policies = vec![
+    PolicyDispatch::new(
+        "send-order-confirmation",
+        EventFilter::by_event_type("Order.Created"),
+    ),
+    PolicyDispatch::new(
+        "notify-on-cancel",
+        EventFilter::by_event_type("Order.Cancelled"),
+    ),
+];
+```
+
+### Dispatching (one process)
+
+Run this in **one** worker — the lease ensures it. It reads new events from
+the log and inserts outbox rows for each registered policy whose filter
+matches:
+
+```rust
+backend
+    .dispatch_policies_to_outbox(
+        &outbox,
+        "dispatcher-1",
+        &policies,
+        Duration::from_secs(30),
+    )
+    .await?;
+```
+
+Run it on a tick or wake on `listen_for_events()` for low-latency dispatch.
+
+### Draining (N parallel workers per policy)
+
+```rust
+loop {
+    let claims = outbox
+        .claim_batch(
+            "send-order-confirmation",
+            "drainer-1",
+            32,
+            Duration::from_secs(60),
+        )
+        .await?;
+
+    if claims.is_empty() {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        continue;
+    }
+
+    for claim in claims {
+        match send_email_for(claim.event_id).await {
+            Ok(_) => outbox.mark_done(claim.id).await?,
+            Err(e) => outbox.mark_failed(claim.id, &e.to_string(), Some(5)).await?,
+        }
+    }
+}
+```
+
+`claim_batch` uses `FOR UPDATE SKIP LOCKED` so multiple drainer workers
+never see the same row in the same claim. Rows past `max_attempts` end up
+in `status='failed'` for ops to inspect; reset them to `'pending'` to
+retry.

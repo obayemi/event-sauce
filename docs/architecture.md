@@ -129,9 +129,31 @@ Read model building via durable subscriptions:
 
 - **Subscription** - Durable event subscription with guaranteed delivery
 - **EventFilter** - Filter events by type or aggregate
-- **CheckpointStore** - Track progress for resumability
+- **CheckpointStore** - Track progress for resumability, plus
+  `try_acquire_lease` / `renew_lease` / `release_lease` so multiple
+  workers can coordinate which one is the active processor
 - **CheckpointStrategy** - Configure checkpoint frequency
 - **PostgresProjection** trait (in `event-sauce-postgres`) - Transactional read models whose writes commit atomically with the subscription checkpoint
+- **`PostgresEventStore::listen_for_events`** - `LISTEN`/`NOTIFY` stream that
+  wakes subscribers within milliseconds of a commit, with the new max
+  position as payload
+- **`PostgresPolicyOutbox`** - queue-shaped sibling for side-effecting
+  policies, drained via `FOR UPDATE SKIP LOCKED`. See
+  [policies.md](policies.md#two-ways-to-dispatch-in-process-runner-vs-queue)
+
+### Tiers for downstream consumers
+
+event-sauce splits *downstream consumption* into three tiers, picked per
+consumer based on what it needs:
+
+| Tier | Storage | Best for | Mechanism |
+|---|---|---|---|
+| Event log | `events` (immutable) | Source of truth, replay | — |
+| Checkpointed subscription | `events` + `checkpoints` (with lease) | Projections / read models — ordering and replay matter | `run_leased_projection`, `Subscription` |
+| Outbox queue | `events` + `policy_outbox` | Side effects (email, webhooks, payments) — parallelism + per-event retry/DLQ matter | `dispatch_policies_to_outbox` + `claim_batch` (SKIP LOCKED) |
+
+The log is the source of truth in all three; the outbox is *derived* from
+it, so a new consumer can be added later by replaying history.
 
 ### event-sauce (facade)
 
