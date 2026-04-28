@@ -15,6 +15,7 @@ event-sauce-core = { path = "../event-sauce-core", version = "0.1.0" }
 event-sauce-crypto = { path = "../event-sauce-crypto", version = "0.1.0" }
 sqlx = { workspace = true, features = ["postgres"] }
 async-trait.workspace = true
+async-stream.workspace = true
 futures.workspace = true
 serde.workspace = true
 serde_json.workspace = true

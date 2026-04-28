@@ -7,7 +7,8 @@ use event_sauce_core::{
     AggregateVersion, Error, EventEnvelope, EventStore, EventVersion, Position, Result, Snapshot,
     SnapshotConfig, StreamId,
 };
-use futures::stream::{self, Stream};
+use futures::stream::Stream;
+use futures::TryStreamExt;
 use sqlx::PgPool;
 
 /// `PostgreSQL` event store implementation.
@@ -928,19 +929,22 @@ impl EventStore for PostgresEventStore {
              ORDER BY stream_version ASC"
         );
 
+        let pool = self.pool.clone();
+        let aggregate_id = stream_id.aggregate_id();
+        let aggregate_type = stream_id.aggregate_type().as_str().to_string();
         let from_version_i64 = from_version.as_i64();
-        let events: Vec<EventEnvelope> = sqlx::query_as::<_, EventRow>(&query)
-            .bind(stream_id.aggregate_id())
-            .bind(stream_id.aggregate_type().as_str())
-            .bind(from_version_i64)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(|e| Error::backend("Failed to load stream", e))?
-            .into_iter()
-            .map(Into::into)
-            .collect();
 
-        Ok(stream::iter(events.into_iter().map(Ok)))
+        Ok(Box::pin(async_stream::try_stream! {
+            let mut rows = sqlx::query_as::<_, EventRow>(&query)
+                .bind(aggregate_id)
+                .bind(&aggregate_type)
+                .bind(from_version_i64)
+                .fetch(&pool);
+            while let Some(row) = rows.try_next().await
+                .map_err(|e| Error::backend("Failed to load stream", e))? {
+                yield EventEnvelope::from(row);
+            }
+        }))
     }
 
     async fn stream_all(
@@ -956,16 +960,18 @@ impl EventStore for PostgresEventStore {
              ORDER BY id ASC"
         );
 
-        let events: Vec<EventEnvelope> = sqlx::query_as::<_, EventRow>(&query)
-            .bind(from_position.as_i64())
-            .fetch_all(&self.pool)
-            .await
-            .map_err(|e| Error::backend("Failed to stream all", e))?
-            .into_iter()
-            .map(Into::into)
-            .collect();
+        let pool = self.pool.clone();
+        let from = from_position.as_i64();
 
-        Ok(stream::iter(events.into_iter().map(Ok)))
+        Ok(Box::pin(async_stream::try_stream! {
+            let mut rows = sqlx::query_as::<_, EventRow>(&query)
+                .bind(from)
+                .fetch(&pool);
+            while let Some(row) = rows.try_next().await
+                .map_err(|e| Error::backend("Failed to stream all", e))? {
+                yield EventEnvelope::from(row);
+            }
+        }))
     }
 
     async fn get_version(&self, stream_id: StreamId) -> Result<AggregateVersion> {

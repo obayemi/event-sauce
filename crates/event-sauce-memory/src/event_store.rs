@@ -449,9 +449,7 @@ impl EventStore for InMemoryEventStore {
                 .unwrap_or_default()
         };
 
-        Ok(stream::iter(
-            arcs.into_iter().map(|arc| Ok((*arc).clone())),
-        ))
+        Ok(stream::iter(arcs.into_iter().map(|arc| Ok((*arc).clone()))))
     }
 
     async fn stream_all(
@@ -468,9 +466,7 @@ impl EventStore for InMemoryEventStore {
                 .collect()
         };
 
-        Ok(stream::iter(
-            arcs.into_iter().map(|arc| Ok((*arc).clone())),
-        ))
+        Ok(stream::iter(arcs.into_iter().map(|arc| Ok((*arc).clone()))))
     }
 
     async fn get_version(&self, stream_id: StreamId) -> Result<AggregateVersion> {
