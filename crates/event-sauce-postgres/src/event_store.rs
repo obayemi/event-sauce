@@ -239,6 +239,75 @@ impl PostgresEventStore {
         crate::migrations::qualify(&self.schema, table)
     }
 
+    /// Returns the `LISTEN`/`NOTIFY` channel name used by this store.
+    ///
+    /// Derived from the schema (`event_sauce_events_<schema>`) so multiple
+    /// event-sauce instances sharing a database but using different schemas
+    /// stay isolated.
+    #[must_use]
+    pub fn notify_channel(&self) -> String {
+        format!("event_sauce_events_{}", self.schema)
+    }
+
+    /// Subscribes to `NOTIFY` wake-ups for new event commits.
+    ///
+    /// Returns a stream that yields a [`Position`] each time a transaction
+    /// commits at least one event. The yielded position is the global `id`
+    /// of the last event written by that transaction, intended as a hint:
+    /// readers can skip waking up if they have already streamed past it.
+    ///
+    /// The stream owns its own pooled connection (sqlx [`PgListener`]) — it
+    /// does not return rows from the connection pool until dropped, so prefer
+    /// holding it for the lifetime of a worker rather than acquiring it per
+    /// poll. Combine with [`stream_all`](EventStore::stream_all) to drain
+    /// missed events on each wake-up.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the listener cannot connect or fails to subscribe
+    /// to the notification channel.
+    ///
+    /// [`PgListener`]: sqlx::postgres::PgListener
+    pub async fn listen_for_events(
+        &self,
+    ) -> Result<impl futures::Stream<Item = Result<Position>> + Send> {
+        use sqlx::postgres::PgListener;
+
+        let mut listener = PgListener::connect_with(&self.pool)
+            .await
+            .map_err(|e| Error::backend("Failed to connect NOTIFY listener", e))?;
+
+        let channel = self.notify_channel();
+        listener
+            .listen(&channel)
+            .await
+            .map_err(|e| Error::backend("Failed to LISTEN on NOTIFY channel", e))?;
+
+        Ok(async_stream::stream! {
+            loop {
+                match listener.recv().await {
+                    Ok(notification) => {
+                        let payload = notification.payload();
+                        match payload.parse::<i64>() {
+                            Ok(pos) => yield Ok(Position::new(pos)),
+                            Err(parse_err) => {
+                                yield Err(Error::backend(
+                                    format!("Invalid NOTIFY payload: {payload}"),
+                                    parse_err,
+                                ));
+                                return;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        yield Err(Error::backend("NOTIFY listener error", e));
+                        return;
+                    }
+                }
+            }
+        })
+    }
+
     /// Runs database migrations to set up the event store schema.
     ///
     /// This method creates the necessary tables (`events` and `snapshots`) and indexes
@@ -865,7 +934,10 @@ impl EventStore for PostgresEventStore {
                 ));
             }
 
-            // Insert events
+            // Insert events; capture the global id of the last insert so we
+            // can emit it as the NOTIFY payload (a hint to LISTENers about
+            // how far this commit advanced the log).
+            let mut last_inserted_id: i64 = 0;
             for (idx, event) in events.iter().enumerate() {
                 #[allow(clippy::cast_possible_wrap)]
                 let stream_version = expected_version.as_i64() + idx as i64;
@@ -875,10 +947,11 @@ impl EventStore for PostgresEventStore {
                     "INSERT INTO {events_table} (
                         event_id, aggregate_id, aggregate_type, event_type, event_version,
                         event_data, stream_version, created_by, correlation_id, causation_id, metadata
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)"
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                    RETURNING id"
                 );
 
-                sqlx::query(&insert_query)
+                last_inserted_id = sqlx::query_scalar(&insert_query)
                     .bind(event.id)
                     .bind(event.aggregate_id)
                     .bind(event.aggregate_type.as_str())
@@ -890,10 +963,21 @@ impl EventStore for PostgresEventStore {
                     .bind(event.metadata.as_ref().and_then(|m| m.correlation_id))
                     .bind(event.metadata.as_ref().and_then(|m| m.causation_id))
                     .bind(event.metadata.as_ref().and_then(|m| m.additional.clone()))
-                    .execute(&mut *tx)
+                    .fetch_one(&mut *tx)
                     .await
                     .map_err(|e| Error::backend("Failed to insert event", e))?;
             }
+
+            // Queue a NOTIFY with the position of the last inserted event.
+            // Postgres holds notifications until commit, so this fires only
+            // if the transaction succeeds.
+            let channel = self.notify_channel();
+            sqlx::query("SELECT pg_notify($1, $2)")
+                .bind(&channel)
+                .bind(last_inserted_id.to_string())
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| Error::backend("Failed to issue NOTIFY", e))?;
         }
 
         // Handle claims
@@ -2031,6 +2115,141 @@ mod tests {
         assert_eq!(
             fast_count, manual_count,
             "Optimized count should match manual stream count"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_notify_channel_includes_schema() {
+        let db = TestDatabase::new().await.unwrap();
+        let store = db.store();
+        // The default test store uses the "public" schema
+        assert_eq!(store.notify_channel(), "event_sauce_events_public");
+    }
+
+    #[tokio::test]
+    async fn test_listen_receives_notification_on_append() {
+        use std::time::Duration;
+        use tokio::time::timeout;
+
+        let db = TestDatabase::new().await.unwrap();
+        let store = db.store();
+
+        let stream = store.listen_for_events().await.unwrap();
+        futures::pin_mut!(stream);
+
+        // Append from a separate task so the listener can wake up.
+        let store_for_writer = store.clone();
+        tokio::spawn(async move {
+            // Tiny sleep so the listener is definitely subscribed before commit.
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let stream_id = StreamId::new("User", Uuid::new_v4());
+            let event = create_test_envelope("UserCreated", stream_id.aggregate_id());
+            store_for_writer
+                .append(
+                    stream_id,
+                    vec![event],
+                    AggregateVersion::initial(),
+                    vec![],
+                    false,
+                )
+                .await
+                .unwrap();
+        });
+
+        let notification = timeout(
+            Duration::from_secs(5),
+            futures::StreamExt::next(&mut stream),
+        )
+        .await
+        .expect("listener should receive a notification within 5s")
+        .expect("stream should yield an item")
+        .expect("notification should be Ok");
+
+        // The first commit goes to the first BIGSERIAL id. With a fresh DB
+        // that's 1; we just check it's a positive position.
+        assert!(notification.as_i64() > 0);
+    }
+
+    #[tokio::test]
+    async fn test_listen_emits_one_notification_per_commit() {
+        use std::time::Duration;
+        use tokio::time::timeout;
+
+        let db = TestDatabase::new().await.unwrap();
+        let store = db.store();
+
+        let stream = store.listen_for_events().await.unwrap();
+        futures::pin_mut!(stream);
+
+        let store_for_writer = store.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            for i in 0..3 {
+                let aggregate_id = Uuid::new_v4();
+                let stream_id = StreamId::new("User", aggregate_id);
+                let event = create_test_envelope(&format!("Event{i}"), aggregate_id);
+                store_for_writer
+                    .append(
+                        stream_id,
+                        vec![event],
+                        AggregateVersion::initial(),
+                        vec![],
+                        false,
+                    )
+                    .await
+                    .unwrap();
+            }
+        });
+
+        // Three commits → three notifications. Positions are monotonic.
+        let mut last_pos: i64 = 0;
+        for _ in 0..3 {
+            let notification = timeout(
+                Duration::from_secs(5),
+                futures::StreamExt::next(&mut stream),
+            )
+            .await
+            .expect("listener should receive a notification within 5s")
+            .expect("stream should yield an item")
+            .expect("notification should be Ok");
+            assert!(notification.as_i64() > last_pos);
+            last_pos = notification.as_i64();
+        }
+    }
+
+    #[tokio::test]
+    async fn test_listen_no_notification_for_empty_append() {
+        use std::time::Duration;
+        use tokio::time::timeout;
+
+        let db = TestDatabase::new().await.unwrap();
+        let store = db.store();
+
+        let stream = store.listen_for_events().await.unwrap();
+        futures::pin_mut!(stream);
+
+        // Empty append should not emit NOTIFY.
+        let stream_id = StreamId::new("User", Uuid::new_v4());
+        store
+            .append(
+                stream_id,
+                vec![],
+                AggregateVersion::initial(),
+                vec![],
+                false,
+            )
+            .await
+            .unwrap();
+
+        // Wait briefly; nothing should arrive.
+        let result = timeout(
+            Duration::from_millis(300),
+            futures::StreamExt::next(&mut stream),
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "no notification should be emitted for an empty append"
         );
     }
 }
