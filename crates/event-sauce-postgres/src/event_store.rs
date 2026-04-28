@@ -687,54 +687,77 @@ impl PostgresEventStore {
         if !claims.is_empty() {
             use sha2::{Digest, Sha256};
 
-            let mut current_claim_types: Vec<String> = Vec::new();
+            // Hash each claim once — we need both the hash for SQL binding and
+            // the original claim metadata for error reporting.
+            let mut hashed: Vec<(&event_sauce_core::AggregateClaim, Vec<u8>)> =
+                Vec::with_capacity(claims.len());
             for claim in &claims {
                 let key_json = serde_json::to_string(&claim.claim_key)
                     .map_err(|e| Error::custom(format!("Failed to serialize claim key: {e}")))?;
                 let claim_hash = Sha256::digest(key_json.as_bytes()).to_vec();
+                hashed.push((claim, claim_hash));
+            }
 
-                current_claim_types.push(claim.claim_type.to_string());
+            let current_claim_types: Vec<String> = hashed
+                .iter()
+                .map(|(c, _)| c.claim_type.to_string())
+                .collect();
 
-                // Try to upsert the claim
-                let upsert_query = format!(
-                    "INSERT INTO {claims_table} (aggregate_id, claim_type, claim_hash)
-                     VALUES ($1, $2, $3)
-                     ON CONFLICT (aggregate_id, claim_type)
-                     DO UPDATE SET claim_hash = EXCLUDED.claim_hash"
-                );
+            // Single round-trip: a CTE that detects conflicts (different aggregate
+            // already holds one of our (claim_type, claim_hash) pairs) and, if
+            // none, performs a batched upsert. The query returns one row per
+            // detected conflict; an empty result means success.
+            let aggregate_id = stream_id.aggregate_id();
+            let row_placeholders: Vec<String> = (0..hashed.len())
+                .map(|i| format!("(${}::text, ${}::bytea)", 2 + 2 * i, 3 + 2 * i))
+                .collect();
+            let combined_query = format!(
+                "WITH input(claim_type, claim_hash) AS (VALUES {rows}),
+                      conflicts AS (
+                          SELECT i.claim_type, i.claim_hash, c.aggregate_id AS holder
+                          FROM input i
+                          JOIN {claims_table} c USING (claim_type, claim_hash)
+                          WHERE c.aggregate_id <> $1
+                      ),
+                      upsert AS (
+                          INSERT INTO {claims_table} (aggregate_id, claim_type, claim_hash)
+                          SELECT $1, claim_type, claim_hash FROM input
+                          WHERE NOT EXISTS (SELECT 1 FROM conflicts)
+                          ON CONFLICT (aggregate_id, claim_type)
+                          DO UPDATE SET claim_hash = EXCLUDED.claim_hash
+                          RETURNING aggregate_id
+                      )
+                  SELECT claim_type, claim_hash, holder FROM conflicts LIMIT 1",
+                rows = row_placeholders.join(", "),
+            );
 
-                let result = sqlx::query(&upsert_query)
-                    .bind(stream_id.aggregate_id())
-                    .bind(claim.claim_type)
-                    .bind(&claim_hash)
-                    .execute(&mut **tx)
+            let mut query = sqlx::query_as::<_, (String, Vec<u8>, uuid::Uuid)>(&combined_query)
+                .bind(aggregate_id);
+            for (claim, hash) in &hashed {
+                query = query.bind(claim.claim_type).bind(hash);
+            }
+
+            match query.fetch_optional(&mut **tx).await {
+                Ok(None) => {}
+                Ok(Some((claim_type, claim_hash, holder))) => {
+                    return Err(Self::build_conflict_error(
+                        &hashed,
+                        &claim_type,
+                        &claim_hash,
+                        holder,
+                    ));
+                }
+                Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => {
+                    return Self::recover_concurrent_conflict(
+                        tx,
+                        claims_table,
+                        aggregate_id,
+                        &hashed,
+                    )
                     .await;
-
-                match result {
-                    Ok(_) => {}
-                    Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => {
-                        // The UNIQUE(claim_type, claim_hash) constraint was violated —
-                        // another aggregate holds this claim.
-                        let holder_query = format!(
-                            "SELECT aggregate_id FROM {claims_table} WHERE claim_type = $1 AND claim_hash = $2"
-                        );
-                        let held_by: Option<uuid::Uuid> = sqlx::query_scalar(&holder_query)
-                            .bind(claim.claim_type)
-                            .bind(&claim_hash)
-                            .fetch_optional(&mut **tx)
-                            .await
-                            .ok()
-                            .flatten();
-
-                        return Err(Error::claim_conflict(
-                            claim.claim_type,
-                            claim.claim_key.clone(),
-                            held_by,
-                        ));
-                    }
-                    Err(e) => {
-                        return Err(Error::custom(format!("Failed to upsert claim: {e}")));
-                    }
+                }
+                Err(e) => {
+                    return Err(Error::custom(format!("Failed to upsert claims: {e}")));
                 }
             }
 
@@ -749,7 +772,7 @@ impl PostgresEventStore {
                     "DELETE FROM {claims_table} WHERE aggregate_id = $1 AND claim_type NOT IN ({})",
                     placeholders.join(", ")
                 );
-                let mut query = sqlx::query(&cleanup_query).bind(stream_id.aggregate_id());
+                let mut query = sqlx::query(&cleanup_query).bind(aggregate_id);
                 for ct in &current_claim_types {
                     query = query.bind(ct);
                 }
@@ -770,6 +793,59 @@ impl PostgresEventStore {
         }
 
         Ok(())
+    }
+
+    fn build_conflict_error(
+        hashed: &[(&event_sauce_core::AggregateClaim, Vec<u8>)],
+        claim_type: &str,
+        claim_hash: &[u8],
+        holder: uuid::Uuid,
+    ) -> Error {
+        let original_key = hashed
+            .iter()
+            .find(|(c, h)| c.claim_type == claim_type && h.as_slice() == claim_hash)
+            .map_or(serde_json::Value::Null, |(c, _)| c.claim_key.clone());
+        Error::claim_conflict(claim_type, original_key, Some(holder))
+    }
+
+    /// Fall back when the CTE upsert raced a concurrent transaction: a single
+    /// query finds any of our (claim_type, claim_hash) pairs already held by
+    /// a different aggregate. Avoids N round-trips on contended writes.
+    async fn recover_concurrent_conflict(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        claims_table: &str,
+        aggregate_id: uuid::Uuid,
+        hashed: &[(&event_sauce_core::AggregateClaim, Vec<u8>)],
+    ) -> Result<()> {
+        let row_placeholders: Vec<String> = (0..hashed.len())
+            .map(|i| format!("(${}::text, ${}::bytea)", 2 + 2 * i, 3 + 2 * i))
+            .collect();
+        let holder_query = format!(
+            "SELECT claim_type, claim_hash, aggregate_id FROM {claims_table}
+             WHERE (claim_type, claim_hash) IN ({rows}) AND aggregate_id <> $1
+             LIMIT 1",
+            rows = row_placeholders.join(", "),
+        );
+        let mut query = sqlx::query_as::<_, (String, Vec<u8>, uuid::Uuid)>(&holder_query)
+            .bind(aggregate_id);
+        for (claim, hash) in hashed {
+            query = query.bind(claim.claim_type).bind(hash);
+        }
+
+        match query.fetch_optional(&mut **tx).await {
+            Ok(Some((claim_type, claim_hash, holder))) => {
+                Err(Self::build_conflict_error(
+                    hashed,
+                    &claim_type,
+                    &claim_hash,
+                    holder,
+                ))
+            }
+            Ok(None) => Err(Error::custom(
+                "Claim upsert failed with unique violation but no conflicting holder found",
+            )),
+            Err(e) => Err(Error::custom(format!("Failed to look up claim holder: {e}"))),
+        }
     }
 }
 
