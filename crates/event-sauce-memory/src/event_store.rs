@@ -51,12 +51,15 @@ pub struct InMemoryEventStore {
 }
 
 struct InMemoryEventStoreInner {
-    /// Stores events by stream ID
-    streams: RwLock<HashMap<StreamId, Vec<EventEnvelope>>>,
+    /// Stores events by stream ID. Events are stored as `Arc` so that the
+    /// same envelope shared between per-stream and global views is allocated
+    /// once on append.
+    streams: RwLock<HashMap<StreamId, Vec<Arc<EventEnvelope>>>>,
     /// Stores snapshots by stream ID
     snapshots: RwLock<HashMap<StreamId, Snapshot>>,
-    /// All events in global order for `stream_all`
-    global_events: RwLock<Vec<EventEnvelope>>,
+    /// All events in global order for `stream_all`. Shares `Arc`s with
+    /// `streams`, avoiding a second copy on append.
+    global_events: RwLock<Vec<Arc<EventEnvelope>>>,
     /// Snapshot configuration
     snapshot_config: SnapshotConfig,
 }
@@ -179,7 +182,12 @@ impl InMemoryEventStore {
     /// ```
     #[must_use]
     pub fn all_events(&self) -> Vec<EventEnvelope> {
-        self.inner.global_events.read().clone()
+        self.inner
+            .global_events
+            .read()
+            .iter()
+            .map(|e| (**e).clone())
+            .collect()
     }
 
     /// Creates a builder for configuring the event store.
@@ -407,10 +415,12 @@ impl EventStore for InMemoryEventStore {
                 ));
             }
 
-            // Append events
-            for event in &events {
-                stream.push(event.clone());
-                global_events.push(event.clone());
+            // Append events: wrap each in Arc once and share between
+            // per-stream and global views, avoiding the second envelope clone.
+            for event in events {
+                let shared = Arc::new(event);
+                stream.push(Arc::clone(&shared));
+                global_events.push(shared);
             }
         } // Locks are dropped here
 
@@ -422,40 +432,45 @@ impl EventStore for InMemoryEventStore {
         stream_id: StreamId,
         from_version: AggregateVersion,
     ) -> Result<impl Stream<Item = Result<EventEnvelope>> + Send> {
-        let streams = self.inner.streams.read();
-
-        // Get events for this stream
+        // Clone Arcs under the lock (cheap), then drop the lock before
+        // unwrapping each envelope — keeps the lock window small.
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let events = streams
-            .get(&stream_id)
-            .map(|stream| {
-                stream
-                    .iter()
-                    .skip(from_version.as_i64() as usize)
-                    .cloned()
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+        let arcs: Vec<Arc<EventEnvelope>> = {
+            let streams = self.inner.streams.read();
+            streams
+                .get(&stream_id)
+                .map(|stream| {
+                    stream
+                        .iter()
+                        .skip(from_version.as_i64() as usize)
+                        .map(Arc::clone)
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
 
-        // Convert to stream of Results
-        Ok(stream::iter(events.into_iter().map(Ok)))
+        Ok(stream::iter(
+            arcs.into_iter().map(|arc| Ok((*arc).clone())),
+        ))
     }
 
     async fn stream_all(
         &self,
         from_position: Position,
     ) -> Result<impl Stream<Item = Result<EventEnvelope>> + Send> {
-        let global_events = self.inner.global_events.read();
-
-        // Get all events from position
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let events = global_events
-            .iter()
-            .skip(from_position.as_i64() as usize)
-            .cloned()
-            .collect::<Vec<_>>();
+        let arcs: Vec<Arc<EventEnvelope>> = {
+            let global_events = self.inner.global_events.read();
+            global_events
+                .iter()
+                .skip(from_position.as_i64() as usize)
+                .map(Arc::clone)
+                .collect()
+        };
 
-        Ok(stream::iter(events.into_iter().map(Ok)))
+        Ok(stream::iter(
+            arcs.into_iter().map(|arc| Ok((*arc).clone())),
+        ))
     }
 
     async fn get_version(&self, stream_id: StreamId) -> Result<AggregateVersion> {
