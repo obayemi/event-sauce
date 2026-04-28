@@ -4,9 +4,10 @@
 //! suitable for testing and development.
 
 use async_trait::async_trait;
-use event_sauce_core::{CheckpointStore, Position, Result};
+use event_sauce_core::{CheckpointStore, Error, Position, Result};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 
 /// In-memory checkpoint store for testing and development.
@@ -40,7 +41,28 @@ use tokio::sync::RwLock;
 /// ```
 #[derive(Clone)]
 pub struct InMemoryCheckpointStore {
-    inner: Arc<RwLock<HashMap<String, Position>>>,
+    inner: Arc<RwLock<HashMap<String, Entry>>>,
+}
+
+#[derive(Clone)]
+struct Entry {
+    position: Position,
+    lease: Option<Lease>,
+}
+
+impl Default for Entry {
+    fn default() -> Self {
+        Self {
+            position: Position::start(),
+            lease: None,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct Lease {
+    worker_id: String,
+    expires_at: Instant,
 }
 
 impl InMemoryCheckpointStore {
@@ -70,19 +92,86 @@ impl Default for InMemoryCheckpointStore {
 #[async_trait]
 impl CheckpointStore for InMemoryCheckpointStore {
     async fn save_checkpoint(&self, subscription_name: &str, position: Position) -> Result<()> {
-        self.inner
-            .write()
-            .await
-            .insert(subscription_name.to_string(), position);
+        let mut guard = self.inner.write().await;
+        let entry = guard.entry(subscription_name.to_string()).or_default();
+        entry.position = position;
         Ok(())
     }
 
     async fn load_checkpoint(&self, subscription_name: &str) -> Result<Option<Position>> {
-        Ok(self.inner.read().await.get(subscription_name).copied())
+        Ok(self
+            .inner
+            .read()
+            .await
+            .get(subscription_name)
+            .map(|entry| entry.position))
     }
 
     async fn delete_checkpoint(&self, subscription_name: &str) -> Result<()> {
         self.inner.write().await.remove(subscription_name);
+        Ok(())
+    }
+
+    async fn try_acquire_lease(
+        &self,
+        subscription_name: &str,
+        worker_id: &str,
+        lease_duration: Duration,
+    ) -> Result<Option<Position>> {
+        let mut guard = self.inner.write().await;
+        let now = Instant::now();
+        let entry = guard.entry(subscription_name.to_string()).or_default();
+
+        let can_take = match &entry.lease {
+            None => true,
+            Some(lease) => lease.expires_at <= now || lease.worker_id == worker_id,
+        };
+        if !can_take {
+            return Ok(None);
+        }
+        entry.lease = Some(Lease {
+            worker_id: worker_id.to_string(),
+            expires_at: now + lease_duration,
+        });
+        Ok(Some(entry.position))
+    }
+
+    async fn renew_lease(
+        &self,
+        subscription_name: &str,
+        worker_id: &str,
+        lease_duration: Duration,
+    ) -> Result<()> {
+        let mut guard = self.inner.write().await;
+        let now = Instant::now();
+        let Some(entry) = guard.get_mut(subscription_name) else {
+            return Err(Error::custom(format!(
+                "lease lost: no entry for {subscription_name}"
+            )));
+        };
+        match &entry.lease {
+            Some(lease) if lease.worker_id == worker_id && lease.expires_at > now => {
+                entry.lease = Some(Lease {
+                    worker_id: worker_id.to_string(),
+                    expires_at: now + lease_duration,
+                });
+                Ok(())
+            }
+            _ => Err(Error::custom(format!(
+                "lease lost: not held by {worker_id}"
+            ))),
+        }
+    }
+
+    async fn release_lease(&self, subscription_name: &str, worker_id: &str) -> Result<()> {
+        let mut guard = self.inner.write().await;
+        if let Some(entry) = guard.get_mut(subscription_name) {
+            if let Some(lease) = &entry.lease {
+                if lease.worker_id == worker_id {
+                    entry.lease = None;
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -232,6 +321,138 @@ mod tests {
 
         let position = store.load_checkpoint("test-subscription").await.unwrap();
         assert_eq!(position, Some(Position::new(42)));
+    }
+
+    #[tokio::test]
+    async fn test_acquire_lease_on_empty_creates_entry_at_start() {
+        let store = InMemoryCheckpointStore::new();
+        let pos = store
+            .try_acquire_lease("sub", "worker-a", Duration::from_secs(60))
+            .await
+            .unwrap();
+        assert_eq!(pos, Some(Position::start()));
+    }
+
+    #[tokio::test]
+    async fn test_second_worker_cannot_acquire_active_lease() {
+        let store = InMemoryCheckpointStore::new();
+        store
+            .try_acquire_lease("sub", "worker-a", Duration::from_secs(60))
+            .await
+            .unwrap();
+        let result = store
+            .try_acquire_lease("sub", "worker-b", Duration::from_secs(60))
+            .await
+            .unwrap();
+        assert!(result.is_none(), "second worker should be blocked");
+    }
+
+    #[tokio::test]
+    async fn test_same_worker_can_re_acquire_own_lease() {
+        let store = InMemoryCheckpointStore::new();
+        store
+            .try_acquire_lease("sub", "worker-a", Duration::from_secs(60))
+            .await
+            .unwrap();
+        let result = store
+            .try_acquire_lease("sub", "worker-a", Duration::from_secs(60))
+            .await
+            .unwrap();
+        assert!(result.is_some(), "same worker should refresh its lease");
+    }
+
+    #[tokio::test]
+    async fn test_expired_lease_can_be_taken() {
+        let store = InMemoryCheckpointStore::new();
+        // Acquire with a very short duration
+        store
+            .try_acquire_lease("sub", "worker-a", Duration::from_millis(10))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let result = store
+            .try_acquire_lease("sub", "worker-b", Duration::from_secs(60))
+            .await
+            .unwrap();
+        assert!(
+            result.is_some(),
+            "expired lease should be reclaimable by another worker"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_renew_extends_lease() {
+        let store = InMemoryCheckpointStore::new();
+        store
+            .try_acquire_lease("sub", "worker-a", Duration::from_millis(50))
+            .await
+            .unwrap();
+        store
+            .renew_lease("sub", "worker-a", Duration::from_secs(60))
+            .await
+            .unwrap();
+        // Wait past the original expiry
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let result = store
+            .try_acquire_lease("sub", "worker-b", Duration::from_secs(60))
+            .await
+            .unwrap();
+        assert!(result.is_none(), "renewed lease should still be active");
+    }
+
+    #[tokio::test]
+    async fn test_renew_errors_when_not_held() {
+        let store = InMemoryCheckpointStore::new();
+        let result = store
+            .renew_lease("sub", "worker-a", Duration::from_secs(60))
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_release_allows_other_worker() {
+        let store = InMemoryCheckpointStore::new();
+        store
+            .try_acquire_lease("sub", "worker-a", Duration::from_secs(60))
+            .await
+            .unwrap();
+        store.release_lease("sub", "worker-a").await.unwrap();
+        let result = store
+            .try_acquire_lease("sub", "worker-b", Duration::from_secs(60))
+            .await
+            .unwrap();
+        assert!(
+            result.is_some(),
+            "released lease should be acquirable by another worker"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_release_is_idempotent() {
+        let store = InMemoryCheckpointStore::new();
+        // Releasing without ever acquiring is a no-op
+        store.release_lease("sub", "worker-a").await.unwrap();
+        // Releasing twice is a no-op
+        store
+            .try_acquire_lease("sub", "worker-a", Duration::from_secs(60))
+            .await
+            .unwrap();
+        store.release_lease("sub", "worker-a").await.unwrap();
+        store.release_lease("sub", "worker-a").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_lease_returns_existing_position() {
+        let store = InMemoryCheckpointStore::new();
+        store
+            .save_checkpoint("sub", Position::new(100))
+            .await
+            .unwrap();
+        let pos = store
+            .try_acquire_lease("sub", "worker-a", Duration::from_secs(60))
+            .await
+            .unwrap();
+        assert_eq!(pos, Some(Position::new(100)));
     }
 
     #[tokio::test]

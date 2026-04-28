@@ -219,7 +219,28 @@ impl EventStore for MockEventStore {
 /// Mock checkpoint store for subscription tests.
 #[derive(Clone)]
 pub struct MockCheckpointStore {
-    checkpoints: Arc<RwLock<HashMap<String, Position>>>,
+    checkpoints: Arc<RwLock<HashMap<String, MockCheckpointEntry>>>,
+}
+
+#[derive(Clone)]
+struct MockCheckpointEntry {
+    position: Position,
+    lease: Option<MockLease>,
+}
+
+impl Default for MockCheckpointEntry {
+    fn default() -> Self {
+        Self {
+            position: Position::start(),
+            lease: None,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct MockLease {
+    worker_id: String,
+    expires_at: std::time::Instant,
 }
 
 impl Default for MockCheckpointStore {
@@ -240,17 +261,20 @@ impl MockCheckpointStore {
     /// Gets the checkpoint for a subscription.
     #[must_use]
     pub fn get(&self, name: &str) -> Option<Position> {
-        self.checkpoints.read().unwrap().get(name).copied()
+        self.checkpoints
+            .read()
+            .unwrap()
+            .get(name)
+            .map(|entry| entry.position)
     }
 }
 
 #[async_trait]
 impl CheckpointStore for MockCheckpointStore {
     async fn save_checkpoint(&self, subscription_name: &str, position: Position) -> Result<()> {
-        self.checkpoints
-            .write()
-            .unwrap()
-            .insert(subscription_name.to_string(), position);
+        let mut guard = self.checkpoints.write().unwrap();
+        let entry = guard.entry(subscription_name.to_string()).or_default();
+        entry.position = position;
         Ok(())
     }
 
@@ -260,11 +284,74 @@ impl CheckpointStore for MockCheckpointStore {
             .read()
             .unwrap()
             .get(subscription_name)
-            .copied())
+            .map(|entry| entry.position))
     }
 
     async fn delete_checkpoint(&self, subscription_name: &str) -> Result<()> {
         self.checkpoints.write().unwrap().remove(subscription_name);
+        Ok(())
+    }
+
+    async fn try_acquire_lease(
+        &self,
+        subscription_name: &str,
+        worker_id: &str,
+        lease_duration: std::time::Duration,
+    ) -> Result<Option<Position>> {
+        let mut guard = self.checkpoints.write().unwrap();
+        let now = std::time::Instant::now();
+        let entry = guard.entry(subscription_name.to_string()).or_default();
+
+        let can_take = match &entry.lease {
+            None => true,
+            Some(lease) => lease.expires_at <= now || lease.worker_id == worker_id,
+        };
+        if !can_take {
+            return Ok(None);
+        }
+        entry.lease = Some(MockLease {
+            worker_id: worker_id.to_string(),
+            expires_at: now + lease_duration,
+        });
+        Ok(Some(entry.position))
+    }
+
+    async fn renew_lease(
+        &self,
+        subscription_name: &str,
+        worker_id: &str,
+        lease_duration: std::time::Duration,
+    ) -> Result<()> {
+        let mut guard = self.checkpoints.write().unwrap();
+        let now = std::time::Instant::now();
+        let Some(entry) = guard.get_mut(subscription_name) else {
+            return Err(crate::Error::custom(format!(
+                "lease lost: no entry for {subscription_name}"
+            )));
+        };
+        match &entry.lease {
+            Some(lease) if lease.worker_id == worker_id && lease.expires_at > now => {
+                entry.lease = Some(MockLease {
+                    worker_id: worker_id.to_string(),
+                    expires_at: now + lease_duration,
+                });
+                Ok(())
+            }
+            _ => Err(crate::Error::custom(format!(
+                "lease lost: not held by {worker_id}"
+            ))),
+        }
+    }
+
+    async fn release_lease(&self, subscription_name: &str, worker_id: &str) -> Result<()> {
+        let mut guard = self.checkpoints.write().unwrap();
+        if let Some(entry) = guard.get_mut(subscription_name) {
+            if let Some(lease) = &entry.lease {
+                if lease.worker_id == worker_id {
+                    entry.lease = None;
+                }
+            }
+        }
         Ok(())
     }
 }

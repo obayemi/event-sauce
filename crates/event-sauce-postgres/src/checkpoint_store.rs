@@ -5,6 +5,7 @@
 use async_trait::async_trait;
 use event_sauce_core::{CheckpointStore, Error, Position, Result};
 use sqlx::PgPool;
+use std::time::Duration;
 
 /// `PostgreSQL` checkpoint store implementation.
 ///
@@ -223,10 +224,16 @@ impl PostgresCheckpointStore {
         let migrations_table = self.qualify_table("_checkpoint_migrations");
         crate::migrations::ensure_migrations_table(&self.pool, &migrations_table).await?;
 
+        self.migrate_checkpoints_table(&migrations_table).await?;
+        self.migrate_lease_columns(&migrations_table).await?;
+        Ok(())
+    }
+
+    async fn migrate_checkpoints_table(&self, migrations_table: &str) -> Result<()> {
         let checkpoints_table = self.qualify_table("checkpoints");
         crate::migrations::apply_once(
             &self.pool,
-            &migrations_table,
+            migrations_table,
             20_250_101_000_001_i64,
             "create_checkpoints_table",
             |pool| async move {
@@ -249,6 +256,40 @@ impl PostgresCheckpointStore {
                     .execute(pool)
                     .await
                     .map_err(|e| Error::backend("Failed to create index", e))?;
+                Ok(())
+            },
+        )
+        .await
+    }
+
+    async fn migrate_lease_columns(&self, migrations_table: &str) -> Result<()> {
+        let checkpoints_table = self.qualify_table("checkpoints");
+        crate::migrations::apply_once(
+            &self.pool,
+            migrations_table,
+            20_260_428_000_000_i64,
+            "add_lease_columns_to_checkpoints",
+            |pool| async move {
+                let stmts = vec![
+                    format!(
+                        "ALTER TABLE {checkpoints_table} ADD COLUMN IF NOT EXISTS worker_id VARCHAR(255)"
+                    ),
+                    format!(
+                        "ALTER TABLE {checkpoints_table} ADD COLUMN IF NOT EXISTS leased_until TIMESTAMP WITH TIME ZONE"
+                    ),
+                    format!(
+                        "ALTER TABLE {checkpoints_table} ADD COLUMN IF NOT EXISTS heartbeat_at TIMESTAMP WITH TIME ZONE"
+                    ),
+                    format!(
+                        "CREATE INDEX IF NOT EXISTS idx_checkpoints_leased_until ON {checkpoints_table}(leased_until)"
+                    ),
+                ];
+                for sql in stmts {
+                    sqlx::query(&sql)
+                        .execute(pool)
+                        .await
+                        .map_err(|e| Error::backend("Failed to apply lease columns migration", e))?;
+                }
                 Ok(())
             },
         )
@@ -382,6 +423,99 @@ impl CheckpointStore for PostgresCheckpointStore {
             .await
             .map_err(|e| Error::backend("Failed to delete checkpoint", e))?;
 
+        Ok(())
+    }
+
+    async fn try_acquire_lease(
+        &self,
+        subscription_name: &str,
+        worker_id: &str,
+        lease_duration: Duration,
+    ) -> Result<Option<Position>> {
+        let checkpoints_table = self.qualify_table("checkpoints");
+        // Atomically insert-or-update only if the existing lease is free,
+        // expired, or already ours. The conditional UPDATE returns the
+        // current position; if the WHERE blocks the update, RETURNING
+        // returns no rows and we report the lease as held by someone else.
+        let query = format!(
+            "INSERT INTO {checkpoints_table}
+                (subscription_name, position, worker_id, leased_until, heartbeat_at, updated_at)
+             VALUES ($1, 0, $2, NOW() + ($3 * INTERVAL '1 second'), NOW(), NOW())
+             ON CONFLICT (subscription_name) DO UPDATE
+                SET worker_id = EXCLUDED.worker_id,
+                    leased_until = EXCLUDED.leased_until,
+                    heartbeat_at = EXCLUDED.heartbeat_at,
+                    updated_at = NOW()
+                WHERE {checkpoints_table}.worker_id IS NULL
+                   OR {checkpoints_table}.leased_until IS NULL
+                   OR {checkpoints_table}.leased_until < NOW()
+                   OR {checkpoints_table}.worker_id = EXCLUDED.worker_id
+             RETURNING position"
+        );
+
+        #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
+        let secs = lease_duration.as_secs() as i64;
+        let position: Option<i64> = sqlx::query_scalar(&query)
+            .bind(subscription_name)
+            .bind(worker_id)
+            .bind(secs)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| Error::backend("Failed to acquire lease", e))?;
+
+        Ok(position.map(Position::new))
+    }
+
+    async fn renew_lease(
+        &self,
+        subscription_name: &str,
+        worker_id: &str,
+        lease_duration: Duration,
+    ) -> Result<()> {
+        let checkpoints_table = self.qualify_table("checkpoints");
+        let query = format!(
+            "UPDATE {checkpoints_table}
+             SET leased_until = NOW() + ($3 * INTERVAL '1 second'),
+                 heartbeat_at = NOW(),
+                 updated_at = NOW()
+             WHERE subscription_name = $1
+               AND worker_id = $2
+               AND leased_until > NOW()
+             RETURNING position"
+        );
+
+        #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
+        let secs = lease_duration.as_secs() as i64;
+        let renewed: Option<i64> = sqlx::query_scalar(&query)
+            .bind(subscription_name)
+            .bind(worker_id)
+            .bind(secs)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| Error::backend("Failed to renew lease", e))?;
+
+        if renewed.is_none() {
+            return Err(Error::custom(format!(
+                "lease lost for {subscription_name} (worker {worker_id})"
+            )));
+        }
+        Ok(())
+    }
+
+    async fn release_lease(&self, subscription_name: &str, worker_id: &str) -> Result<()> {
+        let checkpoints_table = self.qualify_table("checkpoints");
+        let query = format!(
+            "UPDATE {checkpoints_table}
+             SET worker_id = NULL,
+                 leased_until = NULL
+             WHERE subscription_name = $1 AND worker_id = $2"
+        );
+        sqlx::query(&query)
+            .bind(subscription_name)
+            .bind(worker_id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| Error::backend("Failed to release lease", e))?;
         Ok(())
     }
 }
@@ -781,5 +915,156 @@ mod tests {
         // Position must remain at the pre-tx value.
         let position = store.load_checkpoint("tx-sub").await.unwrap();
         assert_eq!(position, Some(Position::new(3)));
+    }
+
+    #[tokio::test]
+    async fn test_lease_acquire_creates_entry() {
+        let db = TestDatabase::new().await.unwrap();
+        let store = PostgresCheckpointStore::new(db.pool().clone());
+        store.migrate().await.unwrap();
+
+        let pos = store
+            .try_acquire_lease("sub-a", "worker-1", std::time::Duration::from_secs(60))
+            .await
+            .unwrap();
+        assert_eq!(pos, Some(Position::start()));
+    }
+
+    #[tokio::test]
+    async fn test_lease_blocks_second_worker() {
+        let db = TestDatabase::new().await.unwrap();
+        let store = PostgresCheckpointStore::new(db.pool().clone());
+        store.migrate().await.unwrap();
+
+        let lease_dur = std::time::Duration::from_secs(60);
+        store
+            .try_acquire_lease("sub-b", "worker-1", lease_dur)
+            .await
+            .unwrap();
+        let blocked = store
+            .try_acquire_lease("sub-b", "worker-2", lease_dur)
+            .await
+            .unwrap();
+        assert!(blocked.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_lease_same_worker_can_re_acquire() {
+        let db = TestDatabase::new().await.unwrap();
+        let store = PostgresCheckpointStore::new(db.pool().clone());
+        store.migrate().await.unwrap();
+
+        let lease_dur = std::time::Duration::from_secs(60);
+        store
+            .try_acquire_lease("sub-c", "worker-1", lease_dur)
+            .await
+            .unwrap();
+        let again = store
+            .try_acquire_lease("sub-c", "worker-1", lease_dur)
+            .await
+            .unwrap();
+        assert!(again.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_lease_expired_can_be_taken() {
+        let db = TestDatabase::new().await.unwrap();
+        let store = PostgresCheckpointStore::new(db.pool().clone());
+        store.migrate().await.unwrap();
+
+        // Acquire then manually expire it via DB write
+        store
+            .try_acquire_lease("sub-d", "worker-1", std::time::Duration::from_secs(60))
+            .await
+            .unwrap();
+        sqlx::query(
+            "UPDATE event_sauce.checkpoints SET leased_until = NOW() - INTERVAL '1 minute' WHERE subscription_name = $1",
+        )
+        .bind("sub-d")
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        let taken = store
+            .try_acquire_lease("sub-d", "worker-2", std::time::Duration::from_secs(60))
+            .await
+            .unwrap();
+        assert!(taken.is_some(), "expired lease should be reclaimable");
+    }
+
+    #[tokio::test]
+    async fn test_lease_renew_extends_expiry() {
+        let db = TestDatabase::new().await.unwrap();
+        let store = PostgresCheckpointStore::new(db.pool().clone());
+        store.migrate().await.unwrap();
+
+        store
+            .try_acquire_lease("sub-e", "worker-1", std::time::Duration::from_secs(1))
+            .await
+            .unwrap();
+
+        // Renew with a long duration
+        store
+            .renew_lease("sub-e", "worker-1", std::time::Duration::from_secs(60))
+            .await
+            .unwrap();
+
+        // Sleep past the original expiry
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+
+        // Another worker should still be blocked
+        let blocked = store
+            .try_acquire_lease("sub-e", "worker-2", std::time::Duration::from_secs(60))
+            .await
+            .unwrap();
+        assert!(blocked.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_lease_renew_errors_when_not_held() {
+        let db = TestDatabase::new().await.unwrap();
+        let store = PostgresCheckpointStore::new(db.pool().clone());
+        store.migrate().await.unwrap();
+
+        let result = store
+            .renew_lease("sub-f", "worker-1", std::time::Duration::from_secs(60))
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_lease_release_allows_other_worker() {
+        let db = TestDatabase::new().await.unwrap();
+        let store = PostgresCheckpointStore::new(db.pool().clone());
+        store.migrate().await.unwrap();
+
+        let lease_dur = std::time::Duration::from_secs(60);
+        store
+            .try_acquire_lease("sub-g", "worker-1", lease_dur)
+            .await
+            .unwrap();
+        store.release_lease("sub-g", "worker-1").await.unwrap();
+        let taken = store
+            .try_acquire_lease("sub-g", "worker-2", lease_dur)
+            .await
+            .unwrap();
+        assert!(taken.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_lease_returns_existing_position() {
+        let db = TestDatabase::new().await.unwrap();
+        let store = PostgresCheckpointStore::new(db.pool().clone());
+        store.migrate().await.unwrap();
+
+        store
+            .save_checkpoint("sub-h", Position::new(42))
+            .await
+            .unwrap();
+        let pos = store
+            .try_acquire_lease("sub-h", "worker-1", std::time::Duration::from_secs(60))
+            .await
+            .unwrap();
+        assert_eq!(pos, Some(Position::new(42)));
     }
 }
