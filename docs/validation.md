@@ -736,6 +736,38 @@ You can also pass a closure to `@validate_spec` to build specs dynamically from 
 
 Simple spec expressions (e.g., `@validate_spec(OrderIsPending)`) always run in `validate()` / `validate_init()`.
 
+#### Composing specs inside `@validate_spec`
+
+Operator-composed specs can be passed directly to `@validate_spec`. Combine reusable rules without naming the combination:
+
+```rust
+spec!(IsPending for Order, "Order must be pending", |o| {
+    o.status == OrderStatus::Pending
+});
+spec!(IsApproved for Order, "Order must be approved", |o| {
+    o.approved
+});
+
+define_events! {
+    enum OrderEvent for Order {
+        Completed {}
+        // Both rules must hold; failures use each spec's own error message.
+        @validate_spec(IsPending & IsApproved)
+        => |order, _event| {
+            order.status = OrderStatus::Completed;
+        },
+    }
+}
+```
+
+Closure-based `@validate_spec` can also return a composed spec:
+
+```rust
+@validate_spec(|_agg, evt| {
+    HasSufficientFunds { amount: evt.amount } & IsActive
+})
+```
+
 #### Arity-based `@validate` dispatch
 
 The number of closure arguments in `@validate` determines where the check runs:
