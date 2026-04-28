@@ -35,9 +35,9 @@ use std::sync::Arc;
 
 use event_sauce_core::{
     command_handler, define_events, policy, Aggregate, AggregateError, AggregateRoot,
-    DefaultEntity, Entity, EntityId, EventStore, PolicyRunner, Position, Repository,
+    DefaultEntity, Entity, EntityId, EventStore, Position, Repository,
 };
-use event_sauce_memory::{InMemoryCheckpointStore, InMemoryEventStore};
+use event_sauce_memory::InMemoryEventStore;
 use serde::{Deserialize, Serialize};
 
 // ============================================================================
@@ -281,13 +281,7 @@ policy! {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let checkpoint_store: Arc<dyn event_sauce_core::CheckpointStore> =
-        Arc::new(InMemoryCheckpointStore::new());
-    let store = Arc::new(
-        InMemoryEventStore::builder()
-            .checkpoint_store(Arc::clone(&checkpoint_store))
-            .build(),
-    );
+    let store = InMemoryEventStore::for_testing();
 
     // --- Step 1: Set up the world ---
 
@@ -325,7 +319,8 @@ async fn main() -> anyhow::Result<()> {
     // --- Step 3: Run policies ---
 
     println!("\n=== Processing Reactions ===");
-    let runner = PolicyRunner::new(Arc::clone(&store), checkpoint_store)
+    let runner = store
+        .policy_runner()?
         .with_max_cascade_depth(5)
         .register(Arc::new(KickUserPolicy))
         .register(Arc::new(NotifyOnRemovalPolicy));

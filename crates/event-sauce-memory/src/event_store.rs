@@ -201,6 +201,34 @@ impl InMemoryEventStore {
     pub fn builder() -> InMemoryEventStoreBuilder {
         InMemoryEventStoreBuilder::new()
     }
+
+    /// Creates a fully-wired in-memory store for tests.
+    ///
+    /// Wraps the store in `Arc` and pre-installs an
+    /// [`InMemoryCheckpointStore`](super::InMemoryCheckpointStore) so subscriptions,
+    /// projections, and policies work without additional setup. Crypto defaults
+    /// (key store + AES-256-GCM provider) are also installed automatically.
+    ///
+    /// Intended for tests and quick demos — production code should use
+    /// [`builder()`](Self::builder) and pass dependencies explicitly.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use event_sauce_memory::InMemoryEventStore;
+    ///
+    /// // One line to get a store ready for subscriptions, policies, projections.
+    /// let store = InMemoryEventStore::for_testing();
+    /// assert!(store.all_events().is_empty());
+    /// ```
+    #[must_use]
+    pub fn for_testing() -> Arc<Self> {
+        Arc::new(
+            Self::builder()
+                .checkpoint_store(Arc::new(super::InMemoryCheckpointStore::new()))
+                .build(),
+        )
+    }
 }
 
 impl InMemoryEventStoreBuilder {
