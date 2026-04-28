@@ -333,6 +333,15 @@ impl InMemoryEventStoreBuilder {
     /// - **Crypto key store**: [`InMemoryCryptoKeyStore`](super::InMemoryCryptoKeyStore)
     /// - **Crypto provider**: [`Aes256GcmProvider`](event_sauce_crypto::Aes256GcmProvider)
     ///
+    /// # Crypto auto-install
+    ///
+    /// A key store and provider are always installed, even if your aggregates are
+    /// not encrypted — they remain dormant until an encrypted aggregate (one whose
+    /// `Aggregate::is_encrypted()` returns true, or one with `@encrypted_fields`)
+    /// is committed or loaded. Override either via
+    /// [`crypto_key_store()`](Self::crypto_key_store) /
+    /// [`crypto_provider()`](Self::crypto_provider) if you need a custom backend.
+    ///
     /// # Examples
     ///
     /// ```
