@@ -135,18 +135,18 @@ pub fn derive_event(input: TokenStream) -> TokenStream {
 
     let version = attrs.version;
 
-    // Generate Into and EventType implementations for tuple variants
+    // Generate From implementations for tuple variants (Into auto-derived via blanket impl)
     let into_impls = variants.iter().filter_map(|variant| {
         let variant_name = &variant.ident;
 
-        // Only generate Into for tuple variants with exactly one field
+        // Only generate From for tuple variants with exactly one field
         match &variant.fields {
             Fields::Unnamed(fields) if fields.unnamed.len() == 1 => {
                 let field_type = &fields.unnamed.first().unwrap().ty;
                 Some(quote! {
-                    impl Into<#name> for #field_type {
-                        fn into(self) -> #name {
-                            #name::#variant_name(self)
+                    impl From<#field_type> for #name {
+                        fn from(value: #field_type) -> Self {
+                            #name::#variant_name(value)
                         }
                     }
                 })
