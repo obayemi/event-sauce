@@ -249,6 +249,47 @@ impl PostgresEventStore {
         format!("event_sauce_events_{}", self.schema)
     }
 
+    /// Fetches a bounded batch of events with `id > from_position`, ordered by `id`.
+    ///
+    /// Unlike [`stream_all`](EventStore::stream_all), this method runs as a
+    /// single query that releases its pooled connection as soon as the
+    /// returned vector is materialized — there is no long-lived cursor that
+    /// holds a connection for the duration of consumption. Projection runners
+    /// drive a loop of these to drain new events without occupying a
+    /// connection between transactions.
+    ///
+    /// `limit` caps the batch size; pass a small value (e.g. 500) to keep
+    /// memory bounded. The caller is responsible for advancing `from_position`
+    /// after each batch.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying SQL query fails.
+    pub async fn fetch_events_batch(
+        &self,
+        from_position: Position,
+        limit: i64,
+    ) -> Result<Vec<EventEnvelope>> {
+        let events_table = self.qualify_table("events");
+        let query = format!(
+            "SELECT event_id, aggregate_id, aggregate_type, event_type, event_version,
+                    event_data, created_by, created_at, correlation_id, causation_id, metadata
+             FROM {events_table}
+             WHERE id > $1
+             ORDER BY id ASC
+             LIMIT $2"
+        );
+
+        let rows: Vec<EventRow> = sqlx::query_as::<_, EventRow>(&query)
+            .bind(from_position.as_i64())
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| Error::backend("Failed to fetch event batch", e))?;
+
+        Ok(rows.into_iter().map(EventEnvelope::from).collect())
+    }
+
     /// Subscribes to `NOTIFY` wake-ups for new event commits.
     ///
     /// Returns a stream that yields a [`Position`] each time a transaction

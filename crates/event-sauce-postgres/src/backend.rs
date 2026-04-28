@@ -173,41 +173,45 @@ impl PostgresBackend {
         &self,
         projection: &mut P,
     ) -> event_sauce_core::Result<()> {
-        use event_sauce_core::{CheckpointStore, EventStore, Position};
-        use futures::StreamExt;
+        use event_sauce_core::{CheckpointStore, Position};
 
-        let start_position = self
+        let mut current_position = self
             .checkpoint_store
             .load_checkpoint(P::NAME)
             .await?
             .unwrap_or_else(Position::start);
 
-        let event_stream = self.event_store.stream_all(start_position).await?;
-        futures::pin_mut!(event_stream);
-
         let filter = P::event_filter();
-        let mut current_position = start_position;
 
-        while let Some(event_result) = event_stream.next().await {
-            let event = event_result?;
-            current_position = Position::new(current_position.as_i64() + 1);
-
-            if !filter.matches(&event) {
-                continue;
+        loop {
+            let batch = self
+                .event_store
+                .fetch_events_batch(current_position, PROJECTION_BATCH_SIZE)
+                .await?;
+            if batch.is_empty() {
+                break;
             }
 
-            let mut tx = self.pool.begin().await.map_err(|e| {
-                event_sauce_core::Error::backend("Failed to start projection transaction", e)
-            })?;
+            for event in batch {
+                current_position = Position::new(current_position.as_i64() + 1);
 
-            projection.handle(&event, &mut tx).await?;
-            self.checkpoint_store
-                .save_checkpoint_tx(&mut tx, P::NAME, current_position)
-                .await?;
+                if !filter.matches(&event) {
+                    continue;
+                }
 
-            tx.commit().await.map_err(|e| {
-                event_sauce_core::Error::backend("Failed to commit projection transaction", e)
-            })?;
+                let mut tx = self.pool.begin().await.map_err(|e| {
+                    event_sauce_core::Error::backend("Failed to start projection transaction", e)
+                })?;
+
+                projection.handle(&event, &mut tx).await?;
+                self.checkpoint_store
+                    .save_checkpoint_tx(&mut tx, P::NAME, current_position)
+                    .await?;
+
+                tx.commit().await.map_err(|e| {
+                    event_sauce_core::Error::backend("Failed to commit projection transaction", e)
+                })?;
+            }
         }
 
         Ok(())
@@ -331,51 +335,56 @@ impl PostgresBackend {
         lease_duration: std::time::Duration,
         start_position: event_sauce_core::Position,
     ) -> event_sauce_core::Result<()> {
-        use event_sauce_core::{CheckpointStore, EventStore, Position};
-        use futures::StreamExt;
+        use event_sauce_core::{CheckpointStore, Position};
 
         const DISPATCHER_NAME: &str = "__policy_outbox_dispatcher";
-
-        let event_stream = self.event_store.stream_all(start_position).await?;
-        futures::pin_mut!(event_stream);
 
         let mut current_position = start_position;
         let renew_interval = lease_duration / 3;
         let mut last_renew = std::time::Instant::now();
 
-        while let Some(event_result) = event_stream.next().await {
-            let event = event_result?;
-            current_position = Position::new(current_position.as_i64() + 1);
-
-            if last_renew.elapsed() >= renew_interval {
-                self.checkpoint_store
-                    .renew_lease(DISPATCHER_NAME, worker_id, lease_duration)
-                    .await?;
-                last_renew = std::time::Instant::now();
-            }
-
-            // Find which policies care about this event before opening a
-            // transaction — keep the tx narrow.
-            let matched: Vec<&PolicyDispatch> = policies
-                .iter()
-                .filter(|p| p.filter.matches(&event))
-                .collect();
-
-            let mut tx = self.pool.begin().await.map_err(|e| {
-                event_sauce_core::Error::backend("Failed to start dispatcher transaction", e)
-            })?;
-
-            for dispatch in matched {
-                outbox
-                    .enqueue_tx(&mut tx, &dispatch.name, event.id, current_position.as_i64())
-                    .await?;
-            }
-            self.checkpoint_store
-                .save_checkpoint_tx(&mut tx, DISPATCHER_NAME, current_position)
+        loop {
+            let batch = self
+                .event_store
+                .fetch_events_batch(current_position, PROJECTION_BATCH_SIZE)
                 .await?;
-            tx.commit().await.map_err(|e| {
-                event_sauce_core::Error::backend("Failed to commit dispatcher transaction", e)
-            })?;
+            if batch.is_empty() {
+                break;
+            }
+
+            for event in batch {
+                current_position = Position::new(current_position.as_i64() + 1);
+
+                if last_renew.elapsed() >= renew_interval {
+                    self.checkpoint_store
+                        .renew_lease(DISPATCHER_NAME, worker_id, lease_duration)
+                        .await?;
+                    last_renew = std::time::Instant::now();
+                }
+
+                // Find which policies care about this event before opening a
+                // transaction — keep the tx narrow.
+                let matched: Vec<&PolicyDispatch> = policies
+                    .iter()
+                    .filter(|p| p.filter.matches(&event))
+                    .collect();
+
+                let mut tx = self.pool.begin().await.map_err(|e| {
+                    event_sauce_core::Error::backend("Failed to start dispatcher transaction", e)
+                })?;
+
+                for dispatch in matched {
+                    outbox
+                        .enqueue_tx(&mut tx, &dispatch.name, event.id, current_position.as_i64())
+                        .await?;
+                }
+                self.checkpoint_store
+                    .save_checkpoint_tx(&mut tx, DISPATCHER_NAME, current_position)
+                    .await?;
+                tx.commit().await.map_err(|e| {
+                    event_sauce_core::Error::backend("Failed to commit dispatcher transaction", e)
+                })?;
+            }
         }
 
         Ok(())
@@ -388,49 +397,62 @@ impl PostgresBackend {
         lease_duration: std::time::Duration,
         start_position: event_sauce_core::Position,
     ) -> event_sauce_core::Result<()> {
-        use event_sauce_core::{CheckpointStore, EventStore, Position};
-        use futures::StreamExt;
-
-        let event_stream = self.event_store.stream_all(start_position).await?;
-        futures::pin_mut!(event_stream);
+        use event_sauce_core::{CheckpointStore, Position};
 
         let filter = P::event_filter();
         let mut current_position = start_position;
         let renew_interval = lease_duration / 3;
         let mut last_renew = std::time::Instant::now();
 
-        while let Some(event_result) = event_stream.next().await {
-            let event = event_result?;
-            current_position = Position::new(current_position.as_i64() + 1);
-
-            if last_renew.elapsed() >= renew_interval {
-                self.checkpoint_store
-                    .renew_lease(P::NAME, worker_id, lease_duration)
-                    .await?;
-                last_renew = std::time::Instant::now();
-            }
-
-            if !filter.matches(&event) {
-                continue;
-            }
-
-            let mut tx = self.pool.begin().await.map_err(|e| {
-                event_sauce_core::Error::backend("Failed to start projection transaction", e)
-            })?;
-
-            projection.handle(&event, &mut tx).await?;
-            self.checkpoint_store
-                .save_checkpoint_tx(&mut tx, P::NAME, current_position)
+        loop {
+            let batch = self
+                .event_store
+                .fetch_events_batch(current_position, PROJECTION_BATCH_SIZE)
                 .await?;
+            if batch.is_empty() {
+                break;
+            }
 
-            tx.commit().await.map_err(|e| {
-                event_sauce_core::Error::backend("Failed to commit projection transaction", e)
-            })?;
+            for event in batch {
+                current_position = Position::new(current_position.as_i64() + 1);
+
+                if last_renew.elapsed() >= renew_interval {
+                    self.checkpoint_store
+                        .renew_lease(P::NAME, worker_id, lease_duration)
+                        .await?;
+                    last_renew = std::time::Instant::now();
+                }
+
+                if !filter.matches(&event) {
+                    continue;
+                }
+
+                let mut tx = self.pool.begin().await.map_err(|e| {
+                    event_sauce_core::Error::backend("Failed to start projection transaction", e)
+                })?;
+
+                projection.handle(&event, &mut tx).await?;
+                self.checkpoint_store
+                    .save_checkpoint_tx(&mut tx, P::NAME, current_position)
+                    .await?;
+
+                tx.commit().await.map_err(|e| {
+                    event_sauce_core::Error::backend("Failed to commit projection transaction", e)
+                })?;
+            }
         }
 
         Ok(())
     }
 }
+
+/// Maximum number of events fetched per batch by the projection runners.
+///
+/// Bounds memory and ensures the streaming connection is released between
+/// batches, so the connection pool isn't held captive while a projection
+/// catches up. The lease is renewed inside the batch loop, so this only
+/// affects how often the projection runner re-acquires a pool connection.
+const PROJECTION_BATCH_SIZE: i64 = 500;
 
 /// One entry in the policy registry passed to
 /// [`PostgresBackend::dispatch_policies_to_outbox`].
@@ -472,6 +494,7 @@ impl PolicyDispatch {
 /// ```
 pub struct PostgresBackendBuilder {
     database_url: Option<String>,
+    pool: Option<PgPool>,
     schema: Option<String>,
     snapshot_config: Option<SnapshotConfig>,
     crypto_key_store: Option<Arc<dyn event_sauce_core::CryptoKeyStore>>,
@@ -484,6 +507,7 @@ impl PostgresBackendBuilder {
     pub fn new() -> Self {
         Self {
             database_url: None,
+            pool: None,
             schema: None,
             snapshot_config: None,
             crypto_key_store: None,
@@ -493,10 +517,28 @@ impl PostgresBackendBuilder {
 
     /// Sets the database connection URL.
     ///
-    /// This is required — calling `build()` without setting a URL will panic.
+    /// Either this or [`pool`](Self::pool) must be set before calling `build()`.
+    /// When `database_url` is set, `build()` opens a default `PgPool::connect`
+    /// to the URL. Use [`pool`](Self::pool) instead to share a pre-configured
+    /// pool with the rest of the application (e.g. with a custom
+    /// `max_connections`).
     #[must_use]
     pub fn database_url(mut self, url: impl Into<String>) -> Self {
         self.database_url = Some(url.into());
+        self
+    }
+
+    /// Sets a pre-built `PgPool` to use for all stores.
+    ///
+    /// Use this when the application already owns a connection pool (e.g.
+    /// configured with `PgPoolOptions::max_connections(...)`) so the event
+    /// store, checkpoint store, and the rest of the app share a single pool.
+    ///
+    /// Either this or [`database_url`](Self::database_url) must be set; if both
+    /// are provided, `pool` wins.
+    #[must_use]
+    pub fn pool(mut self, pool: PgPool) -> Self {
+        self.pool = Some(pool);
         self
     }
 
@@ -537,20 +579,25 @@ impl PostgresBackendBuilder {
     ///
     /// # Errors
     ///
-    /// Returns an error if `database_url` has not been set, or if the database
-    /// connection fails or migrations cannot be applied.
+    /// Returns an error if neither `database_url` nor `pool` has been set, or
+    /// if the database connection fails or migrations cannot be applied.
     pub async fn build(self) -> event_sauce_core::Result<PostgresBackend> {
-        let database_url = self
-            .database_url
-            .ok_or_else(|| event_sauce_core::Error::invalid_state("database_url is required"))?;
         let schema = self.schema.unwrap_or_else(|| "event_sauce".to_string());
         let snapshot_config = self
             .snapshot_config
             .unwrap_or_else(|| SnapshotConfig::builder().build());
 
-        let pool = PgPool::connect(&database_url)
-            .await
-            .map_err(|e| event_sauce_core::Error::backend("Failed to connect", e))?;
+        let pool = match (self.pool, self.database_url) {
+            (Some(pool), _) => pool,
+            (None, Some(url)) => PgPool::connect(&url)
+                .await
+                .map_err(|e| event_sauce_core::Error::backend("Failed to connect", e))?,
+            (None, None) => {
+                return Err(event_sauce_core::Error::invalid_state(
+                    "either database_url or pool is required",
+                ));
+            }
+        };
 
         let checkpoint_store = PostgresCheckpointStore::builder()
             .pool(pool.clone())
@@ -807,14 +854,45 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_builder_errors_without_url() {
+    async fn test_builder_errors_without_url_or_pool() {
         let result = PostgresBackend::builder().build().await;
         let err = result.err().expect("should be an error");
         let msg = err.to_string();
         assert!(
-            msg.contains("database_url is required"),
+            msg.contains("either database_url or pool is required"),
             "unexpected error: {msg}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_builder_with_pool() {
+        let (url, _container) = start_postgres().await;
+
+        let pool = PgPool::connect(&url)
+            .await
+            .expect("pool connect should succeed");
+
+        let backend = PostgresBackend::builder()
+            .pool(pool.clone())
+            .schema("pool_backend")
+            .build()
+            .await
+            .expect("builder with pre-built pool should succeed");
+
+        assert_eq!(backend.event_store().schema(), "pool_backend");
+
+        // Both backend and the original pool handle should reference the
+        // same underlying pool — confirm by querying through both.
+        let count: (i64,) = sqlx::query_as("SELECT 1::bigint")
+            .fetch_one(backend.pool())
+            .await
+            .expect("backend pool should be functional");
+        assert_eq!(count.0, 1);
+        let count: (i64,) = sqlx::query_as("SELECT 2::bigint")
+            .fetch_one(&pool)
+            .await
+            .expect("original pool should still work");
+        assert_eq!(count.0, 2);
     }
 
     #[tokio::test]

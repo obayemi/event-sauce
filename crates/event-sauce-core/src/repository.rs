@@ -73,32 +73,59 @@ where
     /// Loads an aggregate, applies a closure that mutates it, and saves the result.
     ///
     /// The most common command-handler pattern condensed into a single call. The
-    /// closure receives the loaded aggregate and may apply commands or events;
-    /// any aggregate-defined error is auto-converted via the blanket
-    /// `From<A::Error> for Error`.
+    /// closure receives the loaded aggregate and may apply commands or events.
+    ///
+    /// Returns `Result<R, ModifyError<A::Error>>`, which distinguishes three
+    /// failure modes:
+    ///
+    /// - [`ModifyError::Load`](crate::ModifyError::Load) — the event store failed
+    ///   while loading the aggregate.
+    /// - [`ModifyError::Domain`](crate::ModifyError::Domain) — the closure returned
+    ///   an aggregate-defined error `A::Error`.
+    /// - [`ModifyError::Save`](crate::ModifyError::Save) — the event store failed
+    ///   while persisting pending events.
+    ///
+    /// Callers that want typed-error handling can match on the variants directly.
+    /// Callers whose functions return `Result<_, Error>` can still use `?` thanks
+    /// to the `From<ModifyError<E>> for Error` blanket, which flattens the error
+    /// transparently.
     ///
     /// Accepts both raw `EntityId` and typed IDs implementing `EntityIdFor<A>`.
     ///
     /// # Errors
     ///
-    /// Returns an error if the aggregate cannot be loaded, the closure fails,
-    /// or saving fails.
+    /// Returns `ModifyError::Load` if loading fails, `ModifyError::Domain` if the
+    /// closure fails, or `ModifyError::Save` if saving fails.
     ///
     /// # Examples
     ///
     /// ```ignore
+    /// // Typed matching:
+    /// match repo.modify(order_id, |order| order.add_item("laptop".into(), 1, 120_000)).await {
+    ///     Ok(()) => {}
+    ///     Err(ModifyError::Domain(OrderError::InsufficientStock)) => { /* handle */ }
+    ///     Err(e) => return Err(e.into()),
+    /// }
+    ///
+    /// // Ergonomic ? in Result<_, Error> functions:
     /// let value = repo.modify(order_id, |order| {
     ///     order.add_item("laptop".into(), 1, 120_000)?;
     ///     Ok(order.total())
     /// }).await?;
     /// ```
-    pub async fn modify<F, R>(&self, id: impl EntityIdFor<A>, f: F) -> Result<R>
+    pub async fn modify<F, R>(
+        &self,
+        id: impl EntityIdFor<A>,
+        f: F,
+    ) -> std::result::Result<R, crate::ModifyError<A::Error>>
     where
         F: FnOnce(&mut AggregateRoot<A>) -> std::result::Result<R, A::Error>,
     {
-        let mut aggregate = self.load(id).await?;
-        let result = f(&mut aggregate)?;
-        self.save(&mut aggregate).await?;
+        let mut aggregate = self.load(id).await.map_err(crate::ModifyError::Load)?;
+        let result = f(&mut aggregate).map_err(crate::ModifyError::Domain)?;
+        self.save(&mut aggregate)
+            .await
+            .map_err(crate::ModifyError::Save)?;
         Ok(result)
     }
 
@@ -109,19 +136,43 @@ where
     /// the closure is mostly useful for inspecting state or appending metadata-only
     /// events emitted via [`commit_deleted`](crate::EventStore::commit_deleted).
     ///
+    /// Returns `Result<R, ModifyError<A::Error>>`, which distinguishes three
+    /// failure modes:
+    ///
+    /// - [`ModifyError::Load`](crate::ModifyError::Load) — loading the deleted
+    ///   aggregate failed (including `Error::InvalidState` when the aggregate is
+    ///   still active).
+    /// - [`ModifyError::Domain`](crate::ModifyError::Domain) — the closure returned
+    ///   an aggregate-defined error `A::Error`.
+    /// - [`ModifyError::Save`](crate::ModifyError::Save) — persisting pending events
+    ///   failed.
+    ///
+    /// Callers whose functions return `Result<_, Error>` can still use `?` via the
+    /// `From<ModifyError<E>> for Error` blanket.
+    ///
     /// Accepts both raw `EntityId` and typed IDs implementing `EntityIdFor<A>`.
     ///
     /// # Errors
     ///
-    /// Returns an error if the aggregate is not deleted, the closure fails,
-    /// or saving fails.
-    pub async fn modify_deleted<F, R>(&self, id: impl EntityIdFor<A>, f: F) -> Result<R>
+    /// Returns `ModifyError::Load` if the aggregate is not deleted or cannot be
+    /// loaded, `ModifyError::Domain` if the closure fails, or `ModifyError::Save`
+    /// if saving fails.
+    pub async fn modify_deleted<F, R>(
+        &self,
+        id: impl EntityIdFor<A>,
+        f: F,
+    ) -> std::result::Result<R, crate::ModifyError<A::Error>>
     where
         F: FnOnce(&mut DeletedAggregateRoot<A>) -> std::result::Result<R, A::Error>,
     {
-        let mut deleted = self.load_deleted(id).await?;
-        let result = f(&mut deleted)?;
-        self.save_deleted(&mut deleted).await?;
+        let mut deleted = self
+            .load_deleted(id)
+            .await
+            .map_err(crate::ModifyError::Load)?;
+        let result = f(&mut deleted).map_err(crate::ModifyError::Domain)?;
+        self.save_deleted(&mut deleted)
+            .await
+            .map_err(crate::ModifyError::Save)?;
         Ok(result)
     }
 
@@ -505,6 +556,61 @@ mod tests {
         assert!(result.is_err());
         let reloaded = repo.load(id).await.unwrap();
         assert_eq!(reloaded.value, 1, "aggregate not mutated on closure error");
+    }
+
+    #[tokio::test]
+    async fn test_repository_modify_domain_error_is_typed() {
+        let store = Arc::new(MockEventStore::new());
+        let repo = store.repository::<SimpleTestEntity>();
+
+        let id = EntityId::new();
+        let mut aggregate = AggregateRoot::<SimpleTestEntity>::new(id);
+        aggregate
+            .apply(SimpleTestEvent::Created { value: 1 })
+            .unwrap();
+        repo.save(&mut aggregate).await.unwrap();
+
+        let result = repo
+            .modify(id, |_agg| -> std::result::Result<(), _> {
+                Err(crate::test_fixtures::SimpleTestError)
+            })
+            .await;
+
+        // The error should be the Domain variant, not Load or Save.
+        assert!(result.as_ref().unwrap_err().is_domain());
+        assert!(matches!(
+            result.unwrap_err(),
+            crate::ModifyError::Domain(crate::test_fixtures::SimpleTestError)
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_repository_modify_domain_error_flattens_via_from() {
+        // Verify backward-compat: ? in a function returning Result<_, Error> still works.
+        // The inner helper is declared before any statements to satisfy clippy::items_after_statements.
+        async fn try_modify(
+            repo: &crate::Repository<MockEventStore, SimpleTestEntity>,
+            id: EntityId,
+        ) -> crate::Result<()> {
+            repo.modify(id, |_agg| -> std::result::Result<(), _> {
+                Err(crate::test_fixtures::SimpleTestError)
+            })
+            .await?;
+            Ok(())
+        }
+
+        let store = Arc::new(MockEventStore::new());
+        let repo = store.repository::<SimpleTestEntity>();
+
+        let id = EntityId::new();
+        let mut aggregate = AggregateRoot::<SimpleTestEntity>::new(id);
+        aggregate
+            .apply(SimpleTestEvent::Created { value: 1 })
+            .unwrap();
+        repo.save(&mut aggregate).await.unwrap();
+
+        let err = try_modify(&repo, id).await.unwrap_err();
+        assert!(matches!(err, crate::Error::InvalidState(_)));
     }
 
     #[tokio::test]

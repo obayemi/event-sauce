@@ -45,6 +45,7 @@ mod event_store;
 mod init_event;
 mod loaded;
 mod macros;
+mod modify_error;
 /// Policy system for cross-aggregate event reactions with causation tracking.
 pub mod policy;
 mod repository;
@@ -81,6 +82,7 @@ pub use event_log::{EventLogEntry, EventLogPage, EventLogParams, EventLogQuery};
 pub use event_store::{EventStore, Position, Snapshot, StreamId};
 pub use init_event::InitEvent;
 pub use loaded::Loaded;
+pub use modify_error::ModifyError;
 pub use policy::{
     OnError, OnRetryExhausted, Policy, PolicyContext, PolicyRunner, RetryConfig, RetryLimit,
 };
