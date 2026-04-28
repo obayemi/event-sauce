@@ -265,57 +265,38 @@ let store = InMemoryEventStore::builder()
 
 ## Building Projections (Read Models)
 
-Build type-safe read models with the `projection!` macro:
+Read models are postgres-backed and transactional. Implement
+[`PostgresProjection`] (in `event-sauce-postgres`) so the runner can apply
+each event and advance the subscription checkpoint inside the same database
+transaction — see [docs/projections.md](projections.md) for the full guide:
 
 ```rust
-use event_sauce::projection;
-use std::collections::HashMap;
-use uuid::Uuid;
+use event_sauce_postgres::{PostgresBackend, PostgresProjection};
+use event_sauce_core::{EventEnvelope, Result};
 
-#[derive(Debug, Clone)]
-struct CounterView {
-    value: i32,
-    total_operations: u64,
-}
+struct CounterListProjection;
 
-projection! {
-    pub struct CounterListProjection {
-        state: HashMap<Uuid, CounterView>,
+#[async_trait::async_trait]
+impl PostgresProjection for CounterListProjection {
+    const NAME: &'static str = "CounterListProjection";
 
-        on CounterEvent::Incremented |proj, event, aggregate_id| {
-            proj.state.entry(aggregate_id)
-                .and_modify(|v| {
-                    v.value += event.amount;
-                    v.total_operations += 1;
-                })
-                .or_insert(CounterView {
-                    value: event.amount,
-                    total_operations: 1,
-                });
-        },
+    fn handled_event_types() -> Option<Vec<&'static str>> {
+        Some(vec!["Counter.Incremented", "Counter.Decremented"])
+    }
 
-        on CounterEvent::Decremented |proj, event, aggregate_id| {
-            if let Some(counter) = proj.state.get_mut(&aggregate_id) {
-                counter.value -= event.amount;
-                counter.total_operations += 1;
-            }
-        },
+    async fn handle(
+        &mut self,
+        envelope: &EventEnvelope,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    ) -> Result<()> {
+        // Apply the event to your projection table through `tx`.
+        let _ = (envelope, tx);
+        Ok(())
     }
 }
 
-// Use with subscriptions for automatic updates
-let mut projection = CounterListProjection::new(HashMap::new());
-let subscription = event_store
-    .subscription_builder("counter-projection")
-    .build()?;
-
-let stream = subscription.into_stream().await?;
-tokio::pin!(stream);
-
-while let Some(result) = stream.next().await {
-    let envelope = result?;
-    projection.handle(&envelope).await?;
-}
+// Run it. Each event is applied + the checkpoint advances atomically.
+backend.run_postgres_projection(&mut CounterListProjection).await?;
 ```
 
 **Benefits:**

@@ -19,7 +19,6 @@
 //! cargo run --example postgres-quickstart --features "postgres"
 //! ```
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use event_sauce_core::{
@@ -360,73 +359,102 @@ policy! {
 }
 
 // ============================================================================
-// Order Summary Projection
+// Order Summary Projection (transactional, postgres-backed)
 // ============================================================================
 
-/// Order summary view — references user_id, not user PII.
-/// User data is encrypted at rest and should not be denormalized into projections.
-#[derive(Debug, Clone)]
-struct OrderSummaryView {
-    order_id: EntityId,
-    user_id: UserId,
-    item_count: usize,
-    total_amount: i64,
-    status: OrderStatus,
-}
+/// Postgres-backed projection: writes go through the runner-provided
+/// `&mut sqlx::Transaction`; the checkpoint advances atomically with each row.
+struct OrderSummaryProjection;
 
-/// Projection state
-#[derive(Debug, Default)]
-struct ProjectionState {
-    orders: HashMap<EntityId, OrderSummaryView>,
-}
-
-// Order summary projection — subscribes only to OrderEvent
-// (User events are encrypted and should not be denormalized)
-event_sauce_core::projection! {
-    struct OrderSummaryProjection {
-        state: ProjectionState,
-
-        on OrderEvent::Placed |proj, event, aggregate_id| {
-            let order_id = EntityId::from(aggregate_id);
-            proj.state.orders.insert(
-                order_id,
-                OrderSummaryView {
-                    order_id,
-                    user_id: event.user_id,
-                    item_count: 0,
-                    total_amount: 0,
-                    status: OrderStatus::Pending,
-                },
-            );
-        },
-
-        on OrderEvent::ItemAdded |proj, event, aggregate_id| {
-            let order_id = EntityId::from(aggregate_id);
-            if let Some(order) = proj.state.orders.get_mut(&order_id) {
-                order.item_count += 1;
-                order.total_amount += event.price * event.quantity as i64;
-            }
-        },
-
-        on OrderEvent::Completed |proj, _event, aggregate_id| {
-            let order_id = EntityId::from(aggregate_id);
-            if let Some(order) = proj.state.orders.get_mut(&order_id) {
-                order.status = OrderStatus::Completed;
-            }
-        },
-
-        on OrderEvent::Cancelled |proj, _event, aggregate_id| {
-            let order_id = EntityId::from(aggregate_id);
-            if let Some(order) = proj.state.orders.get_mut(&order_id) {
-                order.status = OrderStatus::Cancelled;
-            }
-        },
+impl OrderSummaryProjection {
+    /// User-owned migration: create the read model table.
+    async fn migrate(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS event_sauce.order_summary (
+                order_id UUID PRIMARY KEY,
+                user_id UUID NOT NULL,
+                item_count INTEGER NOT NULL,
+                total_amount BIGINT NOT NULL,
+                status TEXT NOT NULL
+            )",
+        )
+        .execute(pool)
+        .await?;
+        Ok(())
     }
 }
 
-impl OrderSummaryProjection {
-    fn get_all_orders(&self) -> Vec<OrderSummaryView> {
-        self.state.orders.values().cloned().collect()
+#[async_trait::async_trait]
+impl event_sauce_postgres::PostgresProjection for OrderSummaryProjection {
+    const NAME: &'static str = "OrderSummaryProjection";
+
+    fn handled_event_types() -> Option<Vec<&'static str>> {
+        Some(vec![
+            <PlacedEvent as event_sauce_core::EventType>::EVENT_TYPE,
+            <ItemAddedEvent as event_sauce_core::EventType>::EVENT_TYPE,
+            <CompletedEvent as event_sauce_core::EventType>::EVENT_TYPE,
+            <CancelledEvent as event_sauce_core::EventType>::EVENT_TYPE,
+        ])
+    }
+
+    async fn handle(
+        &mut self,
+        envelope: &event_sauce_core::EventEnvelope,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    ) -> event_sauce_core::Result<()> {
+        let order_id = envelope.aggregate_id;
+
+        if envelope.event_type == <PlacedEvent as event_sauce_core::EventType>::EVENT_TYPE {
+            let event: PlacedEvent = serde_json::from_value(envelope.event_data.clone())
+                .map_err(|e| event_sauce_core::Error::custom(e.to_string()))?;
+            sqlx::query(
+                "INSERT INTO event_sauce.order_summary
+                    (order_id, user_id, item_count, total_amount, status)
+                 VALUES ($1, $2, 0, 0, 'pending')
+                 ON CONFLICT (order_id) DO NOTHING",
+            )
+            .bind(order_id)
+            .bind(event.user_id.as_uuid())
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| event_sauce_core::Error::custom(e.to_string()))?;
+        } else if envelope.event_type == <ItemAddedEvent as event_sauce_core::EventType>::EVENT_TYPE
+        {
+            let event: ItemAddedEvent = serde_json::from_value(envelope.event_data.clone())
+                .map_err(|e| event_sauce_core::Error::custom(e.to_string()))?;
+            let delta = event.price * i64::from(event.quantity);
+            sqlx::query(
+                "UPDATE event_sauce.order_summary
+                    SET item_count = item_count + 1,
+                        total_amount = total_amount + $2
+                  WHERE order_id = $1",
+            )
+            .bind(order_id)
+            .bind(delta)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| event_sauce_core::Error::custom(e.to_string()))?;
+        } else if envelope.event_type == <CompletedEvent as event_sauce_core::EventType>::EVENT_TYPE
+        {
+            sqlx::query(
+                "UPDATE event_sauce.order_summary SET status = 'completed' WHERE order_id = $1",
+            )
+            .bind(order_id)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| event_sauce_core::Error::custom(e.to_string()))?;
+        } else if envelope.event_type == <CancelledEvent as event_sauce_core::EventType>::EVENT_TYPE
+        {
+            sqlx::query(
+                "UPDATE event_sauce.order_summary SET status = 'cancelled' WHERE order_id = $1",
+            )
+            .bind(order_id)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| event_sauce_core::Error::custom(e.to_string()))?;
+        }
+
+        Ok(())
     }
 }
 
@@ -665,30 +693,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // ========================================================================
-    // Step 8: Build Projection
+    // Step 8: Build Projection (transactional, postgres-backed)
     // ========================================================================
 
-    println!("\n=== Building Projection ===\n");
+    println!("\n=== Building Projection (transactional) ===\n");
 
-    let mut projection = OrderSummaryProjection::new(ProjectionState::default());
+    OrderSummaryProjection::migrate(backend.pool()).await?;
 
-    // projection_subscription auto-wires name, filter, and checkpoint store
-    let mut subscription = backend
-        .projection_subscription::<OrderSummaryProjection>()
-        .build()?;
-    subscription.run_projection(&mut projection).await?;
+    let mut projection = OrderSummaryProjection;
+    backend.run_postgres_projection(&mut projection).await?;
 
-    println!("  Processed Order events via run_projection");
-    println!("  (User events are encrypted — projection uses user_id references only)\n");
+    println!("  Processed Order events via run_postgres_projection");
+    println!("  (Each event applied + checkpoint advanced in the same transaction)\n");
 
-    for order_view in projection.get_all_orders() {
+    let rows: Vec<(uuid::Uuid, uuid::Uuid, i32, i64, String)> = sqlx::query_as(
+        "SELECT order_id, user_id, item_count, total_amount, status
+           FROM event_sauce.order_summary
+           ORDER BY order_id",
+    )
+    .fetch_all(backend.pool())
+    .await?;
+
+    for (order_id, user_id, item_count, total_amount, status) in rows {
         println!(
-            "  Order {}: user={}, {} items, ${:.2}, {:?}",
-            order_view.order_id,
-            order_view.user_id,
-            order_view.item_count,
-            order_view.total_amount as f64 / 100.0,
-            order_view.status
+            "  Order {}: user={}, {} items, ${:.2}, {}",
+            order_id,
+            user_id,
+            item_count,
+            total_amount as f64 / 100.0,
+            status,
         );
     }
 

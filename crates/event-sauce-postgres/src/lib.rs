@@ -90,9 +90,11 @@ mod crypto_key_store;
 mod event_log;
 mod event_store;
 mod migrations;
+mod projection;
 
 pub use backend::{PostgresBackend, PostgresBackendBuilder};
 pub use checkpoint_store::{PostgresCheckpointStore, PostgresCheckpointStoreBuilder};
 pub use crypto_key_store::{PostgresCryptoKeyStore, PostgresCryptoKeyStoreBuilder};
 pub use event_log::PostgresEventLogQuery;
 pub use event_store::{PostgresEventStore, PostgresEventStoreBuilder};
+pub use projection::PostgresProjection;

@@ -42,7 +42,7 @@ event-sauce provides a powerful and ergonomic event sourcing experience with min
   - `#[derive(Event)]` - Event dispatching
   - `define_events!` - Event definitions with validation
   - `command_handler!` - Command method generation
-  - `projection!` - Read model definitions
+  - `PostgresProjection` - Transactional postgres-backed read models
 - **🎯 Type-Safe Events**: `ApplyEvent` trait for self-contained event logic
 - **✅ Validation & Replay**: Separate validation from application for fast replay
 - **🛡️ Rich Errors**: Aggregate-specific error types with `AggregateError` trait
@@ -360,56 +360,55 @@ See the **[Audit Log Guide](docs/audit-log.md)** for full details.
 
 ### Building Projections (Read Models)
 
-Build type-safe read models with the `projection!` macro:
+Read models are postgres-backed and transactional: the runner applies each
+event and advances the subscription checkpoint inside the same database
+transaction, so a crash mid-batch never leaves the projection ahead of (or
+behind) its checkpoint. Implement [`PostgresProjection`] and run it with
+[`PostgresBackend::run_postgres_projection`]:
 
 ```rust
-use event_sauce::projection;
-use std::collections::HashMap;
+use event_sauce_postgres::{PostgresBackend, PostgresProjection};
+use event_sauce_core::{EventEnvelope, Result};
 
-#[derive(Debug, Clone)]
-struct UserView {
-    email: String,
-    name: String,
-    status: UserStatus,
-}
+struct UserListProjection;
 
-projection! {
-    pub struct UserListProjection {
-        state: HashMap<UserId, UserView>,
-
-        on "UserCreated" => UserCreatedEvent |proj, event| {
-            proj.state.insert(event.user_id, UserView {
-                email: event.email.clone(),
-                name: event.name.clone(),
-                status: UserStatus::Active,
-            });
-        },
-
-        on "UserNameChanged" => UserNameChangedEvent |proj, event| {
-            if let Some(user) = proj.state.get_mut(&event.user_id) {
-                user.name = event.new_name.clone();
-            }
-        },
-
-        on "UserDeleted" => UserDeletedEvent |proj, event| {
-            proj.state.remove(&event.user_id);
-        },
+impl UserListProjection {
+    async fn migrate(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS user_list (
+                user_id UUID PRIMARY KEY,
+                email TEXT NOT NULL,
+                name TEXT NOT NULL
+            )",
+        )
+        .execute(pool)
+        .await?;
+        Ok(())
     }
 }
 
-// Use with subscriptions for automatic updates
-let mut projection = UserListProjection::new(HashMap::new());
-let subscription = event_store
-    .subscription_builder("user-projection")
-    .build()?;
+#[async_trait::async_trait]
+impl PostgresProjection for UserListProjection {
+    const NAME: &'static str = "UserListProjection";
 
-let stream = subscription.into_stream().await?;
-tokio::pin!(stream);
+    fn handled_event_types() -> Option<Vec<&'static str>> {
+        Some(vec!["UserCreated", "UserNameChanged", "UserDeleted"])
+    }
 
-while let Some(result) = stream.next().await {
-    let envelope = result?;
-    projection.handle(&envelope).await?;
+    async fn handle(
+        &mut self,
+        envelope: &EventEnvelope,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    ) -> Result<()> {
+        // Inspect envelope.event_type and run the appropriate UPDATE/INSERT
+        // through `tx` — the runner commits after handle() returns Ok.
+        let _ = (envelope, tx);
+        Ok(())
+    }
 }
+
+UserListProjection::migrate(backend.pool()).await?;
+backend.run_postgres_projection(&mut UserListProjection).await?;
 ```
 
 ## Installation

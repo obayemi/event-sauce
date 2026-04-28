@@ -149,6 +149,44 @@ impl PostgresCheckpointStore {
         crate::migrations::qualify(&self.schema, table)
     }
 
+    /// Builds the upsert SQL used by both pool- and transaction-based saves.
+    fn checkpoint_upsert_sql(&self) -> String {
+        let checkpoints_table = self.qualify_table("checkpoints");
+        format!(
+            "INSERT INTO {checkpoints_table} (subscription_name, position, updated_at)
+             VALUES ($1, $2, NOW())
+             ON CONFLICT (subscription_name)
+             DO UPDATE SET position = $2, updated_at = NOW()"
+        )
+    }
+
+    /// Saves a checkpoint inside an existing transaction.
+    ///
+    /// This is the building block used by transactional projection runners that
+    /// need the checkpoint update to commit atomically with the projection's
+    /// data writes. Use [`save_checkpoint`](Self::save_checkpoint) when no outer
+    /// transaction is in play.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the upsert query fails (e.g. connection lost,
+    /// unique constraint violation — neither expected under normal use).
+    pub async fn save_checkpoint_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        subscription_name: &str,
+        position: Position,
+    ) -> Result<()> {
+        let query = self.checkpoint_upsert_sql();
+        sqlx::query(&query)
+            .bind(subscription_name)
+            .bind(position.as_i64())
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| Error::backend("Failed to save checkpoint", e))?;
+        Ok(())
+    }
+
     /// Runs database migrations to set up the checkpoint store schema.
     ///
     /// This method creates the necessary tables (`checkpoints`) for the checkpoint store.
@@ -310,21 +348,13 @@ impl Default for PostgresCheckpointStoreBuilder {
 #[async_trait]
 impl CheckpointStore for PostgresCheckpointStore {
     async fn save_checkpoint(&self, subscription_name: &str, position: Position) -> Result<()> {
-        let checkpoints_table = self.qualify_table("checkpoints");
-        let query = format!(
-            "INSERT INTO {checkpoints_table} (subscription_name, position, updated_at)
-             VALUES ($1, $2, NOW())
-             ON CONFLICT (subscription_name)
-             DO UPDATE SET position = $2, updated_at = NOW()"
-        );
-
+        let query = self.checkpoint_upsert_sql();
         sqlx::query(&query)
             .bind(subscription_name)
             .bind(position.as_i64())
             .execute(&self.pool)
             .await
             .map_err(|e| Error::backend("Failed to save checkpoint", e))?;
-
         Ok(())
     }
 
@@ -710,5 +740,46 @@ mod tests {
 
         // Should fail because table doesn't exist in public schema
         assert!(count_in_public.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_save_checkpoint_tx_commits_with_transaction() {
+        let db = TestDatabase::new().await.unwrap();
+        let store = PostgresCheckpointStore::new(db.pool().clone());
+        store.migrate().await.unwrap();
+
+        let mut tx = db.pool().begin().await.unwrap();
+        store
+            .save_checkpoint_tx(&mut tx, "tx-sub", Position::new(7))
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        let position = store.load_checkpoint("tx-sub").await.unwrap();
+        assert_eq!(position, Some(Position::new(7)));
+    }
+
+    #[tokio::test]
+    async fn test_save_checkpoint_tx_rolls_back_with_transaction() {
+        let db = TestDatabase::new().await.unwrap();
+        let store = PostgresCheckpointStore::new(db.pool().clone());
+        store.migrate().await.unwrap();
+
+        // Establish a baseline so rollback has something to revert to.
+        store
+            .save_checkpoint("tx-sub", Position::new(3))
+            .await
+            .unwrap();
+
+        let mut tx = db.pool().begin().await.unwrap();
+        store
+            .save_checkpoint_tx(&mut tx, "tx-sub", Position::new(99))
+            .await
+            .unwrap();
+        tx.rollback().await.unwrap();
+
+        // Position must remain at the pre-tx value.
+        let position = store.load_checkpoint("tx-sub").await.unwrap();
+        assert_eq!(position, Some(Position::new(3)));
     }
 }

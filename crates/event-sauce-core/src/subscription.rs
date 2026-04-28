@@ -42,16 +42,14 @@
 //! - **Familiar**: Standard async iterator pattern
 //! - **Flexible**: Use with `filter_map`, `take_while`, etc.
 //!
-//! # Projection Integration
+//! # Postgres-Backed Projections
 //!
-//! For projections implementing the [`Projection`](crate::Projection) trait (e.g., via the
-//! `projection!` macro), subscriptions can be auto-configured and run with zero boilerplate:
-//!
-//! ```ignore
-//! // Auto-configured: name, event filter, and checkpoint store from Projection trait
-//! let mut sub = store.projection_subscription::<OrderSummaryProjection>().build()?;
-//! sub.run_projection(&mut projection).await?;
-//! ```
+//! Subscriptions deliver events generically; durable read models live in their
+//! own backend. For postgres see
+//! [`PostgresProjection`](../../event_sauce_postgres/trait.PostgresProjection.html)
+//! and
+//! [`PostgresBackend::run_postgres_projection`](../../event_sauce_postgres/struct.PostgresBackend.html#method.run_postgres_projection),
+//! which advance the checkpoint inside the same transaction as the projection's writes.
 //!
 //! # Alternative: Callback API
 //!
@@ -406,24 +404,6 @@ where
         self
     }
 
-    /// Sets the event filter from a projection's handled event types.
-    ///
-    /// Configures the subscription to only deliver events that the projection
-    /// can handle, based on [`Projection::event_filter()`](crate::Projection::event_filter).
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// let subscription = store
-    ///     .subscription_builder("my-projection")
-    ///     .filter_for_projection::<MyProjection>()
-    ///     .build()?;
-    /// ```
-    #[must_use]
-    pub fn filter_for_projection<P: crate::Projection>(self) -> Self {
-        self.filter(P::event_filter())
-    }
-
     /// Builds the subscription.
     ///
     /// # Errors
@@ -569,103 +549,6 @@ where
                         }
                         ErrorPolicy::Retry => {
                             // For now, just fail - full retry logic would need backoff
-                            return Err(e);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Save final checkpoint
-        if events_processed > 0 {
-            if let Some(ref checkpoint_store) = self.checkpoint_store {
-                checkpoint_store
-                    .save_checkpoint(&self.name, current_position)
-                    .await?;
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Runs a projection, processing all available events through it.
-    ///
-    /// This convenience method combines the subscription's event streaming with
-    /// the projection's event handling. It replaces the common pattern of:
-    ///
-    /// ```ignore
-    /// let stream = subscription.into_stream().await?;
-    /// tokio::pin!(stream);
-    /// while let Some(result) = stream.next().await {
-    ///     projection.handle(&result?).await?;
-    /// }
-    /// ```
-    ///
-    /// With the simpler:
-    ///
-    /// ```ignore
-    /// subscription.run_projection(&mut projection).await?;
-    /// ```
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if event streaming, projection handling, or checkpoint saving fails.
-    pub async fn run_projection<P: crate::Projection>(&mut self, projection: &mut P) -> Result<()> {
-        use futures::StreamExt;
-
-        // Load checkpoint to determine starting position
-        let start_position = if let Some(ref checkpoint_store) = self.checkpoint_store {
-            checkpoint_store
-                .load_checkpoint(&self.name)
-                .await?
-                .unwrap_or(Position::start())
-        } else {
-            Position::start()
-        };
-
-        // Stream all events from the starting position
-        let event_stream = self.store.stream_all(start_position).await?;
-        futures::pin_mut!(event_stream);
-
-        let mut events_processed = 0usize;
-        let mut current_position = start_position;
-
-        while let Some(event_result) = event_stream.next().await {
-            let event = event_result?;
-            current_position = Position::new(current_position.as_i64() + 1);
-
-            // Apply filter
-            if !self.config.filter.matches(&event) {
-                continue;
-            }
-
-            // Process event through projection
-            match projection.handle(&event).await {
-                Ok(()) => {
-                    events_processed += 1;
-
-                    // Save checkpoint according to strategy
-                    if self.should_save_checkpoint(events_processed) {
-                        if let Some(ref checkpoint_store) = self.checkpoint_store {
-                            checkpoint_store
-                                .save_checkpoint(&self.name, current_position)
-                                .await?;
-                        }
-                    }
-                }
-                Err(e) => {
-                    // Handle error according to policy
-                    match self.config.error_policy {
-                        ErrorPolicy::Fail => return Err(e),
-                        ErrorPolicy::Skip => {
-                            tracing::warn!(
-                                subscription = %self.name,
-                                position = %current_position.as_i64(),
-                                error = %e,
-                                "Skipping event due to projection error"
-                            );
-                        }
-                        ErrorPolicy::Retry => {
                             return Err(e);
                         }
                     }
@@ -1489,135 +1372,5 @@ mod tests {
             .unwrap();
 
         assert_eq!(subscription.config.error_policy, ErrorPolicy::Skip);
-    }
-
-    // ===== Projection Integration Tests =====
-
-    struct TestProjection {
-        events: Vec<String>,
-    }
-
-    #[async_trait]
-    impl crate::Projection for TestProjection {
-        type State = Vec<String>;
-        const NAME: &'static str = "TestProjection";
-
-        fn handled_event_types() -> Option<Vec<&'static str>> {
-            Some(vec!["UserCreated", "UserUpdated"])
-        }
-
-        async fn handle(&mut self, envelope: &crate::EventEnvelope) -> crate::Result<()> {
-            self.events.push(envelope.event_type.clone());
-            Ok(())
-        }
-
-        fn state(&self) -> &Vec<String> {
-            &self.events
-        }
-
-        fn state_mut(&mut self) -> &mut Vec<String> {
-            &mut self.events
-        }
-    }
-
-    #[tokio::test]
-    async fn test_filter_for_projection() {
-        let store = Arc::new(MockEventStore::new());
-
-        let subscription = Subscription::builder("test", store)
-            .filter_for_projection::<TestProjection>()
-            .build()
-            .unwrap();
-
-        // Filter should match handled event types
-        let matching = create_test_envelope("UserCreated", "User");
-        let non_matching = create_test_envelope("OrderCreated", "Order");
-
-        assert!(subscription.config.filter.matches(&matching));
-        assert!(!subscription.config.filter.matches(&non_matching));
-    }
-
-    #[tokio::test]
-    async fn test_run_projection_processes_events() {
-        let store = Arc::new(MockEventStore::new());
-        let checkpoint_store = Arc::new(MockCheckpointStore::new());
-
-        store.add_event(create_test_envelope("UserCreated", "User"));
-        store.add_event(create_test_envelope("OrderCreated", "Order"));
-        store.add_event(create_test_envelope("UserUpdated", "User"));
-
-        let mut subscription = Subscription::builder("test", store)
-            .checkpoint_store(checkpoint_store.clone())
-            .filter_for_projection::<TestProjection>()
-            .build()
-            .unwrap();
-
-        let mut projection = TestProjection { events: vec![] };
-        subscription.run_projection(&mut projection).await.unwrap();
-
-        // Only handled + matching events should be processed
-        assert_eq!(projection.events.len(), 2);
-        assert_eq!(projection.events[0], "UserCreated");
-        assert_eq!(projection.events[1], "UserUpdated");
-
-        // Checkpoint should be saved
-        let checkpoint = checkpoint_store.get("test");
-        assert!(checkpoint.is_some());
-    }
-
-    #[tokio::test]
-    async fn test_run_projection_saves_checkpoint() {
-        let store = Arc::new(MockEventStore::new());
-        let checkpoint_store = Arc::new(MockCheckpointStore::new());
-
-        store.add_event(create_test_envelope("UserCreated", "User"));
-        store.add_event(create_test_envelope("UserUpdated", "User"));
-
-        let mut subscription = Subscription::builder("projection-cp", store)
-            .checkpoint_store(checkpoint_store.clone())
-            .filter_for_projection::<TestProjection>()
-            .build()
-            .unwrap();
-
-        let mut projection = TestProjection { events: vec![] };
-        subscription.run_projection(&mut projection).await.unwrap();
-
-        let checkpoint = checkpoint_store.get("projection-cp");
-        assert_eq!(checkpoint.unwrap().as_i64(), 2);
-    }
-
-    #[tokio::test]
-    async fn test_run_projection_resumes_from_checkpoint() {
-        let store = Arc::new(MockEventStore::new());
-        let checkpoint_store = Arc::new(MockCheckpointStore::new());
-
-        for i in 0..5 {
-            store.add_event(create_test_envelope(
-                if i % 2 == 0 {
-                    "UserCreated"
-                } else {
-                    "UserUpdated"
-                },
-                "User",
-            ));
-        }
-
-        // Set checkpoint at position 2
-        checkpoint_store
-            .save_checkpoint("resume-proj", Position::new(2))
-            .await
-            .unwrap();
-
-        let mut subscription = Subscription::builder("resume-proj", store)
-            .checkpoint_store(checkpoint_store)
-            .filter_for_projection::<TestProjection>()
-            .build()
-            .unwrap();
-
-        let mut projection = TestProjection { events: vec![] };
-        subscription.run_projection(&mut projection).await.unwrap();
-
-        // Should process only events from position 2 onwards (3 events)
-        assert_eq!(projection.events.len(), 3);
     }
 }

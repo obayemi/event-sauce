@@ -119,26 +119,37 @@ impl CartRepository {
 
 ### The Projection Pattern
 
+Read models are postgres-backed and transactional. Implement
+`event_sauce_postgres::PostgresProjection` and run it through the backend —
+the runner applies each event and advances the checkpoint inside the same
+transaction.
+
 ```rust
-// Using the projection! macro (recommended):
-projection! {
-    struct CartSummaryProjection {
-        state: CartSummaryState,
+struct CartSummaryProjection;
 
-        on CartEvent::ItemAdded |proj, event| {
-            // update read model
-        },
+#[async_trait::async_trait]
+impl event_sauce_postgres::PostgresProjection for CartSummaryProjection {
+    const NAME: &'static str = "CartSummaryProjection";
 
-        on CartEvent::CheckedOut |proj, event| {
-            // update read model
-        },
+    fn handled_event_types() -> Option<Vec<&'static str>> {
+        Some(vec!["Cart.ItemAdded", "Cart.CheckedOut"])
+    }
+
+    async fn handle(
+        &mut self,
+        envelope: &event_sauce_core::EventEnvelope,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    ) -> event_sauce_core::Result<()> {
+        // UPDATE/INSERT against your read-model table through `tx`.
+        let _ = (envelope, tx);
+        Ok(())
     }
 }
 
-// Auto-configured subscription:
-let mut sub = store.projection_subscription::<CartSummaryProjection>().build()?;
-sub.run_projection(&mut projection).await?;
+backend.run_postgres_projection(&mut CartSummaryProjection).await?;
 ```
+
+See [projections.md](projections.md) for the full guide.
 
 ## Testing Strategies
 

@@ -785,7 +785,7 @@ impl PostgresEventStore {
     }
 
     /// Fall back when the CTE upsert raced a concurrent transaction: a single
-    /// query finds any of our (claim_type, claim_hash) pairs already held by
+    /// query finds any of our (`claim_type`, `claim_hash`) pairs already held by
     /// a different aggregate. Avoids N round-trips on contended writes.
     async fn recover_concurrent_conflict(
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
@@ -802,25 +802,23 @@ impl PostgresEventStore {
              LIMIT 1",
             rows = row_placeholders.join(", "),
         );
-        let mut query = sqlx::query_as::<_, (String, Vec<u8>, uuid::Uuid)>(&holder_query)
-            .bind(aggregate_id);
+        let mut query =
+            sqlx::query_as::<_, (String, Vec<u8>, uuid::Uuid)>(&holder_query).bind(aggregate_id);
         for (claim, hash) in hashed {
             query = query.bind(claim.claim_type).bind(hash);
         }
 
         match query.fetch_optional(&mut **tx).await {
-            Ok(Some((claim_type, claim_hash, holder))) => {
-                Err(Self::build_conflict_error(
-                    hashed,
-                    &claim_type,
-                    &claim_hash,
-                    holder,
-                ))
-            }
+            Ok(Some((claim_type, claim_hash, holder))) => Err(Self::build_conflict_error(
+                hashed,
+                &claim_type,
+                &claim_hash,
+                holder,
+            )),
             Ok(None) => Err(Error::custom(
                 "Claim upsert failed with unique violation but no conflicting holder found",
             )),
-            Err(e) => Err(Error::custom(format!("Failed to look up claim holder: {e}"))),
+            Err(e) => Err(Error::backend("Failed to look up claim holder", e)),
         }
     }
 }

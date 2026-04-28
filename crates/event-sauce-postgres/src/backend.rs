@@ -139,24 +139,70 @@ impl PostgresBackend {
         self.event_store.event_log_query()
     }
 
-    /// Creates a subscription builder pre-configured for a projection type.
+    /// Runs a [`PostgresProjection`](crate::PostgresProjection) atomically.
     ///
-    /// Uses `P::NAME` as the subscription name. The event store, checkpoint store,
-    /// and event filter are all auto-wired from the backend and projection.
+    /// For every matched event the runner opens a transaction, calls
+    /// [`PostgresProjection::handle`](crate::PostgresProjection::handle) with
+    /// it, advances the subscription checkpoint inside the same transaction,
+    /// and commits. If any step fails the transaction is dropped (rolled back)
+    /// and the error propagates — the checkpoint never advances past an event
+    /// whose materialization didn't commit, so a re-run picks up exactly where
+    /// the failure occurred.
     ///
     /// # Examples
     ///
     /// ```ignore
-    /// let mut sub = backend
-    ///     .projection_subscription::<OrderSummaryProjection>()
-    ///     .build()?;
-    /// sub.run_projection(&mut projection).await?;
+    /// let mut projection = OrderTotalsProjection;
+    /// backend.run_postgres_projection(&mut projection).await?;
     /// ```
-    #[must_use]
-    pub fn projection_subscription<P: event_sauce_core::Projection>(
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if checkpoint loading fails, the event stream errors,
+    /// the projection's `handle` returns an error, or the per-event
+    /// transaction cannot be started or committed.
+    pub async fn run_postgres_projection<P: crate::PostgresProjection>(
         &self,
-    ) -> event_sauce_core::SubscriptionBuilder<PostgresEventStore> {
-        self.event_store.projection_subscription::<P>()
+        projection: &mut P,
+    ) -> event_sauce_core::Result<()> {
+        use event_sauce_core::{CheckpointStore, EventStore, Position};
+        use futures::StreamExt;
+
+        let start_position = self
+            .checkpoint_store
+            .load_checkpoint(P::NAME)
+            .await?
+            .unwrap_or_else(Position::start);
+
+        let event_stream = self.event_store.stream_all(start_position).await?;
+        futures::pin_mut!(event_stream);
+
+        let filter = P::event_filter();
+        let mut current_position = start_position;
+
+        while let Some(event_result) = event_stream.next().await {
+            let event = event_result?;
+            current_position = Position::new(current_position.as_i64() + 1);
+
+            if !filter.matches(&event) {
+                continue;
+            }
+
+            let mut tx = self.pool.begin().await.map_err(|e| {
+                event_sauce_core::Error::backend("Failed to start projection transaction", e)
+            })?;
+
+            projection.handle(&event, &mut tx).await?;
+            self.checkpoint_store
+                .save_checkpoint_tx(&mut tx, P::NAME, current_position)
+                .await?;
+
+            tx.commit().await.map_err(|e| {
+                event_sauce_core::Error::backend("Failed to commit projection transaction", e)
+            })?;
+        }
+
+        Ok(())
     }
 }
 
@@ -561,14 +607,45 @@ mod tests {
         assert_eq!(count, 1);
     }
 
-    struct TestBackendProjection {
-        count: u64,
+    /// Counts every matched event in a postgres-backed table.
+    struct CountingProjection {
+        fail_after: Option<u64>,
+        seen: u64,
+    }
+
+    impl CountingProjection {
+        async fn migrate(pool: &PgPool, schema: &str) {
+            sqlx::query(&format!(
+                "CREATE TABLE IF NOT EXISTS {schema}.counting_projection (
+                    id INTEGER PRIMARY KEY,
+                    n BIGINT NOT NULL
+                )"
+            ))
+            .execute(pool)
+            .await
+            .unwrap();
+            sqlx::query(&format!(
+                "INSERT INTO {schema}.counting_projection (id, n) VALUES (1, 0)
+                 ON CONFLICT (id) DO NOTHING"
+            ))
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+
+        async fn read(pool: &PgPool, schema: &str) -> i64 {
+            sqlx::query_scalar(&format!(
+                "SELECT n FROM {schema}.counting_projection WHERE id = 1"
+            ))
+            .fetch_one(pool)
+            .await
+            .unwrap()
+        }
     }
 
     #[async_trait::async_trait]
-    impl event_sauce_core::Projection for TestBackendProjection {
-        type State = u64;
-        const NAME: &'static str = "TestBackendProjection";
+    impl crate::PostgresProjection for CountingProjection {
+        const NAME: &'static str = "CountingProjection";
 
         fn handled_event_types() -> Option<Vec<&'static str>> {
             Some(vec!["TestEvent"])
@@ -576,57 +653,139 @@ mod tests {
 
         async fn handle(
             &mut self,
-            _envelope: &event_sauce_core::EventEnvelope,
+            _envelope: &EventEnvelope,
+            tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         ) -> event_sauce_core::Result<()> {
-            self.count += 1;
+            self.seen += 1;
+            if let Some(limit) = self.fail_after {
+                if self.seen > limit {
+                    return Err(event_sauce_core::Error::custom("forced failure"));
+                }
+            }
+            sqlx::query("UPDATE event_sauce.counting_projection SET n = n + 1 WHERE id = 1")
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| event_sauce_core::Error::custom(format!("update failed: {e}")))?;
             Ok(())
-        }
-
-        fn state(&self) -> &u64 {
-            &self.count
-        }
-
-        fn state_mut(&mut self) -> &mut u64 {
-            &mut self.count
         }
     }
 
-    #[tokio::test]
-    async fn test_projection_subscription_convenience() {
-        let (url, _container) = start_postgres().await;
-
-        let backend = PostgresBackend::setup(&url, "event_sauce")
-            .await
-            .expect("setup should succeed");
-
+    async fn append_test_event(store: &PostgresEventStore, version: AggregateVersion) -> Uuid {
         let aggregate_id = Uuid::new_v4();
         let stream_id = StreamId::new("TestAggregate", aggregate_id);
         let event = create_test_envelope(aggregate_id);
-
-        let store = backend.event_store();
         store
-            .append(
-                stream_id,
-                vec![event],
-                AggregateVersion::initial(),
-                vec![],
-                false,
-            )
+            .append(stream_id, vec![event], version, vec![], false)
             .await
             .expect("append should succeed");
+        aggregate_id
+    }
 
-        // Use projection_subscription convenience method
-        let mut subscription = backend
-            .projection_subscription::<TestBackendProjection>()
-            .build()
-            .expect("build should succeed");
+    #[tokio::test]
+    async fn test_run_postgres_projection_atomic_success() {
+        let (url, _container) = start_postgres().await;
+        let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
+        CountingProjection::migrate(backend.pool(), "event_sauce").await;
 
-        let mut projection = TestBackendProjection { count: 0 };
-        subscription
-            .run_projection(&mut projection)
+        let store = backend.event_store();
+        for _ in 0..3 {
+            append_test_event(&store, AggregateVersion::initial()).await;
+        }
+
+        let mut projection = CountingProjection {
+            fail_after: None,
+            seen: 0,
+        };
+        backend
+            .run_postgres_projection(&mut projection)
             .await
-            .expect("run_projection should succeed");
+            .unwrap();
 
-        assert_eq!(projection.count, 1);
+        assert_eq!(
+            CountingProjection::read(backend.pool(), "event_sauce").await,
+            3
+        );
+
+        let checkpoint = backend
+            .checkpoint_store()
+            .load_checkpoint(<CountingProjection as crate::PostgresProjection>::NAME)
+            .await
+            .unwrap();
+        assert_eq!(checkpoint, Some(Position::new(3)));
+    }
+
+    #[tokio::test]
+    async fn test_run_postgres_projection_rolls_back_on_failure() {
+        let (url, _container) = start_postgres().await;
+        let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
+        CountingProjection::migrate(backend.pool(), "event_sauce").await;
+
+        let store = backend.event_store();
+        for _ in 0..3 {
+            append_test_event(&store, AggregateVersion::initial()).await;
+        }
+
+        let mut projection = CountingProjection {
+            fail_after: Some(2),
+            seen: 0,
+        };
+        let err = backend.run_postgres_projection(&mut projection).await;
+        assert!(err.is_err(), "expected forced failure");
+
+        // First two events committed; the third was rolled back.
+        assert_eq!(
+            CountingProjection::read(backend.pool(), "event_sauce").await,
+            2
+        );
+
+        let checkpoint = backend
+            .checkpoint_store()
+            .load_checkpoint(<CountingProjection as crate::PostgresProjection>::NAME)
+            .await
+            .unwrap();
+        assert_eq!(checkpoint, Some(Position::new(2)));
+    }
+
+    #[tokio::test]
+    async fn test_run_postgres_projection_resumes_from_checkpoint() {
+        let (url, _container) = start_postgres().await;
+        let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
+        CountingProjection::migrate(backend.pool(), "event_sauce").await;
+
+        let store = backend.event_store();
+        for _ in 0..2 {
+            append_test_event(&store, AggregateVersion::initial()).await;
+        }
+
+        let mut projection = CountingProjection {
+            fail_after: None,
+            seen: 0,
+        };
+        backend
+            .run_postgres_projection(&mut projection)
+            .await
+            .unwrap();
+        assert_eq!(
+            CountingProjection::read(backend.pool(), "event_sauce").await,
+            2
+        );
+
+        // Append two more events and re-run; only the new ones should be applied.
+        for _ in 0..2 {
+            append_test_event(&store, AggregateVersion::initial()).await;
+        }
+        let mut projection = CountingProjection {
+            fail_after: None,
+            seen: 0,
+        };
+        backend
+            .run_postgres_projection(&mut projection)
+            .await
+            .unwrap();
+        assert_eq!(projection.seen, 2);
+        assert_eq!(
+            CountingProjection::read(backend.pool(), "event_sauce").await,
+            4
+        );
     }
 }

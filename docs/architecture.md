@@ -131,7 +131,7 @@ Read model building via durable subscriptions:
 - **EventFilter** - Filter events by type or aggregate
 - **CheckpointStore** - Track progress for resumability
 - **CheckpointStrategy** - Configure checkpoint frequency
-- **Projection** trait - Polymorphic projections with auto-configured subscriptions
+- **PostgresProjection** trait (in `event-sauce-postgres`) - Transactional read models whose writes commit atomically with the subscription checkpoint
 
 ### event-sauce (facade)
 
@@ -179,17 +179,19 @@ Result: Current State
 ### 3. Projection Building with Subscriptions
 
 ```
-Create Subscription
-    ↓
 Load Checkpoint (resume from last position)
     ↓
 Stream Events from EventStore
     ↓
 Filter Events
     ↓
-Update Read Model
+For each matched event: BEGIN TX
     ↓
-Save Checkpoint
+        Update Read Model (through tx)
+    ↓
+        Save Checkpoint (through tx)
+    ↓
+    COMMIT
     ↓
 Repeat
 ```
@@ -450,22 +452,25 @@ impl DomainEvent for MyEvent {
 ### Custom Projections
 
 ```rust
+struct MyProjection;
+
 #[async_trait]
-impl Projection for MyProjection {
-    type State = MyState;
+impl event_sauce_postgres::PostgresProjection for MyProjection {
     const NAME: &'static str = "MyProjection";
 
     fn handled_event_types() -> Option<Vec<&'static str>> {
         Some(vec!["MyEvent"])
     }
 
-    async fn handle(&mut self, envelope: &EventEnvelope) -> Result<()> {
-        // Custom projection logic
+    async fn handle(
+        &mut self,
+        envelope: &EventEnvelope,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    ) -> Result<()> {
+        // Apply the event to your read-model table through `tx`.
+        let _ = (envelope, tx);
         Ok(())
     }
-
-    fn state(&self) -> &MyState { &self.state }
-    fn state_mut(&mut self) -> &mut MyState { &mut self.state }
 }
 ```
 

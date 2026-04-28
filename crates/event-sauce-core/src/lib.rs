@@ -47,7 +47,6 @@ mod loaded;
 mod macros;
 /// Policy system for cross-aggregate event reactions with causation tracking.
 pub mod policy;
-mod projection;
 mod repository;
 mod snapshot_config;
 mod snapshot_strategy;
@@ -85,7 +84,6 @@ pub use loaded::Loaded;
 pub use policy::{
     OnError, OnRetryExhausted, Policy, PolicyContext, PolicyRunner, RetryConfig, RetryLimit,
 };
-pub use projection::Projection;
 pub use repository::Repository;
 pub use snapshot_config::{SnapshotConfig, SnapshotConfigBuilder};
 pub use snapshot_strategy::{AlwaysSnapshot, EveryNEvents, NeverSnapshot, SnapshotStrategy};
