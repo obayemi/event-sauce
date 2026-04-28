@@ -275,6 +275,112 @@ impl PostgresBackend {
         result.map(|()| crate::LeaseOutcome::Completed)
     }
 
+    /// Reads new events from the log and fans them out into the policy
+    /// outbox for each registered policy whose filter matches.
+    ///
+    /// The dispatcher uses its own subscription checkpoint
+    /// (`__policy_outbox_dispatcher`) under a lease, so running it from
+    /// multiple instances is safe — only one is active at a time. The
+    /// fan-out itself runs inside a per-event transaction together with the
+    /// checkpoint advance, so an event is enqueued for every matching
+    /// policy or for none — never partial.
+    ///
+    /// Workers (typically separate processes) then drain the outbox via
+    /// [`PostgresPolicyOutbox::claim_batch`](crate::PostgresPolicyOutbox::claim_batch).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the lease cannot be acquired/renewed, the event
+    /// stream errors, or the per-event transaction fails.
+    pub async fn dispatch_policies_to_outbox(
+        &self,
+        outbox: &crate::PostgresPolicyOutbox,
+        worker_id: &str,
+        policies: &[PolicyDispatch],
+        lease_duration: std::time::Duration,
+    ) -> event_sauce_core::Result<crate::LeaseOutcome> {
+        use event_sauce_core::CheckpointStore;
+
+        const DISPATCHER_NAME: &str = "__policy_outbox_dispatcher";
+
+        let Some(start_position) = self
+            .checkpoint_store
+            .try_acquire_lease(DISPATCHER_NAME, worker_id, lease_duration)
+            .await?
+        else {
+            return Ok(crate::LeaseOutcome::Busy);
+        };
+
+        let result = self
+            .dispatch_under_lease(outbox, worker_id, policies, lease_duration, start_position)
+            .await;
+
+        let _ = self
+            .checkpoint_store
+            .release_lease(DISPATCHER_NAME, worker_id)
+            .await;
+
+        result.map(|()| crate::LeaseOutcome::Completed)
+    }
+
+    async fn dispatch_under_lease(
+        &self,
+        outbox: &crate::PostgresPolicyOutbox,
+        worker_id: &str,
+        policies: &[PolicyDispatch],
+        lease_duration: std::time::Duration,
+        start_position: event_sauce_core::Position,
+    ) -> event_sauce_core::Result<()> {
+        use event_sauce_core::{CheckpointStore, EventStore, Position};
+        use futures::StreamExt;
+
+        const DISPATCHER_NAME: &str = "__policy_outbox_dispatcher";
+
+        let event_stream = self.event_store.stream_all(start_position).await?;
+        futures::pin_mut!(event_stream);
+
+        let mut current_position = start_position;
+        let renew_interval = lease_duration / 3;
+        let mut last_renew = std::time::Instant::now();
+
+        while let Some(event_result) = event_stream.next().await {
+            let event = event_result?;
+            current_position = Position::new(current_position.as_i64() + 1);
+
+            if last_renew.elapsed() >= renew_interval {
+                self.checkpoint_store
+                    .renew_lease(DISPATCHER_NAME, worker_id, lease_duration)
+                    .await?;
+                last_renew = std::time::Instant::now();
+            }
+
+            // Find which policies care about this event before opening a
+            // transaction — keep the tx narrow.
+            let matched: Vec<&PolicyDispatch> = policies
+                .iter()
+                .filter(|p| p.filter.matches(&event))
+                .collect();
+
+            let mut tx = self.pool.begin().await.map_err(|e| {
+                event_sauce_core::Error::backend("Failed to start dispatcher transaction", e)
+            })?;
+
+            for dispatch in matched {
+                outbox
+                    .enqueue_tx(&mut tx, &dispatch.name, event.id, current_position.as_i64())
+                    .await?;
+            }
+            self.checkpoint_store
+                .save_checkpoint_tx(&mut tx, DISPATCHER_NAME, current_position)
+                .await?;
+            tx.commit().await.map_err(|e| {
+                event_sauce_core::Error::backend("Failed to commit dispatcher transaction", e)
+            })?;
+        }
+
+        Ok(())
+    }
+
     async fn run_under_lease<P: crate::PostgresProjection>(
         &self,
         projection: &mut P,
@@ -323,6 +429,32 @@ impl PostgresBackend {
         }
 
         Ok(())
+    }
+}
+
+/// One entry in the policy registry passed to
+/// [`PostgresBackend::dispatch_policies_to_outbox`].
+///
+/// Pairs a policy name with the filter the dispatcher uses to decide which
+/// events should produce outbox rows for that policy. Names must match what
+/// drainer workers will pass to
+/// [`PostgresPolicyOutbox::claim_batch`](crate::PostgresPolicyOutbox::claim_batch).
+#[derive(Debug, Clone)]
+pub struct PolicyDispatch {
+    /// Unique policy name; used as the outbox row's `policy_name`.
+    pub name: String,
+    /// Which events trigger an outbox row for this policy.
+    pub filter: event_sauce_core::EventFilter,
+}
+
+impl PolicyDispatch {
+    /// Convenience constructor.
+    #[must_use]
+    pub fn new(name: impl Into<String>, filter: event_sauce_core::EventFilter) -> Self {
+        Self {
+            name: name.into(),
+            filter,
+        }
     }
 }
 
@@ -1045,5 +1177,174 @@ mod tests {
             .await
             .unwrap();
         assert!(acquired.is_some(), "lease should be released after failure");
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_policies_to_outbox_routes_matching_events() {
+        let (url, _container) = start_postgres().await;
+        let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
+        let outbox = crate::PostgresPolicyOutbox::new(backend.pool().clone(), "event_sauce");
+        outbox.migrate().await.unwrap();
+
+        let store = backend.event_store();
+        // Two streams: one matches the policy, one doesn't.
+        for _ in 0..3 {
+            let aggregate_id = Uuid::new_v4();
+            let stream_id = StreamId::new("Order", aggregate_id);
+            let envelope = EventEnvelope::new(
+                Uuid::new_v4(),
+                aggregate_id,
+                "Order".to_string(),
+                "Order.Created".to_string(),
+                EventVersion::new(1),
+                json!({}),
+            );
+            store
+                .append(
+                    stream_id,
+                    vec![envelope],
+                    AggregateVersion::initial(),
+                    vec![],
+                    false,
+                )
+                .await
+                .unwrap();
+        }
+        for _ in 0..2 {
+            let aggregate_id = Uuid::new_v4();
+            let stream_id = StreamId::new("User", aggregate_id);
+            let envelope = EventEnvelope::new(
+                Uuid::new_v4(),
+                aggregate_id,
+                "User".to_string(),
+                "User.Created".to_string(),
+                EventVersion::new(1),
+                json!({}),
+            );
+            store
+                .append(
+                    stream_id,
+                    vec![envelope],
+                    AggregateVersion::initial(),
+                    vec![],
+                    false,
+                )
+                .await
+                .unwrap();
+        }
+
+        let policies = vec![PolicyDispatch::new(
+            "send-order-confirmation",
+            event_sauce_core::EventFilter::by_aggregate_type("Order"),
+        )];
+
+        let outcome = backend
+            .dispatch_policies_to_outbox(
+                &outbox,
+                "dispatcher-1",
+                &policies,
+                std::time::Duration::from_secs(30),
+            )
+            .await
+            .unwrap();
+        assert_eq!(outcome, crate::LeaseOutcome::Completed);
+
+        // Three Order events should be in the outbox; two User events should not.
+        assert_eq!(
+            outbox
+                .pending_count("send-order-confirmation")
+                .await
+                .unwrap(),
+            3
+        );
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_then_drain_via_skip_locked() {
+        let (url, _container) = start_postgres().await;
+        let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
+        let outbox = crate::PostgresPolicyOutbox::new(backend.pool().clone(), "event_sauce");
+        outbox.migrate().await.unwrap();
+
+        // Publish 6 matching events.
+        let store = backend.event_store();
+        for _ in 0..6 {
+            let aggregate_id = Uuid::new_v4();
+            let stream_id = StreamId::new("Order", aggregate_id);
+            let envelope = EventEnvelope::new(
+                Uuid::new_v4(),
+                aggregate_id,
+                "Order".to_string(),
+                "Order.Created".to_string(),
+                EventVersion::new(1),
+                json!({}),
+            );
+            store
+                .append(
+                    stream_id,
+                    vec![envelope],
+                    AggregateVersion::initial(),
+                    vec![],
+                    false,
+                )
+                .await
+                .unwrap();
+        }
+
+        let policies = vec![PolicyDispatch::new(
+            "send-order-confirmation",
+            event_sauce_core::EventFilter::by_aggregate_type("Order"),
+        )];
+        backend
+            .dispatch_policies_to_outbox(
+                &outbox,
+                "dispatcher-1",
+                &policies,
+                std::time::Duration::from_secs(30),
+            )
+            .await
+            .unwrap();
+
+        // Two parallel drain workers.
+        let outbox_a = outbox.clone();
+        let outbox_b = outbox.clone();
+        let (claims_a, claims_b) = tokio::join!(
+            tokio::spawn(async move {
+                outbox_a
+                    .claim_batch(
+                        "send-order-confirmation",
+                        "drainer-a",
+                        100,
+                        std::time::Duration::from_secs(30),
+                    )
+                    .await
+            }),
+            tokio::spawn(async move {
+                outbox_b
+                    .claim_batch(
+                        "send-order-confirmation",
+                        "drainer-b",
+                        100,
+                        std::time::Duration::from_secs(30),
+                    )
+                    .await
+            })
+        );
+
+        let claims_a = claims_a.unwrap().unwrap();
+        let claims_b = claims_b.unwrap().unwrap();
+        assert_eq!(claims_a.len() + claims_b.len(), 6);
+
+        // Mark all as done; pending should hit zero.
+        for c in claims_a.iter().chain(claims_b.iter()) {
+            outbox.mark_done(c.id).await.unwrap();
+        }
+        assert_eq!(
+            outbox
+                .pending_count("send-order-confirmation")
+                .await
+                .unwrap(),
+            0
+        );
     }
 }
