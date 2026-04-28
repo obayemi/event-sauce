@@ -107,7 +107,7 @@ impl PostgresCryptoKeyStore {
             sqlx::query(&create_schema)
                 .execute(&self.pool)
                 .await
-                .map_err(|e| Error::custom(format!("Failed to create schema: {e}")))?;
+                .map_err(|e| Error::backend("Failed to create schema", e))?;
         }
 
         // Create migration tracking table
@@ -122,7 +122,7 @@ impl PostgresCryptoKeyStore {
         sqlx::query(&create_migrations_table)
             .execute(&self.pool)
             .await
-            .map_err(|e| Error::custom(format!("Failed to create migrations table: {e}")))?;
+            .map_err(|e| Error::backend("Failed to create migrations table", e))?;
 
         // Check if migration has already been applied
         let check_query = format!("SELECT COUNT(*) FROM {migrations_table} WHERE version = $1");
@@ -130,7 +130,7 @@ impl PostgresCryptoKeyStore {
             .bind(20_250_301_000_000_i64)
             .fetch_one(&self.pool)
             .await
-            .map_err(|e| Error::custom(format!("Failed to check migration status: {e}")))?;
+            .map_err(|e| Error::backend("Failed to check migration status", e))?;
 
         if count > 0 {
             return Ok(());
@@ -148,7 +148,7 @@ impl PostgresCryptoKeyStore {
         sqlx::query(&create_crypto_keys)
             .execute(&self.pool)
             .await
-            .map_err(|e| Error::custom(format!("Failed to create crypto_keys table: {e}")))?;
+            .map_err(|e| Error::backend("Failed to create crypto_keys table", e))?;
 
         // Record the migration
         let record_query =
@@ -158,7 +158,7 @@ impl PostgresCryptoKeyStore {
             .bind("create_crypto_keys_table")
             .execute(&self.pool)
             .await
-            .map_err(|e| Error::custom(format!("Failed to record migration: {e}")))?;
+            .map_err(|e| Error::backend("Failed to record migration", e))?;
 
         Ok(())
     }
@@ -221,7 +221,7 @@ impl CryptoKeyStore for PostgresCryptoKeyStore {
             .bind(aggregate_id)
             .fetch_optional(&self.pool)
             .await
-            .map_err(|e| Error::custom(format!("Failed to get crypto key: {e}")))?;
+            .map_err(|e| Error::backend("Failed to get crypto key", e))?;
 
         Ok(key_data)
     }
@@ -240,7 +240,7 @@ impl CryptoKeyStore for PostgresCryptoKeyStore {
             .bind(&key)
             .execute(&self.pool)
             .await
-            .map_err(|e| Error::custom(format!("Failed to upsert crypto key: {e}")))?;
+            .map_err(|e| Error::backend("Failed to upsert crypto key", e))?;
 
         Ok(())
     }
@@ -253,7 +253,7 @@ impl CryptoKeyStore for PostgresCryptoKeyStore {
             .bind(aggregate_id)
             .execute(&self.pool)
             .await
-            .map_err(|e| Error::custom(format!("Failed to delete crypto key: {e}")))?;
+            .map_err(|e| Error::backend("Failed to delete crypto key", e))?;
 
         Ok(())
     }
@@ -281,23 +281,23 @@ mod tests {
                 .with_tag("16-alpine")
                 .start()
                 .await
-                .map_err(|e| Error::custom(format!("Failed to start PostgreSQL container: {e}")))?;
+                .map_err(|e| Error::backend("Failed to start PostgreSQL container", e))?;
 
             let host = container
                 .get_host()
                 .await
-                .map_err(|e| Error::custom(format!("Failed to get container host: {e}")))?;
+                .map_err(|e| Error::backend("Failed to get container host", e))?;
             let port = container
                 .get_host_port_ipv4(5432)
                 .await
-                .map_err(|e| Error::custom(format!("Failed to get container port: {e}")))?;
+                .map_err(|e| Error::backend("Failed to get container port", e))?;
 
             let connection_string =
                 format!("postgresql://postgres:postgres@{host}:{port}/postgres");
 
             let pool = PgPool::connect(&connection_string)
                 .await
-                .map_err(|e| Error::custom(format!("Failed to connect: {e}")))?;
+                .map_err(|e| Error::backend("Failed to connect", e))?;
 
             Ok(Self { pool, container })
         }

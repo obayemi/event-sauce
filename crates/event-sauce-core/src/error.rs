@@ -114,6 +114,21 @@ pub enum Error {
         held_by: Option<uuid::Uuid>,
     },
 
+    /// Backend / database error wrapping the original cause.
+    ///
+    /// Preserves the source chain so callers can inspect the underlying
+    /// error (e.g. downcast to `sqlx::Error` to distinguish constraint
+    /// violations from connection failures). Use [`Error::backend`] to
+    /// construct.
+    #[error("Backend error: {message}")]
+    Backend {
+        /// Human-readable context describing what operation failed.
+        message: String,
+        /// The underlying error from the storage backend (e.g. `sqlx::Error`).
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+
     /// Generic error with custom message.
     #[error("{0}")]
     Custom(String),
@@ -265,6 +280,40 @@ impl Error {
     #[must_use]
     pub fn custom(message: impl Into<String>) -> Self {
         Self::Custom(message.into())
+    }
+
+    /// Creates a backend error from a context message and underlying cause.
+    ///
+    /// The `source` is preserved for inspection via [`std::error::Error::source`],
+    /// so callers can downcast to e.g. `sqlx::Error` to handle specific
+    /// failure modes (constraint violations, deadlocks, connection drops).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use event_sauce_core::Error;
+    /// use std::io;
+    ///
+    /// let cause = io::Error::other("connection reset");
+    /// let error = Error::backend("Failed to fetch events", cause);
+    /// assert!(error.is_backend());
+    /// assert!(std::error::Error::source(&error).is_some());
+    /// ```
+    #[must_use]
+    pub fn backend<E>(message: impl Into<String>, source: E) -> Self
+    where
+        E: std::error::Error + Send + Sync + 'static,
+    {
+        Self::Backend {
+            message: message.into(),
+            source: Box::new(source),
+        }
+    }
+
+    /// Returns true if this is a backend error.
+    #[must_use]
+    pub fn is_backend(&self) -> bool {
+        matches!(self, Self::Backend { .. })
     }
 
     /// Returns true if this is a concurrency conflict error.
@@ -707,6 +756,23 @@ mod tests {
         } else {
             panic!("Expected ClaimConflict variant");
         }
+    }
+
+    #[test]
+    fn test_backend_error_preserves_source() {
+        let cause = std::io::Error::other("connection reset");
+        let error = Error::backend("Failed to fetch", cause);
+
+        assert!(error.is_backend());
+        assert!(!error.is_concurrency_conflict());
+
+        let message = error.to_string();
+        assert!(message.contains("Backend error"));
+        assert!(message.contains("Failed to fetch"));
+
+        // Source chain is preserved — callers can downcast.
+        let source = std::error::Error::source(&error).expect("source preserved");
+        assert!(source.to_string().contains("connection reset"));
     }
 
     #[test]

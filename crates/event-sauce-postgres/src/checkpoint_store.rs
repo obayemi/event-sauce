@@ -186,7 +186,7 @@ impl PostgresCheckpointStore {
             sqlx::query(&create_schema)
                 .execute(&self.pool)
                 .await
-                .map_err(|e| Error::custom(format!("Failed to create schema: {e}")))?;
+                .map_err(|e| Error::backend("Failed to create schema", e))?;
         }
 
         // Create migration tracking table in the custom schema
@@ -201,7 +201,7 @@ impl PostgresCheckpointStore {
         sqlx::query(&create_migrations_table)
             .execute(&self.pool)
             .await
-            .map_err(|e| Error::custom(format!("Failed to create migrations table: {e}")))?;
+            .map_err(|e| Error::backend("Failed to create migrations table", e))?;
 
         // Check if migration has already been applied
         let check_query = format!("SELECT COUNT(*) FROM {migrations_table} WHERE version = $1");
@@ -209,7 +209,7 @@ impl PostgresCheckpointStore {
             .bind(20_250_101_000_001_i64)
             .fetch_one(&self.pool)
             .await
-            .map_err(|e| Error::custom(format!("Failed to check migration status: {e}")))?;
+            .map_err(|e| Error::backend("Failed to check migration status", e))?;
 
         if count > 0 {
             // Migration already applied
@@ -230,7 +230,7 @@ impl PostgresCheckpointStore {
         sqlx::query(&create_checkpoints)
             .execute(&self.pool)
             .await
-            .map_err(|e| Error::custom(format!("Failed to create checkpoints table: {e}")))?;
+            .map_err(|e| Error::backend("Failed to create checkpoints table", e))?;
 
         // Create index on updated_at
         let index = format!(
@@ -239,7 +239,7 @@ impl PostgresCheckpointStore {
         sqlx::query(&index)
             .execute(&self.pool)
             .await
-            .map_err(|e| Error::custom(format!("Failed to create index: {e}")))?;
+            .map_err(|e| Error::backend("Failed to create index", e))?;
 
         // Record the migration
         let record_query =
@@ -249,7 +249,7 @@ impl PostgresCheckpointStore {
             .bind("create_checkpoints_table")
             .execute(&self.pool)
             .await
-            .map_err(|e| Error::custom(format!("Failed to record migration: {e}")))?;
+            .map_err(|e| Error::backend("Failed to record migration", e))?;
 
         Ok(())
     }
@@ -360,7 +360,7 @@ impl CheckpointStore for PostgresCheckpointStore {
             .bind(position.as_i64())
             .execute(&self.pool)
             .await
-            .map_err(|e| Error::custom(format!("Failed to save checkpoint: {e}")))?;
+            .map_err(|e| Error::backend("Failed to save checkpoint", e))?;
 
         Ok(())
     }
@@ -374,7 +374,7 @@ impl CheckpointStore for PostgresCheckpointStore {
             .bind(subscription_name)
             .fetch_optional(&self.pool)
             .await
-            .map_err(|e| Error::custom(format!("Failed to load checkpoint: {e}")))?;
+            .map_err(|e| Error::backend("Failed to load checkpoint", e))?;
 
         Ok(position.map(Position::new))
     }
@@ -387,7 +387,7 @@ impl CheckpointStore for PostgresCheckpointStore {
             .bind(subscription_name)
             .execute(&self.pool)
             .await
-            .map_err(|e| Error::custom(format!("Failed to delete checkpoint: {e}")))?;
+            .map_err(|e| Error::backend("Failed to delete checkpoint", e))?;
 
         Ok(())
     }
@@ -416,17 +416,17 @@ mod tests {
                 .with_tag("16-alpine")
                 .start()
                 .await
-                .map_err(|e| Error::custom(format!("Failed to start PostgreSQL container: {e}")))?;
+                .map_err(|e| Error::backend("Failed to start PostgreSQL container", e))?;
 
             // Get connection string
             let host = container
                 .get_host()
                 .await
-                .map_err(|e| Error::custom(format!("Failed to get container host: {e}")))?;
+                .map_err(|e| Error::backend("Failed to get container host", e))?;
             let port = container
                 .get_host_port_ipv4(5432)
                 .await
-                .map_err(|e| Error::custom(format!("Failed to get container port: {e}")))?;
+                .map_err(|e| Error::backend("Failed to get container port", e))?;
 
             let connection_string =
                 format!("postgresql://postgres:postgres@{host}:{port}/postgres");
@@ -434,7 +434,7 @@ mod tests {
             // Connect to database
             let pool = PgPool::connect(&connection_string)
                 .await
-                .map_err(|e| Error::custom(format!("Failed to connect to test database: {e}")))?;
+                .map_err(|e| Error::backend("Failed to connect to test database", e))?;
 
             Ok(Self { pool, container })
         }

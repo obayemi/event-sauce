@@ -134,13 +134,16 @@ impl EventLogQuery for PostgresEventLogQuery {
         data_query = data_query.bind(limit).bind(offset);
 
         #[allow(clippy::cast_sign_loss)]
-        let total_count = count_query.fetch_one(&self.pool).await.map_err(|e| {
-            event_sauce_core::Error::custom(format!("Event log count query failed: {e}"))
-        })? as u64;
+        let total_count = count_query
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| event_sauce_core::Error::backend("Event log count query failed", e))?
+            as u64;
 
-        let rows = data_query.fetch_all(&self.pool).await.map_err(|e| {
-            event_sauce_core::Error::custom(format!("Event log data query failed: {e}"))
-        })?;
+        let rows = data_query
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| event_sauce_core::Error::backend("Event log data query failed", e))?;
 
         let entries = rows.into_iter().map(Into::into).collect();
 
@@ -160,9 +163,7 @@ impl EventLogQuery for PostgresEventLogQuery {
         .fetch_all(&self.pool)
         .await
         .map_err(|e| {
-            event_sauce_core::Error::custom(format!(
-                "Event log distinct_aggregate_types query failed: {e}"
-            ))
+            event_sauce_core::Error::backend("Event log distinct_aggregate_types query failed", e)
         })?;
 
         Ok(rows.into_iter().map(|(t,)| t).collect())
@@ -176,9 +177,7 @@ impl EventLogQuery for PostgresEventLogQuery {
         .fetch_all(&self.pool)
         .await
         .map_err(|e| {
-            event_sauce_core::Error::custom(format!(
-                "Event log distinct_event_types query failed: {e}"
-            ))
+            event_sauce_core::Error::backend("Event log distinct_event_types query failed", e)
         })?;
 
         Ok(rows.into_iter().map(|(t,)| t).collect())

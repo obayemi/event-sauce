@@ -252,7 +252,7 @@ impl PostgresBackendBuilder {
 
         let pool = PgPool::connect(&database_url)
             .await
-            .map_err(|e| event_sauce_core::Error::custom(format!("Failed to connect: {e}")))?;
+            .map_err(|e| event_sauce_core::Error::backend("Failed to connect", e))?;
 
         let checkpoint_store = PostgresCheckpointStore::builder()
             .pool(pool.clone())

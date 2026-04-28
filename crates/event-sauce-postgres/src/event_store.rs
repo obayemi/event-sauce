@@ -236,7 +236,7 @@ impl PostgresEventStore {
             sqlx::query(&create_schema)
                 .execute(&self.pool)
                 .await
-                .map_err(|e| Error::custom(format!("Failed to create schema: {e}")))?;
+                .map_err(|e| Error::backend("Failed to create schema", e))?;
         }
 
         // Create migration tracking table in the custom schema
@@ -251,7 +251,7 @@ impl PostgresEventStore {
         sqlx::query(&create_migrations_table)
             .execute(&self.pool)
             .await
-            .map_err(|e| Error::custom(format!("Failed to create migrations table: {e}")))?;
+            .map_err(|e| Error::backend("Failed to create migrations table", e))?;
 
         // Check if migration has already been applied
         let check_query = format!("SELECT COUNT(*) FROM {migrations_table} WHERE version = $1");
@@ -259,7 +259,7 @@ impl PostgresEventStore {
             .bind(20_250_101_000_000_i64)
             .fetch_one(&self.pool)
             .await
-            .map_err(|e| Error::custom(format!("Failed to check migration status: {e}")))?;
+            .map_err(|e| Error::backend("Failed to check migration status", e))?;
 
         if count > 0 {
             // Migration 1 already applied, check for newer migrations
@@ -295,7 +295,7 @@ impl PostgresEventStore {
         sqlx::query(&create_events)
             .execute(&self.pool)
             .await
-            .map_err(|e| Error::custom(format!("Failed to create events table: {e}")))?;
+            .map_err(|e| Error::backend("Failed to create events table", e))?;
 
         // Create indexes for events table
         let indexes = vec![
@@ -311,7 +311,7 @@ impl PostgresEventStore {
             sqlx::query(&index_sql)
                 .execute(&self.pool)
                 .await
-                .map_err(|e| Error::custom(format!("Failed to create index: {e}")))?;
+                .map_err(|e| Error::backend("Failed to create index", e))?;
         }
 
         // Create snapshots table
@@ -329,7 +329,7 @@ impl PostgresEventStore {
         sqlx::query(&create_snapshots)
             .execute(&self.pool)
             .await
-            .map_err(|e| Error::custom(format!("Failed to create snapshots table: {e}")))?;
+            .map_err(|e| Error::backend("Failed to create snapshots table", e))?;
 
         // Create index for snapshots table
         let snapshots_index = format!(
@@ -338,7 +338,7 @@ impl PostgresEventStore {
         sqlx::query(&snapshots_index)
             .execute(&self.pool)
             .await
-            .map_err(|e| Error::custom(format!("Failed to create snapshots index: {e}")))?;
+            .map_err(|e| Error::backend("Failed to create snapshots index", e))?;
 
         // Record the migration
         let record_query =
@@ -348,7 +348,7 @@ impl PostgresEventStore {
             .bind("create_events_table")
             .execute(&self.pool)
             .await
-            .map_err(|e| Error::custom(format!("Failed to record migration: {e}")))?;
+            .map_err(|e| Error::backend("Failed to record migration", e))?;
 
         // Migration 2: Create crypto_keys table
         self.migrate_crypto_keys(&migrations_table).await?;
@@ -366,7 +366,7 @@ impl PostgresEventStore {
             .bind(20_250_303_000_000_i64)
             .fetch_one(&self.pool)
             .await
-            .map_err(|e| Error::custom(format!("Failed to check migration status: {e}")))?;
+            .map_err(|e| Error::backend("Failed to check migration status", e))?;
 
         if count > 0 {
             return Ok(());
@@ -383,7 +383,7 @@ impl PostgresEventStore {
         sqlx::query(&create_crypto_keys)
             .execute(&self.pool)
             .await
-            .map_err(|e| Error::custom(format!("Failed to create crypto_keys table: {e}")))?;
+            .map_err(|e| Error::backend("Failed to create crypto_keys table", e))?;
 
         let record_query =
             format!("INSERT INTO {migrations_table} (version, description) VALUES ($1, $2)");
@@ -392,7 +392,7 @@ impl PostgresEventStore {
             .bind("create_crypto_keys_table")
             .execute(&self.pool)
             .await
-            .map_err(|e| Error::custom(format!("Failed to record migration: {e}")))?;
+            .map_err(|e| Error::backend("Failed to record migration", e))?;
 
         Ok(())
     }
@@ -404,7 +404,7 @@ impl PostgresEventStore {
             .bind(20_250_315_000_000_i64)
             .fetch_one(&self.pool)
             .await
-            .map_err(|e| Error::custom(format!("Failed to check migration status: {e}")))?;
+            .map_err(|e| Error::backend("Failed to check migration status", e))?;
 
         if count > 0 {
             return Ok(());
@@ -424,7 +424,7 @@ impl PostgresEventStore {
         sqlx::query(&create_claims)
             .execute(&self.pool)
             .await
-            .map_err(|e| Error::custom(format!("Failed to create aggregate_claims table: {e}")))?;
+            .map_err(|e| Error::backend("Failed to create aggregate_claims table", e))?;
 
         let idx_query = format!(
             "CREATE INDEX IF NOT EXISTS idx_claims_aggregate ON {claims_table} (aggregate_id)"
@@ -432,7 +432,7 @@ impl PostgresEventStore {
         sqlx::query(&idx_query)
             .execute(&self.pool)
             .await
-            .map_err(|e| Error::custom(format!("Failed to create claims index: {e}")))?;
+            .map_err(|e| Error::backend("Failed to create claims index", e))?;
 
         let record_query =
             format!("INSERT INTO {migrations_table} (version, description) VALUES ($1, $2)");
@@ -441,7 +441,7 @@ impl PostgresEventStore {
             .bind("create_aggregate_claims_table")
             .execute(&self.pool)
             .await
-            .map_err(|e| Error::custom(format!("Failed to record migration: {e}")))?;
+            .map_err(|e| Error::backend("Failed to record migration", e))?;
 
         Ok(())
     }
@@ -693,7 +693,7 @@ impl PostgresEventStore {
                 Vec::with_capacity(claims.len());
             for claim in &claims {
                 let key_json = serde_json::to_string(&claim.claim_key)
-                    .map_err(|e| Error::custom(format!("Failed to serialize claim key: {e}")))?;
+                    .map_err(|e| Error::backend("Failed to serialize claim key", e))?;
                 let claim_hash = Sha256::digest(key_json.as_bytes()).to_vec();
                 hashed.push((claim, claim_hash));
             }
@@ -757,7 +757,7 @@ impl PostgresEventStore {
                     .await;
                 }
                 Err(e) => {
-                    return Err(Error::custom(format!("Failed to upsert claims: {e}")));
+                    return Err(Error::backend("Failed to upsert claims", e));
                 }
             }
 
@@ -779,7 +779,7 @@ impl PostgresEventStore {
                 query
                     .execute(&mut **tx)
                     .await
-                    .map_err(|e| Error::custom(format!("Failed to cleanup old claims: {e}")))?;
+                    .map_err(|e| Error::backend("Failed to cleanup old claims", e))?;
             }
         }
 
@@ -789,7 +789,7 @@ impl PostgresEventStore {
                 .bind(stream_id.aggregate_id())
                 .execute(&mut **tx)
                 .await
-                .map_err(|e| Error::custom(format!("Failed to clear claims: {e}")))?;
+                .map_err(|e| Error::backend("Failed to clear claims", e))?;
         }
 
         Ok(())
@@ -867,7 +867,7 @@ impl EventStore for PostgresEventStore {
             .pool
             .begin()
             .await
-            .map_err(|e| Error::custom(format!("Failed to start transaction: {e}")))?;
+            .map_err(|e| Error::backend("Failed to start transaction", e))?;
 
         if !events.is_empty() {
             // Check current version
@@ -880,7 +880,7 @@ impl EventStore for PostgresEventStore {
                 .bind(stream_id.aggregate_type().as_str())
                 .fetch_one(&mut *tx)
                 .await
-                .map_err(|e| Error::custom(format!("Failed to check version: {e}")))?;
+                .map_err(|e| Error::backend("Failed to check version", e))?;
 
             let current_version = AggregateVersion::new(current_version.unwrap_or(-1) + 1);
 
@@ -918,7 +918,7 @@ impl EventStore for PostgresEventStore {
                     .bind(event.metadata.as_ref().and_then(|m| m.additional.clone()))
                     .execute(&mut *tx)
                     .await
-                    .map_err(|e| Error::custom(format!("Failed to insert event: {e}")))?;
+                    .map_err(|e| Error::backend("Failed to insert event", e))?;
             }
         }
 
@@ -934,7 +934,7 @@ impl EventStore for PostgresEventStore {
 
         tx.commit()
             .await
-            .map_err(|e| Error::custom(format!("Failed to commit transaction: {e}")))?;
+            .map_err(|e| Error::backend("Failed to commit transaction", e))?;
 
         Ok(())
     }
@@ -960,7 +960,7 @@ impl EventStore for PostgresEventStore {
             .bind(from_version_i64)
             .fetch_all(&self.pool)
             .await
-            .map_err(|e| Error::custom(format!("Failed to load stream: {e}")))?
+            .map_err(|e| Error::backend("Failed to load stream", e))?
             .into_iter()
             .map(Into::into)
             .collect();
@@ -985,7 +985,7 @@ impl EventStore for PostgresEventStore {
             .bind(from_position.as_i64())
             .fetch_all(&self.pool)
             .await
-            .map_err(|e| Error::custom(format!("Failed to stream all: {e}")))?
+            .map_err(|e| Error::backend("Failed to stream all", e))?
             .into_iter()
             .map(Into::into)
             .collect();
@@ -1004,7 +1004,7 @@ impl EventStore for PostgresEventStore {
             .bind(stream_id.aggregate_type().as_str())
             .fetch_one(&self.pool)
             .await
-            .map_err(|e| Error::custom(format!("Failed to get version: {e}")))?;
+            .map_err(|e| Error::backend("Failed to get version", e))?;
 
         let next_version = version.map_or(0, |v| v + 1);
         Ok(AggregateVersion::new(next_version))
@@ -1028,7 +1028,7 @@ impl EventStore for PostgresEventStore {
             .bind(snapshot.is_deleted)
             .execute(&self.pool)
             .await
-            .map_err(|e| Error::custom(format!("Failed to save snapshot: {e}")))?;
+            .map_err(|e| Error::backend("Failed to save snapshot", e))?;
 
         Ok(())
     }
@@ -1046,7 +1046,7 @@ impl EventStore for PostgresEventStore {
             .bind(stream_id.aggregate_type().as_str())
             .fetch_optional(&self.pool)
             .await
-            .map_err(|e| Error::custom(format!("Failed to load snapshot: {e}")))?;
+            .map_err(|e| Error::backend("Failed to load snapshot", e))?;
 
         Ok(row.map(Into::into))
     }
@@ -1115,7 +1115,7 @@ impl PostgresEventStore {
             .bind(stream_id.aggregate_type().as_str())
             .fetch_one(&self.pool)
             .await
-            .map_err(|e| event_sauce_core::Error::custom(format!("Failed to count events: {e}")))?;
+            .map_err(|e| event_sauce_core::Error::backend("Failed to count events", e))?;
 
         #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
         Ok(count as usize)
@@ -1219,17 +1219,17 @@ mod tests {
                 .with_tag("16-alpine")
                 .start()
                 .await
-                .map_err(|e| Error::custom(format!("Failed to start PostgreSQL container: {e}")))?;
+                .map_err(|e| Error::backend("Failed to start PostgreSQL container", e))?;
 
             // Get connection string
             let host = container
                 .get_host()
                 .await
-                .map_err(|e| Error::custom(format!("Failed to get container host: {e}")))?;
+                .map_err(|e| Error::backend("Failed to get container host", e))?;
             let port = container
                 .get_host_port_ipv4(5432)
                 .await
-                .map_err(|e| Error::custom(format!("Failed to get container port: {e}")))?;
+                .map_err(|e| Error::backend("Failed to get container port", e))?;
 
             let connection_string =
                 format!("postgresql://postgres:postgres@{host}:{port}/postgres");
@@ -1237,13 +1237,13 @@ mod tests {
             // Connect to database
             let pool = PgPool::connect(&connection_string)
                 .await
-                .map_err(|e| Error::custom(format!("Failed to connect to test database: {e}")))?;
+                .map_err(|e| Error::backend("Failed to connect to test database", e))?;
 
             // Run migrations
             sqlx::migrate!("./migrations")
                 .run(&pool)
                 .await
-                .map_err(|e| Error::custom(format!("Failed to run migrations: {e}")))?;
+                .map_err(|e| Error::backend("Failed to run migrations", e))?;
 
             Ok(Self { pool, container })
         }
