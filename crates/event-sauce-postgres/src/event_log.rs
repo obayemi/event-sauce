@@ -92,8 +92,9 @@ impl EventLogQuery for PostgresEventLogQuery {
              event_version, event_data, created_by, created_at, \
              correlation_id, causation_id, metadata \
              FROM {schema}.events {where_clause} \
-             ORDER BY id DESC LIMIT ${bind_idx} OFFSET ${next}",
+             ORDER BY {order} LIMIT ${bind_idx} OFFSET ${next}",
             schema = self.schema,
+            order = params.order_by.order_sql(),
             next = bind_idx + 1,
         );
 

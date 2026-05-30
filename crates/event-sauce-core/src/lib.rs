@@ -78,7 +78,7 @@ pub use entity_id::EntityId;
 pub use error::{Error, Result};
 pub use event_applicator::EventApplicator;
 pub use event_envelope::{EventEnvelope, EventMetadata};
-pub use event_log::{EventLogEntry, EventLogPage, EventLogParams, EventLogQuery};
+pub use event_log::{EventLogEntry, EventLogOrder, EventLogPage, EventLogParams, EventLogQuery};
 pub use event_store::{EventStore, Position, Snapshot, StreamId};
 pub use init_event::InitEvent;
 pub use loaded::Loaded;

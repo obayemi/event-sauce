@@ -43,10 +43,47 @@ pub struct EventLogParams {
     pub from_date: Option<DateTime<Utc>>,
     /// Filter events created at or before this timestamp.
     pub to_date: Option<DateTime<Utc>>,
+    /// Result ordering. Defaults to newest-first.
+    pub order_by: EventLogOrder,
     /// Zero-indexed page number.
     pub page: u64,
     /// Number of entries per page.
     pub per_page: u64,
+}
+
+/// Ordering options for [`EventLogParams`]. All variants ultimately tiebreak
+/// by event id (insertion order) so pagination is stable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EventLogOrder {
+    /// `id DESC` — newest first. The historical default.
+    #[default]
+    CreatedAtDesc,
+    /// `id ASC` — oldest first.
+    CreatedAtAsc,
+    /// `aggregate_type ASC, id DESC`.
+    AggregateTypeAsc,
+    /// `aggregate_type DESC, id DESC`.
+    AggregateTypeDesc,
+    /// `created_by ASC NULLS LAST, id DESC`.
+    CreatedByAsc,
+    /// `created_by DESC NULLS LAST, id DESC`.
+    CreatedByDesc,
+}
+
+impl EventLogOrder {
+    /// SQL `ORDER BY` body (everything after the keywords). Safe to interpolate
+    /// — values come from this enum, never user input.
+    #[must_use]
+    pub fn order_sql(self) -> &'static str {
+        match self {
+            Self::CreatedAtDesc => "id DESC",
+            Self::CreatedAtAsc => "id ASC",
+            Self::AggregateTypeAsc => "aggregate_type ASC, id DESC",
+            Self::AggregateTypeDesc => "aggregate_type DESC, id DESC",
+            Self::CreatedByAsc => "created_by ASC NULLS LAST, id DESC",
+            Self::CreatedByDesc => "created_by DESC NULLS LAST, id DESC",
+        }
+    }
 }
 
 impl Default for EventLogParams {
@@ -58,6 +95,7 @@ impl Default for EventLogParams {
             created_by: None,
             from_date: None,
             to_date: None,
+            order_by: EventLogOrder::default(),
             page: 0,
             per_page: 50,
         }
@@ -212,8 +250,37 @@ mod tests {
         assert!(params.created_by.is_none());
         assert!(params.from_date.is_none());
         assert!(params.to_date.is_none());
+        assert_eq!(params.order_by, EventLogOrder::CreatedAtDesc);
         assert_eq!(params.page, 0);
         assert_eq!(params.per_page, 50);
+    }
+
+    #[test]
+    fn test_event_log_order_default_is_newest_first() {
+        assert_eq!(EventLogOrder::default(), EventLogOrder::CreatedAtDesc);
+    }
+
+    #[test]
+    fn test_event_log_order_sql() {
+        // Every variant tiebreaks by `id` so pagination stays stable.
+        assert_eq!(EventLogOrder::CreatedAtDesc.order_sql(), "id DESC");
+        assert_eq!(EventLogOrder::CreatedAtAsc.order_sql(), "id ASC");
+        assert_eq!(
+            EventLogOrder::AggregateTypeAsc.order_sql(),
+            "aggregate_type ASC, id DESC"
+        );
+        assert_eq!(
+            EventLogOrder::AggregateTypeDesc.order_sql(),
+            "aggregate_type DESC, id DESC"
+        );
+        assert_eq!(
+            EventLogOrder::CreatedByAsc.order_sql(),
+            "created_by ASC NULLS LAST, id DESC"
+        );
+        assert_eq!(
+            EventLogOrder::CreatedByDesc.order_sql(),
+            "created_by DESC NULLS LAST, id DESC"
+        );
     }
 
     #[test]

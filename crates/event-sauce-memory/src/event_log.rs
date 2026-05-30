@@ -5,7 +5,7 @@
 
 use async_trait::async_trait;
 use event_sauce_core::{
-    EventLogEntry, EventLogPage, EventLogParams, EventLogQuery, Position, Result,
+    EventLogEntry, EventLogOrder, EventLogPage, EventLogParams, EventLogQuery, Position, Result,
 };
 
 use crate::InMemoryEventStore;
@@ -88,9 +88,40 @@ impl EventLogQuery for InMemoryEventLogQuery {
         #[allow(clippy::cast_possible_truncation)]
         let total_count = filtered.len() as u64;
 
-        // Sort by position descending (newest first), then paginate
+        // Order per params.order_by. The in-memory backend uses `idx` (insertion
+        // order) as a proxy for `id`. Secondary key is always the same `idx` so
+        // pagination stays stable.
         let mut sorted = filtered;
-        sorted.reverse();
+        match params.order_by {
+            EventLogOrder::CreatedAtDesc => sorted.sort_by(|(a, _), (b, _)| b.cmp(a)),
+            EventLogOrder::CreatedAtAsc => sorted.sort_by(|(a, _), (b, _)| a.cmp(b)),
+            EventLogOrder::AggregateTypeAsc => {
+                sorted.sort_by(|(ia, ea), (ib, eb)| {
+                    ea.aggregate_type
+                        .as_str()
+                        .cmp(eb.aggregate_type.as_str())
+                        .then(ib.cmp(ia))
+                });
+            }
+            EventLogOrder::AggregateTypeDesc => {
+                sorted.sort_by(|(ia, ea), (ib, eb)| {
+                    eb.aggregate_type
+                        .as_str()
+                        .cmp(ea.aggregate_type.as_str())
+                        .then(ib.cmp(ia))
+                });
+            }
+            EventLogOrder::CreatedByAsc => {
+                sorted.sort_by(|(ia, ea), (ib, eb)| {
+                    ea.created_by.cmp(&eb.created_by).then(ib.cmp(ia))
+                });
+            }
+            EventLogOrder::CreatedByDesc => {
+                sorted.sort_by(|(ia, ea), (ib, eb)| {
+                    eb.created_by.cmp(&ea.created_by).then(ib.cmp(ia))
+                });
+            }
+        }
 
         #[allow(clippy::cast_possible_truncation)]
         let skip = (params.page * params.per_page) as usize;
@@ -222,6 +253,101 @@ mod tests {
         assert_eq!(page.entries[0].envelope.event_type, "Order.Placed");
         assert_eq!(page.entries[1].envelope.event_type, "User.Updated");
         assert_eq!(page.entries[2].envelope.event_type, "User.Created");
+    }
+
+    #[tokio::test]
+    async fn test_order_created_at_asc_is_oldest_first() {
+        let store = setup_store_with_events().await;
+        let query = InMemoryEventLogQuery::new(store);
+
+        let page = query
+            .query_events(EventLogParams {
+                order_by: EventLogOrder::CreatedAtAsc,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(page.entries[0].envelope.event_type, "User.Created");
+        assert_eq!(page.entries[1].envelope.event_type, "User.Updated");
+        assert_eq!(page.entries[2].envelope.event_type, "Order.Placed");
+    }
+
+    #[tokio::test]
+    async fn test_order_by_aggregate_type() {
+        let store = setup_store_with_events().await;
+        let query = InMemoryEventLogQuery::new(store);
+
+        let asc = query
+            .query_events(EventLogParams {
+                order_by: EventLogOrder::AggregateTypeAsc,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        // "Order" sorts before "User"; newest-first within each group.
+        assert_eq!(asc.entries[0].envelope.aggregate_type, "Order");
+        assert_eq!(asc.entries[1].envelope.aggregate_type, "User");
+        assert_eq!(asc.entries[1].envelope.event_type, "User.Updated");
+        assert_eq!(asc.entries[2].envelope.event_type, "User.Created");
+
+        let desc = query
+            .query_events(EventLogParams {
+                order_by: EventLogOrder::AggregateTypeDesc,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(desc.entries[0].envelope.aggregate_type, "User");
+        assert_eq!(desc.entries[2].envelope.aggregate_type, "Order");
+    }
+
+    #[tokio::test]
+    async fn test_order_by_created_by() {
+        let store = InMemoryEventStore::new();
+        let alice = Uuid::new_v4();
+        let bob = Uuid::new_v4();
+        let agg = Uuid::new_v4();
+        let (lo, hi) = if alice < bob {
+            (alice, bob)
+        } else {
+            (bob, alice)
+        };
+
+        store
+            .append(
+                StreamId::new("Doc", agg),
+                vec![
+                    create_envelope("Doc", "Doc.A", agg).with_created_by(hi),
+                    create_envelope("Doc", "Doc.B", agg).with_created_by(lo),
+                ],
+                AggregateVersion::initial(),
+                vec![],
+                false,
+            )
+            .await
+            .unwrap();
+        let query = InMemoryEventLogQuery::new(store);
+
+        let asc = query
+            .query_events(EventLogParams {
+                order_by: EventLogOrder::CreatedByAsc,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(asc.entries[0].envelope.created_by, Some(lo));
+        assert_eq!(asc.entries[1].envelope.created_by, Some(hi));
+
+        let desc = query
+            .query_events(EventLogParams {
+                order_by: EventLogOrder::CreatedByDesc,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(desc.entries[0].envelope.created_by, Some(hi));
+        assert_eq!(desc.entries[1].envelope.created_by, Some(lo));
     }
 
     #[tokio::test]

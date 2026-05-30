@@ -199,7 +199,37 @@ println!("Page {} of {}", page.page + 1, page.total_pages());
 println!("Showing {} of {} total events", page.entries.len(), page.total_count);
 ```
 
-Results are ordered by position descending (newest first).
+### Ordering
+
+By default results are ordered newest-first. Set `order_by` to change this. Every
+ordering tiebreaks by event id (insertion order) so pagination stays stable:
+
+```rust
+use event_sauce_core::{EventLogParams, EventLogOrder};
+
+// Oldest events first
+let params = EventLogParams {
+    order_by: EventLogOrder::CreatedAtAsc,
+    ..Default::default()
+};
+
+// Group by aggregate type, then newest-first within each
+let params = EventLogParams {
+    order_by: EventLogOrder::AggregateTypeAsc,
+    ..Default::default()
+};
+```
+
+Available orderings:
+
+| Variant | Ordering |
+|---------|----------|
+| `CreatedAtDesc` | Newest first (default) |
+| `CreatedAtAsc` | Oldest first |
+| `AggregateTypeAsc` | Aggregate type ascending, then newest first |
+| `AggregateTypeDesc` | Aggregate type descending, then newest first |
+| `CreatedByAsc` | Actor ascending (nulls last), then newest first |
+| `CreatedByDesc` | Actor descending (nulls last), then newest first |
 
 ### Discovering Types
 
