@@ -61,6 +61,52 @@ pub trait SnapshotStrategy: Send + Sync {
     /// assert!(strategy.should_snapshot(AggregateVersion::new(100)));
     /// ```
     fn should_snapshot(&self, current_version: AggregateVersion) -> bool;
+
+    /// Determines whether a snapshot should be created for a commit that
+    /// advanced the aggregate from `previous_version` to `current_version`.
+    ///
+    /// A single commit can append several events at once, advancing the
+    /// version *past* a snapshot boundary without landing exactly on it (for
+    /// example version 1 -> 6 with `EveryNEvents(5)`). Strategies that fire on
+    /// boundaries should override this method to detect such *crossings*, so a
+    /// multi-event commit still triggers a snapshot.
+    ///
+    /// The default implementation delegates to [`should_snapshot`] using only
+    /// the post-commit `current_version`, preserving exact-landing semantics for
+    /// strategies (like [`AlwaysSnapshot`] / [`NeverSnapshot`]) that do not care
+    /// about boundaries.
+    ///
+    /// [`should_snapshot`]: SnapshotStrategy::should_snapshot
+    ///
+    /// # Arguments
+    ///
+    /// * `previous_version` - The aggregate version before the committed events
+    /// * `current_version` - The aggregate version after the committed events
+    ///
+    /// # Returns
+    ///
+    /// `true` if a snapshot should be created, `false` otherwise
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use event_sauce_core::{SnapshotStrategy, EveryNEvents, AggregateVersion};
+    ///
+    /// let strategy = EveryNEvents(5);
+    /// // A single commit from version 1 to 6 crosses the boundary at 5.
+    /// assert!(strategy.should_snapshot_range(
+    ///     AggregateVersion::new(1),
+    ///     AggregateVersion::new(6),
+    /// ));
+    /// ```
+    fn should_snapshot_range(
+        &self,
+        previous_version: AggregateVersion,
+        current_version: AggregateVersion,
+    ) -> bool {
+        let _ = previous_version;
+        self.should_snapshot(current_version)
+    }
 }
 
 /// Snapshot strategy that creates a snapshot on every commit.
@@ -127,9 +173,15 @@ impl SnapshotStrategy for NeverSnapshot {
 
 /// Snapshot strategy that creates snapshots every N events.
 ///
-/// This strategy creates a snapshot when the aggregate version is exactly
-/// divisible by the specified interval. For example, `EveryNEvents(100)`
-/// will create snapshots at versions 100, 200, 300, etc.
+/// This strategy creates a snapshot whenever a commit advances the aggregate
+/// across an interval boundary. For example, `EveryNEvents(100)` snapshots at
+/// versions 100, 200, 300, etc.
+///
+/// Because a single commit may append several events at once, the boundary is
+/// detected on *crossing* rather than exact landing: a commit that takes the
+/// version from 1 to 6 with `EveryNEvents(5)` still produces a snapshot even
+/// though it never lands exactly on 5. See
+/// [`should_snapshot_range`](SnapshotStrategy::should_snapshot_range).
 ///
 /// This strategy is useful for aggregates that:
 /// - Have moderate to high event counts
@@ -216,6 +268,20 @@ impl SnapshotStrategy for EveryNEvents {
             return false;
         }
         current_version.as_i64() % i64::from(self.0) == 0
+    }
+
+    fn should_snapshot_range(
+        &self,
+        previous_version: AggregateVersion,
+        current_version: AggregateVersion,
+    ) -> bool {
+        let interval = i64::from(self.0);
+        // Number of completed intervals before and after the commit. A snapshot
+        // boundary is crossed whenever the count increases, which covers both
+        // exact landings (e.g. 4 -> 5) and multi-event jumps (e.g. 1 -> 6).
+        let previous_intervals = previous_version.as_i64().max(0) / interval;
+        let current_intervals = current_version.as_i64().max(0) / interval;
+        current_intervals > previous_intervals
     }
 }
 
@@ -342,5 +408,40 @@ mod tests {
         assert!(strategy.should_snapshot(AggregateVersion::new(50)));
         assert!(!strategy.should_snapshot(AggregateVersion::new(51)));
         assert!(strategy.should_snapshot(AggregateVersion::new(100)));
+    }
+
+    #[test]
+    fn test_every_n_events_range_fires_when_commit_crosses_boundary() {
+        let strategy = EveryNEvents(5);
+
+        // Multi-event commit jumps over the boundary without landing on it.
+        assert!(strategy.should_snapshot_range(AggregateVersion::new(1), AggregateVersion::new(6)));
+        // Single event landing exactly on the boundary.
+        assert!(strategy.should_snapshot_range(AggregateVersion::new(4), AggregateVersion::new(5)));
+        // Crossing multiple boundaries at once still fires once.
+        assert!(strategy.should_snapshot_range(AggregateVersion::new(2), AggregateVersion::new(13)));
+    }
+
+    #[test]
+    fn test_every_n_events_range_does_not_fire_without_crossing() {
+        let strategy = EveryNEvents(5);
+
+        // Commit stays within the same interval.
+        assert!(!strategy.should_snapshot_range(AggregateVersion::new(6), AggregateVersion::new(9)));
+        // Just past a boundary already counted by the previous commit.
+        assert!(!strategy.should_snapshot_range(AggregateVersion::new(5), AggregateVersion::new(9)));
+        // No events advanced.
+        assert!(!strategy.should_snapshot_range(AggregateVersion::new(7), AggregateVersion::new(7)));
+    }
+
+    #[test]
+    fn test_default_range_delegates_to_current_version() {
+        // Always/Never do not override should_snapshot_range; the default
+        // delegates to should_snapshot using only the current version.
+        let always = AlwaysSnapshot;
+        assert!(always.should_snapshot_range(AggregateVersion::new(3), AggregateVersion::new(4)));
+
+        let never = NeverSnapshot;
+        assert!(!never.should_snapshot_range(AggregateVersion::new(3), AggregateVersion::new(4)));
     }
 }

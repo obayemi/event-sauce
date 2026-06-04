@@ -476,7 +476,7 @@ where
     let strategy = config.strategy_for_type(aggregate_type.as_str());
     let current_version = aggregate.version();
 
-    let snapshot = if strategy.should_snapshot(current_version) {
+    let snapshot = if strategy.should_snapshot_range(expected_version, current_version) {
         build_snapshot::<S, A>(
             store,
             aggregate_id,
@@ -576,7 +576,7 @@ where
     let strategy = config.strategy_for_type(aggregate_type.as_str());
     let current_version = aggregate.version();
 
-    let snapshot = if strategy.should_snapshot(current_version) {
+    let snapshot = if strategy.should_snapshot_range(expected_version, current_version) {
         build_deleted_snapshot::<S, A>(
             store,
             aggregate_id,
