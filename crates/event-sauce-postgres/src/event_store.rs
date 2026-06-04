@@ -763,6 +763,30 @@ impl Default for PostgresEventStoreBuilder {
 }
 
 impl PostgresEventStore {
+    /// Reads the current committed stream version inside the given transaction.
+    ///
+    /// Computes `MAX(stream_version) + 1` for the stream, treating an empty
+    /// stream (`NULL`) as [`AggregateVersion::initial`]. Runs against the
+    /// transaction so callers observe their own uncommitted writes and any
+    /// committed concurrent writes under READ COMMITTED.
+    async fn current_stream_version(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        events_table: &str,
+        stream_id: &StreamId,
+    ) -> Result<AggregateVersion> {
+        let query = format!(
+            "SELECT MAX(stream_version) FROM {events_table} WHERE aggregate_id = $1 AND aggregate_type = $2"
+        );
+        let current_version: Option<i64> = sqlx::query_scalar(&query)
+            .bind(stream_id.aggregate_id())
+            .bind(stream_id.aggregate_type().as_str())
+            .fetch_one(&mut **tx)
+            .await
+            .map_err(|e| Error::backend("Failed to check version", e))?;
+
+        Ok(AggregateVersion::new(current_version.unwrap_or(-1) + 1))
+    }
+
     async fn handle_claims(
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         claims_table: &str,
@@ -956,17 +980,8 @@ impl EventStore for PostgresEventStore {
         if !events.is_empty() {
             // Check current version
             let events_table = self.qualify_table("events");
-            let query = format!(
-                "SELECT MAX(stream_version) FROM {events_table} WHERE aggregate_id = $1 AND aggregate_type = $2"
-            );
-            let current_version: Option<i64> = sqlx::query_scalar(&query)
-                .bind(stream_id.aggregate_id())
-                .bind(stream_id.aggregate_type().as_str())
-                .fetch_one(&mut *tx)
-                .await
-                .map_err(|e| Error::backend("Failed to check version", e))?;
-
-            let current_version = AggregateVersion::new(current_version.unwrap_or(-1) + 1);
+            let current_version =
+                Self::current_stream_version(&mut tx, &events_table, &stream_id).await?;
 
             if current_version != expected_version {
                 return Err(Error::concurrency_conflict(
@@ -992,7 +1007,7 @@ impl EventStore for PostgresEventStore {
                     RETURNING id"
                 );
 
-                last_inserted_id = sqlx::query_scalar(&insert_query)
+                let insert_result = sqlx::query_scalar(&insert_query)
                     .bind(event.id)
                     .bind(event.aggregate_id)
                     .bind(event.aggregate_type.as_str())
@@ -1005,8 +1020,27 @@ impl EventStore for PostgresEventStore {
                     .bind(event.metadata.as_ref().and_then(|m| m.causation_id))
                     .bind(event.metadata.as_ref().and_then(|m| m.additional.clone()))
                     .fetch_one(&mut *tx)
-                    .await
-                    .map_err(|e| Error::backend("Failed to insert event", e))?;
+                    .await;
+
+                last_inserted_id = match insert_result {
+                    Ok(id) => id,
+                    // Two concurrent appends can both pass the MAX(stream_version)
+                    // precheck under READ COMMITTED (each sees an empty committed
+                    // stream), then the loser violates the
+                    // UNIQUE(aggregate_id, aggregate_type, stream_version) index.
+                    // Surface that as a typed conflict rather than a generic
+                    // backend error, matching the in-memory backend and letting
+                    // callers drive an optimistic-retry loop. The violation aborts
+                    // this transaction (any further query in it would fail with
+                    // 25P02), so we cannot re-read the committed version here. The
+                    // winner committed at `expected_version`, so the true current
+                    // version is at least one beyond it — report that lower bound.
+                    Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => {
+                        let actual = AggregateVersion::new(expected_version.as_i64() + 1);
+                        return Err(Error::concurrency_conflict(expected_version, actual));
+                    }
+                    Err(e) => return Err(Error::backend("Failed to insert event", e)),
+                };
             }
 
             // Queue a NOTIFY with the position of the last inserted event.
@@ -1482,6 +1516,135 @@ mod tests {
             .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().is_concurrency_conflict());
+    }
+
+    /// Regression test for F3 (H1 + M9): a genuine concurrent INSERT that
+    /// passes the `SELECT MAX(stream_version)` precheck but loses the race on
+    /// the `UNIQUE(aggregate_id, aggregate_type, stream_version)` index must be
+    /// surfaced as a [`Error::ConcurrencyConflict`], not a generic
+    /// [`Error::Backend`].
+    ///
+    /// The interleave is forced deterministically:
+    /// 1. A seeding transaction inserts a duplicate row at `stream_version = 0`
+    ///    and is held open (uncommitted), so the row is invisible to other
+    ///    transactions but the unique index already reserves the slot.
+    /// 2. The real `store.append(...)` is invoked for the "loser" at
+    ///    `expected_version = initial()`. Its precheck still sees an empty
+    ///    committed stream (it passes), then its INSERT blocks on the unique
+    ///    index.
+    /// 3. The seeding transaction commits, releasing the loser's blocked INSERT
+    ///    which then fails with SQLSTATE 23505.
+    ///
+    /// Today this maps to `Error::Backend` so `is_concurrency_conflict()` is
+    /// false and the documented retry loop never fires on Postgres.
+    #[tokio::test]
+    async fn test_unique_violation_race_is_concurrency_conflict() {
+        let db = TestDatabase::new().await.unwrap();
+        let store = db.store();
+        let aggregate_id = Uuid::new_v4();
+        let stream_id = StreamId::new("User", aggregate_id);
+        let loser_event = create_test_envelope("UserCreated", aggregate_id);
+
+        // Step 1: seeding transaction reserves (aggregate_id, "User", 0) but
+        // does NOT commit yet. The unique index now blocks any other INSERT
+        // targeting the same key, while the row remains invisible to a
+        // separate transaction's MAX(stream_version) precheck.
+        let mut seeder = db.pool().begin().await.unwrap();
+        sqlx::query(
+            "INSERT INTO events (
+                event_id, aggregate_id, aggregate_type, event_type, event_version,
+                event_data, stream_version
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        )
+        .bind(Uuid::new_v4())
+        .bind(aggregate_id)
+        .bind("User")
+        .bind("UserCreated")
+        .bind(1_i64)
+        .bind(json!({"data": "seed"}))
+        .bind(0_i64)
+        .execute(&mut *seeder)
+        .await
+        .unwrap();
+
+        // Step 2: spawn the loser. Its precheck sees an empty committed stream
+        // (the seeder row is still invisible), so it passes the version check
+        // and then BLOCKS on the unique index INSERT.
+        let loser = tokio::spawn(async move {
+            store
+                .append(
+                    stream_id,
+                    vec![loser_event],
+                    AggregateVersion::initial(),
+                    vec![],
+                    false,
+                )
+                .await
+        });
+
+        // Give the loser time to reach (and block on) its INSERT. The held-open
+        // seeder guarantees correctness regardless; this sleep only affects
+        // timing.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        // Step 3: commit the seeder, releasing the loser's blocked INSERT which
+        // then fails with SQLSTATE 23505 (duplicate key on the unique index).
+        seeder.commit().await.unwrap();
+
+        let result = loser.await.unwrap();
+        let err = result.expect_err("loser append must fail on the unique violation race");
+        assert!(
+            err.is_concurrency_conflict(),
+            "expected ConcurrencyConflict for a lost unique-violation race, got: {err:?}"
+        );
+    }
+
+    /// Negative companion to the race test: a non-unique INSERT failure must
+    /// still map to [`Error::Backend`]. This guards against the planned
+    /// `is_unique_violation()` narrowing accidentally swallowing unrelated
+    /// database errors.
+    ///
+    /// Here the store is pointed at a schema with no `events` table, so the
+    /// `append` INSERT fails with "relation does not exist" (SQLSTATE 42P01),
+    /// which is a backend error, not a concurrency conflict.
+    #[tokio::test]
+    async fn test_non_unique_insert_failure_is_backend() {
+        let db = TestDatabase::new().await.unwrap();
+        // A schema that exists but does not contain the events table.
+        sqlx::query("CREATE SCHEMA IF NOT EXISTS empty_schema")
+            .execute(db.pool())
+            .await
+            .unwrap();
+
+        let store = PostgresEventStore::builder()
+            .pool(db.pool().clone())
+            .schema("empty_schema")
+            .build()
+            .expect("pool was set");
+
+        let aggregate_id = Uuid::new_v4();
+        let stream_id = StreamId::new("User", aggregate_id);
+        let event = create_test_envelope("UserCreated", aggregate_id);
+
+        let result = store
+            .append(
+                stream_id,
+                vec![event],
+                AggregateVersion::initial(),
+                vec![],
+                false,
+            )
+            .await;
+
+        let err = result.expect_err("append must fail against a schema without an events table");
+        assert!(
+            err.is_backend(),
+            "expected Backend error for a non-unique failure, got: {err:?}"
+        );
+        assert!(
+            !err.is_concurrency_conflict(),
+            "a missing-table error must not be reported as a concurrency conflict: {err:?}"
+        );
     }
 
     #[tokio::test]

@@ -28,7 +28,7 @@ event-sauce adopts the notification-log model (`events.id BIGSERIAL` = global `P
 | C2 | critical | design-gap | ordering | `EventRow`/`EventEnvelope` drop the global `id`, so runners *can't* checkpoint the real position | F1 |
 | C3 | critical | current-bug | ordering/projections | Runners checkpoint a synthetic `+1` ordinal vs `BIGSERIAL id` → gap re-processing (projections double-apply; new policies re-process history) | F1 |
 | C4 | critical | current-bug | ordering | No commit-order serialization on `append` → late-committing lower id permanently skipped | F2 |
-| H1 | high | current-bug | concurrency | UNIQUE-violation race surfaced as `Error::Backend`, not `ConcurrencyConflict`; documented retry never fires | F3 |
+| H1 | ✅ fixed | current-bug | concurrency | UNIQUE-violation race surfaced as `Error::Backend`, not `ConcurrencyConflict`; documented retry never fires | F3 |
 | H2 | high | design-gap | serialization | No upcasting hook — `event_version` written but never read on load; `@version` is write-only | F4 |
 | H3 | high | current-bug | encryption | Snapshot encryption fails *open* — silently persists plaintext on key/encrypt failure | F5 |
 | H4 | high | design-gap | encryption | Field-encrypted aggregates degrade silently after key deletion (no `KeyNotFound`) | F5 |
@@ -42,7 +42,7 @@ event-sauce adopts the notification-log model (`events.id BIGSERIAL` = global `P
 | M6 | medium | design-gap | serialization | One unknown/undeserializable event aborts the whole load; rename orphans history | F4 |
 | M7 | medium | design-gap | crypto×evolution | Encrypted aggregates can never be schema-migrated (no upcast + no rewrite path) | F4, F5 |
 | M8 | medium | design-gap | projections | Deprecated core `Subscription` API still public — non-atomic checkpoint, `Retry` that doesn't retry | F7 |
-| M9 | medium | design-gap | concurrency | No Postgres test for the concurrent-append / UNIQUE-violation path | F3 |
+| M9 | ✅ fixed | design-gap | concurrency | No Postgres test for the concurrent-append / UNIQUE-violation path | F3 |
 | L1 | low | design-gap | exactly-once | No atomic multi-aggregate save / unit-of-work | F6 |
 | L2 | low | design-gap | projections | No read-your-writes `wait(position)` — and un-buildable until Position is fixed | F1 |
 | L3 | low | design-gap | domain-model | No deterministic/namespaced (UUIDv5) aggregate IDs | F7 |
@@ -83,6 +83,7 @@ These four share one root cause: `Position` is underspecified and the real globa
 
 ### H1 — UNIQUE-violation race surfaced as `Error::Backend`, not `ConcurrencyConflict`
 - **Evidence:** under READ COMMITTED both appends pass the `SELECT MAX(stream_version)` precheck (`event_store.rs:962-976`); the loser's INSERT hits `UNIQUE(...stream_version)` and is mapped generically at `:1009`. The claims path *does* translate this (`:836`); the events path doesn't. `is_concurrency_conflict()` (`error.rs:330`) returns false. The documented retry loop (`docs/event-store.md:362`) is written against the in-memory backend (which *does* produce the typed error), so copied code silently never retries on Postgres.
+- **✅ Fixed:** the events INSERT loop now matches `is_unique_violation()` and returns `Error::concurrency_conflict(expected, expected+1)` (the violation aborts the tx so the true version can't be re-read; the lower bound `expected+1` keeps `actual > expected`); all other insert errors stay `Error::Backend`. Refactored the precheck and the conflict path to share a `current_stream_version` helper. Regression test + negative guard (M9) added on the testcontainers harness; `docs/event-store.md` retry example retargeted to Postgres with `is_concurrency_conflict()` + jittered backoff + idempotency note.
 
 ### H2 — No upcasting: `event_version` is write-only
 - **Evidence:** `from_envelope` branches solely on `event_type` then `serde_json::from_value` into the *current* struct (`macros.rs:1268-1280`; default trait `domain_event.rs:125-128`). `event_version` is written (`macros.rs:1227,1262`) and never read on load. The "Event Upcasting" docs (`docs/events.md:805-824`) show a manual helper that nothing calls. Any field-shape change serde-fails historical events.
@@ -109,7 +110,7 @@ These four share one root cause: `Position` is underspecified and the real globa
 - **M6 — One bad event aborts the whole load.** A single unknown `event_type` (e.g. renamed variant) or one drifted-shape legacy event fails the entire load (`event_store.rs:850-913`) with no skip/remap — Python's `TopicError` outage, but harsher (no `register_topic`).
 - **M7 — Encryption × schema-evolution are mutually hostile.** No upcast hook *and* no decrypt→transform→re-encrypt primitive, so turning on encryption forfeits the ability to evolve the event schema; surfaces as an unrecoverable load long after the change ships.
 - **M8 — The deprecated core `Subscription` API still ships a foot-gun.** Still public/exported, non-atomic checkpoint, `Retry` that doesn't retry (`subscription.rs:541-779`).
-- **M9 — No Postgres test for the concurrent-append / UNIQUE-violation path** (only sequential, `event_store.rs:1453`) — that gap is why H1 shipped.
+- **M9 — No Postgres test for the concurrent-append / UNIQUE-violation path** (only sequential, `event_store.rs:1453`) — that gap is why H1 shipped. **✅ Fixed** with H1: `test_unique_violation_race_is_concurrency_conflict` (deterministic interleave via a held-open seeding tx) + `test_non_unique_insert_failure_is_backend` (guards the `is_unique_violation` narrowing).
 
 ## ⚪ Low & completeness gaps
 
