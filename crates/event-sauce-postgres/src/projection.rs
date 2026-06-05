@@ -91,6 +91,37 @@ pub trait PostgresProjection: Send {
         envelope: &EventEnvelope,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     ) -> Result<()>;
+
+    /// Clear the projection's read-model so a rebuild can re-derive it from
+    /// genesis.
+    ///
+    /// Called by
+    /// [`PostgresBackend::rebuild`](crate::PostgresBackend::rebuild) inside the
+    /// same transaction that rewinds the checkpoint to
+    /// [`Position::start`](event_sauce_core::Position::start), so the table wipe
+    /// and checkpoint reset commit (or roll back) together. A typical
+    /// implementation truncates or deletes the rows the projection owns through
+    /// the supplied `tx`.
+    ///
+    /// The default implementation returns
+    /// [`Error::invalid_state`](event_sauce_core::Error::invalid_state) so a
+    /// rebuild fails loudly for a projection that has not opted in — a silent
+    /// partial rebuild (table left intact while the checkpoint rewinds) is never
+    /// possible. Override this to support
+    /// [`PostgresBackend::rebuild`](crate::PostgresBackend::rebuild).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if clearing the read-model fails. The default
+    /// implementation always returns an error to signal that rebuild is not
+    /// supported.
+    async fn reset(&mut self, tx: &mut sqlx::Transaction<'_, sqlx::Postgres>) -> Result<()> {
+        let _ = tx;
+        Err(event_sauce_core::Error::invalid_state(format!(
+            "reset not implemented for projection {}; override PostgresProjection::reset to support rebuild",
+            Self::NAME
+        )))
+    }
 }
 
 #[cfg(test)]

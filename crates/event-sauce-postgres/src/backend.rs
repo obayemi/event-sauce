@@ -285,6 +285,131 @@ impl PostgresBackend {
         result.map(|()| crate::LeaseOutcome::Completed)
     }
 
+    /// Rebuilds a [`PostgresProjection`](crate::PostgresProjection) from genesis
+    /// under a lease.
+    ///
+    /// A rebuild wipes the projection's read-model, rewinds its checkpoint to
+    /// the start, and re-derives the whole model by replaying every event from
+    /// position 0. Unlike the old manual procedure (drop the table by hand,
+    /// `delete_checkpoint`, re-run), this is **lease-guarded** and **atomic**:
+    ///
+    /// 1. Acquire the lease for `P::NAME` on behalf of `worker_id`. If another
+    ///    worker holds an active lease, return
+    ///    [`LeaseOutcome::Busy`](crate::LeaseOutcome::Busy) **without touching**
+    ///    the read-model or the checkpoint — a concurrent worker is still
+    ///    running against the live model, so resetting it would corrupt its
+    ///    view.
+    /// 2. In a single transaction, call
+    ///    [`reset`](crate::PostgresProjection::reset) to clear the read-model
+    ///    and rewind the checkpoint to
+    ///    [`Position::start`](event_sauce_core::Position::start). Both commit or
+    ///    roll back together, so a rebuild never leaves a wiped table paired
+    ///    with a stale checkpoint.
+    /// 3. Re-drain from genesis using the same fenced per-event loop as
+    ///    [`run_leased_projection`](Self::run_leased_projection).
+    /// 4. Release the lease on exit, including on error.
+    ///
+    /// The projection **must** override
+    /// [`reset`](crate::PostgresProjection::reset); the default implementation
+    /// returns an error so a projection that has not opted in fails loudly here
+    /// rather than being silently half-rebuilt.
+    ///
+    /// The step-2 rewind to position 0 is a backward checkpoint move, which the
+    /// fenced save ([`save_checkpoint_fenced_tx`]) deliberately rejects. The
+    /// rewind therefore uses the **unfenced** [`save_checkpoint_tx`] — safe
+    /// because this call holds the lease and is the legitimate owner performing
+    /// an intentional rewind. The subsequent forward drain uses the fenced save
+    /// as usual, preserving the monotonicity guarantee for ordinary runs.
+    ///
+    /// [`save_checkpoint_fenced_tx`]: crate::PostgresCheckpointStore::save_checkpoint_fenced_tx
+    /// [`save_checkpoint_tx`]: crate::PostgresCheckpointStore::save_checkpoint_tx
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use std::time::Duration;
+    ///
+    /// let worker_id = format!("{}-{}", hostname()?, std::process::id());
+    /// let outcome = backend
+    ///     .rebuild(&mut OrderTotalsProjection, &worker_id, Duration::from_secs(30))
+    ///     .await?;
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the projection does not override
+    /// [`reset`](crate::PostgresProjection::reset), if the reset/checkpoint
+    /// transaction fails, or for any reason
+    /// [`run_leased_projection`](Self::run_leased_projection) would error during
+    /// the re-drain.
+    pub async fn rebuild<P: crate::PostgresProjection>(
+        &self,
+        projection: &mut P,
+        worker_id: &str,
+        lease_duration: std::time::Duration,
+    ) -> event_sauce_core::Result<crate::LeaseOutcome> {
+        use event_sauce_core::CheckpointStore;
+
+        let Some(_held_position) = self
+            .checkpoint_store
+            .try_acquire_lease(P::NAME, worker_id, lease_duration)
+            .await?
+        else {
+            // Another worker owns the lease: leave the read-model and
+            // checkpoint untouched and let the caller retry later.
+            return Ok(crate::LeaseOutcome::Busy);
+        };
+
+        let result = self
+            .rebuild_under_lease(projection, worker_id, lease_duration)
+            .await;
+
+        // Always try to release on exit, including on error. Releasing a lease
+        // we no longer hold is a no-op.
+        let _ = self
+            .checkpoint_store
+            .release_lease(P::NAME, worker_id)
+            .await;
+
+        result.map(|()| crate::LeaseOutcome::Completed)
+    }
+
+    /// Performs the atomic reset (read-model wipe + checkpoint rewind) and the
+    /// subsequent fenced re-drain. The caller already holds the lease and is
+    /// responsible for releasing it.
+    async fn rebuild_under_lease<P: crate::PostgresProjection>(
+        &self,
+        projection: &mut P,
+        worker_id: &str,
+        lease_duration: std::time::Duration,
+    ) -> event_sauce_core::Result<()> {
+        // Atomic reset: clear the read-model and rewind the checkpoint to
+        // genesis in one transaction. The rewind is a backward move, so it uses
+        // the UNFENCED save (the fenced save would reject it) — safe because we
+        // hold the lease and this is a deliberate rewind by the owner.
+        let mut tx = self.pool.begin().await.map_err(|e| {
+            event_sauce_core::Error::backend("Failed to start rebuild reset transaction", e)
+        })?;
+
+        projection.reset(&mut tx).await?;
+        self.checkpoint_store
+            .save_checkpoint_tx(&mut tx, P::NAME, event_sauce_core::Position::start())
+            .await?;
+
+        tx.commit().await.map_err(|e| {
+            event_sauce_core::Error::backend("Failed to commit rebuild reset transaction", e)
+        })?;
+
+        // Re-drain from genesis with the usual fenced per-event loop.
+        self.run_under_lease(
+            projection,
+            worker_id,
+            lease_duration,
+            event_sauce_core::Position::start(),
+        )
+        .await
+    }
+
     /// Reads new events from the log and fans them out into the policy
     /// outbox for each registered policy whose filter matches.
     ///
@@ -1669,6 +1794,295 @@ mod tests {
                 .await
                 .unwrap(),
             0
+        );
+    }
+
+    // === Rebuild tests (L11): lease-guarded table+checkpoint reset + re-drain ===
+
+    /// A read model that records one row per handled event into its own table.
+    /// `reset()` truncates that table so a rebuild starts from an empty model.
+    struct RebuildProjection;
+
+    impl RebuildProjection {
+        async fn migrate(pool: &PgPool, schema: &str) {
+            sqlx::query(&format!(
+                "CREATE TABLE IF NOT EXISTS {schema}.rebuild_projection (
+                    seq BIGSERIAL PRIMARY KEY,
+                    event_id UUID NOT NULL
+                )"
+            ))
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+
+        /// Total number of rows currently materialized.
+        async fn row_count(pool: &PgPool, schema: &str) -> i64 {
+            sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {schema}.rebuild_projection"))
+                .fetch_one(pool)
+                .await
+                .unwrap()
+        }
+
+        /// Number of rows recorded for a specific event UUID.
+        async fn count_for(pool: &PgPool, schema: &str, event_id: Uuid) -> i64 {
+            sqlx::query_scalar(&format!(
+                "SELECT COUNT(*) FROM {schema}.rebuild_projection WHERE event_id = $1"
+            ))
+            .bind(event_id)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+        }
+
+        /// Seeds a STALE row that does not correspond to any committed event.
+        /// A correct rebuild must wipe it before re-deriving from genesis.
+        async fn seed_stale(pool: &PgPool, schema: &str, event_id: Uuid) {
+            sqlx::query(&format!(
+                "INSERT INTO {schema}.rebuild_projection (event_id) VALUES ($1)"
+            ))
+            .bind(event_id)
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::PostgresProjection for RebuildProjection {
+        const NAME: &'static str = "RebuildProjection";
+
+        fn handled_event_types() -> Option<Vec<&'static str>> {
+            Some(vec!["TestEvent"])
+        }
+
+        async fn handle(
+            &mut self,
+            envelope: &EventEnvelope,
+            tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        ) -> event_sauce_core::Result<()> {
+            sqlx::query("INSERT INTO event_sauce.rebuild_projection (event_id) VALUES ($1)")
+                .bind(envelope.id)
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| event_sauce_core::Error::custom(format!("insert failed: {e}")))?;
+            Ok(())
+        }
+
+        async fn reset(
+            &mut self,
+            tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        ) -> event_sauce_core::Result<()> {
+            sqlx::query("TRUNCATE event_sauce.rebuild_projection")
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| event_sauce_core::Error::custom(format!("truncate failed: {e}")))?;
+            Ok(())
+        }
+    }
+
+    /// A projection that does NOT override `reset()`, so it relies on the
+    /// trait default. Used to lock in the default-impl decision (rebuild must
+    /// refuse to run for a projection that has not opted in).
+    struct NoResetProjection;
+
+    impl NoResetProjection {
+        async fn migrate(pool: &PgPool, schema: &str) {
+            sqlx::query(&format!(
+                "CREATE TABLE IF NOT EXISTS {schema}.no_reset_projection (
+                    seq BIGSERIAL PRIMARY KEY,
+                    event_id UUID NOT NULL
+                )"
+            ))
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::PostgresProjection for NoResetProjection {
+        const NAME: &'static str = "NoResetProjection";
+
+        fn handled_event_types() -> Option<Vec<&'static str>> {
+            Some(vec!["TestEvent"])
+        }
+
+        async fn handle(
+            &mut self,
+            envelope: &EventEnvelope,
+            tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        ) -> event_sauce_core::Result<()> {
+            sqlx::query("INSERT INTO event_sauce.no_reset_projection (event_id) VALUES ($1)")
+                .bind(envelope.id)
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| event_sauce_core::Error::custom(format!("insert failed: {e}")))?;
+            Ok(())
+        }
+        // intentionally no `reset()` override — uses the trait default.
+    }
+
+    #[tokio::test]
+    async fn test_rebuild_resets_and_redrains() {
+        let (url, _container) = start_postgres().await;
+        let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
+        RebuildProjection::migrate(backend.pool(), "event_sauce").await;
+
+        // Commit three real source events.
+        let store = backend.event_store();
+        let e1 = append_recorded_event(&store).await;
+        let e2 = append_recorded_event(&store).await;
+        let e3 = append_recorded_event(&store).await;
+
+        // Poison the world: a STALE read-model row that maps to no committed
+        // event, and a checkpoint already advanced PAST all real events. A
+        // naive re-run (without reset) would see "nothing new" and leave the
+        // stale row in place.
+        let stale = Uuid::new_v4();
+        RebuildProjection::seed_stale(backend.pool(), "event_sauce", stale).await;
+        backend
+            .checkpoint_store()
+            .save_checkpoint(
+                <RebuildProjection as crate::PostgresProjection>::NAME,
+                Position::new(999),
+            )
+            .await
+            .unwrap();
+
+        // Rebuild: lease-guarded, atomic table+checkpoint reset, re-drain from 0.
+        let mut projection = RebuildProjection;
+        let outcome = backend
+            .rebuild(
+                &mut projection,
+                "worker-1",
+                std::time::Duration::from_secs(30),
+            )
+            .await
+            .unwrap();
+        assert_eq!(outcome, crate::LeaseOutcome::Completed);
+
+        // (a) The stale row is gone and the table reflects a clean re-derivation:
+        //     exactly one row per real event, no extras.
+        assert_eq!(
+            RebuildProjection::count_for(backend.pool(), "event_sauce", stale).await,
+            0,
+            "stale row must be wiped by the reset"
+        );
+        assert_eq!(
+            RebuildProjection::row_count(backend.pool(), "event_sauce").await,
+            3,
+            "table must hold exactly one row per committed event"
+        );
+        for (label, id) in [("first", e1), ("second", e2), ("third", e3)] {
+            assert_eq!(
+                RebuildProjection::count_for(backend.pool(), "event_sauce", id).await,
+                1,
+                "event {label} ({id}) must be re-derived exactly once"
+            );
+        }
+
+        // (b) The checkpoint was reset off 999 and advanced to the real max (3).
+        let checkpoint = backend
+            .checkpoint_store()
+            .load_checkpoint(<RebuildProjection as crate::PostgresProjection>::NAME)
+            .await
+            .unwrap();
+        assert_eq!(
+            checkpoint,
+            Some(Position::new(3)),
+            "checkpoint must be reset then re-advanced to the real max position"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rebuild_busy_when_leased() {
+        let (url, _container) = start_postgres().await;
+        let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
+        RebuildProjection::migrate(backend.pool(), "event_sauce").await;
+
+        let store = backend.event_store();
+        append_recorded_event(&store).await;
+
+        // Seed a stale row and a high checkpoint; if rebuild WRONGLY proceeded
+        // it would wipe/reset these. A Busy outcome must leave them untouched.
+        let stale = Uuid::new_v4();
+        RebuildProjection::seed_stale(backend.pool(), "event_sauce", stale).await;
+        backend
+            .checkpoint_store()
+            .save_checkpoint(
+                <RebuildProjection as crate::PostgresProjection>::NAME,
+                Position::new(777),
+            )
+            .await
+            .unwrap();
+
+        // Another worker holds the lease.
+        backend
+            .checkpoint_store()
+            .try_acquire_lease(
+                <RebuildProjection as crate::PostgresProjection>::NAME,
+                "other-worker",
+                std::time::Duration::from_secs(60),
+            )
+            .await
+            .unwrap();
+
+        let mut projection = RebuildProjection;
+        let outcome = backend
+            .rebuild(
+                &mut projection,
+                "worker-1",
+                std::time::Duration::from_secs(30),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            outcome,
+            crate::LeaseOutcome::Busy,
+            "rebuild must report Busy when another worker holds the lease"
+        );
+
+        // The read model and checkpoint must be UNTOUCHED (no reset happened).
+        assert_eq!(
+            RebuildProjection::count_for(backend.pool(), "event_sauce", stale).await,
+            1,
+            "stale row must survive a Busy rebuild (no reset)"
+        );
+        let checkpoint = backend
+            .checkpoint_store()
+            .load_checkpoint(<RebuildProjection as crate::PostgresProjection>::NAME)
+            .await
+            .unwrap();
+        assert_eq!(
+            checkpoint,
+            Some(Position::new(777)),
+            "checkpoint must not be reset on a Busy rebuild"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rebuild_errors_when_reset_not_implemented() {
+        let (url, _container) = start_postgres().await;
+        let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
+        NoResetProjection::migrate(backend.pool(), "event_sauce").await;
+
+        let store = backend.event_store();
+        append_recorded_event(&store).await;
+
+        // A projection that did not override `reset()` must NOT be silently
+        // half-rebuilt: rebuild must fail loudly via the default `reset()`.
+        let mut projection = NoResetProjection;
+        let result = backend
+            .rebuild(
+                &mut projection,
+                "worker-1",
+                std::time::Duration::from_secs(30),
+            )
+            .await;
+        assert!(
+            result.is_err(),
+            "rebuild must error for a projection whose reset() is the default (not overridden)"
         );
     }
 }

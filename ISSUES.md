@@ -53,7 +53,7 @@ event-sauce adopts the notification-log model (`events.id BIGSERIAL` = global `P
 | L8 | low | design-gap | serialization | `#[derive(Event)]` applies one `event_version` to all variants (vs per-variant `define_events!`) | F4 |
 | L9 | low | design-gap | domain-model | `apply()` purity is doc-only; `post_validate` leaves the entity mutated on failure | F7 |
 | L10 | ✅ fixed | design-gap | exactly-once | Outbox `attempts` incremented at claim time → crash-reclaims prematurely DLQ | F6 |
-| L11 | low | design-gap | projections | No built-in projection rebuild | F6 |
+| L11 | ✅ fixed | design-gap | projections | No built-in projection rebuild | F6 |
 
 ---
 
@@ -133,7 +133,7 @@ These four share one root cause: `Position` is underspecified and the real globa
 - **L8** `#[derive(Event)]` applies one `#[event(version=N)]` to all variants (`lib.rs:106-127`); `define_events!` is per-variant.
 - **L9** `apply()` purity is doc-only; `post_validate` runs after `apply` mutates the entity (`aggregate_root.rs:186-196`) → a rejected event leaves a reusable, inconsistent `AggregateRoot`.
 - **L10** Outbox `attempts` incremented at *claim* time (`policy_outbox.rs:219`) → crash-reclaims count toward `max_attempts`, prematurely DLQ'ing never-failed work. **✅ Fixed:** added a `failures` column (migration); the DLQ decision now keys off `failures` (incremented only in `mark_failed`), while `attempts` stays a claim/delivery counter. RED: a row reclaimed 3× without any handler failure is no longer DLQ'd; it goes to `failed` only on the 2nd real failure with `max_attempts=2`.
-- **L11** No built-in projection rebuild; the manual procedure drops table + checkpoint with no concurrency guard (`docs/projections.md:126-135`).
+- **L11** No built-in projection rebuild; the manual procedure drops table + checkpoint with no concurrency guard (`docs/projections.md:126-135`). **✅ Fixed:** added `PostgresProjection::reset(&mut tx)` (default = loud `invalid_state` error so a projection must opt in) and `PostgresBackend::rebuild` — acquires the lease (returns `Busy` without touching state if held elsewhere), in one tx calls `reset()` + rewinds the checkpoint to start (via the **unfenced** save, safe because it holds the lease — the H6 fence rejects backward moves), then re-drains from genesis through the fenced loop. RED proven by revert (removing reset+rewind fails the tests; the busy-test correctly stays green). `docs/projections.md` replaces the manual drop+`delete_checkpoint` procedure.
 
 ---
 

@@ -129,10 +129,9 @@ Projection table migrations are user-owned. event-sauce manages migrations
 for the event log, snapshots, checkpoints, and crypto key store; *your*
 projection schema is yours to evolve.
 
-While the project is pre-production, the supported way to handle a schema
-change is to drop the projection table, delete the checkpoint, and let the
-runner rebuild from position 0 (`PostgresBackend::checkpoint_store()` +
-`delete_checkpoint(P::NAME)`).
+When a schema change (or a projection bug) requires re-deriving the read-model
+from scratch, use `PostgresBackend::rebuild` rather than the old manual
+procedure. See [Rebuilding a projection](#rebuilding-a-projection) below.
 
 ## Filtering
 
@@ -291,6 +290,66 @@ competing workers. Under normal operation only the lease holder processes
 events; a stalled worker that loses its lease mid-transaction has its write
 fenced (rolled back, surfaced as `Error::LeaseLost`), so the checkpoint never
 regresses and no event is double-applied across the hand-off.
+
+## Rebuilding a projection
+
+When you need to re-derive a read-model from scratch — a schema change, a fixed
+projection bug, or recovering a corrupted table — call
+`PostgresBackend::rebuild`:
+
+```rust
+use event_sauce_postgres::LeaseOutcome;
+use std::time::Duration;
+
+let mut projection = OrderTotals;
+match backend.rebuild(&mut projection, &worker_id, Duration::from_secs(30)).await? {
+    LeaseOutcome::Completed => { /* table wiped and re-derived from position 0 */ }
+    LeaseOutcome::Busy => { /* another worker holds the lease; retry later */ }
+}
+```
+
+`rebuild` is **lease-guarded** and **atomic**, unlike the old manual procedure
+(drop the table by hand, `delete_checkpoint(P::NAME)`, re-run) which had no
+concurrency protection and also wiped the lease columns:
+
+1. **Acquire the lease** for `P::NAME`. If another worker is actively running
+   against the live model, `rebuild` returns `LeaseOutcome::Busy` **without
+   touching** the read-model or the checkpoint — resetting it under a live
+   reader would corrupt that worker's view.
+2. **Atomic reset.** In a single transaction it calls `reset(&mut tx)` to clear
+   the read-model and rewinds the checkpoint to position 0. Both commit (or roll
+   back) together, so a rebuild never leaves a wiped table paired with a stale
+   checkpoint.
+3. **Re-drain from genesis** using the same fenced per-event loop as
+   `run_leased_projection`.
+4. **Release the lease** on exit, including on error.
+
+To support `rebuild`, a projection **must override** `reset` — the trait method
+that clears its rows:
+
+```rust
+async fn reset(
+    &mut self,
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<()> {
+    sqlx::query("TRUNCATE order_totals")
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| Error::custom(e.to_string()))?;
+    Ok(())
+}
+```
+
+The default `reset` returns an error, so calling `rebuild` on a projection that
+has not opted in fails loudly rather than silently leaving the table intact
+while the checkpoint rewinds.
+
+The step-2 rewind to position 0 is a *backward* checkpoint move, which the
+fenced save (`save_checkpoint_fenced_tx`) deliberately rejects to preserve
+monotonicity. The rewind therefore uses the **unfenced** `save_checkpoint_tx` —
+safe precisely because `rebuild` holds the lease and is the legitimate owner
+performing an intentional rewind. The forward re-drain that follows uses the
+fenced save as usual, so ordinary runs keep their no-regression guarantee.
 
 ## Choosing checkpoint vs. queue
 
