@@ -45,13 +45,13 @@ event-sauce adopts the notification-log model (`events.id BIGSERIAL` = global `P
 | M9 | ✅ fixed | design-gap | concurrency | No Postgres test for the concurrent-append / UNIQUE-violation path | F3 |
 | L1 | ✅ fixed | design-gap | exactly-once | No atomic multi-aggregate save / unit-of-work | F6 |
 | L2 | low | design-gap | projections | No read-your-writes `wait(position)` — and un-buildable until Position is fixed | F1 |
-| L3 | low | design-gap | domain-model | No deterministic/namespaced (UUIDv5) aggregate IDs | F7 |
+| L3 | ✅ fixed | design-gap | domain-model | No deterministic/namespaced (UUIDv5) aggregate IDs | F7 |
 | L4 | ✅ fixed | design-gap | audit-log | `EventLogOrder::CreatedAt*` actually order by `id` — misleading names | F7 |
 | L5 | low | design-gap | encryption | No AAD binds ciphertext to its event — intra-aggregate relocation/replay possible | F5 |
 | L6 | low | future-issue | encryption | No per-key message cap/rotation — relies on the 96-bit random-nonce birthday bound | F5 |
 | L7 | ✅ fixed | potential-issue | encryption | `is_encrypted` structural on the literal `"__encrypted"` key — collides with user data | F5 |
 | L8 | ✅ fixed | design-gap | serialization | `#[derive(Event)]` applies one `event_version` to all variants (vs per-variant `define_events!`) | F4 |
-| L9 | low | design-gap | domain-model | `apply()` purity is doc-only; `post_validate` leaves the entity mutated on failure | F7 |
+| L9 | ✅ fixed | design-gap | domain-model | `apply()` purity is doc-only; `post_validate` leaves the entity mutated on failure | F7 |
 | L10 | ✅ fixed | design-gap | exactly-once | Outbox `attempts` incremented at claim time → crash-reclaims prematurely DLQ | F6 |
 | L11 | ✅ fixed | design-gap | projections | No built-in projection rebuild | F6 |
 
@@ -125,13 +125,13 @@ These four share one root cause: `Position` is underspecified and the real globa
 
 - **L1** No atomic multi-aggregate save / unit-of-work (Python `Application.save`) — `repository.rs:69,116`, `event_store.rs:224` are single-stream.
 - **L2** No read-your-writes `wait(position)` — and un-buildable until C1/C2 unify the position space.
-- **L3** No deterministic/namespaced (UUIDv5) aggregate IDs.
+- **L3** No deterministic/namespaced (UUIDv5) aggregate IDs. **✅ Fixed:** added `EntityId::from_namespace(ns, name)` and `from_namespace_bytes` (UUIDv5; enabled the `uuid` `v5` feature) for idempotent creation / natural-key lookup; `EntityId::new()` stays random.
 - **L4** `EventLogOrder::CreatedAtDesc/Asc` actually emit `ORDER BY id` (`event_log.rs:56-87`) — misleading; `from_date/to_date` filter real `created_at` (which is `Utc::now()`, non-monotonic). **✅ Fixed:** renamed the variants to `ByIdDesc`/`ByIdAsc` (the `order_sql()` was already `id`-ordered; `#[default]` kept on `ByIdDesc`); enum docs now state `id` (insertion order) is the canonical monotonic chronological ordering and `created_at` is informational/non-monotonic. All consumers + `docs/audit-log.md` updated.
 - **L5** AES-GCM uses no AAD (`event-sauce-crypto/src/lib.rs:67-100`) — a ciphertext can be relocated/replayed onto another event row of the same aggregate and still authenticate.
 - **L6** One key per aggregate for life, no rotation/cap (`event_store.rs:730-746`) — relies on the 96-bit random-nonce birthday bound (~2³² messages).
 - **L7** `is_encrypted` just checks for a `"__encrypted"` key (`crypto.rs:116-127`); doesn't require it be the sole key or a string → collides with user data.
 - **L8** `#[derive(Event)]` applies one `#[event(version=N)]` to all variants (`lib.rs:106-127`); `define_events!` is per-variant. **✅ Fixed:** `#[derive(Event)]` now reads an optional per-variant `#[event(version = N)]`, falling back to the container version — matching `define_events!`'s per-variant model (and the H2 upcasting story, which keys on the stored `from_version`).
-- **L9** `apply()` purity is doc-only; `post_validate` runs after `apply` mutates the entity (`aggregate_root.rs:186-196`) → a rejected event leaves a reusable, inconsistent `AggregateRoot`.
+- **L9** `apply()` purity is doc-only; `post_validate` runs after `apply` mutates the entity (`aggregate_root.rs:186-196`) → a rejected event leaves a reusable, inconsistent `AggregateRoot`. **✅ Fixed:** `AggregateRoot` (and `DeletedAggregateRoot`) now carry a `poisoned` flag set on any failed `apply`/`apply_with_actor`/`apply_with_metadata`; `prepare_commit`/`prepare_commit_deleted` return `Error::InvalidState` for a poisoned root, so a rejected event can no longer be silently committed — the caller must discard and reload. Hardened the `ApplyEvent::apply`/`AggregateRoot::apply*` rustdoc + `docs/validation.md`: `apply` must be pure/total/deterministic and a failed apply poisons the root. RED proven by revert.
 - **L10** Outbox `attempts` incremented at *claim* time (`policy_outbox.rs:219`) → crash-reclaims count toward `max_attempts`, prematurely DLQ'ing never-failed work. **✅ Fixed:** added a `failures` column (migration); the DLQ decision now keys off `failures` (incremented only in `mark_failed`), while `attempts` stays a claim/delivery counter. RED: a row reclaimed 3× without any handler failure is no longer DLQ'd; it goes to `failed` only on the 2nd real failure with `max_attempts=2`.
 - **L11** No built-in projection rebuild; the manual procedure drops table + checkpoint with no concurrency guard (`docs/projections.md:126-135`). **✅ Fixed:** added `PostgresProjection::reset(&mut tx)` (default = loud `invalid_state` error so a projection must opt in) and `PostgresBackend::rebuild` — acquires the lease (returns `Busy` without touching state if held elsewhere), in one tx calls `reset()` + rewinds the checkpoint to start (via the **unfenced** save, safe because it holds the lease — the H6 fence rejects backward moves), then re-drains from genesis through the fenced loop. RED proven by revert (removing reset+rewind fails the tests; the busy-test correctly stays green). `docs/projections.md` replaces the manual drop+`delete_checkpoint` procedure.
 

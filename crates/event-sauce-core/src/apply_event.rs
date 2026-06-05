@@ -100,7 +100,19 @@ pub trait ApplyEvent<A: Aggregate> {
     ///
     /// This method performs the actual state transformation. It assumes
     /// that validation has already been performed (or is not needed).
-    /// Should be pure and deterministic.
+    ///
+    /// `apply` **must be pure, total, and deterministic**. It must never read
+    /// the clock, an RNG, or any external state (database, network,
+    /// environment), and must never panic: replay re-runs `apply` against the
+    /// stored events, so any non-determinism would reconstruct a different
+    /// aggregate than the one that was committed. Generate any clock/random
+    /// value once in the command and pass it in as an event field.
+    ///
+    /// Note that when this is driven through
+    /// [`AggregateRoot::apply`](crate::AggregateRoot::apply), a *later* failing
+    /// `post_validate` cannot undo the mutation performed here — the aggregate
+    /// is poisoned and must be discarded and reloaded. See
+    /// [`AggregateRoot::is_poisoned`](crate::AggregateRoot::is_poisoned).
     fn apply(&self, aggregate: &mut A);
 
     /// Validates the entity state after the event has been applied.

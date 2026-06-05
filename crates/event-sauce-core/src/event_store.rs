@@ -600,6 +600,13 @@ where
     A: Aggregate + serde::Serialize,
     A::Event: serde::Serialize,
 {
+    if aggregate.is_poisoned() {
+        return Err(crate::Error::invalid_state(
+            "cannot commit a poisoned aggregate: a previous apply() failed, \
+             leaving inconsistent state — discard and reload the aggregate",
+        ));
+    }
+
     let pending = aggregate.pending_events_with_actors();
     if pending.is_empty() {
         return Ok(None);
@@ -701,6 +708,13 @@ where
     A::DeletedState: serde::Serialize,
     A::Event: serde::Serialize,
 {
+    if aggregate.is_poisoned() {
+        return Err(crate::Error::invalid_state(
+            "cannot commit a poisoned deleted aggregate: a previous apply() failed, \
+             leaving inconsistent state — discard and reload the aggregate",
+        ));
+    }
+
     let pending = aggregate.pending_events_with_actors();
     if pending.is_empty() {
         return Ok(None);

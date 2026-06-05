@@ -908,6 +908,53 @@ impl ApplyEvent<BankAccount> for AccountWithdrawnEvent {
 }
 ```
 
+`apply()` must be **pure, total, and deterministic**. It must never read the
+clock, an RNG, or any external state (database, network, environment): replay
+re-runs `apply()` against the stored events, so any non-determinism would
+reconstruct a *different* aggregate than the one that was committed. Generate
+any clock/random value **once in the command** and pass it into the event as a
+field:
+
+```rust
+// Bad: apply() reads the clock — replay produces a different timestamp.
+fn apply(&self, account: &mut BankAccount) {
+    account.last_activity = Utc::now(); // Wrong! Non-deterministic.
+}
+
+// Good: the command captures the value, the event carries it.
+fn deposit(&mut self, amount: i64) -> Result<(), AccountError> {
+    self.apply(DepositedEvent { amount, at: Utc::now() })
+}
+fn apply(&self, account: &mut BankAccount) {
+    account.last_activity = self.at; // Deterministic on replay.
+}
+```
+
+#### A failed `apply()` poisons the `AggregateRoot`
+
+`AggregateRoot::apply()` runs `validate → apply → post_validate`. When
+`post_validate` (or `validate`) rejects an event, the apply closure has
+**already mutated** the entity, but the version is not bumped and the event is
+not recorded — and there is no `Clone` bound to roll the entity back. Rather
+than let that inconsistent state be reused or silently committed, a failed
+`apply*` call **poisons** the `AggregateRoot`:
+
+- `AggregateRoot::is_poisoned()` reports the poisoned state.
+- Committing a poisoned aggregate (`save`/`commit`, including the delete path)
+  fails with `Error::InvalidState` instead of persisting half-mutated state.
+
+The contract is **discard and reload**: on a failed `apply()`, drop the
+aggregate and re-`load()` it from the event store before retrying.
+
+```rust
+let mut account = repo.load(id).await?;
+if account.withdraw(huge_amount).is_err() {
+    // `account` is now poisoned — do NOT commit or reuse it.
+    // Reload a fresh, consistent copy instead.
+    account = repo.load(id).await?;
+}
+```
+
 ### 5. Test All Error Paths
 
 Ensure complete test coverage:
@@ -992,6 +1039,7 @@ Validation in event-sauce follows these principles:
 - **Skip validation on replay**: Use `apply_unchecked()` for performance
 - **Rich errors**: Use aggregate-specific error types with context
 - **Test thoroughly**: Cover valid cases, invalid cases, and boundaries
-- **Keep apply pure**: No validation in `ApplyEvent::apply()` methods
+- **Keep apply pure**: No validation, clock, RNG, or external state in `ApplyEvent::apply()` — replay must be deterministic
+- **A failed `apply()` poisons the aggregate**: discard and reload; committing a poisoned `AggregateRoot` fails with `Error::InvalidState`
 
 Next: [Aggregates Guide](aggregates.md) | [Events Guide](events.md)

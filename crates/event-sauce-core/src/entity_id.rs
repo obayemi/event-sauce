@@ -71,6 +71,68 @@ impl EntityId {
         Self(Uuid::nil())
     }
 
+    /// Creates a deterministic, namespaced entity ID from a name.
+    ///
+    /// Uses UUID version 5 (SHA-1) so the same `(namespace, name)` pair always
+    /// yields the same `EntityId`. This makes aggregate creation idempotent
+    /// under retries or message redelivery and lets an aggregate be looked up
+    /// by its *natural key* (e.g. an email, an external system identifier)
+    /// without maintaining a separate lookup table.
+    ///
+    /// Pick a stable, application-specific `namespace` UUID (often a constant)
+    /// to partition names so identical names in different domains do not
+    /// collide. For binary names, use
+    /// [`from_namespace_bytes`](Self::from_namespace_bytes).
+    ///
+    /// Contrast with [`new`](Self::new), which produces a random (UUID v4) ID
+    /// for aggregates that have no natural key.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use event_sauce_core::EntityId;
+    /// use uuid::Uuid;
+    ///
+    /// let namespace = Uuid::parse_str("6ba7b810-9dad-11d1-80b4-00c04fd430c8").unwrap();
+    ///
+    /// // Deterministic: the same name always maps to the same id.
+    /// let a = EntityId::from_namespace(namespace, "alice@example.com");
+    /// let b = EntityId::from_namespace(namespace, "alice@example.com");
+    /// assert_eq!(a, b);
+    ///
+    /// // Distinct names map to distinct ids.
+    /// let c = EntityId::from_namespace(namespace, "bob@example.com");
+    /// assert_ne!(a, c);
+    /// ```
+    #[must_use]
+    pub fn from_namespace(namespace: Uuid, name: &str) -> Self {
+        Self(Uuid::new_v5(&namespace, name.as_bytes()))
+    }
+
+    /// Creates a deterministic, namespaced entity ID from raw bytes.
+    ///
+    /// Identical to [`from_namespace`](Self::from_namespace) but accepts an
+    /// arbitrary byte slice as the name. Because `&str` hashing uses its UTF-8
+    /// bytes, `from_namespace(ns, "alice")` and
+    /// `from_namespace_bytes(ns, b"alice")` produce the same `EntityId`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use event_sauce_core::EntityId;
+    /// use uuid::Uuid;
+    ///
+    /// let namespace = Uuid::parse_str("6ba7b810-9dad-11d1-80b4-00c04fd430c8").unwrap();
+    ///
+    /// let from_str = EntityId::from_namespace(namespace, "alice");
+    /// let from_bytes = EntityId::from_namespace_bytes(namespace, b"alice");
+    /// assert_eq!(from_str, from_bytes);
+    /// ```
+    #[must_use]
+    pub fn from_namespace_bytes(namespace: Uuid, name: &[u8]) -> Self {
+        Self(Uuid::new_v5(&namespace, name))
+    }
+
     /// Returns the underlying UUID.
     ///
     /// # Examples
@@ -210,5 +272,71 @@ mod tests {
 
         let serialized = serde_json::to_string(&id).unwrap();
         assert_eq!(serialized, r#""550e8400-e29b-41d4-a716-446655440000""#);
+    }
+
+    // === L3: deterministic / namespaced (UUIDv5) entity IDs ===
+
+    #[test]
+    fn test_from_namespace_is_deterministic_for_same_name() {
+        // The same (namespace, name) pair must always yield the same id, so
+        // that aggregate creation is idempotent under retries/redelivery and an
+        // aggregate can be looked up by its natural key.
+        let namespace = Uuid::new_v4();
+
+        let a = EntityId::from_namespace(namespace, "alice");
+        let b = EntityId::from_namespace(namespace, "alice");
+
+        assert_eq!(a, b, "same namespace + name must produce the same EntityId");
+    }
+
+    #[test]
+    fn test_from_namespace_differs_by_name() {
+        let namespace = Uuid::new_v4();
+
+        let alice = EntityId::from_namespace(namespace, "alice");
+        let bob = EntityId::from_namespace(namespace, "bob");
+
+        assert_ne!(alice, bob, "different names must produce different ids");
+    }
+
+    #[test]
+    fn test_from_namespace_differs_by_namespace() {
+        let ns_one = Uuid::new_v4();
+        let ns_two = Uuid::new_v4();
+
+        let in_one = EntityId::from_namespace(ns_one, "alice");
+        let in_two = EntityId::from_namespace(ns_two, "alice");
+
+        assert_ne!(
+            in_one, in_two,
+            "the same name in different namespaces must produce different ids"
+        );
+    }
+
+    #[test]
+    fn test_from_namespace_produces_uuid_v5() {
+        // Deterministic, namespaced ids must be backed by UUID version 5 (SHA-1),
+        // mirroring the Python eventsourcing version-5 id convention.
+        let namespace = Uuid::new_v4();
+
+        let id = EntityId::from_namespace(namespace, "alice");
+
+        assert_eq!(
+            id.as_uuid().get_version(),
+            Some(uuid::Version::Sha1),
+            "from_namespace must produce a UUIDv5 (SHA-1) id"
+        );
+    }
+
+    #[test]
+    fn test_from_namespace_bytes_matches_str_form() {
+        // The bytes-based constructor must agree with the &str constructor for
+        // identical input, since &str hashing uses the UTF-8 bytes.
+        let namespace = Uuid::new_v4();
+
+        let from_str = EntityId::from_namespace(namespace, "alice");
+        let from_bytes = EntityId::from_namespace_bytes(namespace, b"alice");
+
+        assert_eq!(from_str, from_bytes);
     }
 }

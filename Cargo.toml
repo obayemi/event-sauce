@@ -38,7 +38,7 @@ thiserror = "2.0.16"
 anyhow = "1.0.99"
 
 # Utilities (latest stable)
-uuid = { version = "1.18.1", features = ["v4", "v7", "serde"] }
+uuid = { version = "1.18.1", features = ["v4", "v5", "v7", "serde"] }
 chrono = { version = "0.4.42", features = ["serde"] }
 tracing = "0.1.41"
 

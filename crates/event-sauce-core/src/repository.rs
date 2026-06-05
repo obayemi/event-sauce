@@ -702,6 +702,7 @@ mod tests {
             id,
             AggregateVersion::new(1),
             pending,
+            false,
         );
 
         repo.save_deleted(&mut deleted).await.unwrap();

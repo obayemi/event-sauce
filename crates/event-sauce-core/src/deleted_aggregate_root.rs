@@ -27,6 +27,12 @@ pub struct DeletedAggregateRoot<A: Aggregate> {
     entity_id: EntityId,
     version: AggregateVersion,
     pending_events: Vec<PendingEvent<A::Event>>,
+    /// Carried over from a poisoned [`AggregateRoot`](crate::AggregateRoot).
+    ///
+    /// If the source aggregate was poisoned by a failed `apply` before being
+    /// deleted, its state is inconsistent. The commit path refuses a poisoned
+    /// deleted root with [`crate::Error::InvalidState`] rather than persist it.
+    poisoned: bool,
 }
 
 impl<A: Aggregate> std::ops::Deref for DeletedAggregateRoot<A> {
@@ -50,6 +56,15 @@ impl<A: Aggregate> DeletedAggregateRoot<A> {
     #[must_use]
     pub fn version(&self) -> AggregateVersion {
         self.version
+    }
+
+    /// Returns `true` if this deleted root was produced from a poisoned
+    /// [`AggregateRoot`](crate::AggregateRoot).
+    ///
+    /// A poisoned deleted root holds inconsistent state and is refused by the
+    /// commit path with [`crate::Error::InvalidState`].
+    pub(crate) fn is_poisoned(&self) -> bool {
+        self.poisoned
     }
 
     /// Returns a reference to the deleted state.
@@ -90,18 +105,22 @@ impl<A: Aggregate> DeletedAggregateRoot<A> {
 
     /// Creates a deleted aggregate root from a delete operation with pending events.
     ///
-    /// Used by `AggregateRoot::apply_delete()` at command time.
+    /// Used by `AggregateRoot::apply_delete()` at command time. `poisoned`
+    /// carries the poison flag of the source aggregate so the commit path can
+    /// refuse an inconsistent deleted root.
     pub(crate) fn from_delete_with_pending(
         state: A::DeletedState,
         entity_id: EntityId,
         version: AggregateVersion,
         pending_events: Vec<PendingEvent<A::Event>>,
+        poisoned: bool,
     ) -> Self {
         Self {
             state,
             entity_id,
             version,
             pending_events,
+            poisoned,
         }
     }
 
@@ -118,6 +137,7 @@ impl<A: Aggregate> DeletedAggregateRoot<A> {
             entity_id,
             version,
             pending_events: Vec::new(),
+            poisoned: false,
         }
     }
 
@@ -134,6 +154,7 @@ impl<A: Aggregate> DeletedAggregateRoot<A> {
             entity_id,
             version,
             pending_events: Vec::new(),
+            poisoned: false,
         }
     }
 
@@ -170,6 +191,7 @@ where
             entity_id: self.entity_id,
             version: self.version,
             pending_events: self.pending_events.clone(),
+            poisoned: self.poisoned,
         }
     }
 }
@@ -264,8 +286,39 @@ mod tests {
             EntityId::new(),
             AggregateVersion::new(2),
             pending,
+            false,
         );
         assert_eq!(deleted.pending_events().len(), 1);
+    }
+
+    #[test]
+    fn test_deleted_aggregate_root_carries_poison() {
+        let entity = SimpleTestEntity {
+            id: EntityId::new(),
+            value: 0,
+        };
+        let deleted = DeletedAggregateRoot::<SimpleTestEntity>::from_delete_with_pending(
+            entity,
+            EntityId::new(),
+            AggregateVersion::new(2),
+            Vec::new(),
+            true,
+        );
+        assert!(deleted.is_poisoned());
+    }
+
+    #[test]
+    fn test_deleted_aggregate_root_replay_is_not_poisoned() {
+        let entity = SimpleTestEntity {
+            id: EntityId::new(),
+            value: 0,
+        };
+        let deleted = DeletedAggregateRoot::<SimpleTestEntity>::from_delete_replay(
+            entity,
+            EntityId::new(),
+            AggregateVersion::new(1),
+        );
+        assert!(!deleted.is_poisoned());
     }
 
     #[test]
@@ -284,6 +337,7 @@ mod tests {
             EntityId::new(),
             AggregateVersion::new(2),
             pending,
+            false,
         );
         deleted.clear_pending_events();
         assert!(deleted.pending_events().is_empty());
@@ -306,6 +360,7 @@ mod tests {
             EntityId::new(),
             AggregateVersion::new(2),
             pending,
+            false,
         );
         let with_actors = deleted.pending_events_with_actors();
         assert_eq!(with_actors[0].actor_id, Some(actor_id));
@@ -408,6 +463,7 @@ mod tests {
             EntityId::new(),
             AggregateVersion::new(2),
             pending,
+            false,
         );
 
         let metadata = crate::EventMetadata::new().with_correlation_id(uuid::Uuid::new_v4());
@@ -442,6 +498,7 @@ mod tests {
             EntityId::new(),
             AggregateVersion::new(2),
             pending,
+            false,
         );
 
         let new_metadata = crate::EventMetadata::new().with_correlation_id(uuid::Uuid::new_v4());
