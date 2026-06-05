@@ -313,21 +313,24 @@ impl<S: EventStore + 'static> PolicyContext<S> {
         Ok(())
     }
 
-    /// Flushes all buffered commits to the event store.
+    /// Flushes all buffered commits to the event store as one logical write.
     ///
     /// Called by [`PolicyRunner`] after a handler returns `Ok(())`. If the
     /// handler returns `Err`, this method is never called and the buffered
     /// commits are silently dropped.
+    ///
+    /// All buffered commits go through a single
+    /// [`append_batch`](EventStore::append_batch) call, so a handler that reacts
+    /// across several aggregates commits atomically on backends with real
+    /// transactions (e.g. `PostgreSQL`): the whole reaction succeeds or none of it
+    /// is persisted. On the in-memory backend the commits are applied per-stream.
     ///
     /// # Errors
     ///
     /// Returns an error if appending events or saving snapshots fails.
     pub(crate) async fn flush(&self) -> Result<()> {
         let commits: Vec<PreparedCommit> = self.pending_commits.lock().unwrap().drain(..).collect();
-        for prepared in commits {
-            crate::event_store::flush_prepared(&*self.store, prepared).await?;
-        }
-        Ok(())
+        crate::event_store::flush_prepared_batch(&*self.store, commits).await
     }
 
     // === Introspection ===

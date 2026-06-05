@@ -102,6 +102,11 @@ ctx.commit_deleted(&mut deleted_aggregate).await?;
 
 Commits through `PolicyContext` are **buffered**: they are only persisted to the event store when the handler returns `Ok(())`. If the handler returns `Err`, all buffered commits are discarded. This prevents partially-committed events on handler failure, and avoids duplicate events when the handler is retried.
 
+A handler may `ctx.commit` to **several aggregates** in one reaction — the canonical "move funds from account A to account B". When the handler returns `Ok(())`, all buffered commits are flushed through a single `EventStore::append_batch`:
+
+- On **PostgreSQL** the whole reaction is **atomic**: every aggregate's events commit in one transaction, or none do. A `ConcurrencyConflict` (or claim conflict) on any aggregate rolls back the entire reaction — so a partial failure can never leave aggregate A debited while aggregate B's credit is lost, and the at-least-once redelivery of the source event re-drives a clean (not double-applied) reaction.
+- On the **in-memory** backend the buffered commits are applied per-stream (not transactional), so a mid-flush failure can leave earlier aggregates written. Use the PostgreSQL backend when multi-aggregate reactions must be atomic.
+
 ### Introspection
 
 ```rust

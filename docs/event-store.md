@@ -451,6 +451,41 @@ store.commit(&mut account).await?;
 // All 4 events (open + 3 transactions) saved together
 ```
 
+### Multi-Aggregate Atomic Writes
+
+A single `commit()` covers one aggregate. When a use case must change **several
+aggregates together** — the canonical "move funds between two accounts" — use
+`Repository::save_all`, which persists every aggregate through a single
+`EventStore::append_batch`:
+
+```rust
+let repo = store.repository::<Account>();
+
+let mut from = repo.load(from_id).await?;
+let mut to = repo.load(to_id).await?;
+
+from.withdraw(amount)?;
+to.deposit(amount)?;
+
+// Both aggregates are persisted as one logical write.
+repo.save_all(&mut [&mut from, &mut to]).await?;
+```
+
+`append_batch` is the consistency-boundary primitive: it takes a `Vec<StreamCommit>`
+(one per stream) and writes them together.
+
+- **PostgreSQL** runs the whole batch in **one transaction** under a single append
+  serialization lock: all commits succeed or the whole batch rolls back. A
+  `ConcurrencyConflict` (or claim conflict) on any stream aborts the entire write —
+  no aggregate is left partially applied.
+- **In-memory** keeps the per-stream default: `append_batch` simply loops `append`,
+  so it is **not** transactional. A failure mid-batch leaves earlier streams
+  written. Use it for the API shape and single-process happy path; rely on the
+  PostgreSQL backend when atomic multi-aggregate writes matter.
+
+Each aggregate's pending events are cleared as it is prepared, and aggregates with
+no pending events are skipped.
+
 ## Best Practices
 
 ### 1. One Aggregate, One Store Commit
@@ -463,8 +498,13 @@ let mut order = load(&store, order_id).await?;
 order.add_item(item)?;
 store.commit(&mut order).await?;
 
-// ❌ Bad: Don't try to coordinate multiple aggregates in one commit
-// Use subscriptions and event-driven workflows instead
+// ✅ Also fine: an intentional, bounded multi-aggregate write via save_all
+// (atomic on PostgreSQL — see "Multi-Aggregate Atomic Writes" above).
+repo.save_all(&mut [&mut from, &mut to]).await?;
+
+// ❌ Bad: hand-rolling multiple separate commits and hoping they all land
+// store.commit(&mut from).await?; // if the next line fails, this is orphaned
+// store.commit(&mut to).await?;
 ```
 
 ### 2. Always Handle Conflicts

@@ -245,6 +245,13 @@ pub trait EventStore: Send + Sync {
         events: Vec<EventEnvelope>,
     ) -> Result<(), Self::Error>;
 
+    // Append several streams as one logical write — the consistency-boundary
+    // primitive behind atomic multi-aggregate policy reactions and
+    // `Repository::save_all`. PostgreSQL runs the whole batch in one
+    // transaction (all-or-nothing); the default (and the in-memory backend)
+    // loops `append` per stream and is NOT atomic.
+    async fn append_batch(&self, commits: Vec<StreamCommit>) -> Result<(), Self::Error>;
+
     // Load events from a specific stream
     async fn load_stream(
         &self,

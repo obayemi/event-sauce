@@ -1064,58 +1064,70 @@ impl PostgresEventStore {
     }
 }
 
-#[async_trait]
-impl EventStore for PostgresEventStore {
-    async fn append(
+impl PostgresEventStore {
+    /// Takes the per-log append serialization advisory lock inside the given
+    /// transaction.
+    ///
+    /// Serializes id-assignment-to-commit across ALL streams sharing this log.
+    /// The `events.id` BIGSERIAL is allocated at INSERT but the row only becomes
+    /// visible at COMMIT, so under READ COMMITTED two concurrent appends to
+    /// different streams can take ids N and N+1 yet commit in the opposite order.
+    /// A checkpoint reader scanning `WHERE id > checkpoint ORDER BY id ASC` could
+    /// then observe N+1, advance its checkpoint past it, and never see N once it
+    /// commits — silent, permanent event loss. Taking a transaction-scoped
+    /// advisory lock here, before allocating any id, forces insert order to equal
+    /// commit order. `pg_advisory_xact_lock` auto-releases at commit/rollback (no
+    /// manual unlock). Readers stay fully concurrent: the advisory lock does not
+    /// block SELECT. Only id-allocating appends take it — claims-only /
+    /// clear-only writes allocate no ids and must not serialize on it.
+    async fn acquire_append_lock(
         &self,
-        stream_id: StreamId,
-        events: Vec<EventEnvelope>,
-        expected_version: AggregateVersion,
-        claims: Vec<event_sauce_core::AggregateClaim>,
-        clear_claims: bool,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        events_table: &str,
     ) -> Result<()> {
-        if events.is_empty() && claims.is_empty() && !clear_claims {
-            return Ok(());
-        }
-
-        let mut tx = self
-            .pool
-            .begin()
+        #[allow(clippy::cast_possible_truncation)]
+        let lock_timeout_ms = self.append_lock_timeout.as_millis() as i64;
+        sqlx::query(&format!("SET LOCAL lock_timeout = {lock_timeout_ms}"))
+            .execute(&mut **tx)
             .await
-            .map_err(|e| Error::backend("Failed to start transaction", e))?;
+            .map_err(|e| Error::backend("Failed to set append lock timeout", e))?;
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(append_lock_key(events_table))
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| Error::backend("Failed to acquire append serialization lock", e))?;
+        Ok(())
+    }
+
+    /// Persists one stream's events and claims inside an already-open
+    /// transaction that already holds the append lock.
+    ///
+    /// Runs the version precheck, inserts each event (translating a unique
+    /// violation into a typed `ConcurrencyConflict`), and applies claims. Returns
+    /// the global id of the last inserted event (0 if this commit had no events),
+    /// so the caller can emit a single NOTIFY for the whole transaction.
+    ///
+    /// Does NOT begin/commit the transaction or emit NOTIFY — those are the
+    /// caller's responsibility so that `append` and `append_batch` can share this
+    /// body while controlling transaction and notification scope.
+    async fn write_commit_in_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        events_table: &str,
+        commit: event_sauce_core::StreamCommit,
+    ) -> Result<i64> {
+        let event_sauce_core::StreamCommit {
+            stream_id,
+            events,
+            expected_version,
+            claims,
+            clear_claims,
+        } = commit;
+        let mut last_inserted_id: i64 = 0;
 
         if !events.is_empty() {
-            // Check current version
-            let events_table = self.qualify_table("events");
-
-            // Serialize id-assignment-to-commit across ALL streams sharing this
-            // log. The `events.id` BIGSERIAL is allocated at INSERT but the row
-            // only becomes visible at COMMIT, so under READ COMMITTED two
-            // concurrent appends to different streams can take ids N and N+1 yet
-            // commit in the opposite order. A checkpoint reader scanning
-            // `WHERE id > checkpoint ORDER BY id ASC` could then observe N+1,
-            // advance its checkpoint past it, and never see N once it commits —
-            // silent, permanent event loss. Taking a transaction-scoped advisory
-            // lock here, before allocating any id, forces insert order to equal
-            // commit order. `pg_advisory_xact_lock` auto-releases at
-            // commit/rollback (no manual unlock). Readers stay fully concurrent:
-            // the advisory lock does not block SELECT. Only id-allocating appends
-            // take it — claims-only / clear-only appends (handled below) allocate
-            // no ids and must not serialize on it.
-            #[allow(clippy::cast_possible_truncation)]
-            let lock_timeout_ms = self.append_lock_timeout.as_millis() as i64;
-            sqlx::query(&format!("SET LOCAL lock_timeout = {lock_timeout_ms}"))
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| Error::backend("Failed to set append lock timeout", e))?;
-            sqlx::query("SELECT pg_advisory_xact_lock($1)")
-                .bind(append_lock_key(&events_table))
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| Error::backend("Failed to acquire append serialization lock", e))?;
-
             let current_version =
-                Self::current_stream_version(&mut tx, &events_table, &stream_id).await?;
+                Self::current_stream_version(tx, events_table, &stream_id).await?;
 
             if current_version != expected_version {
                 return Err(Error::concurrency_conflict(
@@ -1124,10 +1136,6 @@ impl EventStore for PostgresEventStore {
                 ));
             }
 
-            // Insert events; capture the global id of the last insert so we
-            // can emit it as the NOTIFY payload (a hint to LISTENers about
-            // how far this commit advanced the log).
-            let mut last_inserted_id: i64 = 0;
             for (idx, event) in events.iter().enumerate() {
                 #[allow(clippy::cast_possible_wrap)]
                 let stream_version = expected_version.as_i64() + idx as i64;
@@ -1153,7 +1161,7 @@ impl EventStore for PostgresEventStore {
                     .bind(event.metadata.as_ref().and_then(|m| m.correlation_id))
                     .bind(event.metadata.as_ref().and_then(|m| m.causation_id))
                     .bind(event.metadata.as_ref().and_then(|m| m.additional.clone()))
-                    .fetch_one(&mut *tx)
+                    .fetch_one(&mut **tx)
                     .await;
 
                 last_inserted_id = match insert_result {
@@ -1176,28 +1184,132 @@ impl EventStore for PostgresEventStore {
                     Err(e) => return Err(Error::backend("Failed to insert event", e)),
                 };
             }
-
-            // Queue a NOTIFY with the position of the last inserted event.
-            // Postgres holds notifications until commit, so this fires only
-            // if the transaction succeeds.
-            let channel = self.notify_channel();
-            sqlx::query("SELECT pg_notify($1, $2)")
-                .bind(&channel)
-                .bind(last_inserted_id.to_string())
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| Error::backend("Failed to issue NOTIFY", e))?;
         }
 
         // Handle claims
         Self::handle_claims(
-            &mut tx,
+            tx,
             &self.qualify_table("aggregate_claims"),
             &stream_id,
             claims,
             clear_claims,
         )
         .await?;
+
+        Ok(last_inserted_id)
+    }
+
+    /// Emits a single NOTIFY carrying the highest inserted id for the
+    /// transaction. Postgres holds notifications until commit, so this fires only
+    /// if the transaction succeeds. A `last_inserted_id` of 0 means no events
+    /// were inserted (claims-only / clear-only) — nothing to notify.
+    async fn notify_inserted(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        last_inserted_id: i64,
+    ) -> Result<()> {
+        if last_inserted_id == 0 {
+            return Ok(());
+        }
+        let channel = self.notify_channel();
+        sqlx::query("SELECT pg_notify($1, $2)")
+            .bind(&channel)
+            .bind(last_inserted_id.to_string())
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| Error::backend("Failed to issue NOTIFY", e))?;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl EventStore for PostgresEventStore {
+    async fn append(
+        &self,
+        stream_id: StreamId,
+        events: Vec<EventEnvelope>,
+        expected_version: AggregateVersion,
+        claims: Vec<event_sauce_core::AggregateClaim>,
+        clear_claims: bool,
+    ) -> Result<()> {
+        if events.is_empty() && claims.is_empty() && !clear_claims {
+            return Ok(());
+        }
+
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| Error::backend("Failed to start transaction", e))?;
+
+        let events_table = self.qualify_table("events");
+
+        // Only id-allocating appends take the serialization lock.
+        if !events.is_empty() {
+            self.acquire_append_lock(&mut tx, &events_table).await?;
+        }
+
+        let last_inserted_id = self
+            .write_commit_in_tx(
+                &mut tx,
+                &events_table,
+                event_sauce_core::StreamCommit {
+                    stream_id,
+                    events,
+                    expected_version,
+                    claims,
+                    clear_claims,
+                },
+            )
+            .await?;
+
+        self.notify_inserted(&mut tx, last_inserted_id).await?;
+
+        tx.commit()
+            .await
+            .map_err(|e| Error::backend("Failed to commit transaction", e))?;
+
+        Ok(())
+    }
+
+    async fn append_batch(&self, commits: Vec<event_sauce_core::StreamCommit>) -> Result<()> {
+        // Drop no-op commits so a batch of only empty commits stays a true no-op
+        // (matching `append`'s early return).
+        let commits: Vec<event_sauce_core::StreamCommit> = commits
+            .into_iter()
+            .filter(|c| !(c.events.is_empty() && c.claims.is_empty() && !c.clear_claims))
+            .collect();
+        if commits.is_empty() {
+            return Ok(());
+        }
+
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| Error::backend("Failed to start transaction", e))?;
+
+        let events_table = self.qualify_table("events");
+
+        // Take the append serialization lock ONCE for the whole batch if any
+        // commit allocates ids. Holding it across all streams keeps the
+        // insert-order = commit-order invariant for the batch.
+        if commits.iter().any(|c| !c.events.is_empty()) {
+            self.acquire_append_lock(&mut tx, &events_table).await?;
+        }
+
+        // Process every commit in the same transaction; the first conflict (or
+        // any error) propagates and rolls the whole batch back. Track the highest
+        // inserted id across the batch for a single NOTIFY.
+        let mut max_inserted_id: i64 = 0;
+        for commit in commits {
+            let last = self
+                .write_commit_in_tx(&mut tx, &events_table, commit)
+                .await?;
+            max_inserted_id = max_inserted_id.max(last);
+        }
+
+        self.notify_inserted(&mut tx, max_inserted_id).await?;
 
         tx.commit()
             .await
@@ -2981,5 +3093,312 @@ mod tests {
             .execute(&mut *lock_conn)
             .await
             .expect("release session advisory lock");
+    }
+
+    // ========================================================================
+    // M3-L1: Multi-aggregate atomic flush / append_batch
+    //
+    // A policy reaction that touches two aggregates in one handler (the
+    // canonical move-funds-between-two-accounts) must be all-or-nothing on
+    // Postgres. Today `PolicyContext::flush` loops `append()` once per buffered
+    // commit, each its own transaction, so a partial failure leaves the first
+    // aggregate committed and the second not — and at-least-once redelivery of
+    // the source event can then double-apply the surviving half.
+    // ========================================================================
+
+    use event_sauce_core::{
+        Aggregate, AggregateError, AggregateRoot, ApplyEvent, CheckpointStore, DefaultEntity,
+        DomainEvent, Entity, EntityId, EventApplicator, EventFilter, Policy, PolicyContext,
+        PolicyRunner,
+    };
+
+    /// Minimal `DefaultEntity` aggregate used by the multi-aggregate flush test.
+    /// One balance, one event kind ("credit"); no macros so the test is
+    /// self-contained in the postgres crate (which has no `paste`/macro deps).
+    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    struct Acct {
+        id: EntityId,
+        balance: i64,
+    }
+
+    impl Entity for Acct {
+        fn new(id: EntityId) -> Self {
+            Self { id, balance: 0 }
+        }
+        fn entity_id(&self) -> EntityId {
+            self.id
+        }
+    }
+
+    impl DefaultEntity for Acct {}
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("acct error")]
+    struct AcctError;
+    impl AggregateError for AcctError {}
+
+    impl Aggregate for Acct {
+        type Event = AcctEvent;
+        type Error = AcctError;
+        type DeletedState = Self;
+    }
+
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+    enum AcctEvent {
+        Credited { amount: i64 },
+    }
+
+    impl DomainEvent for AcctEvent {
+        type Aggregate = Acct;
+        fn event_type(&self) -> &'static str {
+            "Acct.Credited"
+        }
+        fn event_version(&self) -> EventVersion {
+            EventVersion::new(1)
+        }
+        fn occurred_at(&self) -> chrono::DateTime<chrono::Utc> {
+            chrono::Utc::now()
+        }
+    }
+
+    impl ApplyEvent<Acct> for AcctEvent {
+        fn apply(&self, entity: &mut Acct) {
+            match self {
+                AcctEvent::Credited { amount } => entity.balance += amount,
+            }
+        }
+    }
+
+    impl EventApplicator<Acct> for AcctEvent {
+        fn dispatch(&self, entity: &mut Acct) -> std::result::Result<(), AcctError> {
+            self.apply(entity);
+            Ok(())
+        }
+        fn dispatch_unchecked(&self, entity: &mut Acct) {
+            self.apply(entity);
+        }
+    }
+
+    /// Policy whose handler commits to two DIFFERENT `Acct` aggregates (a
+    /// debit/credit pair). Both are buffered in `PolicyContext`; the second
+    /// aggregate's stream is pre-seeded so its append conflicts at flush time.
+    struct TransferPolicy {
+        first_id: EntityId,
+        second_id: EntityId,
+    }
+
+    #[async_trait]
+    impl<S: EventStore + 'static> Policy<S> for TransferPolicy {
+        fn name(&self) -> &'static str {
+            "TransferPolicy"
+        }
+        fn event_filter(&self) -> EventFilter {
+            EventFilter::by_event_type("Trigger.Fired")
+        }
+        async fn handle(
+            &self,
+            _event: &EventEnvelope,
+            ctx: &PolicyContext<S>,
+        ) -> event_sauce_core::Result<()> {
+            // First aggregate commits cleanly.
+            let mut first = AggregateRoot::<Acct>::new(self.first_id);
+            first.apply(AcctEvent::Credited { amount: 100 }).unwrap();
+            ctx.commit(&mut first).await?;
+
+            // Second aggregate: a fresh root (expected_version = initial), but
+            // its stream was pre-seeded to version 1, so its append will raise
+            // ConcurrencyConflict at flush time.
+            let mut second = AggregateRoot::<Acct>::new(self.second_id);
+            second.apply(AcctEvent::Credited { amount: 100 }).unwrap();
+            ctx.commit(&mut second).await?;
+
+            Ok(())
+        }
+    }
+
+    /// RED (assertion-level): the canonical multi-aggregate reaction must be
+    /// atomic on Postgres. The handler commits aggregate A (first) and then
+    /// aggregate B (second), where B's commit conflicts. After the failed
+    /// reaction, NEITHER aggregate's event may be persisted.
+    ///
+    /// TODAY `flush` appends A in its own transaction (which commits) before B
+    /// is even attempted, so A's `Acct.Credited` survives the failure — this
+    /// assertion fails (A is present). AFTER the M3 fix, both stream commits go
+    /// through a single `append_batch` transaction, so A rolls back with B and
+    /// this passes.
+    #[tokio::test]
+    async fn test_flush_multi_aggregate_is_atomic() {
+        let db = TestDatabase::new().await.unwrap();
+
+        // Checkpoint store on the public schema (TestDatabase migrates events
+        // there); create the checkpoints table.
+        let cp = std::sync::Arc::new(
+            crate::PostgresCheckpointStore::builder()
+                .pool(db.pool().clone())
+                .schema("public")
+                .build()
+                .expect("pool was set"),
+        );
+        cp.migrate().await.unwrap();
+
+        let store = std::sync::Arc::new(
+            PostgresEventStore::builder()
+                .pool(db.pool().clone())
+                .schema("public")
+                .checkpoint_store(cp.clone())
+                .build()
+                .expect("pool was set"),
+        );
+
+        let first_id = EntityId::new();
+        let second_id = EntityId::new();
+
+        // Pre-seed the SECOND aggregate's stream so a fresh-root append (which
+        // expects initial version) loses on the version precheck → conflict.
+        store
+            .append(
+                StreamId::new("Acct", second_id.as_uuid()),
+                vec![create_test_envelope_with_type(
+                    "Acct.Credited",
+                    "Acct",
+                    second_id.as_uuid(),
+                )],
+                AggregateVersion::initial(),
+                vec![],
+                false,
+            )
+            .await
+            .unwrap();
+
+        // Seed the policy checkpoint to start so it processes the trigger event.
+        cp.save_checkpoint("TransferPolicy", Position::start())
+            .await
+            .unwrap();
+
+        // Append the trigger event the policy reacts to.
+        store
+            .append(
+                StreamId::new("Trigger", Uuid::new_v4()),
+                vec![create_test_envelope_with_type(
+                    "Trigger.Fired",
+                    "Trigger",
+                    Uuid::new_v4(),
+                )],
+                AggregateVersion::initial(),
+                vec![],
+                false,
+            )
+            .await
+            .unwrap();
+
+        let runner = PolicyRunner::new(std::sync::Arc::clone(&store), cp.clone()).register(
+            std::sync::Arc::new(TransferPolicy {
+                first_id,
+                second_id,
+            }),
+        );
+
+        // The reaction must fail because the second commit conflicts.
+        let result = runner.process_pending().await;
+        let err = result.expect_err("multi-aggregate reaction should fail on the conflict");
+        assert!(
+            err.is_concurrency_conflict(),
+            "expected the second commit to surface a ConcurrencyConflict, got: {err:?}"
+        );
+
+        // ATOMICITY: the FIRST aggregate must NOT have been persisted — the
+        // whole reaction rolls back together. (Today it IS persisted, so this
+        // fails: RED.)
+        let first_version = store
+            .get_version(StreamId::new("Acct", first_id.as_uuid()))
+            .await
+            .unwrap();
+        assert_eq!(
+            first_version,
+            AggregateVersion::initial(),
+            "first aggregate's event must roll back with the failed second commit; \
+             it is currently persisted in its own transaction (the multi-aggregate \
+             atomicity bug)"
+        );
+
+        let first_count = store
+            .count_events_fast(StreamId::new("Acct", first_id.as_uuid()))
+            .await
+            .unwrap();
+        assert_eq!(
+            first_count, 0,
+            "no events for the first aggregate may survive a failed multi-aggregate reaction"
+        );
+    }
+
+    /// RED (compile-gap + atomicity proof): the new `append_batch` primitive
+    /// must commit all streams in ONE transaction. Build two `StreamCommit`s
+    /// for two different aggregates; make the second's `expected_version` wrong
+    /// so its insert raises `ConcurrencyConflict`. `append_batch` must return
+    /// that error AND leave NEITHER stream with any persisted events.
+    ///
+    /// TODAY `StreamCommit` and `EventStore::append_batch` do not exist, so this
+    /// is a compile-gap RED until the M3 production code lands.
+    #[tokio::test]
+    async fn test_append_batch_is_atomic() {
+        let db = TestDatabase::new().await.unwrap();
+        let store = db.store();
+
+        let id_a = Uuid::new_v4();
+        let id_b = Uuid::new_v4();
+        let stream_a = StreamId::new("Acct", id_a);
+        let stream_b = StreamId::new("Acct", id_b);
+
+        // Second commit carries a deliberately-wrong expected_version: an empty
+        // stream is at initial(), but we claim version 5, so its insert path
+        // raises a ConcurrencyConflict.
+        let commits = vec![
+            event_sauce_core::StreamCommit {
+                stream_id: stream_a.clone(),
+                events: vec![create_test_envelope_with_type(
+                    "Acct.Credited",
+                    "Acct",
+                    id_a,
+                )],
+                expected_version: AggregateVersion::initial(),
+                claims: vec![],
+                clear_claims: false,
+            },
+            event_sauce_core::StreamCommit {
+                stream_id: stream_b.clone(),
+                events: vec![create_test_envelope_with_type(
+                    "Acct.Credited",
+                    "Acct",
+                    id_b,
+                )],
+                expected_version: AggregateVersion::new(5),
+                claims: vec![],
+                clear_claims: false,
+            },
+        ];
+
+        let result = store.append_batch(commits).await;
+        let err = result.expect_err("append_batch must fail when any commit conflicts");
+        assert!(
+            err.is_concurrency_conflict(),
+            "expected ConcurrencyConflict from the second commit, got: {err:?}"
+        );
+
+        // Whole batch rolled back: neither stream has any events.
+        assert_eq!(
+            store.get_version(stream_a.clone()).await.unwrap(),
+            AggregateVersion::initial(),
+            "first stream must roll back with the failed batch"
+        );
+        assert_eq!(
+            store.get_version(stream_b.clone()).await.unwrap(),
+            AggregateVersion::initial(),
+            "second stream must not be partially written"
+        );
+        assert_eq!(
+            store.count_events_fast(stream_a).await.unwrap(),
+            0,
+            "no events may survive an atomic batch that failed"
+        );
     }
 }

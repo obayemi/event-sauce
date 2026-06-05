@@ -70,6 +70,45 @@ where
         self.store.commit(aggregate).await
     }
 
+    /// Saves several aggregate roots as one logical write.
+    ///
+    /// Prepares each aggregate (events, claims, expected version, snapshot)
+    /// through the same path as [`save`](Self::save), then persists them all via
+    /// a single [`append_batch`](EventStore::append_batch). On backends with real
+    /// transactions (e.g. `PostgreSQL`) the whole set commits atomically: all
+    /// aggregates are saved or none are. The in-memory backend applies them
+    /// per-stream (not atomic).
+    ///
+    /// Pending events are cleared on each aggregate as it is prepared. Aggregates
+    /// with no pending events are skipped.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if serialization, the event store operation, or
+    /// concurrency control fails. On atomic backends a failure rolls the whole
+    /// batch back.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let mut from = repo.load(from_id).await?;
+    /// let mut to = repo.load(to_id).await?;
+    /// from.apply(Withdrawn { amount })?;
+    /// to.apply(Deposited { amount })?;
+    /// repo.save_all(&mut [&mut from, &mut to]).await?;
+    /// ```
+    pub async fn save_all(&self, aggregates: &mut [&mut AggregateRoot<A>]) -> Result<()> {
+        let mut prepared = Vec::with_capacity(aggregates.len());
+        for aggregate in aggregates.iter_mut() {
+            if let Some(commit) =
+                crate::event_store::prepare_commit(&*self.store, aggregate).await?
+            {
+                prepared.push(commit);
+            }
+        }
+        crate::event_store::flush_prepared_batch(&*self.store, prepared).await
+    }
+
     /// Loads an aggregate, applies a closure that mutates it, and saves the result.
     ///
     /// The most common command-handler pattern condensed into a single call. The

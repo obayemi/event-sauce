@@ -28,6 +28,58 @@ pub(crate) struct PreparedCommit {
     pub clear_claims: bool,
 }
 
+/// A single stream's contribution to a multi-stream atomic write.
+///
+/// Mirrors the parameters of [`EventStore::append`] for one stream. A batch of
+/// `StreamCommit`s is passed to [`EventStore::append_batch`] so that several
+/// aggregates can be persisted together — atomically on backends that support
+/// it (e.g. `PostgreSQL`), or stream-by-stream on backends whose default
+/// implementation simply loops [`append`](EventStore::append).
+///
+/// This is the consistency-boundary primitive behind atomic multi-aggregate
+/// policy reactions and [`Repository::save_all`].
+///
+/// # Examples
+///
+/// ```
+/// use event_sauce_core::{AggregateVersion, StreamCommit, StreamId};
+/// use uuid::Uuid;
+///
+/// let commit = StreamCommit {
+///     stream_id: StreamId::new("Account", Uuid::new_v4()),
+///     events: vec![],
+///     expected_version: AggregateVersion::initial(),
+///     claims: vec![],
+///     clear_claims: false,
+/// };
+/// assert_eq!(commit.expected_version, AggregateVersion::initial());
+/// ```
+#[derive(Debug, Clone)]
+pub struct StreamCommit {
+    /// The stream the events belong to.
+    pub stream_id: StreamId,
+    /// The events to append, in order.
+    pub events: Vec<EventEnvelope>,
+    /// The version the stream is expected to be at (optimistic concurrency).
+    pub expected_version: AggregateVersion,
+    /// Uniqueness claims to enforce transactionally.
+    pub claims: Vec<AggregateClaim>,
+    /// When true, all existing claims for the aggregate are cleared.
+    pub clear_claims: bool,
+}
+
+impl From<&PreparedCommit> for StreamCommit {
+    fn from(prepared: &PreparedCommit) -> Self {
+        Self {
+            stream_id: prepared.stream_id.clone(),
+            events: prepared.events.clone(),
+            expected_version: prepared.expected_version,
+            claims: prepared.claims.clone(),
+            clear_claims: prepared.clear_claims,
+        }
+    }
+}
+
 /// Stream ID uniquely identifying an event stream.
 ///
 /// Combines aggregate type and aggregate ID to create a unique stream identifier.
@@ -306,6 +358,41 @@ pub trait EventStore: Send + Sync {
         claims: Vec<AggregateClaim>,
         clear_claims: bool,
     ) -> Result<()>;
+
+    /// Appends several streams' events as one logical write.
+    ///
+    /// This is the consistency-boundary primitive behind atomic multi-aggregate
+    /// policy reactions (see [`PolicyContext::flush`](crate::PolicyContext)) and
+    /// [`Repository::save_all`]. Each [`StreamCommit`] carries the same data as a
+    /// single [`append`](Self::append) call for one stream.
+    ///
+    /// # Atomicity
+    ///
+    /// The default implementation simply loops [`append`](Self::append) over each
+    /// commit, so it is **not** atomic: a partial failure leaves earlier commits
+    /// persisted. Backends with real transactions (e.g. `PostgreSQL`) override this
+    /// to run the whole batch in a single transaction — all commits succeed or
+    /// none do. The in-memory backend keeps the per-stream default.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::ConcurrencyConflict` if any commit's expected version
+    /// doesn't match, or `Error::ClaimConflict` if a claim is already held by
+    /// another aggregate. On atomic backends the whole batch rolls back; on the
+    /// looping default, commits before the failing one are already persisted.
+    async fn append_batch(&self, commits: Vec<StreamCommit>) -> Result<()> {
+        for commit in commits {
+            self.append(
+                commit.stream_id,
+                commit.events,
+                commit.expected_version,
+                commit.claims,
+                commit.clear_claims,
+            )
+            .await?;
+        }
+        Ok(())
+    }
 
     /// Loads events from a stream starting at a specific version.
     async fn load_stream(
@@ -740,6 +827,40 @@ pub(crate) async fn flush_prepared<S: EventStore + ?Sized>(
                 error = %e,
                 "Failed to save snapshot"
             );
+        }
+    }
+
+    Ok(())
+}
+
+/// Flushes several prepared commits as one logical write.
+///
+/// Appends every commit's events through a single
+/// [`append_batch`](EventStore::append_batch) call — so on backends with real
+/// transactions (e.g. `PostgreSQL`) the whole set is atomic. Snapshots are then
+/// saved best-effort, after the events are durable.
+///
+/// Returns `Ok(())` immediately for an empty batch.
+pub(crate) async fn flush_prepared_batch<S: EventStore + ?Sized>(
+    store: &S,
+    prepared: Vec<PreparedCommit>,
+) -> Result<()> {
+    if prepared.is_empty() {
+        return Ok(());
+    }
+
+    let commits: Vec<StreamCommit> = prepared.iter().map(StreamCommit::from).collect();
+    store.append_batch(commits).await?;
+
+    for commit in prepared {
+        if let Some(snapshot) = commit.snapshot {
+            if let Err(e) = store.save_snapshot(snapshot).await {
+                tracing::warn!(
+                    stream_id = %commit.stream_id,
+                    error = %e,
+                    "Failed to save snapshot"
+                );
+            }
         }
     }
 
