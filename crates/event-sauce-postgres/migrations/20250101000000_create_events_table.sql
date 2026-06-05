@@ -48,6 +48,11 @@ CREATE TABLE IF NOT EXISTS snapshots (
     snapshot_data JSONB NOT NULL,
     is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
 
+    -- Schema version of the serialized state (stamped from
+    -- Aggregate::snapshot_version()). Nullable so legacy rows read back as
+    -- NULL, which the SnapshotRow mapper interprets as schema version 0.
+    snapshot_schema_version BIGINT,
+
     -- Audit
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
 

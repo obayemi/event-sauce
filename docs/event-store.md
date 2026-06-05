@@ -191,6 +191,17 @@ where
 > `@init` command), not `load()`. Handle `Error::NotFound` (`err.is_not_found()`)
 > when an ID may not exist yet.
 
+> **Snapshots self-heal.** When snapshots are enabled, `load()` uses a stored
+> snapshot as a fast-forward cache and then replays only the events after it.
+> The snapshot is a cache, never the source of truth: if it is stale or
+> incompatible — its `aggregate_type` or `snapshot_schema_version` no longer
+> matches, or it can no longer be deserialized — it is discarded and the state
+> is rebuilt from the full event stream. Bump `Aggregate::snapshot_version()`
+> (e.g. `#[aggregate(snapshot_version = N)]`) when you change the serialized
+> state shape so older snapshots are transparently discarded; the next
+> `commit()` writes a fresh snapshot at the new version. See
+> [architecture.md](architecture.md#snapshots-are-a-cache-never-the-source-of-truth).
+
 **Example:**
 
 ```rust

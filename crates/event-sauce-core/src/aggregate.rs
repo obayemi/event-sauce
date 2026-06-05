@@ -155,6 +155,25 @@ pub trait Aggregate: Entity + Into<Self::DeletedState> {
                 .to_string(),
         )
     }
+
+    /// Returns the schema version of this aggregate's snapshotted state.
+    ///
+    /// Snapshots are a cache, never the source of truth: the authoritative
+    /// state is always derivable by replaying events. A snapshot is stamped
+    /// with the value returned here at write time and is only reused on load
+    /// when its stamp still matches the current `snapshot_version()`. Bump this
+    /// whenever you make an incompatible change to the aggregate's serialized
+    /// shape (renamed/removed fields, changed field semantics) — any older
+    /// snapshot is then transparently discarded and the aggregate is rebuilt
+    /// from events, with a fresh snapshot written at the new version on the
+    /// next commit.
+    ///
+    /// Defaults to `0`. Override by using `#[aggregate(..., snapshot_version = N)]`
+    /// or by implementing manually.
+    #[must_use]
+    fn snapshot_version() -> u32 {
+        0
+    }
 }
 
 #[cfg(test)]

@@ -632,23 +632,21 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
                                     );
                                 }
                                 OnError::Retry(config) => {
-                                    let should_skip = match self
-                                        .retry_handler(policy, &envelope, config)
-                                        .await
-                                    {
-                                        Ok(skip) => skip,
-                                        Err(e) => {
-                                            // Retries exhausted under
-                                            // OnRetryExhausted::Fail. This is the
-                                            // OnError::Fail path: persist progress up
-                                            // to the last fully-handled event (this
-                                            // failing event is NOT advanced) before
-                                            // failing, so a re-run resumes here and
-                                            // does not replay already-flushed effects.
-                                            self.save_checkpoints(&policy_checkpoints).await?;
-                                            return Err(e);
-                                        }
-                                    };
+                                    let should_skip =
+                                        match self.retry_handler(policy, &envelope, config).await {
+                                            Ok(skip) => skip,
+                                            Err(e) => {
+                                                // Retries exhausted under
+                                                // OnRetryExhausted::Fail. This is the
+                                                // OnError::Fail path: persist progress up
+                                                // to the last fully-handled event (this
+                                                // failing event is NOT advanced) before
+                                                // failing, so a re-run resumes here and
+                                                // does not replay already-flushed effects.
+                                                self.save_checkpoints(&policy_checkpoints).await?;
+                                                return Err(e);
+                                            }
+                                        };
                                     if !should_skip {
                                         round_processed += 1;
                                     }

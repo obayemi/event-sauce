@@ -389,6 +389,42 @@ Snapshots trade:
 - (-) Additional storage
 - (-) Complexity
 
+#### Snapshots are a cache, never the source of truth
+
+The event log is always the authoritative source of state; a snapshot is only a
+materialized cache of a point on the timeline. `load()` therefore *self-heals*:
+when a stored snapshot can no longer be trusted it is silently discarded and the
+aggregate is rebuilt from events instead. A snapshot is treated as a **cache
+miss** (and the loader falls through to full event replay) when any of these
+hold:
+
+1. its `aggregate_type` no longer matches the type being loaded;
+2. its `snapshot_schema_version` no longer matches `A::snapshot_version()`;
+3. its data can no longer be deserialized into the current aggregate shape.
+
+Each aggregate declares a snapshot schema version via the
+`Aggregate::snapshot_version()` method (default `0`). Bump it whenever you make
+an incompatible change to the aggregate's serialized state shape — for example
+renaming or removing a field, or changing a field's meaning:
+
+```rust
+#[aggregate(event = "OrderEvent", error = "OrderError", snapshot_version = 1)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct Order { /* new state shape */ }
+```
+
+After a bump, every snapshot written under the old version is automatically
+ignored on load (a `tracing::warn!` records the miss) and the state is
+reconstructed from events. The next `commit()` writes a fresh snapshot stamped
+at the new version, so the cache repopulates without any manual migration or
+backfill. This makes snapshots safe to evolve: a stale snapshot can never
+corrupt state or take an aggregate offline.
+
+> **Encryption interaction:** an encrypted snapshot whose key has been
+> crypto-shredded is *not* a cache miss — it intentionally returns
+> `KeyNotFound` (the data is unrecoverable by design), never a silent
+> fall-through to replay.
+
 ### Event Streaming
 
 Use async streams for memory efficiency:

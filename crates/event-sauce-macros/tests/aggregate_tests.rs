@@ -538,6 +538,77 @@ fn test_aggregate_encrypted_works_with_aggregate_root() {
 }
 
 // ============================================================================
+// Tests for #[aggregate(snapshot_version = N)] — snapshot schema versioning
+// ============================================================================
+
+#[derive(Debug, Error)]
+#[error("Versioned agg error")]
+struct VersionedAggError;
+
+impl AggregateError for VersionedAggError {}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum VersionedAggEvent {
+    Created { value: i32 },
+}
+
+impl DomainEvent for VersionedAggEvent {
+    type Aggregate = VersionedAgg;
+    fn event_type(&self) -> &'static str {
+        match self {
+            VersionedAggEvent::Created { .. } => "VersionedAgg.Created",
+        }
+    }
+    fn event_version(&self) -> event_sauce_core::EventVersion {
+        event_sauce_core::EventVersion::new(1)
+    }
+    fn occurred_at(&self) -> chrono::DateTime<Utc> {
+        Utc::now()
+    }
+}
+
+impl ApplyEvent<VersionedAgg> for VersionedAggEvent {
+    fn apply(&self, entity: &mut VersionedAgg) {
+        match self {
+            VersionedAggEvent::Created { value } => entity.value = *value,
+        }
+    }
+}
+
+impl EventApplicator<VersionedAgg> for VersionedAggEvent {
+    fn dispatch(&self, entity: &mut VersionedAgg) -> Result<(), VersionedAggError> {
+        ApplyEvent::apply(self, entity);
+        Ok(())
+    }
+    fn dispatch_unchecked(&self, entity: &mut VersionedAgg) {
+        ApplyEvent::apply(self, entity);
+    }
+}
+
+#[event_sauce_macros::aggregate(
+    event = "VersionedAggEvent",
+    error = "VersionedAggError",
+    snapshot_version = 3
+)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct VersionedAgg {
+    #[id]
+    id: EntityId,
+    value: i32,
+}
+
+#[test]
+fn test_aggregate_snapshot_version_override() {
+    assert_eq!(VersionedAgg::snapshot_version(), 3);
+}
+
+#[test]
+fn test_aggregate_default_snapshot_version_is_zero() {
+    // TestCounter was defined without `snapshot_version` — should default to 0.
+    assert_eq!(TestCounter::snapshot_version(), 0);
+}
+
+// ============================================================================
 // Tests for typed AggregateId in #[aggregate] struct
 // ============================================================================
 

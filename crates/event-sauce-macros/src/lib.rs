@@ -41,6 +41,12 @@ struct AggregateAttrs {
     /// Generates `fn claims(&self) -> Vec<AggregateClaim> { self.aggregate_claims() }`.
     #[darling(default)]
     claims: bool,
+    /// Optional snapshot schema version. When set, generates
+    /// `fn snapshot_version() -> u32 { <n> }`. Bump this when the aggregate's
+    /// serialized shape changes incompatibly so stale snapshots are discarded
+    /// and rebuilt from events.
+    #[darling(default)]
+    snapshot_version: Option<u32>,
 }
 
 /// Attributes for the #[event(...)] container attribute
@@ -1196,6 +1202,10 @@ pub fn aggregate(attr: TokenStream, item: TokenStream) -> TokenStream {
     } else {
         quote! {}
     };
+    let snapshot_version_override = aggregate_attrs.snapshot_version.map_or_else(
+        || quote! {},
+        |v| quote! { fn snapshot_version() -> u32 { #v } },
+    );
     let deleted_state_type = aggregate_attrs.deleted_state.as_deref().map_or_else(
         || quote! { type DeletedState = Self; },
         |ds| {
@@ -1217,6 +1227,7 @@ pub fn aggregate(attr: TokenStream, item: TokenStream) -> TokenStream {
             #aggregate_type_override
             #is_encrypted_override
             #claims_override
+            #snapshot_version_override
         }
 
         impl #aggregate_name {

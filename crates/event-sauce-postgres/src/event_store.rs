@@ -429,6 +429,8 @@ impl PostgresEventStore {
         self.migrate_events_and_snapshots(&migrations_table).await?;
         self.migrate_crypto_keys(&migrations_table).await?;
         self.migrate_aggregate_claims(&migrations_table).await?;
+        self.migrate_snapshot_schema_version(&migrations_table)
+            .await?;
         Ok(())
     }
 
@@ -567,6 +569,37 @@ impl PostgresEventStore {
                     .execute(pool)
                     .await
                     .map_err(|e| Error::backend("Failed to create claims index", e))?;
+                Ok(())
+            },
+        )
+        .await
+    }
+
+    /// Migration 4: Adds the `snapshot_schema_version` column to `snapshots`.
+    ///
+    /// Snapshots are a cache, never the source of truth. Stamping each snapshot
+    /// with [`Aggregate::snapshot_version()`](event_sauce_core::Aggregate::snapshot_version)
+    /// lets a stale snapshot (written before an incompatible state-shape change)
+    /// be detected on load and transparently discarded in favour of full event
+    /// replay. The column is nullable so existing rows read back as `NULL`,
+    /// which the [`SnapshotRow`] mapper interprets as schema version `0`.
+    async fn migrate_snapshot_schema_version(&self, migrations_table: &str) -> Result<()> {
+        let snapshots_table = self.qualify_table("snapshots");
+        crate::migrations::apply_once(
+            &self.pool,
+            migrations_table,
+            20_260_605_000_000_i64,
+            "add_snapshot_schema_version_column",
+            move |pool| async move {
+                let alter = format!(
+                    "ALTER TABLE {snapshots_table} ADD COLUMN IF NOT EXISTS snapshot_schema_version BIGINT"
+                );
+                sqlx::query(&alter)
+                    .execute(pool)
+                    .await
+                    .map_err(|e| {
+                        Error::backend("Failed to add snapshot_schema_version column", e)
+                    })?;
                 Ok(())
             },
         )
@@ -1264,19 +1297,21 @@ impl EventStore for PostgresEventStore {
     async fn save_snapshot(&self, snapshot: Snapshot) -> Result<()> {
         let snapshots_table = self.qualify_table("snapshots");
         let query = format!(
-            "INSERT INTO {snapshots_table} (aggregate_id, aggregate_type, snapshot_version, snapshot_data, is_deleted)
-             VALUES ($1, $2, $3, $4, $5)
+            "INSERT INTO {snapshots_table} (aggregate_id, aggregate_type, snapshot_version, snapshot_data, is_deleted, snapshot_schema_version)
+             VALUES ($1, $2, $3, $4, $5, $6)
              ON CONFLICT (aggregate_id, aggregate_type)
-             DO UPDATE SET snapshot_version = $3, snapshot_data = $4, is_deleted = $5, created_at = NOW()"
+             DO UPDATE SET snapshot_version = $3, snapshot_data = $4, is_deleted = $5, snapshot_schema_version = $6, created_at = NOW()"
         );
 
         let snapshot_version_i64 = snapshot.snapshot_version.as_i64();
+        let snapshot_schema_version_i64 = i64::from(snapshot.snapshot_schema_version);
         sqlx::query(&query)
             .bind(snapshot.aggregate_id)
             .bind(snapshot.aggregate_type.as_str())
             .bind(snapshot_version_i64)
             .bind(&snapshot.snapshot_data)
             .bind(snapshot.is_deleted)
+            .bind(snapshot_schema_version_i64)
             .execute(&self.pool)
             .await
             .map_err(|e| Error::backend("Failed to save snapshot", e))?;
@@ -1287,7 +1322,7 @@ impl EventStore for PostgresEventStore {
     async fn load_snapshot(&self, stream_id: StreamId) -> Result<Option<Snapshot>> {
         let snapshots_table = self.qualify_table("snapshots");
         let query = format!(
-            "SELECT aggregate_id, aggregate_type, snapshot_version, snapshot_data, is_deleted
+            "SELECT aggregate_id, aggregate_type, snapshot_version, snapshot_data, is_deleted, snapshot_schema_version
              FROM {snapshots_table}
              WHERE aggregate_id = $1 AND aggregate_type = $2"
         );
@@ -1443,11 +1478,21 @@ struct SnapshotRow {
     snapshot_version: i64,
     snapshot_data: serde_json::Value,
     is_deleted: bool,
+    /// Nullable: rows written before the `snapshot_schema_version` migration
+    /// read back as `NULL`, which maps to schema version `0`.
+    snapshot_schema_version: Option<i64>,
 }
 
 impl From<SnapshotRow> for Snapshot {
     fn from(row: SnapshotRow) -> Self {
         let snapshot_version = AggregateVersion::new(row.snapshot_version);
+        // NULL (pre-migration rows) and any negative value defensively map to 0,
+        // the default schema version. `u32::try_from` rejects negatives, and
+        // `unwrap_or(0)` covers the `None` case.
+        let snapshot_schema_version = row
+            .snapshot_schema_version
+            .and_then(|v| u32::try_from(v).ok())
+            .unwrap_or(0);
 
         Snapshot {
             aggregate_id: row.aggregate_id,
@@ -1455,6 +1500,7 @@ impl From<SnapshotRow> for Snapshot {
             snapshot_version,
             snapshot_data: row.snapshot_data,
             is_deleted: row.is_deleted,
+            snapshot_schema_version,
         }
     }
 }
@@ -1820,18 +1866,23 @@ mod tests {
         let aggregate_id = Uuid::new_v4();
         let stream_id = StreamId::new("User", aggregate_id);
 
-        let snapshot = Snapshot::new(
+        let snapshot = Snapshot::new_with_schema_version(
             aggregate_id,
             "User".to_string(),
             AggregateVersion::new(10),
             json!({"name": "Alice"}),
+            4,
         );
 
         store.save_snapshot(snapshot.clone()).await.unwrap();
         let loaded = store.load_snapshot(stream_id).await.unwrap();
 
-        assert!(loaded.is_some());
-        assert_eq!(loaded.unwrap().snapshot_version, AggregateVersion::new(10));
+        let loaded = loaded.expect("snapshot should load");
+        assert_eq!(loaded.snapshot_version, AggregateVersion::new(10));
+        assert_eq!(
+            loaded.snapshot_schema_version, 4,
+            "the schema version must round-trip through save/load_snapshot"
+        );
     }
 
     #[tokio::test]
@@ -2274,9 +2325,49 @@ mod tests {
         let pool = PgPool::connect(&connection_string).await.unwrap();
         let store = PostgresEventStore::new(pool.clone());
 
-        // Call migrate twice - should not fail
+        // Call migrate twice - should not fail (idempotent, including the
+        // M4 snapshot_schema_version ADD COLUMN IF NOT EXISTS migration).
         store.migrate().await.unwrap();
         store.migrate().await.unwrap();
+
+        // M4: the snapshots table must carry the schema-version column.
+        let column_exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS (
+                SELECT FROM information_schema.columns
+                WHERE table_name = 'snapshots'
+                  AND column_name = 'snapshot_schema_version'
+            )",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(
+            column_exists,
+            "snapshots table must have snapshot_schema_version column after migrate()"
+        );
+
+        // M4: an old row whose snapshot_schema_version is NULL (as written by a
+        // pre-migration store) must load back as schema version 0.
+        let legacy_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO event_sauce.snapshots
+                (aggregate_id, aggregate_type, snapshot_version, snapshot_data, is_deleted, snapshot_schema_version)
+             VALUES ($1, 'User', 1, '{}'::jsonb, FALSE, NULL)",
+        )
+        .bind(legacy_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let loaded = store
+            .load_snapshot(StreamId::new("User", legacy_id))
+            .await
+            .unwrap()
+            .expect("legacy snapshot row should load");
+        assert_eq!(
+            loaded.snapshot_schema_version, 0,
+            "a NULL snapshot_schema_version must map to schema version 0"
+        );
 
         // Verify we can use the store
         let aggregate_id = Uuid::new_v4();

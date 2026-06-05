@@ -175,10 +175,22 @@ pub struct Snapshot {
     pub snapshot_data: serde_json::Value,
     /// Whether this snapshot represents a deleted aggregate.
     pub is_deleted: bool,
+    /// Schema version of the serialized state, stamped from
+    /// [`Aggregate::snapshot_version()`](crate::Aggregate::snapshot_version)
+    /// at write time.
+    ///
+    /// On load, a snapshot whose stamp no longer matches the aggregate's
+    /// current `snapshot_version()` is treated as a cache miss and discarded
+    /// in favour of full event replay (snapshot is a cache, never the source
+    /// of truth). Snapshots written before this field existed read back as `0`.
+    pub snapshot_schema_version: u32,
 }
 
 impl Snapshot {
-    /// Creates a new snapshot for an active aggregate.
+    /// Creates a new snapshot for an active aggregate at schema version `0`.
+    ///
+    /// Use [`Snapshot::new_with_schema_version`] to stamp a specific
+    /// [`Aggregate::snapshot_version()`](crate::Aggregate::snapshot_version).
     #[must_use]
     pub fn new(
         aggregate_id: Uuid,
@@ -186,18 +198,39 @@ impl Snapshot {
         snapshot_version: AggregateVersion,
         snapshot_data: serde_json::Value,
     ) -> Self {
+        Self::new_with_schema_version(
+            aggregate_id,
+            aggregate_type,
+            snapshot_version,
+            snapshot_data,
+            0,
+        )
+    }
+
+    /// Creates a new snapshot for an active aggregate at a specific schema version.
+    #[must_use]
+    pub fn new_with_schema_version(
+        aggregate_id: Uuid,
+        aggregate_type: impl Into<AggregateType>,
+        snapshot_version: AggregateVersion,
+        snapshot_data: serde_json::Value,
+        snapshot_schema_version: u32,
+    ) -> Self {
         Self {
             aggregate_id,
             aggregate_type: aggregate_type.into(),
             snapshot_version,
             snapshot_data,
             is_deleted: false,
+            snapshot_schema_version,
         }
     }
 
-    /// Creates a new snapshot for a deleted aggregate.
+    /// Creates a new snapshot for a deleted aggregate at schema version `0`.
     ///
     /// The `snapshot_data` should contain the serialized `A::DeletedState`.
+    /// Use [`Snapshot::new_deleted_with_schema_version`] to stamp a specific
+    /// [`Aggregate::snapshot_version()`](crate::Aggregate::snapshot_version).
     #[must_use]
     pub fn new_deleted(
         aggregate_id: Uuid,
@@ -205,12 +238,33 @@ impl Snapshot {
         snapshot_version: AggregateVersion,
         snapshot_data: serde_json::Value,
     ) -> Self {
+        Self::new_deleted_with_schema_version(
+            aggregate_id,
+            aggregate_type,
+            snapshot_version,
+            snapshot_data,
+            0,
+        )
+    }
+
+    /// Creates a new snapshot for a deleted aggregate at a specific schema version.
+    ///
+    /// The `snapshot_data` should contain the serialized `A::DeletedState`.
+    #[must_use]
+    pub fn new_deleted_with_schema_version(
+        aggregate_id: Uuid,
+        aggregate_type: impl Into<AggregateType>,
+        snapshot_version: AggregateVersion,
+        snapshot_data: serde_json::Value,
+        snapshot_schema_version: u32,
+    ) -> Self {
         Self {
             aggregate_id,
             aggregate_type: aggregate_type.into(),
             snapshot_version,
             snapshot_data,
             is_deleted: true,
+            snapshot_schema_version,
         }
     }
 }
@@ -715,11 +769,12 @@ async fn build_snapshot<S: EventStore + ?Sized, A: Aggregate>(
             if A::is_encrypted() || A::Event::has_any_encrypted_fields() {
                 encrypt_snapshot_data(store, aggregate_id, &mut snapshot_data).await?;
             }
-            Ok(Some(Snapshot::new(
+            Ok(Some(Snapshot::new_with_schema_version(
                 aggregate_id,
                 aggregate_type.clone(),
                 current_version,
                 snapshot_data,
+                A::snapshot_version(),
             )))
         }
         Err(e) => {
@@ -756,11 +811,12 @@ async fn build_deleted_snapshot<S: EventStore + ?Sized, A: Aggregate>(
             if A::is_encrypted() || A::Event::has_any_encrypted_fields() {
                 encrypt_snapshot_data(store, aggregate_id, &mut snapshot_data).await?;
             }
-            Ok(Some(Snapshot::new_deleted(
+            Ok(Some(Snapshot::new_deleted_with_schema_version(
                 aggregate_id,
                 aggregate_type.clone(),
                 current_version,
                 snapshot_data,
+                A::snapshot_version(),
             )))
         }
         Err(e) => {
@@ -884,6 +940,122 @@ async fn has_committed_data<S: EventStore + ?Sized>(
     Ok(event_stream.next().await.is_some())
 }
 
+/// Attempts to reconstruct an aggregate from a (decrypted) snapshot plus its
+/// post-snapshot events.
+///
+/// Returns `Ok(Some(loaded))` when the snapshot is a usable cache entry, and
+/// `Ok(None)` when it is a CACHE MISS — i.e. the snapshot's type tag or schema
+/// version no longer matches `A`, or its data can no longer be deserialized
+/// into `A` / `A::DeletedState`. On a miss the caller falls through to full
+/// event replay (snapshot is a cache, never the source of truth) and a fresh
+/// snapshot is written at the current version on the next commit.
+///
+/// The `snapshot.snapshot_data` is expected to already be decrypted (the
+/// crypto-shredding `KeyNotFound` case is handled by the caller before this is
+/// invoked).
+///
+/// # Errors
+///
+/// Returns an error only if loading the post-snapshot event stream or
+/// deserializing an event fails. A snapshot deserialization failure is a cache
+/// miss (`Ok(None)`), not an error.
+async fn try_load_from_snapshot<S, A>(
+    store: &S,
+    stream_id: StreamId,
+    crypto_key: Option<&[u8]>,
+    snapshot: Snapshot,
+) -> Result<Option<Loaded<A>>>
+where
+    S: EventStore,
+    A: Aggregate + serde::de::DeserializeOwned,
+    A::DeletedState: serde::de::DeserializeOwned,
+    A::Event: serde::de::DeserializeOwned,
+{
+    use crate::EventApplicator;
+    use futures::StreamExt;
+
+    // (i) Type-tag mismatch: a different aggregate's snapshot was stored under
+    // this id, or the type name changed. Discard and replay.
+    if snapshot.aggregate_type != A::aggregate_type() {
+        tracing::warn!(
+            aggregate_type = %A::aggregate_type(),
+            snapshot_aggregate_type = %snapshot.aggregate_type,
+            aggregate_id = %snapshot.aggregate_id,
+            "Snapshot aggregate-type mismatch; discarding stale snapshot and replaying events"
+        );
+        return Ok(None);
+    }
+
+    // (ii) Schema-version mismatch: the aggregate's serialized shape changed
+    // (its `snapshot_version()` was bumped). Discard and replay.
+    if snapshot.snapshot_schema_version != A::snapshot_version() {
+        tracing::warn!(
+            aggregate_type = %A::aggregate_type(),
+            aggregate_id = %snapshot.aggregate_id,
+            snapshot_schema_version = snapshot.snapshot_schema_version,
+            expected_schema_version = A::snapshot_version(),
+            "Snapshot schema-version mismatch; discarding stale snapshot and replaying events"
+        );
+        return Ok(None);
+    }
+
+    let snapshot_version = snapshot.snapshot_version;
+    let aggregate_id = snapshot.aggregate_id;
+
+    // Deleted snapshot: deserialize as DeletedState and return immediately.
+    if snapshot.is_deleted {
+        let Ok(deleted_state) = serde_json::from_value::<A::DeletedState>(snapshot.snapshot_data)
+        else {
+            // (iii) Shape mismatch on the deleted state: cache miss, replay.
+            tracing::warn!(
+                aggregate_type = %A::aggregate_type(),
+                aggregate_id = %aggregate_id,
+                "Deleted snapshot no longer deserializes into current shape; \
+                 discarding stale snapshot and replaying events"
+            );
+            return Ok(None);
+        };
+        let entity_id = EntityId::from(aggregate_id);
+        return Ok(Some(Loaded::Deleted(DeletedAggregateRoot::from_snapshot(
+            deleted_state,
+            entity_id,
+            snapshot_version,
+        ))));
+    }
+
+    // (iii) Active snapshot: a deserialization failure is a cache miss, NOT a
+    // hard error — the full correct state is still derivable from events.
+    let Ok(entity) = serde_json::from_value::<A>(snapshot.snapshot_data) else {
+        tracing::warn!(
+            aggregate_type = %A::aggregate_type(),
+            aggregate_id = %aggregate_id,
+            "Snapshot no longer deserializes into current shape; \
+             discarding stale snapshot and replaying events"
+        );
+        return Ok(None);
+    };
+
+    let mut aggregate = AggregateRoot::from_snapshot(snapshot_version, entity);
+
+    let event_stream = store.load_stream(stream_id, snapshot_version).await?;
+    futures::pin_mut!(event_stream);
+
+    while let Some(envelope) = event_stream.next().await {
+        let mut envelope = envelope?;
+        decrypt_event_data(store, crypto_key, &mut envelope.event_data)?;
+        let event = A::Event::from_envelope(&envelope)?;
+
+        if EventApplicator::is_delete(&event) {
+            let deleted = aggregate.apply_delete_unchecked(&event);
+            return Ok(Some(Loaded::Deleted(deleted)));
+        }
+
+        aggregate.apply_unchecked(&event);
+    }
+
+    Ok(Some(Loaded::Active(aggregate)))
+}
+
 /// Loads an aggregate from the event store, returning its lifecycle state.
 ///
 /// Returns `Loaded::Active(AggregateRoot<A>)` for active aggregates, or
@@ -943,7 +1115,25 @@ where
         None
     };
 
-    // Try to load snapshot if enabled
+    // Try to load snapshot if enabled.
+    //
+    // A snapshot is a CACHE, never the source of truth: the authoritative state
+    // is always derivable by replaying events. So a stale or incompatible
+    // snapshot must self-heal — we treat it as a cache miss and fall through to
+    // the full-event-replay path below rather than corrupting state or
+    // hard-failing. The next commit writes a fresh snapshot at the current
+    // version. A cache miss is any of:
+    //   (i)   the snapshot's `aggregate_type` no longer matches `A`,
+    //   (ii)  the snapshot's `snapshot_schema_version` no longer matches
+    //         `A::snapshot_version()` (the aggregate's serialized shape changed),
+    //   (iii) the snapshot can no longer be deserialized into `A` /
+    //         `A::DeletedState`.
+    //
+    // The encrypted-snapshot crypto-shredding path is NOT a cache miss: a
+    // snapshot that is still ciphertext after decryption means the key was
+    // shredded and the data is intentionally unrecoverable — that returns
+    // `KeyNotFound`, never a silent fall-through to replay (replay would fail
+    // the same way), so it is checked first.
     let config = store.snapshot_config();
     if config.use_snapshots_on_load() {
         if let Some(mut snapshot) = store.load_snapshot(stream_id.clone()).await? {
@@ -957,48 +1147,21 @@ where
                 return Err(crate::Error::key_not_found(uuid));
             }
 
-            // Deleted snapshot: deserialize as DeletedState and return immediately
-            if snapshot.is_deleted {
-                let deleted_state: A::DeletedState = serde_json::from_value(snapshot.snapshot_data)
-                    .map_err(|e| {
-                        crate::Error::custom(format!("Failed to deserialize deleted snapshot: {e}"))
-                    })?;
-                let entity_id = EntityId::from(snapshot.aggregate_id);
-                return Ok(Loaded::Deleted(DeletedAggregateRoot::from_snapshot(
-                    deleted_state,
-                    entity_id,
-                    snapshot.snapshot_version,
-                )));
+            if let Some(loaded) = try_load_from_snapshot::<S, A>(
+                store,
+                stream_id.clone(),
+                crypto_key.as_deref(),
+                snapshot,
+            )
+            .await?
+            {
+                return Ok(loaded);
             }
-
-            let entity: A = serde_json::from_value(snapshot.snapshot_data).map_err(|e| {
-                crate::Error::custom(format!("Failed to deserialize snapshot entity: {e}"))
-            })?;
-
-            let mut aggregate = AggregateRoot::from_snapshot(snapshot.snapshot_version, entity);
-            let from_version = snapshot.snapshot_version;
-
-            let event_stream = store.load_stream(stream_id, from_version).await?;
-            futures::pin_mut!(event_stream);
-
-            while let Some(envelope) = event_stream.next().await {
-                let mut envelope = envelope?;
-                decrypt_event_data(store, crypto_key.as_deref(), &mut envelope.event_data)?;
-                let event = A::Event::from_envelope(&envelope)?;
-
-                if EventApplicator::is_delete(&event) {
-                    let deleted = aggregate.apply_delete_unchecked(&event);
-                    return Ok(Loaded::Deleted(deleted));
-                }
-
-                aggregate.apply_unchecked(&event);
-            }
-
-            return Ok(Loaded::Active(aggregate));
+            // Cache miss: fall through to full replay below.
         }
     }
 
-    // No snapshot: load all events
+    // No snapshot (or a snapshot that missed): load all events
     let event_stream = store
         .load_stream(stream_id, AggregateVersion::initial())
         .await?;
@@ -1214,6 +1377,46 @@ mod tests {
         assert_eq!(snapshot.snapshot_version, AggregateVersion::new(10));
         assert_eq!(snapshot.snapshot_data, snapshot_data);
         assert!(!snapshot.is_deleted);
+        assert_eq!(
+            snapshot.snapshot_schema_version, 0,
+            "Snapshot::new defaults the schema version to 0"
+        );
+    }
+
+    #[test]
+    fn test_snapshot_new_with_schema_version() {
+        let aggregate_id = Uuid::new_v4();
+        let snapshot_data = serde_json::json!({"value": 42});
+
+        let snapshot = Snapshot::new_with_schema_version(
+            aggregate_id,
+            "Counter".to_string(),
+            AggregateVersion::new(10),
+            snapshot_data.clone(),
+            3,
+        );
+
+        assert!(!snapshot.is_deleted);
+        assert_eq!(snapshot.snapshot_data, snapshot_data);
+        assert_eq!(snapshot.snapshot_schema_version, 3);
+    }
+
+    #[test]
+    fn test_snapshot_new_deleted_with_schema_version() {
+        let aggregate_id = Uuid::new_v4();
+        let snapshot_data = serde_json::json!({"archived": true});
+
+        let snapshot = Snapshot::new_deleted_with_schema_version(
+            aggregate_id,
+            "Counter".to_string(),
+            AggregateVersion::new(5),
+            snapshot_data.clone(),
+            7,
+        );
+
+        assert!(snapshot.is_deleted);
+        assert_eq!(snapshot.snapshot_data, snapshot_data);
+        assert_eq!(snapshot.snapshot_schema_version, 7);
     }
 
     #[test]
@@ -1233,6 +1436,10 @@ mod tests {
         assert_eq!(snapshot.snapshot_version, AggregateVersion::new(5));
         assert_eq!(snapshot.snapshot_data, snapshot_data);
         assert!(snapshot.is_deleted);
+        assert_eq!(
+            snapshot.snapshot_schema_version, 0,
+            "Snapshot::new_deleted defaults the schema version to 0"
+        );
     }
 
     // Tests for default trait implementations (including crypto accessors)
@@ -1867,6 +2074,277 @@ mod tests {
             "Should reflect full replay, not snapshot value of 999"
         );
         assert_eq!(loaded.version(), AggregateVersion::new(2));
+    }
+
+    // -- M4: snapshot self-heals on an undeserializable / stale snapshot --
+
+    #[tokio::test]
+    async fn test_load_falls_through_to_replay_when_snapshot_does_not_deserialize() {
+        // M4 (TERMINAL -> REPLAY): a persisted snapshot whose `snapshot_data`
+        // can no longer be deserialized into the current aggregate shape (here:
+        // the required `value` field is absent — `SimpleTestEntity` has no
+        // `#[serde(default)]`) must be treated as a CACHE MISS. The store should
+        // fall through to full-event replay and rebuild the correct state,
+        // NOT return an opaque "Failed to deserialize snapshot entity" error.
+        //
+        // TODAY: `serde_json::from_value::<SimpleTestEntity>` fails and
+        // `load_any` propagates `Error::custom("Failed to deserialize snapshot
+        // entity: ...")`, taking the aggregate offline even though the full
+        // correct state is derivable from the events.
+        let config = SnapshotConfig::always();
+        let store = CommitTestStore::new(config);
+        let id = crate::EntityId::new();
+        let stream_id = StreamId::new("SimpleTestEntity", id.as_uuid());
+
+        // Seed an incompatible snapshot at version 1: object lacks `value`.
+        let bad_snapshot = Snapshot::new(
+            id.as_uuid(),
+            "SimpleTestEntity".to_string(),
+            AggregateVersion::new(1),
+            serde_json::json!({ "id": id }), // missing required `value`
+        );
+        store
+            .snapshots
+            .lock()
+            .unwrap()
+            .insert(stream_id.clone(), bad_snapshot);
+
+        // Seed the full event stream that produces the real state (value = 30).
+        let make_env = |event: &SimpleTestEvent| {
+            EventEnvelope::new(
+                Uuid::new_v4(),
+                id.as_uuid(),
+                "SimpleTestEntity".to_string(),
+                "SimpleTestEntity.Updated".to_string(),
+                crate::EventVersion::new(1),
+                serde_json::to_value(event).unwrap(),
+            )
+        };
+        store.streams.lock().unwrap().insert(
+            stream_id,
+            vec![
+                make_env(&SimpleTestEvent::Created { value: 10 }),
+                make_env(&SimpleTestEvent::Updated { value: 20 }),
+                make_env(&SimpleTestEvent::Updated { value: 30 }),
+            ],
+        );
+
+        let result: Result<AggregateRoot<SimpleTestEntity>> = load(&store, id).await;
+
+        let loaded = result.expect(
+            "an undeserializable snapshot must self-heal via replay, not hard-fail \
+             (snapshot is a cache, never the source of truth)",
+        );
+        assert_eq!(
+            loaded.value, 30,
+            "state must be rebuilt from full event replay"
+        );
+        assert_eq!(
+            loaded.version(),
+            AggregateVersion::new(3),
+            "version must reflect all replayed events, not the stale snapshot"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_load_uses_matching_snapshot_on_happy_path() {
+        // M4 GUARD (must stay green): a correctly-shaped snapshot is still USED
+        // (not replayed). We prove the snapshot path is taken by giving the
+        // snapshot a DIFFERENT state than replaying from version 0 would
+        // produce: the snapshot is at version 2 with value=20, and only the
+        // post-snapshot events (index >= 2) are applied on top. If replay were
+        // (wrongly) used instead, the pre-snapshot Created/Updated events would
+        // re-run and the resulting version would not match.
+        let config = SnapshotConfig::always();
+        let store = CommitTestStore::new(config);
+        let id = crate::EntityId::new();
+        let stream_id = StreamId::new("SimpleTestEntity", id.as_uuid());
+
+        let snapshot_entity = SimpleTestEntity { id, value: 20 };
+        let snapshot = Snapshot::new(
+            id.as_uuid(),
+            "SimpleTestEntity".to_string(),
+            AggregateVersion::new(2),
+            serde_json::to_value(&snapshot_entity).unwrap(),
+        );
+        store
+            .snapshots
+            .lock()
+            .unwrap()
+            .insert(stream_id.clone(), snapshot);
+
+        let make_env = |event: &SimpleTestEvent| {
+            EventEnvelope::new(
+                Uuid::new_v4(),
+                id.as_uuid(),
+                "SimpleTestEntity".to_string(),
+                "SimpleTestEntity.Updated".to_string(),
+                crate::EventVersion::new(1),
+                serde_json::to_value(event).unwrap(),
+            )
+        };
+        // Four events; snapshot is at version 2 so only events at index 2,3 apply.
+        store.streams.lock().unwrap().insert(
+            stream_id,
+            vec![
+                make_env(&SimpleTestEvent::Created { value: 10 }),
+                make_env(&SimpleTestEvent::Updated { value: 20 }),
+                make_env(&SimpleTestEvent::Updated { value: 30 }),
+                make_env(&SimpleTestEvent::Updated { value: 40 }),
+            ],
+        );
+
+        let loaded: AggregateRoot<SimpleTestEntity> = load(&store, id).await.unwrap();
+
+        assert_eq!(loaded.value, 40, "snapshot + post-snapshot replay");
+        assert_eq!(
+            loaded.version(),
+            AggregateVersion::new(4),
+            "snapshot version (2) + 2 replayed events; proves snapshot path was taken"
+        );
+    }
+
+    /// Aggregate whose snapshot schema version is `1` (state shape was
+    /// "changed" relative to the default `0`), used to exercise the M4
+    /// version-mismatch -> replay path without disturbing the shared
+    /// `SimpleTestEntity` fixture.
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+    struct VersionedTestEntity {
+        id: EntityId,
+        value: i32,
+    }
+
+    impl crate::Entity for VersionedTestEntity {
+        fn new(id: EntityId) -> Self {
+            Self { id, value: 0 }
+        }
+        fn entity_id(&self) -> EntityId {
+            self.id
+        }
+    }
+
+    impl crate::DefaultEntity for VersionedTestEntity {}
+
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+    enum VersionedTestEvent {
+        Created { value: i32 },
+        Updated { value: i32 },
+    }
+
+    impl crate::DomainEvent for VersionedTestEvent {
+        type Aggregate = VersionedTestEntity;
+        fn event_type(&self) -> &'static str {
+            match self {
+                Self::Created { .. } => "VersionedTestEntity.Created",
+                Self::Updated { .. } => "VersionedTestEntity.Updated",
+            }
+        }
+        fn event_version(&self) -> crate::EventVersion {
+            crate::EventVersion::new(1)
+        }
+        fn occurred_at(&self) -> chrono::DateTime<chrono::Utc> {
+            chrono::Utc::now()
+        }
+    }
+
+    impl crate::EventApplicator<VersionedTestEntity> for VersionedTestEvent {
+        fn dispatch(
+            &self,
+            entity: &mut VersionedTestEntity,
+        ) -> std::result::Result<(), crate::test_fixtures::SimpleTestError> {
+            self.dispatch_unchecked(entity);
+            Ok(())
+        }
+        fn dispatch_unchecked(&self, entity: &mut VersionedTestEntity) {
+            match self {
+                Self::Created { value } | Self::Updated { value } => entity.value = *value,
+            }
+        }
+    }
+
+    impl crate::Aggregate for VersionedTestEntity {
+        type Event = VersionedTestEvent;
+        type Error = crate::test_fixtures::SimpleTestError;
+        type DeletedState = Self;
+
+        fn snapshot_version() -> u32 {
+            1
+        }
+    }
+
+    #[tokio::test]
+    async fn test_load_falls_through_to_replay_on_snapshot_schema_version_mismatch() {
+        // M4 (VERSION-MISMATCH -> REPLAY): a snapshot stamped at schema version 0
+        // is stale for an aggregate whose `snapshot_version()` is now 1. Even
+        // though the snapshot data deserializes cleanly, its schema stamp no
+        // longer matches, so it must be discarded as a cache miss and the state
+        // rebuilt from full event replay. A subsequent commit must then persist a
+        // fresh snapshot stamped at the current version (1).
+        assert_eq!(VersionedTestEntity::snapshot_version(), 1);
+
+        let store = CommitTestStore::new(SnapshotConfig::always());
+        let id = crate::EntityId::new();
+        let stream_id = StreamId::new("VersionedTestEntity", id.as_uuid());
+
+        // Seed a structurally-valid but schema-version-0 snapshot at version 2
+        // (the full stream length) carrying a sentinel value (999) that replay
+        // never produces. The version (2) is deliberately >= the event count:
+        // `load_stream` skips `from_version` events, so if the stale snapshot
+        // were (wrongly) USED, no post-snapshot events would replay over it and
+        // the loaded value would stay 999 — whereas a correct cache-miss replays
+        // from genesis and yields 20. The assertion on 20 therefore FAILS if the
+        // schema-version check is removed (the snapshot would be used → 999).
+        let stale_entity = VersionedTestEntity { id, value: 999 };
+        let stale_snapshot = Snapshot::new_with_schema_version(
+            id.as_uuid(),
+            "VersionedTestEntity".to_string(),
+            AggregateVersion::new(2),
+            serde_json::to_value(&stale_entity).unwrap(),
+            0, // old schema version
+        );
+        store
+            .snapshots
+            .lock()
+            .unwrap()
+            .insert(stream_id.clone(), stale_snapshot);
+
+        let make_env = |event: &VersionedTestEvent| {
+            EventEnvelope::new(
+                Uuid::new_v4(),
+                id.as_uuid(),
+                "VersionedTestEntity".to_string(),
+                "VersionedTestEntity.Updated".to_string(),
+                crate::EventVersion::new(1),
+                serde_json::to_value(event).unwrap(),
+            )
+        };
+        store.streams.lock().unwrap().insert(
+            stream_id.clone(),
+            vec![
+                make_env(&VersionedTestEvent::Created { value: 10 }),
+                make_env(&VersionedTestEvent::Updated { value: 20 }),
+            ],
+        );
+
+        let loaded: AggregateRoot<VersionedTestEntity> = load(&store, id).await.unwrap();
+        assert_eq!(
+            loaded.value, 20,
+            "stale-version snapshot must be skipped; state rebuilt from replay"
+        );
+        assert_eq!(loaded.version(), AggregateVersion::new(2));
+
+        // A subsequent commit must write a fresh snapshot stamped at version 1.
+        let mut agg = loaded;
+        agg.apply(VersionedTestEvent::Updated { value: 30 })
+            .unwrap();
+        store.commit(&mut agg).await.unwrap();
+
+        let snapshots = store.snapshots.lock().unwrap();
+        let fresh = snapshots.get(&stream_id).expect("fresh snapshot written");
+        assert_eq!(
+            fresh.snapshot_schema_version, 1,
+            "fresh snapshot must be stamped at the current schema version"
+        );
     }
 
     #[tokio::test]
