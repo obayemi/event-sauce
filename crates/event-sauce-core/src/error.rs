@@ -114,6 +114,22 @@ pub enum Error {
         held_by: Option<uuid::Uuid>,
     },
 
+    /// Leased worker lost its lease mid-run.
+    ///
+    /// Occurs when a leased projection or dispatcher worker tries to advance
+    /// its checkpoint but no longer holds an active lease for the
+    /// subscription — typically because the worker stalled past
+    /// `leased_until` and another worker took over. The fenced checkpoint
+    /// write is rejected and the in-flight transaction is rolled back rather
+    /// than risk double-applying events or regressing the checkpoint.
+    #[error("Lease lost for subscription {subscription} (worker {worker_id})")]
+    LeaseLost {
+        /// The subscription whose lease was lost.
+        subscription: String,
+        /// The worker that lost the lease.
+        worker_id: String,
+    },
+
     /// Backend / database error wrapping the original cause.
     ///
     /// Preserves the source chain so callers can inspect the underlying
@@ -265,6 +281,24 @@ impl Error {
             claim_type: claim_type.into(),
             claim_key,
             held_by,
+        }
+    }
+
+    /// Creates a lease lost error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use event_sauce_core::Error;
+    ///
+    /// let error = Error::lease_lost("OrderTotals", "worker-1");
+    /// assert!(error.is_lease_lost());
+    /// ```
+    #[must_use]
+    pub fn lease_lost(subscription: impl Into<String>, worker_id: impl Into<String>) -> Self {
+        Self::LeaseLost {
+            subscription: subscription.into(),
+            worker_id: worker_id.into(),
         }
     }
 
@@ -438,6 +472,21 @@ impl Error {
     #[must_use]
     pub fn is_claim_conflict(&self) -> bool {
         matches!(self, Self::ClaimConflict { .. })
+    }
+
+    /// Returns true if this is a lease lost error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use event_sauce_core::Error;
+    ///
+    /// let error = Error::lease_lost("OrderTotals", "worker-1");
+    /// assert!(error.is_lease_lost());
+    /// ```
+    #[must_use]
+    pub fn is_lease_lost(&self) -> bool {
+        matches!(self, Self::LeaseLost { .. })
     }
 }
 
@@ -773,6 +822,40 @@ mod tests {
         // Source chain is preserved — callers can downcast.
         let source = std::error::Error::source(&error).expect("source preserved");
         assert!(source.to_string().contains("connection reset"));
+    }
+
+    #[test]
+    fn test_lease_lost_error() {
+        let error = Error::lease_lost("OrderTotals", "worker-1");
+
+        assert!(error.is_lease_lost());
+        assert!(!error.is_concurrency_conflict());
+        assert!(!error.is_not_found());
+        assert!(!error.is_backend());
+
+        let message = error.to_string();
+        assert!(message.contains("Lease lost"));
+        assert!(message.contains("OrderTotals"));
+        assert!(message.contains("worker-1"));
+    }
+
+    #[test]
+    fn test_lease_lost_fields() {
+        let error = Error::LeaseLost {
+            subscription: "Dispatcher".to_string(),
+            worker_id: "worker-7".to_string(),
+        };
+
+        if let Error::LeaseLost {
+            subscription,
+            worker_id,
+        } = error
+        {
+            assert_eq!(subscription, "Dispatcher");
+            assert_eq!(worker_id, "worker-7");
+        } else {
+            panic!("Expected LeaseLost variant");
+        }
     }
 
     #[test]

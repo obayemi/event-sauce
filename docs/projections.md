@@ -237,13 +237,26 @@ match outcome {
 }
 ```
 
-Two pieces make this safe:
+Three pieces make this safe:
 
 1. **Lease on the checkpoint** — only the worker that holds the lease for
    `P::NAME` is the active processor. Other workers see `Busy` and back off.
    The lease is renewed automatically every `lease_duration / 3`; if the
    active worker dies, the lease expires and another worker takes over.
-2. **`LISTEN`/`NOTIFY` for low-latency wake-up** — between leased runs a
+2. **Fenced checkpoint advance** — the per-event transaction advances the
+   checkpoint with a write that is *fenced* on lease ownership and
+   monotonicity: it only lands when the row is still leased by this worker,
+   the lease has not expired, and the new position strictly advances the
+   stored one. Lease renewal happens only *between* events, so if a worker
+   stalls (GC pause, slow handle, network hiccup) past `leased_until` while a
+   per-event transaction is in flight, another worker can take over and move
+   the checkpoint forward. When the stalled worker resumes and tries to
+   commit, the fence rejects its write, the runner **rolls the transaction
+   back** and returns `Error::LeaseLost { subscription, worker_id }` instead
+   of double-applying the event or regressing the checkpoint to a lower
+   position. Treat `LeaseLost` as a benign hand-off: stop, drop the lease,
+   and let the new owner continue.
+3. **`LISTEN`/`NOTIFY` for low-latency wake-up** — between leased runs a
    worker waits on `PostgresEventStore::listen_for_events()` (which yields a
    new `Position` for every committed transaction) instead of polling. New
    events are picked up in milliseconds without burning CPU.
@@ -274,7 +287,10 @@ loop {
 
 A complete runnable example lives at
 `crates/event-sauce/examples/projection-worker.rs` — it spins up two
-competing workers and demonstrates that exactly-once-across-workers holds.
+competing workers. Under normal operation only the lease holder processes
+events; a stalled worker that loses its lease mid-transaction has its write
+fenced (rolled back, surfaced as `Error::LeaseLost`), so the checkpoint never
+regresses and no event is double-applied across the hand-off.
 
 ## Choosing checkpoint vs. queue
 

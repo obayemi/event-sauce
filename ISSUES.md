@@ -33,7 +33,7 @@ event-sauce adopts the notification-log model (`events.id BIGSERIAL` = global `P
 | H3 | ✅ fixed | current-bug | encryption | Snapshot encryption fails *open* — silently persists plaintext on key/encrypt failure | F5 |
 | H4 | ✅ fixed | design-gap | encryption | Field-encrypted aggregates degrade silently after key deletion (no `KeyNotFound`) | F5 |
 | H5 | ✅ fixed | current-bug | domain-model | `load()` on an empty-stream `#[aggregate(init)]` **panics** instead of `NotFound` | F7 |
-| H6 | high | current-bug | projections | Projection lease has no fencing token; checkpoint write unconditional & non-monotonic | F6 |
+| H6 | ✅ fixed | current-bug | projections | Projection lease has no fencing token; checkpoint write unconditional & non-monotonic | F6 |
 | M1 | medium | design-gap | exactly-once | Outbox delivery is at-least-once (effect + `mark_done` not in one tx) | F6 |
 | M2 | medium | current-bug | exactly-once | In-process `PolicyRunner` = consume-side dual-write; advances checkpoint unconditionally | F6 |
 | M3 | medium | design-gap | exactly-once | `PolicyContext::flush` has no surrounding tx → multi-aggregate reaction not atomic | F6 |
@@ -106,6 +106,7 @@ These four share one root cause: `Position` is underspecified and the real globa
 
 ### H6 — Projection lease has no fencing token
 - **Evidence:** `save_checkpoint_tx` is an unconditional `ON CONFLICT DO UPDATE SET position=$2` — no `worker_id`/`leased_until`/monotonicity guard (`checkpoint_store.rs:153-189`). Lease renewal happens only *between* events (`backend.rs:419`); a stalled worker past `leased_until` still commits its in-flight tx, **double-applying** and even moving the checkpoint **backward**. `docs/projections.md:236` claims "exactly-once-across-workers holds."
+- **✅ Fixed:** new postgres-inherent `save_checkpoint_fenced_tx(tx, name, worker_id, position) -> Result<bool>` whose `DO UPDATE` is fenced `WHERE worker_id = $3 AND leased_until > NOW() AND EXCLUDED.position > position`; the two leased runners (`run_under_lease`, `dispatch_under_lease`) use it and, on `Ok(false)`, **roll back the per-event tx and return `Error::LeaseLost`** instead of committing — a stalled/expired-lease worker can no longer double-apply or regress the checkpoint. The unfenced `save_checkpoint_tx` is kept for the documented single-instance unleased runner (`CheckpointStore` trait + in-memory impl untouched). New `Error::LeaseLost`/`lease_lost()`/`is_lease_lost()`. RED proven by reverting the fence (both tests fail). `docs/projections.md` corrected. *(Note: `Error` is not `#[non_exhaustive]`; the variant was added pre-1.0 as prior variants were. `renew_lease` still signals loss via `Error::custom` — cosmetic, could unify later.)*
 
 ## 🟡 Medium
 

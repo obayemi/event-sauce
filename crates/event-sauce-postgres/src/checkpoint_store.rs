@@ -188,6 +188,69 @@ impl PostgresCheckpointStore {
         Ok(())
     }
 
+    /// Saves a checkpoint inside an existing transaction, fenced on lease
+    /// ownership and monotonicity.
+    ///
+    /// Unlike [`save_checkpoint_tx`](Self::save_checkpoint_tx), the write only
+    /// lands when **all** of the following hold for the existing row:
+    /// - it is currently leased by `worker_id`,
+    /// - the lease has not expired (`leased_until > NOW()`), and
+    /// - the new `position` strictly advances the stored position.
+    ///
+    /// This is the fence that stops a stalled worker — one that lost its lease
+    /// to another worker while a per-event transaction was in flight — from
+    /// double-applying events or regressing the checkpoint to a lower
+    /// position. The caller (a leased projection or dispatcher runner) should
+    /// roll back the transaction and surface
+    /// [`Error::LeaseLost`](event_sauce_core::Error::LeaseLost) when this
+    /// returns `Ok(false)`.
+    ///
+    /// Returns `Ok(true)` when the fenced write landed, `Ok(false)` when the
+    /// fence rejected it (lease no longer owned/active, or position not
+    /// strictly increasing).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the upsert query fails (e.g. connection lost).
+    pub async fn save_checkpoint_fenced_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        subscription_name: &str,
+        worker_id: &str,
+        position: Position,
+    ) -> Result<bool> {
+        let checkpoints_table = self.qualify_table("checkpoints");
+        // The fence lives entirely in the conditional UPDATE: only advance
+        // the position when this worker still owns an active lease and the
+        // new position is strictly greater than the stored one. RETURNING
+        // yields a row exactly when the write landed.
+        //
+        // The bare INSERT branch (no existing row) is intentionally NOT fenced
+        // and is unreachable in practice: every caller is a leased runner that
+        // has already `try_acquire_lease`d, which inserts the checkpoint row
+        // (with this worker's lease) before any fenced save runs — so a fenced
+        // save always hits the conditional DO UPDATE. Do not call this without
+        // first holding the lease, or the first write would bypass the fence.
+        let query = format!(
+            "INSERT INTO {checkpoints_table} (subscription_name, position, updated_at)
+             VALUES ($1, $2, NOW())
+             ON CONFLICT (subscription_name)
+             DO UPDATE SET position = EXCLUDED.position, updated_at = NOW()
+             WHERE {checkpoints_table}.worker_id = $3
+               AND {checkpoints_table}.leased_until > NOW()
+               AND EXCLUDED.position > {checkpoints_table}.position
+             RETURNING position"
+        );
+        let landed: Option<i64> = sqlx::query_scalar(&query)
+            .bind(subscription_name)
+            .bind(position.as_i64())
+            .bind(worker_id)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(|e| Error::backend("Failed to save fenced checkpoint", e))?;
+        Ok(landed.is_some())
+    }
+
     /// Runs database migrations to set up the checkpoint store schema.
     ///
     /// This method creates the necessary tables (`checkpoints`) for the checkpoint store.
@@ -1066,5 +1129,136 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(pos, Some(Position::new(42)));
+    }
+
+    // === Fenced checkpoint save tests (lease fencing, H6) ===
+
+    #[tokio::test]
+    async fn test_fenced_checkpoint_happy_path() {
+        let db = TestDatabase::new().await.unwrap();
+        let store = PostgresCheckpointStore::new(db.pool().clone());
+        store.migrate().await.unwrap();
+
+        let lease_dur = std::time::Duration::from_secs(60);
+        // Worker holds the lease.
+        store
+            .try_acquire_lease("fenced-sub", "worker-1", lease_dur)
+            .await
+            .unwrap();
+
+        // Strictly-increasing position while holding the lease persists.
+        let mut tx = db.pool().begin().await.unwrap();
+        let landed = store
+            .save_checkpoint_fenced_tx(&mut tx, "fenced-sub", "worker-1", Position::new(10))
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        assert!(landed, "increasing position under held lease must persist");
+        assert_eq!(
+            store.load_checkpoint("fenced-sub").await.unwrap(),
+            Some(Position::new(10))
+        );
+
+        // Equal position is not strictly increasing: fence rejects, position unchanged.
+        let mut tx = db.pool().begin().await.unwrap();
+        let landed_equal = store
+            .save_checkpoint_fenced_tx(&mut tx, "fenced-sub", "worker-1", Position::new(10))
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        assert!(
+            !landed_equal,
+            "equal position must not persist (monotonicity)"
+        );
+        assert_eq!(
+            store.load_checkpoint("fenced-sub").await.unwrap(),
+            Some(Position::new(10))
+        );
+
+        // Lower position is rejected and leaves the stored position unchanged.
+        let mut tx = db.pool().begin().await.unwrap();
+        let landed_lower = store
+            .save_checkpoint_fenced_tx(&mut tx, "fenced-sub", "worker-1", Position::new(5))
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        assert!(
+            !landed_lower,
+            "lower position must not persist (monotonicity)"
+        );
+        assert_eq!(
+            store.load_checkpoint("fenced-sub").await.unwrap(),
+            Some(Position::new(10))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_stalled_worker_cannot_move_checkpoint_backward() {
+        let db = TestDatabase::new().await.unwrap();
+        let store = PostgresCheckpointStore::new(db.pool().clone());
+        store.migrate().await.unwrap();
+
+        let lease_dur = std::time::Duration::from_secs(60);
+
+        // Worker-1 acquires the lease and (fenced) saves position 50.
+        store
+            .try_acquire_lease("stall-sub", "worker-1", lease_dur)
+            .await
+            .unwrap();
+        let mut tx = db.pool().begin().await.unwrap();
+        let landed = store
+            .save_checkpoint_fenced_tx(&mut tx, "stall-sub", "worker-1", Position::new(50))
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        assert!(
+            landed,
+            "worker-1 should persist position 50 while holding lease"
+        );
+
+        // Simulate lease handover: worker-1 stalls past its lease expiry.
+        sqlx::query(
+            "UPDATE event_sauce.checkpoints SET leased_until = NOW() - INTERVAL '1 minute' WHERE subscription_name = $1",
+        )
+        .bind("stall-sub")
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        // Worker-2 takes over the now-expired lease and (fenced) saves position 60.
+        let taken = store
+            .try_acquire_lease("stall-sub", "worker-2", lease_dur)
+            .await
+            .unwrap();
+        assert!(taken.is_some(), "worker-2 should reclaim the expired lease");
+        let mut tx = db.pool().begin().await.unwrap();
+        let landed2 = store
+            .save_checkpoint_fenced_tx(&mut tx, "stall-sub", "worker-2", Position::new(60))
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        assert!(
+            landed2,
+            "worker-2 should persist position 60 while holding lease"
+        );
+
+        // Worker-1, now stale (no longer holds the lease), tries to commit an
+        // in-flight save at position 51. The fence must reject it: it no longer
+        // owns the lease, so the write does not land and the checkpoint stays 60.
+        let mut tx = db.pool().begin().await.unwrap();
+        let landed_stale = store
+            .save_checkpoint_fenced_tx(&mut tx, "stall-sub", "worker-1", Position::new(51))
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        assert!(
+            !landed_stale,
+            "a stalled worker that lost the lease must not move the checkpoint"
+        );
+        assert_eq!(
+            store.load_checkpoint("stall-sub").await.unwrap(),
+            Some(Position::new(60)),
+            "checkpoint must not regress below the value written by the current lease holder"
+        );
     }
 }

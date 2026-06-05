@@ -231,6 +231,12 @@ impl PostgresBackend {
     /// `lease_duration / 3` to keep ownership. If renewal fails — typically
     /// because the lease expired and was taken by another worker — the run
     /// stops with an error rather than risk concurrent processing.
+    /// Additionally, every per-event checkpoint advance is *fenced* on lease
+    /// ownership and monotonicity: if this worker stalled past `leased_until`
+    /// and another worker took over while a transaction was in flight, the
+    /// fenced write is rejected, the transaction is rolled back, and the run
+    /// stops with [`Error::LeaseLost`](event_sauce_core::Error::LeaseLost) —
+    /// never double-applying an event or regressing the checkpoint.
     ///
     /// # Examples
     ///
@@ -379,9 +385,32 @@ impl PostgresBackend {
                         .enqueue_tx(&mut tx, &dispatch.name, event.id, current_position.as_i64())
                         .await?;
                 }
-                self.checkpoint_store
-                    .save_checkpoint_tx(&mut tx, DISPATCHER_NAME, current_position)
+                let landed = self
+                    .checkpoint_store
+                    .save_checkpoint_fenced_tx(
+                        &mut tx,
+                        DISPATCHER_NAME,
+                        worker_id,
+                        current_position,
+                    )
                     .await?;
+
+                if !landed {
+                    // Lease lost mid-run: roll back the fan-out + checkpoint
+                    // advance instead of risking duplicate enqueues / a
+                    // regressed dispatcher checkpoint.
+                    tx.rollback().await.map_err(|e| {
+                        event_sauce_core::Error::backend(
+                            "Failed to roll back dispatcher transaction",
+                            e,
+                        )
+                    })?;
+                    return Err(event_sauce_core::Error::lease_lost(
+                        DISPATCHER_NAME,
+                        worker_id,
+                    ));
+                }
+
                 tx.commit().await.map_err(|e| {
                     event_sauce_core::Error::backend("Failed to commit dispatcher transaction", e)
                 })?;
@@ -433,9 +462,23 @@ impl PostgresBackend {
                 })?;
 
                 projection.handle(&entry.envelope, &mut tx).await?;
-                self.checkpoint_store
-                    .save_checkpoint_tx(&mut tx, P::NAME, current_position)
+                let landed = self
+                    .checkpoint_store
+                    .save_checkpoint_fenced_tx(&mut tx, P::NAME, worker_id, current_position)
                     .await?;
+
+                if !landed {
+                    // We no longer own an active lease (a stalled worker that
+                    // was taken over). Roll the in-flight tx back rather than
+                    // double-apply / regress the checkpoint.
+                    tx.rollback().await.map_err(|e| {
+                        event_sauce_core::Error::backend(
+                            "Failed to roll back projection transaction",
+                            e,
+                        )
+                    })?;
+                    return Err(event_sauce_core::Error::lease_lost(P::NAME, worker_id));
+                }
 
                 tx.commit().await.map_err(|e| {
                     event_sauce_core::Error::backend("Failed to commit projection transaction", e)
