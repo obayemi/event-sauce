@@ -214,7 +214,11 @@ pub fn has_encrypted_fields(value: &serde_json::Value) -> bool {
 
 /// Returns `true` if the JSON value is in encrypted form.
 ///
-/// Encrypted values have the shape `{"__encrypted": "<base64>"}`.
+/// Encrypted values are objects whose *sole* key is `__encrypted` and whose
+/// value is a base64 string — the exact shape produced by [`encrypt_value`].
+/// An object that carries a `__encrypted` key alongside other keys, or whose
+/// `__encrypted` value is not a string, is a legitimate user payload, not
+/// ciphertext, and is reported as `false`.
 ///
 /// # Examples
 ///
@@ -224,10 +228,18 @@ pub fn has_encrypted_fields(value: &serde_json::Value) -> bool {
 ///
 /// assert!(is_encrypted(&json!({"__encrypted": "abc"})));
 /// assert!(!is_encrypted(&json!({"name": "Alice"})));
+/// // Extra keys or a non-string value mean it is not ciphertext:
+/// assert!(!is_encrypted(&json!({"__encrypted": "abc", "name": "Alice"})));
+/// assert!(!is_encrypted(&json!({"__encrypted": 5})));
 /// ```
 #[must_use]
 pub fn is_encrypted(value: &serde_json::Value) -> bool {
-    value.get("__encrypted").is_some()
+    value.as_object().is_some_and(|obj| {
+        obj.len() == 1
+            && obj
+                .get("__encrypted")
+                .is_some_and(serde_json::Value::is_string)
+    })
 }
 
 #[cfg(test)]
@@ -330,6 +342,27 @@ mod tests {
     fn is_encrypted_returns_false_for_array() {
         let value = serde_json::json!([1, 2, 3]);
         assert!(!is_encrypted(&value));
+    }
+
+    #[test]
+    fn is_encrypted_returns_false_when_extra_keys_present() {
+        // A legitimate user object that happens to carry a top-level
+        // `__encrypted` key must NOT be misclassified as ciphertext.
+        let value = serde_json::json!({"__encrypted": "abc", "name": "Alice"});
+        assert!(
+            !is_encrypted(&value),
+            "an object with extra keys alongside __encrypted is not ciphertext"
+        );
+    }
+
+    #[test]
+    fn is_encrypted_returns_false_when_value_not_string() {
+        // Real ciphertext stores a base64 string; a non-string value is not it.
+        let value = serde_json::json!({"__encrypted": 5});
+        assert!(
+            !is_encrypted(&value),
+            "__encrypted with a non-string value is not ciphertext"
+        );
     }
 
     #[test]

@@ -543,7 +543,7 @@ where
             current_version,
             || serde_json::to_value(aggregate.entity()),
         )
-        .await
+        .await?
     } else {
         None
     };
@@ -643,7 +643,7 @@ where
             current_version,
             || serde_json::to_value(aggregate.state()),
         )
-        .await
+        .await?
     } else {
         None
     };
@@ -693,25 +693,34 @@ pub(crate) async fn flush_prepared<S: EventStore + ?Sized>(
 }
 
 /// Builds an active-aggregate snapshot, encrypting if needed.
+///
+/// A serialization failure is best-effort (the events are already committed and
+/// the snapshot is only an optimization) so it logs and yields `None`. A crypto
+/// failure for an encryption-required aggregate is fatal: it propagates as an
+/// error so the commit fails closed rather than persisting a plaintext snapshot.
+///
+/// # Errors
+///
+/// Returns an error if snapshot encryption fails for an encryption-required
+/// aggregate (see [`encrypt_snapshot_data`]).
 async fn build_snapshot<S: EventStore + ?Sized, A: Aggregate>(
     store: &S,
     aggregate_id: uuid::Uuid,
     aggregate_type: &AggregateType,
     current_version: AggregateVersion,
     serialize: impl FnOnce() -> std::result::Result<serde_json::Value, serde_json::Error>,
-) -> Option<Snapshot> {
+) -> Result<Option<Snapshot>> {
     match serialize() {
         Ok(mut snapshot_data) => {
             if A::is_encrypted() || A::Event::has_any_encrypted_fields() {
-                encrypt_snapshot_data(store, aggregate_id, aggregate_type, &mut snapshot_data)
-                    .await;
+                encrypt_snapshot_data(store, aggregate_id, &mut snapshot_data).await?;
             }
-            Some(Snapshot::new(
+            Ok(Some(Snapshot::new(
                 aggregate_id,
                 aggregate_type.clone(),
                 current_version,
                 snapshot_data,
-            ))
+            )))
         }
         Err(e) => {
             tracing::warn!(
@@ -720,31 +729,39 @@ async fn build_snapshot<S: EventStore + ?Sized, A: Aggregate>(
                 error = %e,
                 "Failed to serialize entity for snapshot"
             );
-            None
+            Ok(None)
         }
     }
 }
 
 /// Builds a deleted-aggregate snapshot, encrypting if needed.
+///
+/// Like [`build_snapshot`], a serialization failure is best-effort (`None`) but
+/// a crypto failure for an encryption-required aggregate is fatal and propagates
+/// so the commit fails closed instead of persisting a plaintext snapshot.
+///
+/// # Errors
+///
+/// Returns an error if snapshot encryption fails for an encryption-required
+/// aggregate (see [`encrypt_snapshot_data`]).
 async fn build_deleted_snapshot<S: EventStore + ?Sized, A: Aggregate>(
     store: &S,
     aggregate_id: uuid::Uuid,
     aggregate_type: &AggregateType,
     current_version: AggregateVersion,
     serialize: impl FnOnce() -> std::result::Result<serde_json::Value, serde_json::Error>,
-) -> Option<Snapshot> {
+) -> Result<Option<Snapshot>> {
     match serialize() {
         Ok(mut snapshot_data) => {
             if A::is_encrypted() || A::Event::has_any_encrypted_fields() {
-                encrypt_snapshot_data(store, aggregate_id, aggregate_type, &mut snapshot_data)
-                    .await;
+                encrypt_snapshot_data(store, aggregate_id, &mut snapshot_data).await?;
             }
-            Some(Snapshot::new_deleted(
+            Ok(Some(Snapshot::new_deleted(
                 aggregate_id,
                 aggregate_type.clone(),
                 current_version,
                 snapshot_data,
-            ))
+            )))
         }
         Err(e) => {
             tracing::warn!(
@@ -753,33 +770,43 @@ async fn build_deleted_snapshot<S: EventStore + ?Sized, A: Aggregate>(
                 error = %e,
                 "Failed to serialize deleted state for snapshot"
             );
-            None
+            Ok(None)
         }
     }
 }
 
-/// Encrypts snapshot data in-place if crypto is available.
+/// Encrypts snapshot data in-place, failing closed for an aggregate that
+/// requires encryption.
+///
+/// Callers invoke this only when the aggregate is fully encrypted or has any
+/// field-encrypted event variant, so a missing key store, a missing provider, a
+/// key-store read error, a missing key, or an `encrypt_value` failure are all
+/// HARD errors: the snapshot would otherwise be persisted in plaintext —
+/// leaking full state and being un-shreddable. We never fall through to a
+/// plaintext snapshot for an encryption-required aggregate.
+///
+/// # Errors
+///
+/// Returns `Error::InvalidState` if crypto configuration is missing,
+/// `Error::KeyNotFound` if no key exists for the aggregate, or
+/// `Error::Encryption` if encryption fails.
 async fn encrypt_snapshot_data<S: EventStore + ?Sized>(
     store: &S,
     aggregate_id: uuid::Uuid,
-    aggregate_type: &AggregateType,
     snapshot_data: &mut serde_json::Value,
-) {
-    if let (Some(key_store), Some(provider)) = (store.crypto_key_store(), store.crypto_provider()) {
-        if let Ok(Some(crypto_key)) = key_store.get_key(aggregate_id).await {
-            match crate::crypto::encrypt_value(provider, &crypto_key, snapshot_data) {
-                Ok(encrypted) => *snapshot_data = encrypted,
-                Err(e) => {
-                    tracing::warn!(
-                        aggregate_type = %aggregate_type,
-                        aggregate_id = %aggregate_id,
-                        error = %e,
-                        "Failed to encrypt snapshot data"
-                    );
-                }
-            }
-        }
-    }
+) -> Result<()> {
+    let key_store = store.crypto_key_store().ok_or_else(|| {
+        crate::Error::invalid_state("Encrypted aggregate requires crypto_key_store")
+    })?;
+    let provider = require_crypto_provider(store)?;
+
+    let crypto_key = key_store
+        .get_key(aggregate_id)
+        .await?
+        .ok_or_else(|| crate::Error::key_not_found(aggregate_id))?;
+
+    *snapshot_data = crate::crypto::encrypt_value(provider, &crypto_key, snapshot_data)?;
+    Ok(())
 }
 
 /// Gets or creates a crypto key for an aggregate.
@@ -831,6 +858,32 @@ fn decrypt_event_data<S: EventStore + ?Sized>(
     Ok(())
 }
 
+/// Returns `true` if the aggregate has any committed data — a persisted
+/// snapshot, or at least one event in its stream.
+///
+/// Used to distinguish a crypto-shredded aggregate (data exists but its key is
+/// gone) from a genuinely never-committed one (nothing to read), so that a
+/// missing field-encryption key only surfaces as `KeyNotFound` when there is
+/// actually data that has become unreadable.
+async fn has_committed_data<S: EventStore + ?Sized>(
+    store: &S,
+    stream_id: &StreamId,
+) -> Result<bool> {
+    use futures::StreamExt;
+
+    if store.snapshot_config().use_snapshots_on_load()
+        && store.load_snapshot(stream_id.clone()).await?.is_some()
+    {
+        return Ok(true);
+    }
+
+    let event_stream = store
+        .load_stream(stream_id.clone(), AggregateVersion::initial())
+        .await?;
+    futures::pin_mut!(event_stream);
+    Ok(event_stream.next().await.is_some())
+}
+
 /// Loads an aggregate from the event store, returning its lifecycle state.
 ///
 /// Returns `Loaded::Active(AggregateRoot<A>)` for active aggregates, or
@@ -869,9 +922,20 @@ where
             .ok_or_else(|| crate::Error::key_not_found(uuid))?;
         Some(key)
     } else if A::Event::has_any_encrypted_fields() {
-        // Field-level encryption: key may not exist yet (no events committed)
+        // Field-level encryption. The key may legitimately not exist yet when no
+        // data has been committed. But if data EXISTS and the key is gone, it was
+        // crypto-shredded out from under existing data — surface that as
+        // `KeyNotFound`, exactly like a fully-encrypted aggregate, so callers can
+        // detect GDPR erasure uniformly via `is_key_not_found()`.
         if let Some(key_store) = store.crypto_key_store() {
-            key_store.get_key(uuid).await?
+            if let Some(key) = key_store.get_key(uuid).await? {
+                Some(key)
+            } else {
+                if has_committed_data(store, &stream_id).await? {
+                    return Err(crate::Error::key_not_found(uuid));
+                }
+                None
+            }
         } else {
             None
         }
@@ -884,6 +948,14 @@ where
     if config.use_snapshots_on_load() {
         if let Some(mut snapshot) = store.load_snapshot(stream_id.clone()).await? {
             decrypt_event_data(store, crypto_key.as_deref(), &mut snapshot.snapshot_data)?;
+
+            // If the snapshot is still ciphertext after the decryption pass, we
+            // lacked the key to read it — the aggregate was crypto-shredded.
+            // Surface `KeyNotFound` instead of letting `from_value` fail with an
+            // opaque deserialization error on the `__encrypted` blob.
+            if crate::crypto::is_encrypted(&snapshot.snapshot_data) {
+                return Err(crate::Error::key_not_found(uuid));
+            }
 
             // Deleted snapshot: deserialize as DeletedState and return immediately
             if snapshot.is_deleted {

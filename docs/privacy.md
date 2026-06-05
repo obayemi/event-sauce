@@ -206,9 +206,9 @@ The `VisitRecorded` event is stored entirely in plaintext (no `@encrypted_fields
 ### How It Works
 
 - **Same key management**: Field-encrypted aggregates use the same per-aggregate `CryptoKeyStore` and `CryptoProvider` as fully encrypted ones
-- **Snapshots are fully encrypted**: When any event variant has `@encrypted_fields`, snapshots are encrypted with `encrypt_value()` to prevent plaintext leaks
+- **Snapshots are fully encrypted and fail closed**: When any event variant has `@encrypted_fields`, snapshots are encrypted with `encrypt_value()` to prevent plaintext leaks. If snapshot encryption cannot complete (missing key, missing provider, or an `encrypt` failure), `commit()` returns an error and refuses to persist a plaintext snapshot — confidentiality is never traded for an optimization
 - **Auto-detection on load**: Encrypted fields are detected by scanning for the `{"__encrypted": ...}` marker — no field list is needed for decryption
-- **Crypto-shredding works**: Deleting the key makes encrypted fields unreadable, causing load to fail
+- **Crypto-shredding works, unified with full encryption**: Deleting the key for an aggregate that already has committed data makes its encrypted fields unreadable, and `load()` returns `Error::KeyNotFound` — exactly like a fully encrypted aggregate, so `is_key_not_found()` reliably detects GDPR erasure in both modes. An aggregate with no committed data and no key surfaces as `Error::NotFound` (nothing to shred), not `KeyNotFound`
 - **Not fully encrypted**: `Aggregate::is_encrypted()` remains `false` — the aggregate is not marked as fully encrypted
 
 ### When to Use

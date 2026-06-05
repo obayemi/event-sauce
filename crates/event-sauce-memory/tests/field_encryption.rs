@@ -252,14 +252,16 @@ async fn field_encrypted_crypto_shredding() {
     // Delete the crypto key (crypto-shredding)
     key_store.delete_key(id.as_uuid()).await.unwrap();
 
-    // Loading should fail because the encrypted fields cannot be decrypted
+    // Loading should fail because the encrypted fields cannot be decrypted.
+    // Crypto-shredding a field-encrypted aggregate surfaces as `KeyNotFound`,
+    // unified with full encryption.
     let store = Arc::new(store);
     let repo = store.repository::<Patient>();
     let result = repo.load(id).await;
 
     assert!(
-        result.is_err(),
-        "Load should fail after crypto-shredding field-encrypted aggregate"
+        result.unwrap_err().is_key_not_found(),
+        "Load should fail with KeyNotFound after crypto-shredding field-encrypted aggregate"
     );
 }
 
@@ -297,6 +299,171 @@ async fn field_encrypted_snapshot_encryption() {
     assert_eq!(loaded.entity().name, "Diana");
     assert_eq!(loaded.entity().diagnosis, "flu");
     assert_eq!(loaded.entity().visit_count, 1);
+}
+
+/// Crypto provider whose `encrypt` always fails — used to prove the snapshot
+/// encryption path fails closed (never persists plaintext) when encryption is
+/// impossible.
+struct FailingEncryptProvider;
+
+impl event_sauce_core::CryptoProvider for FailingEncryptProvider {
+    fn encrypt(&self, _key: &[u8], _plaintext: &[u8]) -> event_sauce_core::Result<Vec<u8>> {
+        Err(event_sauce_core::Error::encryption("encrypt always fails"))
+    }
+    fn decrypt(&self, _key: &[u8], _ciphertext: &[u8]) -> event_sauce_core::Result<Vec<u8>> {
+        Err(event_sauce_core::Error::encryption("decrypt always fails"))
+    }
+    fn generate_key(&self) -> Vec<u8> {
+        vec![0x42; 32]
+    }
+}
+
+/// H3: snapshot encryption for an aggregate that REQUIRES encryption must FAIL
+/// CLOSED — never persist plaintext.
+///
+/// We commit only a `VisitRecorded` event, which has NO `@encrypted_fields`, so
+/// the event-encryption path is skipped entirely (`encrypt_fields` is never
+/// called). Yet because `PatientEvent::has_any_encrypted_fields()` is true, the
+/// snapshot MUST be fully encrypted. With a provider whose `encrypt` always
+/// fails and snapshots-on-every-commit, the snapshot cannot be encrypted, so
+/// `commit()` MUST return an error and MUST NOT persist a plaintext snapshot.
+///
+/// Today `encrypt_snapshot_data` swallows the encrypt error (warn + fall
+/// through), so commit succeeds and a PLAINTEXT snapshot containing `name`,
+/// `diagnosis`, etc. is stored — a confidentiality hole.
+#[tokio::test]
+async fn snapshot_fails_closed_when_encryption_fails() {
+    let key_store = Arc::new(InMemoryCryptoKeyStore::new());
+    let store = InMemoryEventStore::builder()
+        .snapshot_config(SnapshotConfig::always())
+        .crypto_key_store(key_store)
+        .crypto_provider(Arc::new(FailingEncryptProvider))
+        .build();
+
+    let id = EntityId::new();
+    let mut agg = AggregateRoot::<Patient>::new(id);
+    // VisitRecorded has no encrypted fields: event-encryption is a no-op, so the
+    // only crypto operation is snapshot encryption — isolating the H3 path.
+    agg.apply(PatientEvent::VisitRecorded {
+        visit_count: 5,
+        timestamp: chrono::Utc::now(),
+    })
+    .unwrap();
+
+    let result = store.commit(&mut agg).await;
+    assert!(
+        result.is_err(),
+        "commit must fail closed when snapshot encryption fails for an encryption-required aggregate"
+    );
+    let err = result.unwrap_err();
+    assert!(
+        err.is_encryption() || err.is_key_not_found(),
+        "expected encryption/key-not-found error, got: {err:?}"
+    );
+
+    // Any persisted snapshot must be ciphertext, never plaintext.
+    let stream_id = StreamId::new("Patient", id.as_uuid());
+    if let Some(snapshot) = store.load_snapshot(stream_id).await.unwrap() {
+        assert!(
+            event_sauce_core::crypto::is_encrypted(&snapshot.snapshot_data),
+            "any persisted snapshot for an encryption-required aggregate must be ciphertext, never plaintext"
+        );
+    }
+}
+
+/// H4: crypto-shredding a field-encrypted aggregate must surface as
+/// `KeyNotFound`, exactly like full encryption. Snapshots disabled, so the
+/// failure must come from the event stream's embedded `__encrypted` blobs.
+///
+/// Today load succeeds with `__encrypted` blobs left in the events (key treated
+/// as optional, decrypt becomes a no-op) — so this returns Ok, not KeyNotFound.
+#[tokio::test]
+async fn field_encrypted_crypto_shredding_returns_key_not_found() {
+    let (store, key_store) = create_store_with_crypto();
+    let id = EntityId::new();
+
+    let mut agg = AggregateRoot::<Patient>::new(id);
+    agg.apply(PatientEvent::Registered {
+        name: "Frank".into(),
+        diagnosis: "headache".into(),
+        visit_count: 1,
+        timestamp: chrono::Utc::now(),
+    })
+    .unwrap();
+    store.commit(&mut agg).await.unwrap();
+
+    // Delete the crypto key out from under existing data (crypto-shredding).
+    key_store.delete_key(id.as_uuid()).await.unwrap();
+
+    let store = Arc::new(store);
+    let repo = store.repository::<Patient>();
+    let result = repo.load(id).await;
+
+    assert!(result.is_err(), "load must fail after key deletion");
+    assert!(
+        result.unwrap_err().is_key_not_found(),
+        "field-encrypted shred must surface as KeyNotFound (unified with full encryption)"
+    );
+}
+
+/// H4: same as above but a fully-encrypted snapshot exists. Load must still
+/// surface `KeyNotFound`, not an opaque `Error::custom` from `from_value`
+/// failing to deserialize ciphertext.
+#[tokio::test]
+async fn field_encrypted_crypto_shredding_with_snapshot_returns_key_not_found() {
+    let (store, key_store) = create_store_with_crypto_and_snapshots();
+    let id = EntityId::new();
+
+    let mut agg = AggregateRoot::<Patient>::new(id);
+    agg.apply(PatientEvent::Registered {
+        name: "Grace".into(),
+        diagnosis: "flu".into(),
+        visit_count: 1,
+        timestamp: chrono::Utc::now(),
+    })
+    .unwrap();
+    store.commit(&mut agg).await.unwrap();
+
+    key_store.delete_key(id.as_uuid()).await.unwrap();
+
+    let store = Arc::new(store);
+    let repo = store.repository::<Patient>();
+    let result = repo.load(id).await;
+
+    assert!(result.is_err(), "load must fail after key deletion");
+    let err = result.unwrap_err();
+    assert!(
+        err.is_key_not_found(),
+        "expected KeyNotFound for shredded field-encrypted aggregate with snapshot, got: {err:?}"
+    );
+}
+
+/// H4 GUARD (must stay green): a field-encrypted aggregate with NO committed
+/// data and an absent key must NOT report `KeyNotFound`. With no events and no
+/// snapshot, there is genuinely nothing to read — the correct outcome is
+/// `NotFound` (after F7a), never a spurious key-not-found.
+#[tokio::test]
+async fn field_encrypted_no_data_no_key_is_not_key_not_found() {
+    let (store, _key_store) = create_store_with_crypto();
+    let id = EntityId::new(); // never committed; key store present but empty
+
+    let store = Arc::new(store);
+    let repo = store.repository::<Patient>();
+    let result = repo.load(id).await;
+
+    assert!(
+        result.is_err(),
+        "loading a never-committed aggregate should be an error (NotFound)"
+    );
+    let err = result.unwrap_err();
+    assert!(
+        !err.is_key_not_found(),
+        "no data + no key must NOT be KeyNotFound (nothing to shred), got: {err:?}"
+    );
+    assert!(
+        err.is_not_found(),
+        "no data should surface as NotFound, got: {err:?}"
+    );
 }
 
 #[tokio::test]

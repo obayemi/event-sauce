@@ -30,8 +30,8 @@ event-sauce adopts the notification-log model (`events.id BIGSERIAL` = global `P
 | C4 | ✅ fixed | current-bug | ordering | No commit-order serialization on `append` → late-committing lower id permanently skipped | F2 |
 | H1 | ✅ fixed | current-bug | concurrency | UNIQUE-violation race surfaced as `Error::Backend`, not `ConcurrencyConflict`; documented retry never fires | F3 |
 | H2 | high | design-gap | serialization | No upcasting hook — `event_version` written but never read on load; `@version` is write-only | F4 |
-| H3 | high | current-bug | encryption | Snapshot encryption fails *open* — silently persists plaintext on key/encrypt failure | F5 |
-| H4 | high | design-gap | encryption | Field-encrypted aggregates degrade silently after key deletion (no `KeyNotFound`) | F5 |
+| H3 | ✅ fixed | current-bug | encryption | Snapshot encryption fails *open* — silently persists plaintext on key/encrypt failure | F5 |
+| H4 | ✅ fixed | design-gap | encryption | Field-encrypted aggregates degrade silently after key deletion (no `KeyNotFound`) | F5 |
 | H5 | ✅ fixed | current-bug | domain-model | `load()` on an empty-stream `#[aggregate(init)]` **panics** instead of `NotFound` | F7 |
 | H6 | high | current-bug | projections | Projection lease has no fencing token; checkpoint write unconditional & non-monotonic | F6 |
 | M1 | medium | design-gap | exactly-once | Outbox delivery is at-least-once (effect + `mark_done` not in one tx) | F6 |
@@ -49,7 +49,7 @@ event-sauce adopts the notification-log model (`events.id BIGSERIAL` = global `P
 | L4 | low | design-gap | audit-log | `EventLogOrder::CreatedAt*` actually order by `id` — misleading names | F7 |
 | L5 | low | design-gap | encryption | No AAD binds ciphertext to its event — intra-aggregate relocation/replay possible | F5 |
 | L6 | low | future-issue | encryption | No per-key message cap/rotation — relies on the 96-bit random-nonce birthday bound | F5 |
-| L7 | low | potential-issue | encryption | `is_encrypted` structural on the literal `"__encrypted"` key — collides with user data | F5 |
+| L7 | ✅ fixed | potential-issue | encryption | `is_encrypted` structural on the literal `"__encrypted"` key — collides with user data | F5 |
 | L8 | low | design-gap | serialization | `#[derive(Event)]` applies one `event_version` to all variants (vs per-variant `define_events!`) | F4 |
 | L9 | low | design-gap | domain-model | `apply()` purity is doc-only; `post_validate` leaves the entity mutated on failure | F7 |
 | L10 | low | design-gap | exactly-once | Outbox `attempts` incremented at claim time → crash-reclaims prematurely DLQ | F6 |
@@ -94,9 +94,11 @@ These four share one root cause: `Position` is underspecified and the real globa
 
 ### H3 — Snapshot encryption fails *open* to plaintext
 - **Evidence:** `encrypt_snapshot_data` (`event_store.rs:703-724`) only encrypts on `if let Ok(Some(key))`; it drops the `Err` arm and on `encrypt_value` failure emits a `tracing::warn` and persists the **plaintext** full-state snapshot. The *event* path uses `?` and fails closed (`:448-455`). A plaintext snapshot is passed through silently on load and can never be crypto-shredded.
+- **✅ Fixed:** `encrypt_snapshot_data` now returns `Result<()>` and fails closed — requires the key store/provider, propagates the `get_key` `Err`, returns `KeyNotFound` on a missing key, and `?`-propagates `encrypt_value` failures; `build_snapshot`/`build_deleted_snapshot` return `Result<Option<Snapshot>>` and the `?` fires before `clear_pending_events`/`flush_prepared`, so a crypto failure aborts the whole commit (no plaintext snapshot ever persisted). A serde *serialize* failure stays best-effort (events already committed). RED test isolates the snapshot path on a field-encrypted aggregate committing a non-encrypted-field event.
 
 ### H4 — Field-encrypted aggregates degrade silently after key deletion
 - **Evidence:** full-encryption returns `Error::key_not_found` (`event_store.rs:803-811`); field-encryption treats the key as optional (`:812-818`) → `load` succeeds returning `{"__encrypted":…}` blobs, or fails the fully-encrypted snapshot with an opaque `Error::custom` (`:843`) — never `KeyNotFound`. Tests bake this in (`encrypted_aggregate.rs:280` asserts `is_key_not_found()`; `field_encryption.rs:260` asserts only `is_err()`). GDPR-erasure detection via `is_key_not_found()` is mode-dependent.
+- **✅ Fixed:** `load_any`'s field-encryption branch now, when the key store is present and `get_key==None`, calls a `has_committed_data` helper (snapshot or any event in the stream); if data exists it returns `Error::key_not_found` (shredded out from under data), else `None` (no data yet → surfaces as `NotFound` post-F7a). Defense-in-depth: if a snapshot is still ciphertext after the decrypt pass, return `KeyNotFound` rather than an opaque serde error. `is_key_not_found()` is now reliable for both encryption modes; the overlapping shred test was tightened from `is_err()` to `is_key_not_found()`.
 
 ### H5 — `load()` on an empty-stream init aggregate panics
 - **Evidence:** empty stream + no snapshot → `AggregateRoot::new_for_replay(id)` → `A::new(id)`, which for `#[aggregate(init)]` is `panic!` by design (`event_store.rs:876-880`, `entity.rs:82-89`). Reachable from `Repository::load`/`modify` with **any nonexistent/stale id** (no `DefaultEntity` bound on that impl block, `repository.rs:45-51`). `Error::NotFound` already exists. (`TODO.md` already lists "remove code that panics.")
