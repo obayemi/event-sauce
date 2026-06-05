@@ -785,6 +785,15 @@ macro_rules! __check_spec_init_actor {
 /// - `@encrypted_fields(f1, f2)` field-level encryption
 /// - `=> |agg, evt|` apply logic (or `=> |id, evt|` for init events)
 ///
+/// An optional **enum-level** clause may appear as the **first** item in the
+/// enum body (before any variant):
+///
+/// - `@upcast |event_type, from_version, data| { ... }` — overrides
+///   [`DomainEvent::upcast`](crate::DomainEvent::upcast). Runs on load, before
+///   deserialization, with the stored `event_version`; mutate `data` (the
+///   variant's flat JSON object) in place to migrate an older payload. Omit the
+///   clause to keep the trait default (no migration).
+///
 /// # Benefits
 ///
 /// - Reduces boilerplate by ~60%
@@ -832,12 +841,28 @@ macro_rules! define_events {
     // =========================================================================
     (
         $vis:vis enum $event_enum:ident for $aggregate:ty {
+            @upcast |$upcast_type:ident, $upcast_ver:ident, $upcast_data:ident| $upcast_body:block
             $($rest:tt)*
         }
     ) => {
         define_events! {
             @munch
             [$vis] [$event_enum] [$aggregate]
+            upcast: [[$upcast_type, $upcast_ver, $upcast_data, $upcast_body]]
+            accumulated: []
+            rest: [$($rest)*]
+        }
+    };
+
+    (
+        $vis:vis enum $event_enum:ident for $aggregate:ty {
+            $($rest:tt)*
+        }
+    ) => {
+        define_events! {
+            @munch
+            [$vis] [$event_enum] [$aggregate]
+            upcast: []
             accumulated: []
             rest: [$($rest)*]
         }
@@ -849,6 +874,7 @@ macro_rules! define_events {
     (
         @munch
         [$vis:vis] [$event_enum:ident] [$aggregate:ty]
+        upcast: [$($upcast:tt)*]
         accumulated: [$($acc:tt)*]
         rest: [
             $variant:ident {
@@ -868,6 +894,7 @@ macro_rules! define_events {
         define_events! {
             @munch
             [$vis] [$event_enum] [$aggregate]
+            upcast: [$($upcast)*]
             accumulated: [
                 $($acc)*
                 {
@@ -894,6 +921,7 @@ macro_rules! define_events {
     (
         @munch
         [$vis:vis] [$event_enum:ident] [$aggregate:ty]
+        upcast: [$($upcast:tt)*]
         accumulated: [$($acc:tt)*]
         rest: [
             $variant:ident {
@@ -914,6 +942,7 @@ macro_rules! define_events {
         define_events! {
             @munch
             [$vis] [$event_enum] [$aggregate]
+            upcast: [$($upcast)*]
             accumulated: [
                 $($acc)*
                 {
@@ -940,6 +969,7 @@ macro_rules! define_events {
     (
         @munch
         [$vis:vis] [$event_enum:ident] [$aggregate:ty]
+        upcast: [$($upcast:tt)*]
         accumulated: [$($acc:tt)*]
         rest: [
             $variant:ident {
@@ -960,6 +990,7 @@ macro_rules! define_events {
         define_events! {
             @munch
             [$vis] [$event_enum] [$aggregate]
+            upcast: [$($upcast)*]
             accumulated: [
                 $($acc)*
                 {
@@ -986,6 +1017,7 @@ macro_rules! define_events {
     (
         @munch
         [$vis:vis] [$event_enum:ident] [$aggregate:ty]
+        upcast: [$($upcast:tt)*]
         accumulated: [$($acc:tt)*]
         rest: [
             $variant:ident {
@@ -1005,6 +1037,7 @@ macro_rules! define_events {
         define_events! {
             @munch
             [$vis] [$event_enum] [$aggregate]
+            upcast: [$($upcast)*]
             accumulated: [
                 $($acc)*
                 {
@@ -1031,6 +1064,7 @@ macro_rules! define_events {
     (
         @munch
         [$vis:vis] [$event_enum:ident] [$aggregate:ty]
+        upcast: [$($upcast:tt)*]
         accumulated: [$($acc:tt)*]
         rest: [
             $variant:ident {
@@ -1049,6 +1083,7 @@ macro_rules! define_events {
         define_events! {
             @munch
             [$vis] [$event_enum] [$aggregate]
+            upcast: [$($upcast)*]
             accumulated: [
                 $($acc)*
                 {
@@ -1075,6 +1110,7 @@ macro_rules! define_events {
     (
         @munch
         [$vis:vis] [$event_enum:ident] [$aggregate:ty]
+        upcast: [$($upcast:tt)*]
         accumulated: [$($acc:tt)*]
         rest: [
             $variant:ident {
@@ -1094,6 +1130,7 @@ macro_rules! define_events {
         define_events! {
             @munch
             [$vis] [$event_enum] [$aggregate]
+            upcast: [$($upcast)*]
             accumulated: [
                 $($acc)*
                 {
@@ -1120,12 +1157,14 @@ macro_rules! define_events {
     (
         @munch
         [$vis:vis] [$event_enum:ident] [$aggregate:ty]
+        upcast: [$($upcast:tt)*]
         accumulated: [$($acc:tt)*]
         rest: []
     ) => {
         define_events! {
             @build
             [$vis] [$event_enum] [$aggregate]
+            upcast: [$($upcast)*]
             variants: [$($acc)*]
         }
     };
@@ -1136,6 +1175,7 @@ macro_rules! define_events {
     (
         @build
         [$vis:vis] [$event_enum:ident] [$aggregate:ty]
+        upcast: [$($upcast:tt)*]
         variants: [
             $(
                 {
@@ -1268,7 +1308,13 @@ macro_rules! define_events {
                 fn from_envelope(envelope: &$crate::EventEnvelope) -> $crate::Result<Self> {
                     $(
                         if envelope.event_type == <[<$variant Event>] as $crate::EventType>::EVENT_TYPE {
-                            let event = ::serde_json::from_value::<[<$variant Event>]>(envelope.event_data.clone())
+                            let mut data = envelope.event_data.clone();
+                            <$event_enum as $crate::DomainEvent>::upcast(
+                                &envelope.event_type,
+                                envelope.event_version,
+                                &mut data,
+                            );
+                            let event = ::serde_json::from_value::<[<$variant Event>]>(data)
                                 .map_err(|e| $crate::Error::custom(format!("Failed to deserialize event: {e}")))?;
                             return Ok($event_enum::$variant {
                                 $($field: event.$field,)*
@@ -1292,6 +1338,8 @@ macro_rules! define_events {
                 fn has_any_encrypted_fields() -> bool {
                     define_events!(@has_any_encrypted_fields $([$($encrypted_fields)*])*)
                 }
+
+                define_events!(@upcast_method [$($upcast)*]);
             }
         }
 
@@ -2027,6 +2075,21 @@ macro_rules! define_events {
     (@has_any_encrypted_fields) => {
         false
     };
+
+    // =========================================================================
+    // Helper: emit the optional `DomainEvent::upcast` override.
+    // =========================================================================
+    // When an `@upcast |event_type, from_version, data| { ... }` clause was
+    // supplied, generate an override running the user's closure body. When
+    // absent, generate nothing so the trait's default (no-op) applies.
+    (@upcast_method [[$ut:ident, $uv:ident, $ud:ident, $ubody:block]]) => {
+        fn upcast(
+            $ut: &str,
+            $uv: $crate::EventVersion,
+            $ud: &mut ::serde_json::Value,
+        ) $ubody
+    };
+    (@upcast_method []) => {};
 }
 
 /// Generates `BitAnd`, `BitOr`, and `Not` operator impls for a specification struct.

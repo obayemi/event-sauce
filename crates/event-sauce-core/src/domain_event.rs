@@ -92,6 +92,78 @@ pub trait DomainEvent: Clone + Debug + Send + Sync + Serialize + DeserializeOwne
         false
     }
 
+    /// Migrates an older event payload to the shape the current struct expects.
+    ///
+    /// This is the **event upcasting** hook. It is called automatically on load
+    /// (by [`from_envelope`](DomainEvent::from_envelope)) with the event's
+    /// **stored** [`event_version`](EventVersion) **before** the JSON payload is
+    /// deserialized. Implementors mutate `data` in place to bring a historical
+    /// payload up to the current schema — for example, by inserting a field that
+    /// did not exist at an earlier version, renaming a key, or reshaping a value.
+    ///
+    /// Because the event's current [`event_version`](DomainEvent::event_version)
+    /// is fixed at the latest schema, `from_version` lets the implementation
+    /// decide whether (and how) to migrate: older payloads are upcast while
+    /// current-version payloads are passed through untouched.
+    ///
+    /// The default implementation does nothing, so existing events keep loading
+    /// exactly as before. Override it (manually, or via the `@upcast` clause of
+    /// [`define_events!`](crate::define_events)) to add a migration path.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use event_sauce_core::{DomainEvent, EventVersion};
+    /// use serde_json::{json, Value};
+    /// # use event_sauce_core::{Aggregate, AggregateError, DefaultEntity, Entity, EntityId, EventApplicator};
+    /// # use serde::{Deserialize, Serialize};
+    /// # #[derive(Debug, thiserror::Error)]
+    /// # #[error("err")]
+    /// # struct ProfileError;
+    /// # impl AggregateError for ProfileError {}
+    /// # #[derive(Debug, Clone, Serialize, Deserialize)]
+    /// # struct Profile { id: EntityId, tier: String }
+    /// # impl Entity for Profile {
+    /// #     fn new(id: EntityId) -> Self { Self { id, tier: String::new() } }
+    /// #     fn entity_id(&self) -> EntityId { self.id }
+    /// # }
+    /// # impl DefaultEntity for Profile {}
+    /// # impl Aggregate for Profile { type Event = ProfileEvent; type Error = ProfileError; type DeletedState = Self; }
+    /// #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+    /// enum ProfileEvent {
+    ///     Registered { tier: String },
+    /// }
+    /// # impl EventApplicator<Profile> for ProfileEvent {
+    /// #     fn dispatch(&self, _a: &mut Profile) -> Result<(), ProfileError> { Ok(()) }
+    /// #     fn dispatch_unchecked(&self, _a: &mut Profile) {}
+    /// # }
+    ///
+    /// impl DomainEvent for ProfileEvent {
+    ///     type Aggregate = Profile;
+    ///     # fn event_type(&self) -> &'static str { "Profile.Registered" }
+    ///     # fn occurred_at(&self) -> chrono::DateTime<chrono::Utc> { chrono::Utc::now() }
+    ///     // ... event_type / occurred_at ...
+    ///     fn event_version(&self) -> EventVersion {
+    ///         EventVersion::new(2) // `tier` was added in v2
+    ///     }
+    ///
+    ///     fn upcast(event_type: &str, from_version: EventVersion, data: &mut Value) {
+    ///         if event_type == "Profile.Registered" && from_version == EventVersion::new(1) {
+    ///             if let Some(obj) = data
+    ///                 .get_mut("Registered")
+    ///                 .and_then(Value::as_object_mut)
+    ///             {
+    ///                 obj.entry("tier").or_insert_with(|| json!("free"));
+    ///             }
+    ///         }
+    ///     }
+    /// }
+    /// ```
+    fn upcast(event_type: &str, from_version: EventVersion, data: &mut serde_json::Value) {
+        // Default: no migration. Suppress unused-variable lints for the no-op.
+        let _ = (event_type, from_version, data);
+    }
+
     /// Converts this domain event into an `EventEnvelope`.
     ///
     /// Uses `EntityId.as_uuid()` for the aggregate ID and
@@ -117,13 +189,17 @@ pub trait DomainEvent: Clone + Debug + Send + Sync + Serialize + DeserializeOwne
 
     /// Creates a domain event from an `EventEnvelope`.
     ///
-    /// Deserializes the event data from the envelope's JSON payload.
+    /// The envelope's stored [`event_version`](EventVersion) is read first and
+    /// passed to [`upcast`](DomainEvent::upcast), which may migrate an older
+    /// payload to the current schema, before the data is deserialized.
     ///
     /// # Errors
     ///
     /// Returns an error if deserialization fails.
     fn from_envelope(envelope: &EventEnvelope) -> Result<Self> {
-        serde_json::from_value(envelope.event_data.clone())
+        let mut data = envelope.event_data.clone();
+        Self::upcast(&envelope.event_type, envelope.event_version, &mut data);
+        serde_json::from_value(data)
             .map_err(|e| Error::custom(format!("Failed to deserialize event: {e}")))
     }
 }

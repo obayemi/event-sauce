@@ -29,7 +29,7 @@ event-sauce adopts the notification-log model (`events.id BIGSERIAL` = global `P
 | C3 | ✅ fixed | current-bug | ordering/projections | Runners checkpoint a synthetic `+1` ordinal vs `BIGSERIAL id` → gap re-processing (projections double-apply; new policies re-process history) | F1 |
 | C4 | ✅ fixed | current-bug | ordering | No commit-order serialization on `append` → late-committing lower id permanently skipped | F2 |
 | H1 | ✅ fixed | current-bug | concurrency | UNIQUE-violation race surfaced as `Error::Backend`, not `ConcurrencyConflict`; documented retry never fires | F3 |
-| H2 | high | design-gap | serialization | No upcasting hook — `event_version` written but never read on load; `@version` is write-only | F4 |
+| H2 | ✅ fixed | design-gap | serialization | No upcasting hook — `event_version` written but never read on load; `@version` is write-only | F4 |
 | H3 | ✅ fixed | current-bug | encryption | Snapshot encryption fails *open* — silently persists plaintext on key/encrypt failure | F5 |
 | H4 | ✅ fixed | design-gap | encryption | Field-encrypted aggregates degrade silently after key deletion (no `KeyNotFound`) | F5 |
 | H5 | ✅ fixed | current-bug | domain-model | `load()` on an empty-stream `#[aggregate(init)]` **panics** instead of `NotFound` | F7 |
@@ -91,6 +91,7 @@ These four share one root cause: `Position` is underspecified and the real globa
 
 ### H2 — No upcasting: `event_version` is write-only
 - **Evidence:** `from_envelope` branches solely on `event_type` then `serde_json::from_value` into the *current* struct (`macros.rs:1268-1280`; default trait `domain_event.rs:125-128`). `event_version` is written (`macros.rs:1227,1262`) and never read on load. The "Event Upcasting" docs (`docs/events.md:805-824`) show a manual helper that nothing calls. Any field-shape change serde-fails historical events.
+- **✅ Fixed:** added a default-no-op `DomainEvent::upcast(event_type, from_version, &mut data)` hook (additive, non-breaking) called in **both** `from_envelope` paths (the default trait impl *and* the `define_events!`-generated one) with the **stored `event_version`**, before `serde_json::from_value` — so old payloads are migrated in place on load. `define_events!` gained an optional enum-level `@upcast |event_type, from_version, data| { … }` clause; manual `DomainEvent` impls can override `upcast` directly. `docs/events.md` rewritten to show the real auto-invoked hook (replacing the never-called manual helper); `examples/upcasting.rs` added. RED proven by reverting the wiring (a v1 payload missing a field fails to deserialize; migrates after).
 
 ### H3 — Snapshot encryption fails *open* to plaintext
 - **Evidence:** `encrypt_snapshot_data` (`event_store.rs:703-724`) only encrypts on `if let Ok(Some(key))`; it drops the `Err` arm and on `encrypt_value` failure emits a `tracing::warn` and persists the **plaintext** full-state snapshot. The *event* path uses `?` and fails closed (`:448-455`). A plaintext snapshot is passed through silently on load and can never be crypto-shredded.

@@ -39,7 +39,7 @@ The **`define_events!` macro** is the recommended way to define events in event-
 - 60% less boilerplate - No manual struct definitions or trait implementations
 - Declarative syntax - Clear event definitions with inline validation and apply logic
 - Type-safe validation - Business rules co-located with events
-- Automatic versioning - Support for schema evolution with `@version`
+- Automatic versioning - Support for schema evolution with `@version` and on-load migration with `@upcast`
 - Pre and post-validation - `@validate` and `@post_validate` hooks
 - Field-level encryption - Encrypt sensitive fields with `@encrypted_fields` (see [Privacy](privacy.md))
 
@@ -671,22 +671,34 @@ Withdrawn { amount: i64 }  // Missing context
 
 ### 4. Event Versioning
 
-Plan for schema evolution from the start:
+Plan for schema evolution from the start. Each event carries an
+`event_version` (set with `@version` in `define_events!`); it is written into
+the stored envelope and read back on load to drive [upcasting](#event-upcasting).
 
 ```rust
-#[derive(Event)]
-#[event(version = 1)]  // Start at v1
-enum BankAccountEvent {
-    // Events...
+define_events! {
+    pub enum BankAccountEvent for BankAccount {
+        Withdrawn { amount: i64 }
+        @version(1)  // Start at v1
+        => |account, event| { account.balance -= event.amount; },
+    }
 }
 
-// Later, when schema changes:
-#[derive(Event)]
-#[event(version = 2)]  // Increment version
-enum BankAccountEvent {
-    // Updated events...
+// Later, when the event's shape changes, bump the version and add an
+// `@upcast` clause that migrates older payloads on load:
+define_events! {
+    pub enum BankAccountEvent for BankAccount {
+        @upcast |event_type, from_version, data| { /* migrate v1 -> v2 */ }
+
+        Withdrawn { amount: i64, fee: i64 }
+        @version(2)  // Increment version
+        => |account, event| { account.balance -= event.amount + event.fee; },
+    }
 }
 ```
+
+Bumping `@version` is what tells `upcast` which payloads are historical. See
+[Event Upcasting](#event-upcasting) for the full migration mechanism.
 
 ### 5. Validation Placement
 
@@ -804,24 +816,84 @@ fn test_withdrawn_event_validates_insufficient_funds() {
 
 ### Event Upcasting
 
-Handle schema evolution by converting old events to new format:
+When you change the **shape** of an event (add a required field, rename a key,
+reshape a value), historical payloads stored under an older `event_version` no
+longer match the current struct and fail to deserialize. Upcasting migrates
+those old payloads to the current shape **on load**, before deserialization.
+
+The seam is `DomainEvent::upcast`. It is called automatically by
+`from_envelope` with the envelope's **stored** `event_version` (the version the
+payload was written with) and a mutable JSON value. The default implementation
+is a no-op, so existing events keep loading unchanged; override it to add a
+migration path. Because the event's current `event_version` always reports the
+latest schema, you branch on `from_version` so that old payloads are migrated
+while current-version payloads pass through untouched.
+
+#### With `define_events!` (recommended)
+
+Add an enum-level `@upcast |event_type, from_version, data| { ... }` clause as
+the first item in the enum body, bump `@version`, and add the new field. Because
+`define_events!` serialises each variant as a flat object, `data` is that
+variant's object directly:
 
 ```rust
-impl BankAccountEventV2 {
-    fn from_v1(v1: BankAccountEventV1) -> Self {
-        match v1 {
-            BankAccountEventV1::Withdrawn { amount, timestamp } => {
-                // Add new fields with defaults
-                BankAccountEventV2::Withdrawn {
-                    amount,
-                    timestamp,
-                    fee: 0,  // New field with default
+use event_sauce::{define_events, EventVersion};
+use serde_json::json;
+
+define_events! {
+    pub enum BankAccountEvent for BankAccount {
+        // Migrate payloads written before `fee` existed (v1 -> v2).
+        @upcast |event_type, from_version, data| {
+            if event_type == "BankAccount.Withdrawn"
+                && from_version == EventVersion::new(1)
+            {
+                if let Some(obj) = data.as_object_mut() {
+                    obj.entry("fee").or_insert_with(|| json!(0));
                 }
+            }
+        }
+
+        Withdrawn {
+            amount: i64,
+            fee: i64, // Added in v2 — historical v1 payloads lack it.
+        }
+        @version(2)
+        => |account, event| {
+            account.balance -= event.amount + event.fee;
+        },
+    }
+}
+```
+
+When the `@upcast` clause is omitted, the trait default (no migration) applies.
+
+#### Manual `DomainEvent` impl
+
+If you implement `DomainEvent` by hand, override `upcast` directly. With a
+serde-tagged enum the payload is keyed by the variant name, so reach into that
+key first:
+
+```rust
+impl DomainEvent for BankAccountEvent {
+    type Aggregate = BankAccount;
+
+    // ... event_type / event_version (returns v2) / occurred_at ...
+
+    fn upcast(event_type: &str, from_version: EventVersion, data: &mut serde_json::Value) {
+        if event_type == "BankAccount.Withdrawn" && from_version == EventVersion::new(1) {
+            if let Some(obj) = data
+                .get_mut("Withdrawn")
+                .and_then(serde_json::Value::as_object_mut)
+            {
+                obj.entry("fee").or_insert_with(|| serde_json::json!(0));
             }
         }
     }
 }
 ```
+
+The migration runs transparently inside `Repository::load` / replay — no
+separate conversion step is needed at the call site.
 
 ### Event Correlation
 
@@ -858,7 +930,7 @@ The event-sauce event system provides:
 - **Rich validation** with `@validate` and `@post_validate` hooks
 - **Optimized replay** with `apply_unchecked`
 - **Clean separation** between validation and application
-- **Schema evolution** with `@version` attribute
+- **Schema evolution** with `@version` plus `@upcast` for on-load migration
 - **Field-level encryption** with `@encrypted_fields` for selective privacy
 - **Better testing** with independent event tests
 

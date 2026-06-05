@@ -4,13 +4,7 @@
 
 > **Note**: event-sauce is **not production-ready**. The current architecture targets single-node deployments and has not been validated for horizontal scalability or high-throughput distributed workloads. Use it for prototyping, learning, and small-scale applications.
 
-> ⚠️ **Known limitations** — a [2026-06-04 audit](ISSUES.md) (benchmarked against Python's `eventsourcing`) found a latent **correctness cluster** that is invisible in the current single-threaded test suite. Read **[ISSUES.md](ISSUES.md)** before relying on it. Highlights:
-> - **Global ordering / projections (critical):** consumers checkpoint a synthetic counter rather than the real `events.id`, and `append` does not serialize commit order — so under concurrent writers or after any rolled-back append, projections/policies can **silently skip or re-apply events**.
-> - **Concurrency:** a genuine cross-process append conflict surfaces as a generic backend error, not `ConcurrencyConflict`, so the documented retry loop doesn't fire on Postgres.
-> - **Schema evolution:** `event_version` is stored but never read on load — there is **no upcasting**; changing an event's shape breaks old events.
-> - **Encryption:** snapshot encryption can fail open to plaintext; field-level crypto-shredding detection is mode-dependent.
->
-> Each finding in [ISSUES.md](ISSUES.md) is verified with `file:line` evidence and ships with a concrete, TDD-oriented fix design.
+> 🔧 **Audit & hardening** — a [2026-06-04 audit](ISSUES.md) (benchmarked against Python's `eventsourcing`) found a latent correctness cluster invisible to the single-threaded test suite. **All critical and high-severity findings are now fixed** (TDD, each with a regression test): global-ordering/`Position` plumbing + commit-order serialization, cross-process `ConcurrencyConflict`, event **upcasting**, fail-closed snapshot encryption + unified crypto-shredding, lease **fencing**, and the empty-stream `load()` panic. Some medium/low items remain open — see **[ISSUES.md](ISSUES.md)** for the full catalog and per-issue status (each finding is verified with `file:line` evidence and a fix design).
 
 [![CI](https://github.com/yourusername/event-sauce/workflows/CI/badge.svg)](https://github.com/yourusername/event-sauce/actions)
 [![Coverage](https://codecov.io/gh/yourusername/event-sauce/branch/main/graph/badge.svg)](https://codecov.io/gh/yourusername/event-sauce)
