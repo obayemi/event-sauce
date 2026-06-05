@@ -22,6 +22,43 @@
 //!
 //! Replay always works against the log, so the outbox is disposable.
 //!
+//! # Delivery is at-least-once — handlers MUST be idempotent
+//!
+//! Draining is three separate steps: [`claim_batch`] → run the handler →
+//! [`mark_done`]. They are **not** one transaction. If a worker runs the side
+//! effect and then crashes (or its lease expires) before [`mark_done`]
+//! commits, the row stays `pending` and another worker re-delivers it — the
+//! side effect runs **again**. The same is true on every lease-expiry
+//! reclaim. So the outbox guarantees *at-least-once* delivery, never
+//! exactly-once.
+//!
+//! This makes the outbox the right home for side effects that are **safe to
+//! repeat**: idempotent API calls (keyed by `event_id`), upserts, "send at
+//! most once" effects deduplicated by the caller. It is **not** a way to make
+//! a non-idempotent effect safe — a naive "charge this card" handler can
+//! double-charge on redelivery. Make your handler idempotent (dedupe on
+//! `claim.event_id`), or, for an effect that is itself a write to *this same
+//! Postgres database*, fold that write into the same transaction as the
+//! projection/read-model update so it commits or rolls back atomically with
+//! the event that triggered it.
+//!
+//! Two counters track a row's lifecycle, and they mean different things:
+//!
+//! - **`attempts`** — how many times the row has been *claimed* for delivery,
+//!   including lease-expiry reclaims of a crashed worker. A delivery /
+//!   observability counter; it does **not** drive the DLQ.
+//! - **`failures`** — how many times a handler has reported a real error via
+//!   [`mark_failed`]. This is the counter the DLQ keys off: a row is parked in
+//!   `failed` only once `failures` reaches `max_attempts`. Crash-reclaims bump
+//!   `attempts` but never `failures`, so they can never DLQ a row whose side
+//!   effect never actually failed.
+//!
+//! A built-in transactional drain that runs the handler in the *same*
+//! transaction as [`mark_done`] (giving effectively-once for same-DB effects)
+//! is future work. Until then, callers needing exactly-once for a database
+//! side effect should write to their read model in the same transaction as
+//! the projection runner, which already commits atomically with the event.
+//!
 //! [`EventFilter`]: event_sauce_core::EventFilter
 //! [`PostgresBackend::dispatch_policies_to_outbox`]: crate::PostgresBackend::dispatch_policies_to_outbox
 //! [`claim_batch`]: PostgresPolicyOutbox::claim_batch
@@ -53,8 +90,18 @@ pub struct OutboxClaim {
     pub event_id: Uuid,
     /// Global position of the event in the log.
     pub event_position: i64,
-    /// How many times this row has been claimed (incremented on each claim).
+    /// How many times this row has been **claimed** for delivery (incremented
+    /// on every claim, *including* lease-expiry reclaims of a crashed worker).
+    ///
+    /// This is a delivery/observability counter, **not** the DLQ gate — a
+    /// worker that claims, crashes mid-side-effect, and never reports back
+    /// still burns an attempt. Use [`OutboxClaim::failures`] for retry logic.
     pub attempts: i32,
+    /// How many times a handler has reported a real failure for this row via
+    /// [`PostgresPolicyOutbox::mark_failed`]. This is the counter the DLQ
+    /// decision keys off: a row is parked in `failed` only once `failures`
+    /// reaches `max_attempts`.
+    pub failures: i32,
 }
 
 impl PostgresPolicyOutbox {
@@ -148,6 +195,29 @@ impl PostgresPolicyOutbox {
                 Ok(())
             },
         )
+        .await?;
+
+        // `attempts` counts claims (including lease-expiry reclaims of crashed
+        // workers), so it must NOT drive the DLQ decision. `failures` counts
+        // only handler errors reported via `mark_failed`; that's what gates the
+        // DLQ. Added as a separate migration so existing tables get the column.
+        let outbox_table = self.outbox_table();
+        crate::migrations::apply_once(
+            &self.pool,
+            &migrations_table,
+            20_260_605_000_001_i64,
+            "add_policy_outbox_failures_column",
+            |pool| async move {
+                let add_column = format!(
+                    "ALTER TABLE {outbox_table}
+                     ADD COLUMN IF NOT EXISTS failures INT NOT NULL DEFAULT 0"
+                );
+                sqlx::query(&add_column).execute(pool).await.map_err(|e| {
+                    Error::backend("Failed to add policy_outbox failures column", e)
+                })?;
+                Ok(())
+            },
+        )
         .await
     }
 
@@ -192,6 +262,13 @@ impl PostgresPolicyOutbox {
     /// Workers running in parallel never receive the same row in the same
     /// claim — that's the point of `SKIP LOCKED`.
     ///
+    /// Claiming bumps the row's `attempts` (a delivery/observability counter),
+    /// **not** its `failures`. A worker that claims, crashes mid-side-effect,
+    /// and never reports back has burned a claim but not failed — so the DLQ
+    /// (which keys off `failures`, see [`mark_failed`]) is unaffected.
+    ///
+    /// [`mark_failed`]: PostgresPolicyOutbox::mark_failed
+    ///
     /// # Errors
     ///
     /// Returns an error if the claim query fails.
@@ -220,12 +297,12 @@ impl PostgresPolicyOutbox {
                 updated_at = NOW()
             FROM claimed
             WHERE o.id = claimed.id
-            RETURNING o.id, o.event_id, o.event_position, o.attempts"
+            RETURNING o.id, o.event_id, o.event_position, o.attempts, o.failures"
         );
 
         #[allow(clippy::cast_possible_wrap)]
         let secs = lock_duration.as_secs() as i64;
-        let rows: Vec<(i64, Uuid, i64, i32)> = sqlx::query_as(&query)
+        let rows: Vec<(i64, Uuid, i64, i32, i32)> = sqlx::query_as(&query)
             .bind(policy_name)
             .bind(i64::from(batch_size))
             .bind(worker_id)
@@ -236,12 +313,15 @@ impl PostgresPolicyOutbox {
 
         Ok(rows
             .into_iter()
-            .map(|(id, event_id, event_position, attempts)| OutboxClaim {
-                id,
-                event_id,
-                event_position,
-                attempts,
-            })
+            .map(
+                |(id, event_id, event_position, attempts, failures)| OutboxClaim {
+                    id,
+                    event_id,
+                    event_position,
+                    attempts,
+                    failures,
+                },
+            )
             .collect())
     }
 
@@ -269,13 +349,20 @@ impl PostgresPolicyOutbox {
         Ok(())
     }
 
-    /// Marks an outbox row as failed. The row stays in the table for ops
-    /// inspection (DLQ); reset to `pending` manually if you want to retry
-    /// after an external fix.
+    /// Records a real handler failure for an outbox row. The row stays in the
+    /// table for ops inspection (DLQ); reset to `pending` manually if you want
+    /// to retry after an external fix.
     ///
-    /// If `max_attempts` is `None` or the row has fewer than `max_attempts`
-    /// attempts, the row is returned to `pending` so the next claim sweep
-    /// will retry it. Otherwise it's marked `failed` permanently.
+    /// Increments the row's `failures` counter, then decides where it lands:
+    /// if `max_attempts` is `None`, or the row's `failures` is still below
+    /// `max_attempts`, the row returns to `pending` so the next claim sweep
+    /// will retry it. Once `failures` reaches `max_attempts` it's parked in
+    /// `failed` permanently.
+    ///
+    /// The DLQ decision keys off `failures` (handler errors), **not**
+    /// `attempts` (claims). A worker that crashes mid-side-effect bumps
+    /// `attempts` via reclaim but never `failures`, so crash-reclaims can
+    /// never push a row to the DLQ without a side effect actually failing.
     ///
     /// # Errors
     ///
@@ -289,8 +376,9 @@ impl PostgresPolicyOutbox {
         let outbox_table = self.outbox_table();
         let query = format!(
             "UPDATE {outbox_table}
-             SET status = CASE
-                    WHEN $2 IS NOT NULL AND attempts >= $2 THEN 'failed'
+             SET failures = failures + 1,
+                 status = CASE
+                    WHEN $2 IS NOT NULL AND failures + 1 >= $2 THEN 'failed'
                     ELSE 'pending'
                  END,
                  locked_by = NULL,
@@ -563,6 +651,89 @@ mod tests {
             .unwrap();
         assert_eq!(claims_b.len(), 1);
         assert_eq!(claims_b[0].attempts, 2);
+    }
+
+    /// Forces a claimed row's lock to look expired so the next claim sweep
+    /// reclaims it — simulating a worker that crashed mid-side-effect and
+    /// never called `mark_done`/`mark_failed`.
+    async fn expire_lock(outbox: &PostgresPolicyOutbox, id: i64) {
+        sqlx::query(
+            "UPDATE event_sauce.policy_outbox SET locked_until = NOW() - INTERVAL '1 hour' WHERE id = $1",
+        )
+        .bind(id)
+        .execute(outbox.pool())
+        .await
+        .unwrap();
+    }
+
+    async fn status_of(outbox: &PostgresPolicyOutbox, id: i64) -> String {
+        sqlx::query_scalar("SELECT status FROM event_sauce.policy_outbox WHERE id = $1")
+            .bind(id)
+            .fetch_one(outbox.pool())
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_outbox_dlq_keys_off_failures_not_claims() {
+        let db = TestDb::new().await;
+        let outbox = PostgresPolicyOutbox::new(db.pool.clone(), "event_sauce");
+        outbox.migrate().await.unwrap();
+        enqueue_one(&outbox, "policy-a", 1).await;
+
+        // Claim the row several times via expired-lock reclaim, simulating a
+        // worker that crashes mid-side-effect each time and never calls
+        // mark_failed. This drives `attempts` (the claim counter) up to 3
+        // WITHOUT any handler ever having returned an error.
+        let mut id = 0_i64;
+        for _ in 0..3 {
+            let claims = outbox
+                .claim_batch("policy-a", "crasher", 1, Duration::from_secs(60))
+                .await
+                .unwrap();
+            assert_eq!(claims.len(), 1, "row should be reclaimable each sweep");
+            id = claims[0].id;
+            expire_lock(&outbox, id).await;
+        }
+
+        // Three claims happened but zero handler failures. The row must NOT be
+        // in the DLQ — crash-reclaims are not delivery failures.
+        let status = status_of(&outbox, id).await;
+        assert_eq!(
+            status, "pending",
+            "claim/reclaim count must not push a row to the DLQ (failures==0)"
+        );
+
+        // Now the handler actually fails. With max_attempts=2, the DLQ decision
+        // must key off real failures: first failure -> still pending (1 < 2),
+        // second failure -> failed (2 >= 2). It must NOT flip to failed on the
+        // first failure just because `attempts` (claims) already reached 3.
+        outbox.mark_failed(id, "transient", Some(2)).await.unwrap();
+        let status = status_of(&outbox, id).await;
+        assert_eq!(
+            status, "pending",
+            "first real failure (failures==1 < max=2) must return to pending, not DLQ"
+        );
+
+        // Reclaim it (handler retried), then it fails a second time.
+        let claims = outbox
+            .claim_batch("policy-a", "retrier", 1, Duration::from_secs(60))
+            .await
+            .unwrap();
+        assert_eq!(
+            claims.len(),
+            1,
+            "row must still be claimable after 1st failure"
+        );
+        outbox
+            .mark_failed(claims[0].id, "permanent", Some(2))
+            .await
+            .unwrap();
+        let status = status_of(&outbox, id).await;
+        assert_eq!(
+            status, "failed",
+            "second real failure (failures==2 >= max=2) flips to DLQ"
+        );
     }
 
     #[tokio::test]

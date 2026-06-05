@@ -153,7 +153,7 @@ let handled = runner.process_event(&envelope).await?;
 - **New policy skip**: A newly registered policy (no checkpoint) starts from the current max position, skipping all historical events
 - **Resume at the failing event on `Fail`**: If a handler fails mid-batch under `OnError::Fail`, each policy's checkpoint is persisted up to the **last event it fully handled** before the error — never past the failing event. A subsequent `process_pending()` resumes at the failing event and does **not** re-run the already-flushed handlers of earlier events in the batch.
 
-> **At-least-once on the consume side.** The in-process `PolicyRunner` advances the per-policy checkpoint *after* a handler's buffered commits are flushed, in a separate write. These are not a single transaction, so a crash between the flush and the checkpoint save can re-deliver the last handled event on restart. Keep handlers idempotent. For exactly-once-style guarantees with per-event retry/DLQ, use the Postgres outbox dispatcher (see [Two ways to dispatch](#two-ways-to-dispatch-in-process-runner-vs-queue)).
+> **At-least-once on the consume side.** The in-process `PolicyRunner` advances the per-policy checkpoint *after* a handler's buffered commits are flushed, in a separate write. These are not a single transaction, so a crash between the flush and the checkpoint save can re-deliver the last handled event on restart. Keep handlers idempotent. The Postgres outbox dispatcher (see [Two ways to dispatch](#two-ways-to-dispatch-in-process-runner-vs-queue)) adds per-event retry and a DLQ, but its delivery is **also** at-least-once — it does not make handlers exactly-once.
 
 ### Cascade Depth Limits
 
@@ -234,10 +234,22 @@ propagation. It is *not* the right shape for fanning side-effects out to
 many parallel workers, because every policy shares one checkpoint and one
 process; a hung handler stalls everyone behind it.
 
-For side-effects (email, payment APIs, webhooks, anything non-idempotent
-where per-event retry and a DLQ matter more than ordering) event-sauce
-provides a queue-shaped alternative built on `FOR UPDATE SKIP LOCKED`:
+For side-effects (email, payment APIs, webhooks — anything where per-event
+retry and a DLQ matter more than ordering) event-sauce provides a
+queue-shaped alternative built on `FOR UPDATE SKIP LOCKED`:
 **`PostgresPolicyOutbox`**.
+
+> **Delivery is at-least-once — handlers MUST be idempotent.** Draining is
+> three separate steps (`claim_batch` → run handler → `mark_done`), not one
+> transaction. A crash or lease expiry *after* the side effect runs but
+> *before* `mark_done` commits re-delivers the row, so the side effect runs
+> again. The outbox is the right home for effects that are **safe to repeat**
+> (idempotent API calls keyed by `event_id`, upserts, dedup-on-the-caller
+> sends) — it does **not** make a non-idempotent effect safe. Dedupe on
+> `claim.event_id`, or, for an effect that is a write to *this same Postgres
+> DB*, fold it into the same transaction as the projection runner so it
+> commits atomically with the triggering event. (A built-in transactional
+> drain is future work.)
 
 ### When to pick which
 
@@ -245,7 +257,7 @@ provides a queue-shaped alternative built on `FOR UPDATE SKIP LOCKED`:
 |---|---|---|
 | Source of work | Event log directly | Outbox table populated from log |
 | Ordering | Strict | Per-claim only (workers parallelize) |
-| Per-event retry / DLQ | No (whole policy stalls on failure) | Yes (`status='failed'`, `attempts`, `last_error`) |
+| Per-event retry / DLQ | No (whole policy stalls on failure) | Yes (`status='failed'`, `failures` vs `max_attempts`, `last_error`) |
 | Scale-out | One active runner per process | N parallel workers per policy |
 | Replay | Reset checkpoint | Reset checkpoint + truncate outbox |
 | Best for | Cascading domain logic | External side effects |
@@ -347,6 +359,12 @@ loop {
 ```
 
 `claim_batch` uses `FOR UPDATE SKIP LOCKED` so multiple drainer workers
-never see the same row in the same claim. Rows past `max_attempts` end up
-in `status='failed'` for ops to inspect; reset them to `'pending'` to
-retry.
+never see the same row in the same claim. The DLQ keys off the row's
+`failures` counter — the number of real handler errors reported via
+`mark_failed` — **not** `attempts`, which counts claims (including
+lease-expiry reclaims of a crashed worker). So a worker that claims, runs
+the side effect, then crashes before `mark_done` bumps `attempts` on the
+next reclaim but never `failures`; it can never push the row to the DLQ
+without the handler actually failing. Once `failures` reaches
+`max_attempts` the row lands in `status='failed'` for ops to inspect; reset
+it to `'pending'` to retry.
