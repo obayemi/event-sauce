@@ -27,6 +27,7 @@ mod aggregate_id;
 mod aggregate_root;
 mod aggregate_type;
 mod apply_event;
+mod checkpoint;
 /// Aggregate claims for cross-aggregate uniqueness constraints.
 pub mod claims;
 /// Cryptographic traits and helpers for encrypted aggregate encryption (crypto-shredding).
@@ -39,6 +40,7 @@ mod entity_id;
 mod error;
 mod event_applicator;
 mod event_envelope;
+mod event_filter;
 /// Event log query types and trait for paginated, filtered audit log access.
 pub mod event_log;
 mod event_store;
@@ -53,7 +55,6 @@ mod snapshot_config;
 mod snapshot_strategy;
 /// Specification pattern for composable, reusable business rule validation.
 pub mod specification;
-mod subscription;
 mod types;
 mod uninit_aggregate_root;
 mod version;
@@ -68,6 +69,7 @@ pub use aggregate_id::{AggregateId, EntityIdFor};
 pub use aggregate_root::AggregateRoot;
 pub use aggregate_type::AggregateType;
 pub use apply_event::ApplyEvent;
+pub use checkpoint::CheckpointStore;
 pub use claims::AggregateClaim;
 pub use crypto::{CryptoKeyStore, CryptoProvider};
 pub use delete_event::DeleteEvent;
@@ -78,6 +80,7 @@ pub use entity_id::EntityId;
 pub use error::{Error, Result};
 pub use event_applicator::EventApplicator;
 pub use event_envelope::{EventEnvelope, EventMetadata};
+pub use event_filter::EventFilter;
 pub use event_log::{EventLogEntry, EventLogOrder, EventLogPage, EventLogParams, EventLogQuery};
 pub use event_store::{EventStore, Position, Snapshot, StreamCommit, StreamId};
 pub use init_event::InitEvent;
@@ -90,10 +93,6 @@ pub use repository::Repository;
 pub use snapshot_config::{SnapshotConfig, SnapshotConfigBuilder};
 pub use snapshot_strategy::{AlwaysSnapshot, EveryNEvents, NeverSnapshot, SnapshotStrategy};
 pub use specification::{Spec, Specification, SpecificationError};
-pub use subscription::{
-    CheckpointStore, CheckpointStrategy, ErrorPolicy, EventFilter, Subscription,
-    SubscriptionBuilder, SubscriptionConfig,
-};
 pub use types::{CheckpointStoreRef, CryptoKeyStoreRef, CryptoProviderRef};
 pub use uninit_aggregate_root::UninitAggregateRoot;
 pub use version::{AggregateVersion, EventVersion};

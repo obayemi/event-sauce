@@ -513,23 +513,6 @@ pub trait EventStore: Send + Sync {
         Ok(crate::PolicyRunner::new(Arc::clone(self), cp))
     }
 
-    /// Creates a subscription builder pre-configured with this event store.
-    fn subscription_builder(
-        self: &std::sync::Arc<Self>,
-        name: impl Into<String>,
-    ) -> crate::SubscriptionBuilder<Self>
-    where
-        Self: Sized + 'static,
-    {
-        let mut builder = crate::SubscriptionBuilder::new(name, std::sync::Arc::clone(self));
-
-        if let Some(checkpoint_store) = self.checkpoint_store() {
-            builder = builder.checkpoint_store(checkpoint_store);
-        }
-
-        builder
-    }
-
     /// Creates a [`Repository`] for the given aggregate type, wrapping this event store.
     ///
     /// This is a convenience method that avoids verbose turbofish syntax.

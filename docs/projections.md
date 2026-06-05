@@ -138,7 +138,7 @@ procedure. See [Rebuilding a projection](#rebuilding-a-projection) below.
 `handled_event_types` is the simple knob: list the event-type strings you
 care about and the runner skips everything else without opening a
 transaction. For finer-grained selection, override `event_filter` and return
-any [`EventFilter`](../crates/event-sauce-core/src/subscription.rs) directly.
+any [`EventFilter`](../crates/event-sauce-core/src/event_filter.rs) directly.
 
 ## Resuming after restart
 

@@ -53,13 +53,20 @@ pub struct EventLogParams {
 
 /// Ordering options for [`EventLogParams`]. All variants ultimately tiebreak
 /// by event id (insertion order) so pagination is stable.
+///
+/// The event `id` (insertion order) is the canonical chronological ordering:
+/// it is monotonically increasing and gap-free per the BIGSERIAL sequence.
+/// The `created_at` timestamp is `Utc::now()` captured at envelope
+/// construction with **no** monotonicity guarantee, so it is informational
+/// only and is never used for ordering — only the `id`-based variants below
+/// give a stable, chronological order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum EventLogOrder {
-    /// `id DESC` — newest first. The historical default.
+    /// `id DESC` — newest first (by insertion order). The historical default.
     #[default]
-    CreatedAtDesc,
-    /// `id ASC` — oldest first.
-    CreatedAtAsc,
+    ByIdDesc,
+    /// `id ASC` — oldest first (by insertion order).
+    ByIdAsc,
     /// `aggregate_type ASC, id DESC`.
     AggregateTypeAsc,
     /// `aggregate_type DESC, id DESC`.
@@ -76,8 +83,8 @@ impl EventLogOrder {
     #[must_use]
     pub fn order_sql(self) -> &'static str {
         match self {
-            Self::CreatedAtDesc => "id DESC",
-            Self::CreatedAtAsc => "id ASC",
+            Self::ByIdDesc => "id DESC",
+            Self::ByIdAsc => "id ASC",
             Self::AggregateTypeAsc => "aggregate_type ASC, id DESC",
             Self::AggregateTypeDesc => "aggregate_type DESC, id DESC",
             Self::CreatedByAsc => "created_by ASC NULLS LAST, id DESC",
@@ -250,21 +257,25 @@ mod tests {
         assert!(params.created_by.is_none());
         assert!(params.from_date.is_none());
         assert!(params.to_date.is_none());
-        assert_eq!(params.order_by, EventLogOrder::CreatedAtDesc);
+        assert_eq!(params.order_by, EventLogOrder::ByIdDesc);
         assert_eq!(params.page, 0);
         assert_eq!(params.per_page, 50);
     }
 
     #[test]
     fn test_event_log_order_default_is_newest_first() {
-        assert_eq!(EventLogOrder::default(), EventLogOrder::CreatedAtDesc);
+        // The default remains the same variant (newest-first by id), just renamed.
+        assert_eq!(EventLogOrder::default(), EventLogOrder::ByIdDesc);
     }
 
     #[test]
     fn test_event_log_order_sql() {
-        // Every variant tiebreaks by `id` so pagination stays stable.
-        assert_eq!(EventLogOrder::CreatedAtDesc.order_sql(), "id DESC");
-        assert_eq!(EventLogOrder::CreatedAtAsc.order_sql(), "id ASC");
+        // Id-ordering variants are named for what they emit: insertion order
+        // by `id`. `created_at` is informational/non-monotonic, so `id` is the
+        // canonical chronological ordering. Every variant tiebreaks by `id` so
+        // pagination stays stable.
+        assert_eq!(EventLogOrder::ByIdDesc.order_sql(), "id DESC");
+        assert_eq!(EventLogOrder::ByIdAsc.order_sql(), "id ASC");
         assert_eq!(
             EventLogOrder::AggregateTypeAsc.order_sql(),
             "aggregate_type ASC, id DESC"
@@ -336,6 +347,32 @@ mod tests {
             per_page: 0,
         };
         assert_eq!(page.total_pages(), 0);
+    }
+
+    /// M8 guard: removing the deprecated Subscription API must PRESERVE the
+    /// load-bearing `EventFilter`. It is still publicly exported at
+    /// `event_sauce_core::EventFilter` and still matches envelopes correctly.
+    #[test]
+    fn test_event_filter_preserved_after_subscription_removal() {
+        let filter = crate::EventFilter::by_event_type("User.Registered");
+        let matching = EventEnvelope::new(
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            "User",
+            "User.Registered".to_string(),
+            crate::EventVersion::new(1),
+            serde_json::json!({}),
+        );
+        let non_matching = EventEnvelope::new(
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            "User",
+            "User.Deactivated".to_string(),
+            crate::EventVersion::new(1),
+            serde_json::json!({}),
+        );
+        assert!(filter.matches(&matching));
+        assert!(!filter.matches(&non_matching));
     }
 
     #[test]

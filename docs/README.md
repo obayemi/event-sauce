@@ -11,7 +11,7 @@ Welcome to the event-sauce documentation! This directory contains comprehensive 
 - **[Aggregates](aggregates.md)** - Business entities and consistency boundaries
 - **[Events](events.md)** - Domain events and event modeling
 - **[Event Store](event-store.md)** - Persisting and loading event streams
-- **[Projections & Subscriptions](projections.md)** - Building read models with durable, guaranteed delivery
+- **[Projections](projections.md)** - Building read models with transactional, durable delivery
 - **[Policies](policies.md)** - Cross-aggregate event orchestration with causation tracking
 - **[Claims](claims.md)** - Cross-aggregate uniqueness constraints (e.g., unique emails)
 - **[Audit Log](audit-log.md)** - Event log queries, actor tracking, and causation tracing

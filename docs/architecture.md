@@ -35,8 +35,8 @@ Event sourcing is a pattern where state changes are stored as a sequence of even
 ┌────────────┴────────────────┴───────────────────┴────────────┐
 │                     event-sauce Core                          │
 │  ┌─────────┐  ┌──────────┐  ┌──────────┐  ┌────────────┐   │
-│  │Aggregate│  │  Event   │  │EventStore│  │Subscription│   │
-│  │  Trait  │  │  Trait   │  │  Trait   │  │   System   │   │
+│  │Aggregate│  │  Event   │  │EventStore│  │ Projection │   │
+│  │  Trait  │  │  Trait   │  │  Trait   │  │  & Policy  │   │
 │  └─────────┘  └──────────┘  └──────────┘  └────────────┘   │
 └────────────┬────────────────┬──────────────────┬────────────┘
              │                │                   │
@@ -63,7 +63,8 @@ The foundation providing traits and types:
 - **ApplyEvent** - Trait for event validation and state mutation
 - **EventApplicator** - Dispatches event enum variants to individual `ApplyEvent` impls
 - **EventStore** - Persistence abstraction
-- **Subscription** - Durable event consumption with guaranteed delivery
+- **EventFilter** - Predicate for selecting events a consumer cares about
+- **CheckpointStore** - Per-consumer position tracking and leasing for projections and policies
 - **Version** - Optimistic concurrency control
 
 **Why separate?**
@@ -132,16 +133,14 @@ Derive macros for reducing boilerplate (~40% less code):
 - Type-safe and zero-runtime cost
 - Clean separation between business logic and infrastructure
 
-### Subscription System (in event-sauce-core)
+### Event Consumption (in event-sauce-core)
 
-Read model building via durable subscriptions:
+Read model building and reactions consume events durably from the store:
 
-- **Subscription** - Durable event subscription with guaranteed delivery
 - **EventFilter** - Filter events by type or aggregate
 - **CheckpointStore** - Track progress for resumability, plus
   `try_acquire_lease` / `renew_lease` / `release_lease` so multiple
   workers can coordinate which one is the active processor
-- **CheckpointStrategy** - Configure checkpoint frequency
 - **PostgresProjection** trait (in `event-sauce-postgres`) - Transactional read models whose writes commit atomically with the subscription checkpoint
 - **`PostgresEventStore::listen_for_events`** - `LISTEN`/`NOTIFY` stream that
   wakes subscribers within milliseconds of a commit, with the new max
@@ -158,7 +157,7 @@ consumer based on what it needs:
 | Tier | Storage | Best for | Mechanism |
 |---|---|---|---|
 | Event log | `events` (immutable) | Source of truth, replay | — |
-| Checkpointed subscription | `events` + `checkpoints` (with lease) | Projections / read models — ordering and replay matter | `run_leased_projection`, `Subscription` |
+| Checkpointed projection | `events` + `checkpoints` (with lease) | Projections / read models — ordering and replay matter | `run_postgres_projection`, `run_leased_projection` |
 | Outbox queue | `events` + `policy_outbox` | Side effects (email, webhooks, payments) — parallelism + per-event retry/DLQ matter | `dispatch_policies_to_outbox` + `claim_batch` (SKIP LOCKED) |
 
 The log is the source of truth in all three; the outbox is *derived* from
@@ -190,7 +189,7 @@ Generate Domain Events
     ↓
 Save Events (to EventStore)
     ↓
-Subscriptions Process Events
+Projection Runner Processes Events
     ↓
 Update Projections
 ```
@@ -207,7 +206,7 @@ Apply Each Event to Aggregate
 Result: Current State
 ```
 
-### 3. Projection Building with Subscriptions
+### 3. Transactional Projection Building
 
 ```
 Load Checkpoint (resume from last position)
@@ -273,60 +272,44 @@ pub trait EventStore: Send + Sync {
 }
 ```
 
-### Subscription System
+### Event Consumption Primitives
 
-Subscriptions provide guaranteed delivery with checkpoint management:
+Downstream consumers (projections and policies) read durably from the store
+using two core primitives plus a backend-specific runner:
 
 ```rust
-/// Durable subscription with guaranteed delivery
-pub struct Subscription<S> {
-    name: String,
-    store: Arc<S>,
-    checkpoint_store: Option<Arc<dyn CheckpointStore>>,
-    config: SubscriptionConfig,
-}
-
-impl<S: EventStore> Subscription<S> {
-    /// Create a subscription with builder pattern
-    pub fn builder(name: impl Into<String>, store: Arc<S>) -> SubscriptionBuilder<S>;
-
-    /// Run the subscription, processing events through handler
-    pub async fn run<F>(&mut self, handler: F) -> Result<()>
-    where
-        F: FnMut(EventEnvelope) -> Result<()>;
-
-    /// Rebuild from scratch by deleting checkpoint
-    pub async fn rebuild(&mut self) -> Result<()>;
-}
-
-/// Event filter for selective subscription
+/// Predicate for selecting events a consumer cares about.
 pub enum EventFilter {
     All,
     EventType(String),
     AggregateType(String),
     Both { event_type: String, aggregate_type: String },
+    AnyOfEventTypes(Vec<String>),
 }
 
-/// Checkpoint strategy
-pub enum CheckpointStrategy {
-    EveryEvent,      // Save after each event (safest)
-    EveryN(usize),   // Save every N events
-    Manual,          // User controls checkpointing
-}
-
-/// Error handling policy
-pub enum ErrorPolicy {
-    Retry,  // Retry with backoff
-    Skip,   // Skip and continue
-    Fail,   // Fail subscription
+/// Per-consumer position tracking and leasing.
+#[async_trait]
+pub trait CheckpointStore: Send + Sync {
+    async fn save_checkpoint(&self, name: &str, position: Position) -> Result<()>;
+    async fn load_checkpoint(&self, name: &str) -> Result<Option<Position>>;
+    async fn delete_checkpoint(&self, name: &str) -> Result<()>;
+    // Plus try_acquire_lease / renew_lease / release_lease for multi-worker
+    // coordination — exactly one worker is the active processor at a time.
 }
 ```
 
-Key differences from pub/sub:
-- **Guaranteed delivery** - Events never lost, always processed
-- **Checkpoint tracking** - Resume from last position after restart
-- **Eventual consistency** - All subscribers eventually see all events
-- **No broadcast** - Each subscription independently reads from event store
+The only built-in projection model is postgres-backed and transactional:
+`run_postgres_projection` (and the multi-worker `run_leased_projection`)
+applies each matched event and advances the checkpoint **inside the same
+database transaction**, so a crash mid-batch never leaves the read model
+ahead of or behind its checkpoint. See
+[projections.md](projections.md) for the full guide.
+
+Key properties:
+- **Guaranteed delivery** - Events never lost; replayed from the log on restart
+- **Atomic checkpointing** - Read-model write and checkpoint commit together
+- **Resumable** - Resume from last checkpoint after restart
+- **Lease-coordinated** - Multiple instances elect a single active processor
 
 ## Design Decisions
 

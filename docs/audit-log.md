@@ -202,14 +202,20 @@ println!("Showing {} of {} total events", page.entries.len(), page.total_count);
 ### Ordering
 
 By default results are ordered newest-first. Set `order_by` to change this. Every
-ordering tiebreaks by event id (insertion order) so pagination stays stable:
+ordering tiebreaks by event id (insertion order) so pagination stays stable.
+
+The event `id` (insertion order) is the **canonical chronological ordering**:
+it is monotonically increasing and gap-free. The `created_at` timestamp is
+captured at envelope construction with no monotonicity guarantee, so it is
+informational only and is never used for ordering — which is why the
+chronological variants are named for the `id` column they actually sort by:
 
 ```rust
 use event_sauce_core::{EventLogParams, EventLogOrder};
 
 // Oldest events first
 let params = EventLogParams {
-    order_by: EventLogOrder::CreatedAtAsc,
+    order_by: EventLogOrder::ByIdAsc,
     ..Default::default()
 };
 
@@ -224,8 +230,8 @@ Available orderings:
 
 | Variant | Ordering |
 |---------|----------|
-| `CreatedAtDesc` | Newest first (default) |
-| `CreatedAtAsc` | Oldest first |
+| `ByIdDesc` | Newest first by insertion order (default) |
+| `ByIdAsc` | Oldest first by insertion order |
 | `AggregateTypeAsc` | Aggregate type ascending, then newest first |
 | `AggregateTypeDesc` | Aggregate type descending, then newest first |
 | `CreatedByAsc` | Actor ascending (nulls last), then newest first |

@@ -446,8 +446,8 @@ event-sauce = { version = "0.1", features = ["postgres"] }
 ┌────────────┴────────────────┴───────────────────┴─────────┐
 │                     event-sauce Core                      │
 │  ┌─────────┐  ┌──────────┐  ┌──────────┐  ┌────────────┐  │
-│  │Aggregate│  │  Event   │  │EventStore│  │Subscription│  │
-│  │  Trait  │  │  Trait   │  │  Trait   │  │   System   │  │
+│  │Aggregate│  │  Event   │  │EventStore│  │ Projection │  │
+│  │  Trait  │  │  Trait   │  │  Trait   │  │  & Policy  │  │
 │  └─────────┘  └──────────┘  └──────────┘  └────────────┘  │
 └────────────┬────────────────┬───────────────────┬─────────┘
              │                │                   │
@@ -674,7 +674,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 - **[Aggregates Guide](docs/aggregates.md)** - Aggregate design, type-state construction
 - **[Validation Guide](docs/validation.md)** - Business rule validation and specification pattern
 - **[Privacy & Encryption](docs/privacy.md)** - Full-aggregate and field-level encryption, crypto-shredding
-- **[Projections & Subscriptions](docs/projections.md)** - Building read models with durable, guaranteed delivery
+- **[Projections](docs/projections.md)** - Building read models with transactional, durable delivery
 - **[PostgreSQL Production Setup](docs/postgres-production.md)** - Complete production deployment guide
 - **[Policies Guide](docs/policies.md)** - Cross-aggregate event orchestration, causation tracking, and error handling
 - **[Claims Guide](docs/claims.md)** - Cross-aggregate uniqueness constraints
@@ -685,7 +685,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### API Documentation
 
 - [event-sauce (facade)](https://docs.rs/event-sauce) - Main entry point
-- [event-sauce-core](https://docs.rs/event-sauce-core) - Core traits and types (includes Subscription system for projections)
+- [event-sauce-core](https://docs.rs/event-sauce-core) - Core traits and types (includes `EventFilter` and `CheckpointStore` for projections and policies)
 - [event-sauce-postgres](https://docs.rs/event-sauce-postgres) - PostgreSQL backend
 
 ### Learn More
@@ -708,7 +708,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 - [x] **Phase 2: In-memory implementation (event-sauce-memory)** - ✅ 33 tests, 100% coverage
 - [x] **Phase 3: PostgreSQL backend (event-sauce-postgres)** - ✅ 39 tests
 - [x] **Phase 4: Derive macros (event-sauce-macros)** - ✅ 78 tests
-- [x] **Phase 5: Subscription system (event-sauce-core)** - ✅ Integrated into core (Subscription, CheckpointStore, EventFilter)
+- [x] **Phase 5: Event consumption primitives (event-sauce-core)** - ✅ Integrated into core (`CheckpointStore`, `EventFilter`)
 - [x] **Phase 6: Examples and documentation** - ✅ 5 examples, comprehensive guides
 - [ ] **Phase 7: Correctness hardening** - 🔴 resolve the audit findings in [ISSUES.md](ISSUES.md) (global-ordering/Position cluster, OCC error mapping, upcasting, encryption fail-closed, lease fencing)
 - [ ] Phase 8: v0.1.0 release

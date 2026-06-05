@@ -11,7 +11,7 @@
 //! - Repository pattern for type-safe aggregate persistence
 //! - A projection that combines Order data (User PII stays encrypted)
 //! - PostgreSQL backend with testcontainers
-//! - Subscription system for real-time projection updates
+//! - Transactional projections via `run_postgres_projection` for read models
 //! - **Causation chain tracking** across policy-produced events
 //!
 //! Run with:

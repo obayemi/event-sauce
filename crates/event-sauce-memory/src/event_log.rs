@@ -93,8 +93,8 @@ impl EventLogQuery for InMemoryEventLogQuery {
         // pagination stays stable.
         let mut sorted = filtered;
         match params.order_by {
-            EventLogOrder::CreatedAtDesc => sorted.sort_by(|(a, _), (b, _)| b.cmp(a)),
-            EventLogOrder::CreatedAtAsc => sorted.sort_by(|(a, _), (b, _)| a.cmp(b)),
+            EventLogOrder::ByIdDesc => sorted.sort_by(|(a, _), (b, _)| b.cmp(a)),
+            EventLogOrder::ByIdAsc => sorted.sort_by(|(a, _), (b, _)| a.cmp(b)),
             EventLogOrder::AggregateTypeAsc => {
                 sorted.sort_by(|(ia, ea), (ib, eb)| {
                     ea.aggregate_type
@@ -256,13 +256,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_order_created_at_asc_is_oldest_first() {
+    async fn test_order_by_id_asc_is_oldest_first() {
         let store = setup_store_with_events().await;
         let query = InMemoryEventLogQuery::new(store);
 
         let page = query
             .query_events(EventLogParams {
-                order_by: EventLogOrder::CreatedAtAsc,
+                order_by: EventLogOrder::ByIdAsc,
                 ..Default::default()
             })
             .await

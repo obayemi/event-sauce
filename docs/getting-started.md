@@ -63,7 +63,7 @@ That's it! You now have a fully functional event-sourced aggregate with validati
 
 Want to see full working examples? Check out:
 
-- **[postgres-quickstart.rs](../crates/event-sauce/examples/postgres-quickstart.rs)** - Demonstrates User and Order aggregates (both with init events), creation functions, commands, projections, PostgreSQL backend, and the subscription system. Uses `define_events!` and `command_handler!` macros.
+- **[postgres-quickstart.rs](../crates/event-sauce/examples/postgres-quickstart.rs)** - Demonstrates User and Order aggregates (both with init events), creation functions, commands, transactional projections (`run_postgres_projection`), and the PostgreSQL backend. Uses `define_events!` and `command_handler!` macros.
   ```bash
   cargo run --example postgres-quickstart --all-features
   ```
@@ -255,7 +255,7 @@ let store = InMemoryEventStore::builder()
         .build())
     .build();
 
-// Or with checkpoint store for subscriptions
+// Or with a checkpoint store for projections and policies
 let checkpoint_store = Arc::new(InMemoryCheckpointStore::new());
 let store = InMemoryEventStore::builder()
     .snapshot_config(SnapshotConfig::builder().build())

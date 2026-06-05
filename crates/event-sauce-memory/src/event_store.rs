@@ -156,8 +156,8 @@ impl InMemoryEventStore {
     ///     checkpoint_store,
     /// ));
     ///
-    /// // subscription_builder is now available via the EventStore trait
-    /// // let subscription = store.subscription_builder("my-sub").build()?;
+    /// // The checkpoint store is now wired in, so `policy_runner()` and
+    /// // projection runners can track their position automatically.
     /// ```
     #[must_use]
     pub fn with_checkpoint_store(
@@ -215,8 +215,8 @@ impl InMemoryEventStore {
     /// Creates a fully-wired in-memory store for tests.
     ///
     /// Wraps the store in `Arc` and pre-installs an
-    /// [`InMemoryCheckpointStore`](super::InMemoryCheckpointStore) so subscriptions,
-    /// projections, and policies work without additional setup. Crypto defaults
+    /// [`InMemoryCheckpointStore`](super::InMemoryCheckpointStore) so
+    /// projections and policies work without additional setup. Crypto defaults
     /// (key store + AES-256-GCM provider) are also installed automatically.
     ///
     /// Intended for tests and quick demos — production code should use
@@ -987,7 +987,7 @@ mod tests {
     // === Checkpoint Store Integration Tests ===
 
     use super::super::checkpoint_store::InMemoryCheckpointStore;
-    use event_sauce_core::{CheckpointStore, SnapshotConfig};
+    use event_sauce_core::SnapshotConfig;
 
     #[tokio::test]
     async fn test_checkpoint_store_returns_none_by_default() {
@@ -1026,113 +1026,6 @@ mod tests {
         } else {
             panic!("Checkpoint store should be configured");
         }
-    }
-
-    #[tokio::test]
-    async fn test_subscription_builder_without_checkpoint_store() {
-        use event_sauce_core::EventFilter;
-
-        let store = Arc::new(InMemoryEventStore::new());
-
-        // Create subscription builder via trait method - should work without checkpoint store
-        let subscription = store
-            .subscription_builder("test-sub")
-            .filter(EventFilter::all())
-            .build()
-            .unwrap();
-
-        // Subscription should be created successfully
-        // (We can't easily test the subscription behavior without running it,
-        // but we can verify it builds correctly)
-        drop(subscription);
-    }
-
-    #[tokio::test]
-    async fn test_subscription_builder_with_checkpoint_store() {
-        use event_sauce_core::EventFilter;
-
-        let checkpoint_store = Arc::new(InMemoryCheckpointStore::new());
-        let store = Arc::new(InMemoryEventStore::with_checkpoint_store(
-            SnapshotConfig::builder().build(),
-            checkpoint_store.clone(),
-        ));
-
-        // Add some test events
-        let aggregate_id = Uuid::new_v4();
-        let stream_id = StreamId::new("User", aggregate_id);
-        store
-            .append(
-                stream_id,
-                vec![create_test_envelope("UserCreated", aggregate_id)],
-                AggregateVersion::initial(),
-                vec![],
-                false,
-            )
-            .await
-            .unwrap();
-
-        // Create subscription with automatic checkpoint store integration via trait method
-        let subscription = store
-            .subscription_builder("test-sub")
-            .filter(EventFilter::all())
-            .build()
-            .unwrap();
-
-        // Verify subscription was created
-        drop(subscription);
-    }
-
-    #[tokio::test]
-    async fn test_subscription_with_checkpoint_store_integration() {
-        use event_sauce_core::EventFilter;
-        use futures::StreamExt;
-
-        let checkpoint_store = Arc::new(InMemoryCheckpointStore::new());
-        let store = Arc::new(InMemoryEventStore::with_checkpoint_store(
-            SnapshotConfig::builder().build(),
-            checkpoint_store.clone(),
-        ));
-
-        // Add events
-        for i in 0..5 {
-            let aggregate_id = Uuid::new_v4();
-            let stream_id = StreamId::new("User", aggregate_id);
-            store
-                .append(
-                    stream_id,
-                    vec![create_test_envelope(&format!("Event{i}"), aggregate_id)],
-                    AggregateVersion::initial(),
-                    vec![],
-                    false,
-                )
-                .await
-                .unwrap();
-        }
-
-        // Create and run subscription via trait method
-        let subscription = store
-            .subscription_builder("integration-test")
-            .filter(EventFilter::all())
-            .build()
-            .unwrap();
-
-        let stream = subscription.into_stream().await.unwrap();
-        futures::pin_mut!(stream); // Pin the stream for iteration
-        let mut count = 0;
-
-        while let Some(result) = stream.next().await {
-            result.unwrap();
-            count += 1;
-        }
-
-        assert_eq!(count, 5);
-
-        // Verify checkpoint was saved
-        let checkpoint = checkpoint_store
-            .load_checkpoint("integration-test")
-            .await
-            .unwrap();
-        assert!(checkpoint.is_some());
     }
 
     // === Builder Pattern Tests ===

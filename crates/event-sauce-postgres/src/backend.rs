@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use event_sauce_core::{EventStore, SnapshotConfig};
+use event_sauce_core::SnapshotConfig;
 use sqlx::PgPool;
 
 use crate::{PostgresCheckpointStore, PostgresEventStore};
@@ -100,26 +100,6 @@ impl PostgresBackend {
     #[must_use]
     pub fn checkpoint_store(&self) -> Arc<PostgresCheckpointStore> {
         Arc::clone(&self.checkpoint_store)
-    }
-
-    /// Creates a subscription builder with the event store and checkpoint store pre-wired.
-    ///
-    /// This is a convenience method that avoids extracting the event store and checkpoint
-    /// store separately.
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// let subscription = backend
-    ///     .subscription_builder("my-projection")
-    ///     .filter(EventFilter::by_aggregate_type("User"))
-    ///     .build()?;
-    /// ```
-    pub fn subscription_builder(
-        &self,
-        name: impl Into<String>,
-    ) -> event_sauce_core::SubscriptionBuilder<PostgresEventStore> {
-        self.event_store.subscription_builder(name)
     }
 
     /// Creates a [`PostgresEventLogQuery`](crate::PostgresEventLogQuery) for this backend.
@@ -1062,48 +1042,6 @@ mod tests {
             .await
             .expect("original pool should still work");
         assert_eq!(count.0, 2);
-    }
-
-    #[tokio::test]
-    async fn test_subscription_builder_convenience() {
-        let (url, _container) = start_postgres().await;
-
-        let backend = PostgresBackend::setup(&url, "event_sauce")
-            .await
-            .expect("setup should succeed");
-
-        let aggregate_id = Uuid::new_v4();
-        let stream_id = StreamId::new("TestAggregate", aggregate_id);
-        let event = create_test_envelope(aggregate_id);
-
-        let store = backend.event_store();
-        store
-            .append(
-                stream_id,
-                vec![event],
-                AggregateVersion::initial(),
-                vec![],
-                false,
-            )
-            .await
-            .expect("append should succeed");
-
-        // Use the convenience method
-        let mut subscription = backend
-            .subscription_builder("test-sub")
-            .build()
-            .expect("build should succeed");
-
-        let mut count = 0;
-        subscription
-            .run(|_event| {
-                count += 1;
-                Ok(())
-            })
-            .await
-            .expect("run should succeed");
-
-        assert_eq!(count, 1);
     }
 
     /// Counts every matched event in a postgres-backed table.
