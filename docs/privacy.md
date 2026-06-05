@@ -251,6 +251,14 @@ The system handles mixed encrypted/unencrypted data gracefully:
 - Unencrypted JSON values pass through unchanged
 - You can add `encrypted` to an existing aggregate — new events will be encrypted, old events remain readable
 
+### Schema Evolution (Upcasting)
+
+Encrypted aggregates support read-time schema evolution exactly like plaintext ones. On load the event data is **decrypted first**, then the [`DomainEvent::upcast`](events.md#event-upcasting) hook runs on the recovered plaintext, and only then is the event deserialized — i.e. `decrypt → upcast → deserialize`. An older-version encrypted payload (for example one missing a field added in a later version) is migrated by `upcast` before deserialization, with **no need to rewrite the stored ciphertext**. See the [Events guide — Event Upcasting](events.md#event-upcasting).
+
+A crypto-**shredded** aggregate (its key deleted) is the opposite case and remains *intentionally* unrecoverable: load returns `Error::KeyNotFound` and no upcast can run, because the plaintext can never be recovered. That is the entire point of crypto-shredding.
+
+> Rewriting the stored ciphertext itself (e.g. to physically drop a removed field's plaintext, or to re-key) is a deliberate maintenance operation that mutates the otherwise-immutable event log; it is intentionally **not** offered as a casual API. Read-time upcasting covers ordinary schema evolution.
+
 ## Error Handling
 
 ```rust
