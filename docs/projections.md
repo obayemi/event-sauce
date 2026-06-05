@@ -158,6 +158,36 @@ as an id threshold; in the rare case it sits inside a gap, a bounded tail of
 already-seen events may be re-processed once on the next run — always the safe
 direction (never a skip).
 
+### Why `WHERE id > checkpoint` is safe: commit-order == id-order
+
+Resuming from an id threshold only works because the event log guarantees:
+**once an event with global id `N` is visible to a reader, every event with id
+`< N` is already committed and visible.** Without that, a checkpoint reader
+could observe a higher id, advance past it, and then never see a lower id whose
+transaction was still in flight — a silent, permanent skip.
+
+The `events.id` BIGSERIAL is allocated at `INSERT` but the row only becomes
+visible at `COMMIT`. Under `READ COMMITTED`, two concurrent appends to
+*different* streams could otherwise take ids `N` and `N+1` yet commit in the
+opposite order. The Postgres backend prevents this by taking a
+transaction-scoped advisory lock (keyed by the qualified events table) at the
+start of every id-allocating `append`, before reading the version and inserting
+— so insert order equals commit order. The lock auto-releases at commit/rollback
+(`pg_advisory_xact_lock`). The in-memory backend gets the same property for free
+by publishing the global position under its append write locks.
+
+Trade-offs to know:
+
+- **Appends serialize across all streams for the insert window only.** Readers
+  stay fully concurrent — the advisory lock does not block `SELECT`. Tune the
+  wait bound with `PostgresEventStore::builder().append_lock_timeout(..)`
+  (default 5s); exceeding it surfaces as a backend error rather than a hang.
+- **Claims-only / clear-only appends** (no events) allocate no ids and skip the
+  lock entirely, so claim registration is never blocked by event traffic.
+- **Ids stay sparse, not dense** — the lock orders *committed* events; it does
+  not reclaim values burned by rolled-back appends. Gaps remain, and consumers
+  are already gap-tolerant (`WHERE id > checkpoint`).
+
 ## Multiple projections
 
 Each projection has its own `NAME` and therefore its own checkpoint row. Run

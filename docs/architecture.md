@@ -89,6 +89,15 @@ Production-ready PostgreSQL backend:
 - Streaming support for memory efficiency
 - Transaction support
 - Checkpoint storage for resumable subscriptions
+- **Commit-order == global-id-order** for the event log: an id-allocating
+  `append` takes a transaction-scoped advisory lock (keyed by the qualified
+  events table) before inserting, so `events.id` is assigned in commit order.
+  This is what makes `Position`-based consumers safe to scan `id > checkpoint`
+  without ever skipping a still-uncommitted lower id (see
+  [projections.md](projections.md#why-where-id--checkpoint-is-safe-commit-order--id-order)).
+  Reads stay concurrent; the wait bound is configurable via
+  `append_lock_timeout` (default 5s). The in-memory backend has the same
+  property because it publishes the global position under its append locks.
 
 **Schema Design:**
 ```sql

@@ -50,9 +50,47 @@ pub struct PostgresEventStore {
     pool: PgPool,
     snapshot_config: SnapshotConfig,
     schema: String,
+    append_lock_timeout: std::time::Duration,
     checkpoint_store: Option<std::sync::Arc<dyn event_sauce_core::CheckpointStore>>,
     crypto_key_store: Option<std::sync::Arc<dyn event_sauce_core::CryptoKeyStore>>,
     crypto_provider: Option<std::sync::Arc<dyn event_sauce_core::CryptoProvider>>,
+}
+
+/// Default time `append()` waits to acquire the transaction-scoped advisory
+/// lock that serializes commit order before giving up with a backend error.
+const DEFAULT_APPEND_LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Computes the stable advisory-lock key for an event log, derived from the
+/// schema-qualified events table name (e.g. `"public.events"`).
+///
+/// [`PostgresEventStore::append`] takes a transaction-scoped advisory lock on
+/// this key before allocating any global event ids, so that id order equals
+/// commit order across all streams sharing the table (see
+/// [`PostgresEventStore::append`] for the resulting guarantee). Keying on the
+/// qualified table name isolates different schemas / test databases — they
+/// take distinct keys and never serialize against one another.
+///
+/// The hash is a 64-bit [FNV-1a] over the UTF-8 bytes of `qualified_events_table`,
+/// reinterpreted as the signed `bigint` that `pg_advisory_xact_lock` expects.
+/// FNV-1a is used deliberately rather than [`std::hash::DefaultHasher`]: the
+/// latter seeds `SipHash` randomly per process, so two processes would compute
+/// *different* keys and the cross-process serialization guarantee would
+/// silently not hold. The algorithm and input string are therefore part of the
+/// store's wire contract and must remain stable.
+///
+/// [FNV-1a]: https://en.wikipedia.org/wiki/Fowler%E2%80%93Noll%E2%80%93Vo_hash_function
+#[allow(clippy::cast_possible_wrap)]
+pub(crate) fn append_lock_key(qualified_events_table: &str) -> i64 {
+    // Standard FNV-1a 64-bit constants.
+    const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+    let mut hash = FNV_OFFSET_BASIS;
+    for byte in qualified_events_table.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash as i64
 }
 
 /// Builder for configuring `PostgresEventStore`.
@@ -82,6 +120,7 @@ pub struct PostgresEventStoreBuilder {
     pool: Option<PgPool>,
     snapshot_config: Option<SnapshotConfig>,
     schema: Option<String>,
+    append_lock_timeout: Option<std::time::Duration>,
     checkpoint_store: Option<std::sync::Arc<dyn event_sauce_core::CheckpointStore>>,
     crypto_key_store: Option<std::sync::Arc<dyn event_sauce_core::CryptoKeyStore>>,
     crypto_provider: Option<std::sync::Arc<dyn event_sauce_core::CryptoProvider>>,
@@ -543,6 +582,7 @@ impl PostgresEventStoreBuilder {
             pool: None,
             snapshot_config: None,
             schema: None,
+            append_lock_timeout: None,
             checkpoint_store: None,
             crypto_key_store: None,
             crypto_provider: None,
@@ -606,6 +646,35 @@ impl PostgresEventStoreBuilder {
     #[must_use]
     pub fn schema(mut self, schema: impl Into<String>) -> Self {
         self.schema = Some(schema.into());
+        self
+    }
+
+    /// Sets how long [`append`](PostgresEventStore::append) waits to acquire the
+    /// transaction-scoped advisory lock that serializes commit order.
+    ///
+    /// `append()` takes a lock keyed by the qualified events table before
+    /// allocating global event ids, so id order equals commit order. Under heavy
+    /// cross-stream write contention an append may have to wait behind another
+    /// in-flight append's insert window; this bounds that wait. If the lock is
+    /// not acquired within the timeout, `append()` returns a backend error
+    /// rather than blocking indefinitely.
+    ///
+    /// Defaults to 5 seconds.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use event_sauce_postgres::PostgresEventStore;
+    /// use std::time::Duration;
+    ///
+    /// let store = PostgresEventStore::builder()
+    ///     .pool(pool)
+    ///     .append_lock_timeout(Duration::from_secs(2))
+    ///     .build()?;
+    /// ```
+    #[must_use]
+    pub fn append_lock_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.append_lock_timeout = Some(timeout);
         self
     }
 
@@ -751,6 +820,9 @@ impl PostgresEventStoreBuilder {
                 .snapshot_config
                 .unwrap_or_else(|| SnapshotConfig::builder().build()),
             schema,
+            append_lock_timeout: self
+                .append_lock_timeout
+                .unwrap_or(DEFAULT_APPEND_LOCK_TIMEOUT),
             checkpoint_store: self.checkpoint_store,
             crypto_key_store: Some(crypto_key_store),
             crypto_provider: Some(crypto_provider),
@@ -982,6 +1054,33 @@ impl EventStore for PostgresEventStore {
         if !events.is_empty() {
             // Check current version
             let events_table = self.qualify_table("events");
+
+            // Serialize id-assignment-to-commit across ALL streams sharing this
+            // log. The `events.id` BIGSERIAL is allocated at INSERT but the row
+            // only becomes visible at COMMIT, so under READ COMMITTED two
+            // concurrent appends to different streams can take ids N and N+1 yet
+            // commit in the opposite order. A checkpoint reader scanning
+            // `WHERE id > checkpoint ORDER BY id ASC` could then observe N+1,
+            // advance its checkpoint past it, and never see N once it commits —
+            // silent, permanent event loss. Taking a transaction-scoped advisory
+            // lock here, before allocating any id, forces insert order to equal
+            // commit order. `pg_advisory_xact_lock` auto-releases at
+            // commit/rollback (no manual unlock). Readers stay fully concurrent:
+            // the advisory lock does not block SELECT. Only id-allocating appends
+            // take it — claims-only / clear-only appends (handled below) allocate
+            // no ids and must not serialize on it.
+            #[allow(clippy::cast_possible_truncation)]
+            let lock_timeout_ms = self.append_lock_timeout.as_millis() as i64;
+            sqlx::query(&format!("SET LOCAL lock_timeout = {lock_timeout_ms}"))
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| Error::backend("Failed to set append lock timeout", e))?;
+            sqlx::query("SELECT pg_advisory_xact_lock($1)")
+                .bind(append_lock_key(&events_table))
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| Error::backend("Failed to acquire append serialization lock", e))?;
+
             let current_version =
                 Self::current_stream_version(&mut tx, &events_table, &stream_id).await?;
 
@@ -2605,5 +2704,191 @@ mod tests {
             result.is_err(),
             "no notification should be emitted for an empty append"
         );
+    }
+
+    /// F2 / C4: [`append_lock_key`] must be a stable, deterministic hash so that
+    /// different processes compute the SAME advisory-lock key and actually
+    /// serialize against each other; and distinct qualified table names (e.g.
+    /// different schemas) must map to DISTINCT keys so unrelated logs do not
+    /// serialize. Guards against accidentally swapping in a per-process-seeded
+    /// hasher such as `std::hash::DefaultHasher`.
+    #[test]
+    fn test_append_lock_key_is_stable_and_schema_distinct() {
+        // Deterministic across calls (and, because FNV-1a has no per-process
+        // seed, across processes — the precondition for cross-process locking).
+        assert_eq!(
+            append_lock_key("public.events"),
+            append_lock_key("public.events"),
+            "append_lock_key must be stable for a given table name"
+        );
+
+        // Known-answer check pins the exact algorithm + input so the wire
+        // contract cannot drift silently: FNV-1a over the bytes of
+        // "public.events", reinterpreted as i64.
+        let mut expected: u64 = 0xcbf2_9ce4_8422_2325;
+        for byte in "public.events".as_bytes() {
+            expected ^= u64::from(*byte);
+            expected = expected.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        #[allow(clippy::cast_possible_wrap)]
+        let expected = expected as i64;
+        assert_eq!(
+            append_lock_key("public.events"),
+            expected,
+            "append_lock_key must be 64-bit FNV-1a of the qualified table name"
+        );
+
+        // Different schemas / tables take different keys → independent logs do
+        // not serialize against each other.
+        assert_ne!(
+            append_lock_key("public.events"),
+            append_lock_key("other.events"),
+            "different qualified table names must take distinct advisory keys"
+        );
+    }
+
+    /// F2 / C4: `append()` serializes id-assignment-to-commit on a
+    /// transaction-scoped advisory lock keyed by the qualified events table,
+    /// so global-id order equals commit order and a checkpoint reader can never
+    /// skip a still-uncommitted lower id.
+    ///
+    /// We hold the SESSION-level advisory lock on a separate, long-lived
+    /// connection using the SAME key `append()` uses. Because `append()` takes
+    /// the lock, it blocks behind our held lock and never completes while we
+    /// hold it; once released it completes — proving the advisory lock was the
+    /// only thing serializing it.
+    #[tokio::test]
+    async fn test_append_serializes_on_advisory_lock() {
+        use std::time::Duration;
+        use tokio::time::timeout;
+
+        let db = TestDatabase::new().await.unwrap();
+        let store = db.store();
+
+        // The store uses the `public` schema, so the qualified events table is
+        // `public.events` — the exact string `append_lock_key` hashes.
+        let lock_key = append_lock_key("public.events");
+
+        // Hold the session-level advisory lock on a SEPARATE connection so the
+        // store's append transaction must wait for it.
+        let mut lock_conn = db
+            .pool()
+            .acquire()
+            .await
+            .expect("acquire dedicated lock connection");
+        sqlx::query("SELECT pg_advisory_lock($1)")
+            .bind(lock_key)
+            .execute(&mut *lock_conn)
+            .await
+            .expect("acquire session advisory lock");
+
+        let stream_id = StreamId::new("User", Uuid::new_v4());
+        let event = create_test_envelope("UserCreated", stream_id.aggregate_id());
+
+        // With the lock held, an append that allocates an id must NOT be able
+        // to complete (post-fix it blocks on the advisory lock). We give it a
+        // generous window; if it returns within that window while the lock is
+        // held, the serialization mechanism is not in place.
+        let blocked = timeout(
+            Duration::from_millis(800),
+            store.append(
+                stream_id.clone(),
+                vec![event],
+                AggregateVersion::initial(),
+                vec![],
+                false,
+            ),
+        )
+        .await;
+
+        assert!(
+            blocked.is_err(),
+            "append must block on the held advisory lock while id-allocating, \
+             but it completed (result: {blocked:?}) — append() is not serializing \
+             commit order on the advisory lock"
+        );
+
+        // Release the side lock; the same append should now succeed, proving the
+        // advisory lock was the only thing blocking it.
+        sqlx::query("SELECT pg_advisory_unlock($1)")
+            .bind(lock_key)
+            .execute(&mut *lock_conn)
+            .await
+            .expect("release session advisory lock");
+        drop(lock_conn);
+
+        let stream_id2 = StreamId::new("User", Uuid::new_v4());
+        let event2 = create_test_envelope("UserCreated", stream_id2.aggregate_id());
+        let after_release = timeout(
+            Duration::from_secs(5),
+            store.append(
+                stream_id2,
+                vec![event2],
+                AggregateVersion::initial(),
+                vec![],
+                false,
+            ),
+        )
+        .await;
+        assert!(
+            matches!(after_release, Ok(Ok(()))),
+            "append must succeed once the advisory lock is released, got {after_release:?}"
+        );
+    }
+
+    /// F2 / C4: a claims-only append (no events) allocates no global ids, so it
+    /// must NOT serialize on the log's advisory lock. With the log lock held on
+    /// a separate connection, a claims-only append still completes promptly —
+    /// proving the lock is taken only on the id-allocating path and that claim
+    /// registration is never blocked by concurrent event appends.
+    #[tokio::test]
+    async fn test_claims_only_append_skips_lock() {
+        use event_sauce_core::AggregateClaim;
+        use serde_json::json;
+        use std::time::Duration;
+        use tokio::time::timeout;
+
+        let db = TestDatabase::new().await.unwrap();
+        let store = db.store();
+        // The aggregate_claims table is created by the store's own migrations.
+        store.migrate().await.unwrap();
+
+        // Hold the log advisory lock on a separate connection.
+        let lock_key = append_lock_key("public.events");
+        let mut lock_conn = db
+            .pool()
+            .acquire()
+            .await
+            .expect("acquire dedicated lock connection");
+        sqlx::query("SELECT pg_advisory_lock($1)")
+            .bind(lock_key)
+            .execute(&mut *lock_conn)
+            .await
+            .expect("acquire session advisory lock");
+
+        // A claims-only append (events empty) must not wait on the held log lock.
+        let stream_id = StreamId::new("User", Uuid::new_v4());
+        let claim = AggregateClaim::new("email", json!("user@example.com"));
+        let result = timeout(
+            Duration::from_secs(5),
+            store.append(
+                stream_id,
+                vec![],
+                AggregateVersion::initial(),
+                vec![claim],
+                false,
+            ),
+        )
+        .await;
+        assert!(
+            matches!(result, Ok(Ok(()))),
+            "claims-only append must not serialize on the log advisory lock, got {result:?}"
+        );
+
+        sqlx::query("SELECT pg_advisory_unlock($1)")
+            .bind(lock_key)
+            .execute(&mut *lock_conn)
+            .await
+            .expect("release session advisory lock");
     }
 }

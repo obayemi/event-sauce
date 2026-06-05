@@ -227,6 +227,19 @@ pub trait EventStore: Send + Sync {
     /// When `clear_claims` is true, all existing claims for the aggregate are removed
     /// (used for deleted aggregates).
     ///
+    /// # Global ordering guarantee
+    ///
+    /// Implementations MUST assign global positions in commit order: once an
+    /// event with global position `N` is visible to a reader (via
+    /// [`stream_all`](Self::stream_all)), every event with position `< N` is
+    /// already committed and visible. This lets [`Position`]-based consumers
+    /// (projections, policies, checkpoints) scan `position > checkpoint` in
+    /// ascending order without ever skipping a still-uncommitted lower position.
+    /// Positions are not guaranteed to be dense — rolled-back appends may leave
+    /// gaps — only that no *committed* event is ever reordered behind a higher
+    /// committed position. Backends serialize only the id-allocating window;
+    /// reads stay concurrent.
+    ///
     /// # Errors
     ///
     /// Returns `Error::ConcurrencyConflict` if the expected version doesn't match.

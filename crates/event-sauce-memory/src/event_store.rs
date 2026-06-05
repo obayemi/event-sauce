@@ -401,6 +401,13 @@ impl EventStore for InMemoryEventStore {
     ) -> Result<()> {
         // Append events to store within a scope to ensure locks are released
         {
+            // Acquiring both write locks together gives this backend the same
+            // ordering guarantee the postgres backend enforces with a
+            // transaction-scoped advisory lock: a global position is assigned and
+            // published under the same exclusive critical section, so once an
+            // event with global position N is visible to a reader, all events
+            // with position < N are already visible. There is no window where a
+            // higher position commits before a lower one.
             let mut streams = self.inner.streams.write();
             let mut global_events = self.inner.global_events.write();
 
