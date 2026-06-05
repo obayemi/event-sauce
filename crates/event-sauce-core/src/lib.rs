@@ -69,7 +69,7 @@ pub use aggregate_id::{AggregateId, EntityIdFor};
 pub use aggregate_root::AggregateRoot;
 pub use aggregate_type::AggregateType;
 pub use apply_event::ApplyEvent;
-pub use checkpoint::CheckpointStore;
+pub use checkpoint::{wait_for_checkpoint, CheckpointStore};
 pub use claims::AggregateClaim;
 pub use crypto::{CryptoKeyStore, CryptoProvider};
 pub use delete_event::DeleteEvent;

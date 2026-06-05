@@ -203,6 +203,48 @@ tokio::try_join!(
 )?;
 ```
 
+## Read-your-writes: waiting for a projection
+
+Projections are **eventually** consistent: after you `commit` events, the
+projection that builds a read model has not necessarily processed them yet, so
+reading the read model immediately can return stale data. When a caller must
+read its own write — e.g. return the freshly-updated total to the user who just
+placed the order — block until the projection catches up with
+`wait_for_checkpoint`.
+
+The flow is *commit → get position → wait → read*:
+
+```rust
+use std::time::Duration;
+use event_sauce_core::{wait_for_checkpoint, Position};
+
+// 1. Commit produces events; obtain their store-issued position.
+repository.commit(order).await?;
+let write_position: Position = backend.event_store().max_position().await?;
+
+// 2. Block until the projection's checkpoint reaches that position.
+let caught_up = wait_for_checkpoint(
+    backend.checkpoint_store(),
+    OrderTotals::NAME, // the subscription name == projection NAME
+    write_position,
+    Duration::from_millis(10), // poll interval
+    Duration::from_secs(5),    // timeout
+)
+.await?;
+
+// 3. Now it is safe to read the read model.
+if caught_up {
+    let total = OrderTotals::read(backend.pool(), order_id).await?;
+}
+```
+
+`wait_for_checkpoint` returns `Ok(true)` once the stored checkpoint is at or
+past `target` within the timeout, or `Ok(false)` if the timeout elapses first (a
+missing checkpoint counts as `Position::start`). It is **polling**-based, which
+keeps it portable across every backend. On Postgres a `LISTEN`/`NOTIFY`-driven
+variant could wake the poll for lower latency — a future enhancement; the
+polling helper is correct on every backend today.
+
 ## Testing
 
 Use a `testcontainers` postgres instance, append events through the event

@@ -72,3 +72,71 @@ pub trait CheckpointStore: Send + Sync {
     /// and was taken by another worker) is not an error.
     async fn release_lease(&self, subscription_name: &str, worker_id: &str) -> Result<()>;
 }
+
+/// Blocks until a subscription's checkpoint reaches `target` (read-your-writes).
+///
+/// After committing events, a caller often wants to read an
+/// eventually-consistent read model only *after* the projection that builds it
+/// has processed the write it just produced — otherwise it sees stale data.
+/// This helper polls `store` for the `subscription_name` checkpoint until it is
+/// at or past `target`, sleeping `poll_interval` between polls. A missing
+/// checkpoint is treated as [`Position::start`].
+///
+/// Returns `Ok(true)` once the stored checkpoint is `>= target` within
+/// `timeout`, or `Ok(false)` if the timeout elapses first. The check is always
+/// performed at least once, so a `target` that is already reached returns
+/// promptly even with a tiny `timeout`.
+///
+/// This is **polling**-based, which makes it portable across every backend. On
+/// `PostgreSQL` a `LISTEN`/`NOTIFY`-driven variant could wake the poll for
+/// lower latency; that is a future enhancement and not required for
+/// correctness here.
+///
+/// # Read-your-writes pattern
+///
+/// ```no_run
+/// # use std::time::Duration;
+/// # use event_sauce_core::{wait_for_checkpoint, CheckpointStore, Position};
+/// # async fn example(checkpoints: &dyn CheckpointStore, write_position: Position) -> event_sauce_core::Result<()> {
+/// // After `commit`, obtain your write's position (e.g. EventStore::max_position()).
+/// let caught_up = wait_for_checkpoint(
+///     checkpoints,
+///     "MyProjection",
+///     write_position,
+///     Duration::from_millis(10),
+///     Duration::from_secs(5),
+/// )
+/// .await?;
+///
+/// if caught_up {
+///     // The read model now reflects our write — safe to read.
+/// }
+/// # Ok(())
+/// # }
+/// ```
+///
+/// # Errors
+///
+/// Returns any error produced by [`CheckpointStore::load_checkpoint`].
+pub async fn wait_for_checkpoint(
+    store: &dyn CheckpointStore,
+    subscription_name: &str,
+    target: Position,
+    poll_interval: Duration,
+    timeout: Duration,
+) -> Result<bool> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let current = store
+            .load_checkpoint(subscription_name)
+            .await?
+            .unwrap_or_else(Position::start);
+        if current >= target {
+            return Ok(true);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Ok(false);
+        }
+        tokio::time::sleep(poll_interval).await;
+    }
+}
