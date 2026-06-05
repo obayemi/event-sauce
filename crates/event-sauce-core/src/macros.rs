@@ -783,6 +783,11 @@ macro_rules! __check_spec_init_actor {
 /// - `@post_validate_spec(Expr)` post-apply specification validation
 /// - `@version(n)` explicit event version
 /// - `@encrypted_fields(f1, f2)` field-level encryption
+/// - `@aliases("Old.Name", ...)` accept old wire `event_type` strings on read,
+///   keeping historical events loadable after an aggregate/variant rename. The
+///   canonical `EVENT_TYPE` (current name) is unchanged; aliases are only
+///   additional accepted-on-read names. An unknown, un-aliased `event_type`
+///   still fails fast (no silent skip).
 /// - `=> |agg, evt|` apply logic (or `=> |id, evt|` for init events)
 ///
 /// An optional **enum-level** clause may appear as the **first** item in the
@@ -887,6 +892,7 @@ macro_rules! define_events {
             $(@post_validate |$post_val_agg:ident, $post_val_evt:ident| $post_val_body:block)?
             $(@post_validate_spec($($post_val_spec:tt)*))?
             $(@encrypted_fields($($enc_field:ident),+ $(,)?))?
+            $(@aliases($($alias:literal),+ $(,)?))?
             => $apply:expr,
             $($rest:tt)*
         ]
@@ -908,6 +914,7 @@ macro_rules! define_events {
                     post_validate: [$([$post_val_agg, $post_val_evt, $post_val_body])?],
                     post_validate_spec: [$([$($post_val_spec)*])?],
                     encrypted_fields: [$([$($enc_field),+])?],
+                    aliases: [$([$($alias),+])?],
                     apply: $apply,
                 }
             ]
@@ -935,6 +942,7 @@ macro_rules! define_events {
             $(@post_validate |$post_val_agg:ident, $post_val_evt:ident| $post_val_body:block)?
             $(@post_validate_spec($($post_val_spec:tt)*))?
             $(@encrypted_fields($($enc_field:ident),+ $(,)?))?
+            $(@aliases($($alias:literal),+ $(,)?))?
             => $apply:expr,
             $($rest:tt)*
         ]
@@ -956,6 +964,7 @@ macro_rules! define_events {
                     post_validate: [$([$post_val_agg, $post_val_evt, $post_val_body])?],
                     post_validate_spec: [$([$($post_val_spec)*])?],
                     encrypted_fields: [$([$($enc_field),+])?],
+                    aliases: [$([$($alias),+])?],
                     apply: $apply,
                 }
             ]
@@ -983,6 +992,7 @@ macro_rules! define_events {
             $(@post_validate |$post_val_agg:ident, $post_val_evt:ident| $post_val_body:block)?
             $(@post_validate_spec($($post_val_spec:tt)*))?
             $(@encrypted_fields($($enc_field:ident),+ $(,)?))?
+            $(@aliases($($alias:literal),+ $(,)?))?
             => $apply:expr,
             $($rest:tt)*
         ]
@@ -1004,6 +1014,7 @@ macro_rules! define_events {
                     post_validate: [$([$post_val_agg, $post_val_evt, $post_val_body])?],
                     post_validate_spec: [$([$($post_val_spec)*])?],
                     encrypted_fields: [$([$($enc_field),+])?],
+                    aliases: [$([$($alias),+])?],
                     apply: $apply,
                 }
             ]
@@ -1030,6 +1041,7 @@ macro_rules! define_events {
             $(@post_validate |$post_val_agg:ident, $post_val_evt:ident| $post_val_body:block)?
             $(@post_validate_spec($($post_val_spec:tt)*))?
             $(@encrypted_fields($($enc_field:ident),+ $(,)?))?
+            $(@aliases($($alias:literal),+ $(,)?))?
             => $apply:expr,
             $($rest:tt)*
         ]
@@ -1051,6 +1063,7 @@ macro_rules! define_events {
                     post_validate: [$([$post_val_agg, $post_val_evt, $post_val_body])?],
                     post_validate_spec: [$([$($post_val_spec)*])?],
                     encrypted_fields: [$([$($enc_field),+])?],
+                    aliases: [$([$($alias),+])?],
                     apply: $apply,
                 }
             ]
@@ -1076,6 +1089,7 @@ macro_rules! define_events {
             $(@post_validate |$post_val_agg:ident, $post_val_evt:ident| $post_val_body:block)?
             $(@post_validate_spec($($post_val_spec:tt)*))?
             $(@encrypted_fields($($enc_field:ident),+ $(,)?))?
+            $(@aliases($($alias:literal),+ $(,)?))?
             => $apply:expr,
             $($rest:tt)*
         ]
@@ -1097,6 +1111,7 @@ macro_rules! define_events {
                     post_validate: [$([$post_val_agg, $post_val_evt, $post_val_body])?],
                     post_validate_spec: [$([$($post_val_spec)*])?],
                     encrypted_fields: [$([$($enc_field),+])?],
+                    aliases: [$([$($alias),+])?],
                     apply: $apply,
                 }
             ]
@@ -1123,6 +1138,7 @@ macro_rules! define_events {
             $(@post_validate |$post_val_agg:ident, $post_val_evt:ident| $post_val_body:block)?
             $(@post_validate_spec($($post_val_spec:tt)*))?
             $(@encrypted_fields($($enc_field:ident),+ $(,)?))?
+            $(@aliases($($alias:literal),+ $(,)?))?
             => $apply:expr,
             $($rest:tt)*
         ]
@@ -1144,6 +1160,7 @@ macro_rules! define_events {
                     post_validate: [$([$post_val_agg, $post_val_evt, $post_val_body])?],
                     post_validate_spec: [$([$($post_val_spec)*])?],
                     encrypted_fields: [$([$($enc_field),+])?],
+                    aliases: [$([$($alias),+])?],
                     apply: $apply,
                 }
             ]
@@ -1189,6 +1206,7 @@ macro_rules! define_events {
                     post_validate: [$($post_validate:tt)*],
                     post_validate_spec: [$($post_validate_spec:tt)*],
                     encrypted_fields: [$($encrypted_fields:tt)*],
+                    aliases: [$($aliases:tt)*],
                     apply: $apply:expr,
                 }
             )*
@@ -1307,7 +1325,9 @@ macro_rules! define_events {
 
                 fn from_envelope(envelope: &$crate::EventEnvelope) -> $crate::Result<Self> {
                     $(
-                        if envelope.event_type == <[<$variant Event>] as $crate::EventType>::EVENT_TYPE {
+                        if envelope.event_type == <[<$variant Event>] as $crate::EventType>::EVENT_TYPE
+                            || define_events!(@alias_match (envelope.event_type) [$($aliases)*])
+                        {
                             let mut data = envelope.event_data.clone();
                             <$event_enum as $crate::DomainEvent>::upcast(
                                 &envelope.event_type,
@@ -2059,6 +2079,21 @@ macro_rules! define_events {
     };
     (@encrypted_fields_from []) => {
         &[]
+    };
+
+    // =========================================================================
+    // Helper: build the alias-matching condition for a variant in from_envelope.
+    // =========================================================================
+    // The accumulator stores a variant's aliases as `[["Old.Name", ...]]` when
+    // present, or `[]` when absent. This helper expands those into a boolean
+    // expression matching the runtime `event_type` against any declared alias.
+    // With no aliases it evaluates to `false` so only the canonical EVENT_TYPE
+    // matches (preserving the fail-fast default for genuinely-unknown types).
+    (@alias_match ($event_type:expr) [[$($alias:literal),+]]) => {
+        $($event_type == $alias)||+
+    };
+    (@alias_match ($event_type:expr) []) => {
+        false
     };
 
     // =========================================================================

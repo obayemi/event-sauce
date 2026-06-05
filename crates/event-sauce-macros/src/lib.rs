@@ -52,6 +52,8 @@ struct AggregateAttrs {
 /// Attributes for the #[event(...)] container attribute
 #[derive(Debug, FromMeta)]
 struct EventAttrs {
+    /// The default event schema version applied to every variant. Each variant
+    /// may override it with its own per-variant `#[event(version = N)]`.
     version: i64,
     #[darling(default)]
     type_prefix: Option<String>,
@@ -60,6 +62,11 @@ struct EventAttrs {
 }
 
 /// Derive macro for `Event` trait
+///
+/// The container-level `#[event(version = N)]` sets the default schema version
+/// for every variant. An individual variant may override it with its own
+/// `#[event(version = N)]` attribute so variants can be versioned
+/// independently (mirroring `define_events!`'s per-variant `@version(n)`).
 ///
 /// # Panics
 ///
@@ -116,7 +123,10 @@ pub fn derive_event(input: TokenStream) -> TokenStream {
     let event_applicator_impl =
         gen_event_applicator_impl(name, variants, attrs.aggregate.as_deref());
     let try_from_impls = gen_try_from_impls(name);
-    let version = attrs.version;
+    let event_version_arms = match gen_event_version_arms(name, variants, attrs.version) {
+        Ok(arms) => arms,
+        Err(err) => return err,
+    };
 
     let gen = quote! {
         impl event_sauce_core::DomainEvent for #name {
@@ -129,7 +139,9 @@ pub fn derive_event(input: TokenStream) -> TokenStream {
             }
 
             fn event_version(&self) -> event_sauce_core::EventVersion {
-                event_sauce_core::EventVersion::new(#version)
+                match self {
+                    #(#event_version_arms)*
+                }
             }
 
             fn occurred_at(&self) -> chrono::DateTime<chrono::Utc> {
@@ -177,6 +189,67 @@ fn gen_event_type_arms(
             }
         })
         .collect()
+}
+
+/// Reads an optional per-variant `#[event(version = N)]` attribute.
+///
+/// Returns `Ok(Some(n))` when the variant carries an explicit version,
+/// `Ok(None)` when it has no `version` key (falling back to the container
+/// version), or `Err(..)` when the attribute is malformed.
+fn extract_variant_version(variant: &syn::Variant) -> Result<Option<i64>, TokenStream> {
+    for attr in &variant.attrs {
+        if !attr.path().is_ident("event") {
+            continue;
+        }
+        let mut version: Option<i64> = None;
+        let parsed = attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("version") {
+                let value = meta.value()?;
+                let lit: syn::LitInt = value.parse()?;
+                version = Some(lit.base10_parse()?);
+                Ok(())
+            } else {
+                // Ignore other per-variant keys (e.g. future `aliases`) so they
+                // can be handled by their own extractors without erroring here.
+                let _ = meta.value();
+                Ok(())
+            }
+        });
+        if let Err(err) = parsed {
+            return Err(err.to_compile_error().into());
+        }
+        if version.is_some() {
+            return Ok(version);
+        }
+    }
+    Ok(None)
+}
+
+/// Generates the per-variant `event_version()` match arms.
+///
+/// Each variant uses its own `#[event(version = N)]` attribute when present,
+/// otherwise it falls back to the container-level `#[event(version = N)]`.
+fn gen_event_version_arms(
+    name: &Ident,
+    variants: &syn::punctuated::Punctuated<syn::Variant, syn::token::Comma>,
+    container_version: i64,
+) -> Result<Vec<proc_macro2::TokenStream>, TokenStream> {
+    let mut arms = Vec::with_capacity(variants.len());
+    for variant in variants {
+        let variant_name = &variant.ident;
+        let version = extract_variant_version(variant)?.unwrap_or(container_version);
+        let arm = if matches!(&variant.fields, Fields::Unnamed(_)) {
+            quote! {
+                #name::#variant_name(..) => event_sauce_core::EventVersion::new(#version),
+            }
+        } else {
+            quote! {
+                #name::#variant_name { .. } => event_sauce_core::EventVersion::new(#version),
+            }
+        };
+        arms.push(arm);
+    }
+    Ok(arms)
 }
 
 fn gen_occurred_at_arms(

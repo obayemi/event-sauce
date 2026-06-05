@@ -40,6 +40,7 @@ The **`define_events!` macro** is the recommended way to define events in event-
 - Declarative syntax - Clear event definitions with inline validation and apply logic
 - Type-safe validation - Business rules co-located with events
 - Automatic versioning - Support for schema evolution with `@version` and on-load migration with `@upcast`
+- Rename safety - Keep historical events loadable after a rename with `@aliases`
 - Pre and post-validation - `@validate` and `@post_validate` hooks
 - Field-level encryption - Encrypt sensitive fields with `@encrypted_fields` (see [Privacy](privacy.md))
 
@@ -430,9 +431,30 @@ enum AccountEvent {
 
 ### Event Attributes
 
-- **`version`**: The schema version for this event type (required)
+- **`version`**: The default schema version for the enum's variants (required at the container level)
 - **`type_prefix`**: Prefix for generated event type names (optional)
 - **`aggregate`**: The aggregate type name for auto-generating `EventApplicator` impl (optional but recommended)
+
+#### Per-variant version override
+
+The container-level `#[event(version = N)]` sets the default version for every
+variant. An individual variant may override it with its own `#[event(version =
+N)]` attribute — the mirror of `define_events!`'s per-variant `@version(n)` —
+so variants can evolve their schemas independently. This matters for upcasting,
+which keys on the stored `from_version`.
+
+```rust
+#[derive(event_sauce_macros::Event, Debug, Clone, Serialize, Deserialize)]
+#[event(version = 1, aggregate = "Account")]
+enum AccountEvent {
+    // No per-variant attr -> falls back to the container version (1).
+    Opened(AccountOpenedEvent),
+
+    // Independently versioned at 2.
+    #[event(version = 2)]
+    Migrated(AccountMigratedEvent),
+}
+```
 
 ### Event Requirements
 
@@ -895,6 +917,56 @@ impl DomainEvent for BankAccountEvent {
 The migration runs transparently inside `Repository::load` / replay — no
 separate conversion step is needed at the call site.
 
+### Renaming Events Safely (Aliases)
+
+The persisted `event_type` key is derived from the **aggregate and variant
+identifiers**: `define_events!` writes `concat!(stringify!(Aggregate), ".",
+stringify!(Variant))` and `#[derive(Event)]` writes `"{type_prefix}.{Variant}"`.
+This means the aggregate type name and each variant name are part of the
+**on-disk contract**. Renaming the aggregate or a variant changes the key, so
+`from_envelope` no longer matches the old string and every historical event
+orphans with `Error: Unknown event type` — a fail-fast default that is
+deliberately preserved (an event store must never silently skip an unknown
+event, which would corrupt the reconstructed state).
+
+Upcasting (above) handles a change of event **shape**; a rename is a change of
+event **name**, so it needs a different tool: a compile-time **alias**. Declare
+the old wire string with a per-variant `@aliases("Old.Name", ...)` clause so the
+renamed variant keeps loading historical events written under the old name. The
+canonical `EVENT_TYPE` (the current name) is unchanged — aliases are only
+*additional* names accepted on read, and new events are still written under the
+current name.
+
+```rust
+use event_sauce_core::define_events;
+
+// The variant was renamed from `OldCreated` to `Created`. Historical events
+// were persisted as `Account.OldCreated`; the alias keeps them loadable into
+// the renamed `Created` variant. New events write the canonical `Account.Created`.
+define_events! {
+    pub enum AccountEvent for Account {
+        Created {
+            owner: String,
+        }
+        @aliases("Account.OldCreated")
+        => |account, event| {
+            account.owner = event.owner.clone();
+        },
+    }
+}
+```
+
+`@aliases(...)` sits alongside the other per-variant clauses (after
+`@encrypted_fields`, before the `=>` apply closure) and works on every variant
+kind (`@init`, `@actor`, `@delete`, ...). Multiple old names are allowed:
+`@aliases("Old.Name", "Older.Name")`. A rename is therefore a code-only change —
+no data migration is required, and the old key never has to be rewritten on
+disk.
+
+> A rename and a shape change are independent and can be combined: add an
+> `@aliases(...)` for the old name *and* an `@upcast` clause keyed on the
+> stored `event_version` if the fields also changed.
+
 ### Event Correlation
 
 Link related events using correlation IDs:
@@ -931,6 +1003,7 @@ The event-sauce event system provides:
 - **Optimized replay** with `apply_unchecked`
 - **Clean separation** between validation and application
 - **Schema evolution** with `@version` plus `@upcast` for on-load migration
+- **Rename safety** with `@aliases` keeping historical events loadable after a rename
 - **Field-level encryption** with `@encrypted_fields` for selective privacy
 - **Better testing** with independent event tests
 

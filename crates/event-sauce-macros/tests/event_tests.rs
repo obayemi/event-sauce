@@ -335,6 +335,95 @@ fn test_event_derive_single_variant() {
 }
 
 // ============================================================================
+// L8: per-variant #[event(version = N)] in #[derive(Event)]
+// ============================================================================
+//
+// `define_events!` already supports per-variant `@version(n)`, but
+// `#[derive(Event)]` reads a SINGLE container-level `#[event(version = N)]` and
+// emits `EventVersion::new(N)` for EVERY variant. That means individual variants
+// cannot be versioned independently, which undermines the upcasting story (which
+// keys on the stored `from_version`).
+//
+// The fix makes `#[derive(Event)]` accept an OPTIONAL per-variant
+// `#[event(version = N)]` attribute that overrides the container default for
+// that variant only. This is additive: variants with no per-variant attr keep
+// the container version.
+
+// Container default is version 1, but `Migrated` is independently at version 2.
+#[derive(event_sauce_macros::Event, Debug, Clone, Serialize, Deserialize)]
+#[event(version = 1, aggregate = "PerVariantAggregate")]
+#[allow(dead_code)]
+enum PerVariantEvent {
+    Created {
+        id: String,
+        timestamp: DateTime<Utc>,
+    },
+    #[event(version = 2)]
+    Migrated {
+        id: String,
+        tier: String,
+        timestamp: DateTime<Utc>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PerVariantAggregate {
+    id: EntityId,
+}
+
+impl Entity for PerVariantAggregate {
+    fn new(id: EntityId) -> Self {
+        Self { id }
+    }
+
+    fn entity_id(&self) -> EntityId {
+        self.id
+    }
+}
+
+impl EventApplicator<PerVariantAggregate> for PerVariantEvent {
+    fn dispatch(&self, _aggregate: &mut PerVariantAggregate) -> Result<(), TestAggregateError> {
+        Ok(())
+    }
+
+    fn dispatch_unchecked(&self, _aggregate: &mut PerVariantAggregate) {}
+}
+
+impl Aggregate for PerVariantAggregate {
+    type Event = PerVariantEvent;
+    type Error = TestAggregateError;
+    type DeletedState = Self;
+}
+
+#[test]
+fn test_event_derive_per_variant_version_overrides_container() {
+    let timestamp = Utc::now();
+
+    // Variant WITHOUT a per-variant attr falls back to the container version (1).
+    let created = PerVariantEvent::Created {
+        id: "p-1".to_string(),
+        timestamp,
+    };
+    assert_eq!(
+        created.event_version(),
+        EventVersion::new(1),
+        "a variant without #[event(version)] must use the container version (1)"
+    );
+
+    // Variant WITH #[event(version = 2)] must report 2, not the container's 1.
+    let migrated = PerVariantEvent::Migrated {
+        id: "p-1".to_string(),
+        tier: "gold".to_string(),
+        timestamp,
+    };
+    assert_eq!(
+        migrated.event_version(),
+        EventVersion::new(2),
+        "a variant annotated #[event(version = 2)] must report 2, not the container default"
+    );
+}
+
+// ============================================================================
 // TryFrom Tests
 // ============================================================================
 
