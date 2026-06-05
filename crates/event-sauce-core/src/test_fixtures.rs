@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use crate::{
     AggregateError, AggregateVersion, ApplyEvent, CheckpointStore, EntityId, EventApplicator,
-    EventEnvelope, EventStore, EventVersion, Position, Result, StreamId,
+    EventEnvelope, EventLogEntry, EventStore, EventVersion, Position, Result, StreamId,
 };
 
 /// Simple error type for test aggregates.
@@ -111,7 +111,8 @@ impl crate::Aggregate for SimpleTestEntity {
 #[derive(Debug)]
 pub struct MockEventStore {
     streams: Arc<Mutex<HashMap<StreamId, Vec<EventEnvelope>>>>,
-    global_log: Arc<Mutex<Vec<EventEnvelope>>>,
+    /// Global log paired with the store-issued position (1-based, dense).
+    global_log: Arc<Mutex<Vec<(Position, EventEnvelope)>>>,
 }
 
 impl Default for MockEventStore {
@@ -133,12 +134,25 @@ impl MockEventStore {
     /// Returns all events in the global log (for test verification).
     #[must_use]
     pub fn get_events(&self) -> Vec<EventEnvelope> {
-        self.global_log.lock().unwrap().clone()
+        self.global_log
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(_, e)| e.clone())
+            .collect()
+    }
+
+    /// Assigns the next 1-based position and pushes the event onto the global
+    /// log. Positions stay dense for the mock — gaps are a real-backend concern.
+    fn push_global(log: &mut Vec<(Position, EventEnvelope)>, event: EventEnvelope) {
+        #[allow(clippy::cast_possible_wrap)]
+        let position = Position::new(log.len() as i64 + 1);
+        log.push((position, event));
     }
 
     /// Adds an event directly (bypassing append), useful for subscription tests.
     pub fn add_event(&self, event: EventEnvelope) {
-        self.global_log.lock().unwrap().push(event.clone());
+        Self::push_global(&mut self.global_log.lock().unwrap(), event.clone());
         self.streams
             .lock()
             .unwrap()
@@ -161,7 +175,12 @@ impl EventStore for MockEventStore {
         _claims: Vec<crate::AggregateClaim>,
         _clear_claims: bool,
     ) -> Result<()> {
-        self.global_log.lock().unwrap().extend(events.clone());
+        {
+            let mut log = self.global_log.lock().unwrap();
+            for event in &events {
+                Self::push_global(&mut log, event.clone());
+            }
+        }
         let mut streams = self.streams.lock().unwrap();
         streams.entry(stream_id).or_default().extend(events);
         Ok(())
@@ -188,11 +207,21 @@ impl EventStore for MockEventStore {
     async fn stream_all(
         &self,
         from_position: Position,
-    ) -> Result<impl futures::Stream<Item = Result<EventEnvelope>> + Send> {
-        let events = self.global_log.lock().unwrap().clone();
-        let from_idx = usize::try_from(from_position.as_i64()).unwrap_or(0);
-        let filtered_events: Vec<_> = events.into_iter().skip(from_idx).map(Ok).collect();
-        Ok(stream::iter(filtered_events))
+    ) -> Result<impl futures::Stream<Item = Result<EventLogEntry>> + Send> {
+        let entries: Vec<_> = self
+            .global_log
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(position, _)| *position > from_position)
+            .map(|(position, envelope)| {
+                Ok(EventLogEntry {
+                    position: *position,
+                    envelope: envelope.clone(),
+                })
+            })
+            .collect();
+        Ok(stream::iter(entries))
     }
 
     async fn get_version(&self, stream_id: StreamId) -> Result<AggregateVersion> {
@@ -491,10 +520,13 @@ mod tests {
         store.add_event(env2.clone());
 
         let stream = store.stream_all(Position::new(0)).await.unwrap();
-        let events: Vec<_> = stream.map(|r| r.unwrap()).collect().await;
-        assert_eq!(events.len(), 2);
-        assert_eq!(events[0].event_type, env1.event_type);
-        assert_eq!(events[1].event_type, env2.event_type);
+        let entries: Vec<_> = stream.map(|r| r.unwrap()).collect().await;
+        assert_eq!(entries.len(), 2);
+        // Positions are store-issued, 1-based, and strictly monotonic.
+        assert_eq!(entries[0].position, Position::new(1));
+        assert_eq!(entries[0].envelope.event_type, env1.event_type);
+        assert_eq!(entries[1].position, Position::new(2));
+        assert_eq!(entries[1].envelope.event_type, env2.event_type);
     }
 
     #[tokio::test]
@@ -503,9 +535,11 @@ mod tests {
         store.add_event(create_test_envelope("Ev1", "Agg"));
         store.add_event(create_test_envelope("Ev2", "Agg"));
 
+        // Strictly greater than position 1, so only the second event remains.
         let stream = store.stream_all(Position::new(1)).await.unwrap();
-        let events: Vec<_> = stream.map(|r| r.unwrap()).collect().await;
-        assert_eq!(events.len(), 1);
+        let entries: Vec<_> = stream.map(|r| r.unwrap()).collect().await;
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].position, Position::new(2));
     }
 
     // --- MockEventStore::get_version ---

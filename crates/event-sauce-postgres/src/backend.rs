@@ -192,10 +192,10 @@ impl PostgresBackend {
                 break;
             }
 
-            for event in batch {
-                current_position = Position::new(current_position.as_i64() + 1);
+            for entry in batch {
+                current_position = entry.position;
 
-                if !filter.matches(&event) {
+                if !filter.matches(&entry.envelope) {
                     continue;
                 }
 
@@ -203,7 +203,7 @@ impl PostgresBackend {
                     event_sauce_core::Error::backend("Failed to start projection transaction", e)
                 })?;
 
-                projection.handle(&event, &mut tx).await?;
+                projection.handle(&entry.envelope, &mut tx).await?;
                 self.checkpoint_store
                     .save_checkpoint_tx(&mut tx, P::NAME, current_position)
                     .await?;
@@ -335,7 +335,7 @@ impl PostgresBackend {
         lease_duration: std::time::Duration,
         start_position: event_sauce_core::Position,
     ) -> event_sauce_core::Result<()> {
-        use event_sauce_core::{CheckpointStore, Position};
+        use event_sauce_core::CheckpointStore;
 
         const DISPATCHER_NAME: &str = "__policy_outbox_dispatcher";
 
@@ -352,8 +352,9 @@ impl PostgresBackend {
                 break;
             }
 
-            for event in batch {
-                current_position = Position::new(current_position.as_i64() + 1);
+            for entry in batch {
+                current_position = entry.position;
+                let event = entry.envelope;
 
                 if last_renew.elapsed() >= renew_interval {
                     self.checkpoint_store
@@ -397,7 +398,7 @@ impl PostgresBackend {
         lease_duration: std::time::Duration,
         start_position: event_sauce_core::Position,
     ) -> event_sauce_core::Result<()> {
-        use event_sauce_core::{CheckpointStore, Position};
+        use event_sauce_core::CheckpointStore;
 
         let filter = P::event_filter();
         let mut current_position = start_position;
@@ -413,8 +414,8 @@ impl PostgresBackend {
                 break;
             }
 
-            for event in batch {
-                current_position = Position::new(current_position.as_i64() + 1);
+            for entry in batch {
+                current_position = entry.position;
 
                 if last_renew.elapsed() >= renew_interval {
                     self.checkpoint_store
@@ -423,7 +424,7 @@ impl PostgresBackend {
                     last_renew = std::time::Instant::now();
                 }
 
-                if !filter.matches(&event) {
+                if !filter.matches(&entry.envelope) {
                     continue;
                 }
 
@@ -431,7 +432,7 @@ impl PostgresBackend {
                     event_sauce_core::Error::backend("Failed to start projection transaction", e)
                 })?;
 
-                projection.handle(&event, &mut tx).await?;
+                projection.handle(&entry.envelope, &mut tx).await?;
                 self.checkpoint_store
                     .save_checkpoint_tx(&mut tx, P::NAME, current_position)
                     .await?;
@@ -1117,6 +1118,208 @@ mod tests {
             CountingProjection::read(backend.pool(), "event_sauce").await,
             4
         );
+    }
+
+    /// Records the event UUID of every envelope it handles into a postgres
+    /// table — one row per `handle` call. A duplicate UUID row therefore means
+    /// the same event was handled more than once within a run.
+    struct RecordingProjection;
+
+    impl RecordingProjection {
+        async fn migrate(pool: &PgPool, schema: &str) {
+            sqlx::query(&format!(
+                "CREATE TABLE IF NOT EXISTS {schema}.recording_projection (
+                    seq BIGSERIAL PRIMARY KEY,
+                    event_id UUID NOT NULL
+                )"
+            ))
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+
+        /// Number of `handle` rows recorded for `event_id`.
+        async fn count_for(pool: &PgPool, schema: &str, event_id: Uuid) -> i64 {
+            sqlx::query_scalar(&format!(
+                "SELECT COUNT(*) FROM {schema}.recording_projection WHERE event_id = $1"
+            ))
+            .bind(event_id)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::PostgresProjection for RecordingProjection {
+        const NAME: &'static str = "RecordingProjection";
+
+        fn handled_event_types() -> Option<Vec<&'static str>> {
+            Some(vec!["TestEvent"])
+        }
+
+        async fn handle(
+            &mut self,
+            envelope: &EventEnvelope,
+            tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        ) -> event_sauce_core::Result<()> {
+            sqlx::query("INSERT INTO event_sauce.recording_projection (event_id) VALUES ($1)")
+                .bind(envelope.id)
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| event_sauce_core::Error::custom(format!("insert failed: {e}")))?;
+            Ok(())
+        }
+    }
+
+    /// Appends a single `TestEvent` to its own fresh stream and returns its
+    /// event UUID. Each call uses a distinct aggregate, so every append is the
+    /// first (version 0) event of its stream.
+    async fn append_recorded_event(store: &PostgresEventStore) -> Uuid {
+        let aggregate_id = Uuid::new_v4();
+        let stream_id = StreamId::new("TestAggregate", aggregate_id);
+        let event = create_test_envelope(aggregate_id);
+        let event_id = event.id;
+        store
+            .append(
+                stream_id,
+                vec![event],
+                AggregateVersion::initial(),
+                vec![],
+                false,
+            )
+            .await
+            .expect("append should succeed");
+        event_id
+    }
+
+    /// Regression test for F1 (C1/C2/C3): the projection runner reconstructs a
+    /// SYNTHETIC ordinal (`current_position += 1` per event) instead of using
+    /// the real global BIGSERIAL `events.id`. When the id sequence has a GAP —
+    /// e.g. a unique-violation conflict burns a `nextval` — that ordinal lags
+    /// the real id, so the checkpoint it saves is BELOW the id it just
+    /// processed and `WHERE id > checkpoint` re-returns an already-processed
+    /// event WITHIN THE SAME drain loop.
+    ///
+    /// Layout (real committed events keep their ids; a gap forms in between):
+    /// - first event   -> id 1            (kept)
+    /// - second event  -> id 2            (kept)
+    /// - a seeder row + a losing append each consume ids, then both vanish
+    ///   (the seeder row is deleted, the loser is aborted) -> a GAP in the ids
+    /// - third event   -> a higher id     (kept, AFTER the gap)
+    ///
+    /// Three events are committed but their ids are NOT dense (e.g. {1, 2, 5}).
+    /// Driving a recording projection ONCE must handle each event UUID exactly
+    /// once. TODAY it fails: the synthetic `current_position += 1` counter only
+    /// reaches 3 after processing all three events, so it checkpoints 3 while
+    /// the last real id is 5. The batch loop then re-fetches `WHERE id > 3`,
+    /// re-returning the last event AGAIN (and again, until the counter crawls
+    /// past the real id) — handling it multiple times in a single run. After
+    /// the fix (checkpoint = the real `entry.position`), the loop terminates
+    /// immediately and each event is handled exactly once.
+    #[tokio::test]
+    async fn test_gap_in_ids_does_not_reapply_event_in_single_run() {
+        let (url, _container) = start_postgres().await;
+        let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
+        RecordingProjection::migrate(backend.pool(), "event_sauce").await;
+
+        let store = backend.event_store();
+        // A throwaway aggregate used only to force the conflict that burns an
+        // id; none of its rows survive into the committed log.
+        let agg_c = Uuid::new_v4();
+        let stream_c = StreamId::new("TestAggregate", agg_c);
+
+        // First two committed events (each on its own stream).
+        let first_event = append_recorded_event(&store).await;
+        let second_event = append_recorded_event(&store).await;
+
+        // Burn a BIGSERIAL id to create a GAP. A held-open seeder transaction
+        // reserves (agg_c, "TestAggregate", stream_version 0) on the unique
+        // index but stays invisible to the real append's MAX(stream_version)
+        // precheck. The real append to the (empty, committed) stream C passes
+        // its precheck, its INSERT consumes a BIGSERIAL id (nextval), then
+        // blocks on (and ultimately loses) the unique index — aborting the
+        // transaction AFTER the sequence value is already burned. Using a fresh
+        // aggregate keeps the recorded streams untouched.
+        {
+            let mut seeder = backend.pool().begin().await.unwrap();
+            sqlx::query(
+                "INSERT INTO event_sauce.events (
+                    event_id, aggregate_id, aggregate_type, event_type, event_version,
+                    event_data, stream_version
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            )
+            .bind(Uuid::new_v4())
+            .bind(agg_c)
+            .bind("TestAggregate")
+            .bind("TestEvent")
+            .bind(1_i64)
+            .bind(json!({"data": "seed"}))
+            .bind(0_i64)
+            .execute(&mut *seeder)
+            .await
+            .unwrap();
+
+            let store_for_loser = backend.event_store();
+            let loser_stream = stream_c.clone();
+            let loser_agg = agg_c;
+            let loser = tokio::spawn(async move {
+                let loser_event = create_test_envelope(loser_agg);
+                store_for_loser
+                    .append(
+                        loser_stream,
+                        vec![loser_event],
+                        AggregateVersion::initial(),
+                        vec![],
+                        false,
+                    )
+                    .await
+            });
+
+            // Let the loser reach (and block on) its INSERT, then release it.
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            seeder.commit().await.unwrap();
+
+            let result = loser.await.unwrap();
+            let err = result.expect_err("loser append must fail on the unique violation");
+            assert!(
+                err.is_concurrency_conflict(),
+                "expected ConcurrencyConflict (and a burned sequence value), got: {err:?}"
+            );
+        }
+
+        // The seeder's row committed for agg_c (consuming its own BIGSERIAL id);
+        // remove all of agg_c so the only committed events are the recorded
+        // ones, now with a gap in their ids (the burned loser id, and the
+        // deleted seeder id, both sit between the surviving rows).
+        sqlx::query("DELETE FROM event_sauce.events WHERE aggregate_id = $1")
+            .bind(agg_c)
+            .execute(backend.pool())
+            .await
+            .unwrap();
+
+        // A third real, committed event, AFTER the gap.
+        let third_event = append_recorded_event(&store).await;
+
+        // Drive the projection to completion exactly once.
+        let mut projection = RecordingProjection;
+        backend
+            .run_postgres_projection(&mut projection)
+            .await
+            .unwrap();
+
+        // Every committed event must be handled EXACTLY once.
+        for (label, id) in [
+            ("first", first_event),
+            ("second", second_event),
+            ("third (after the gap)", third_event),
+        ] {
+            let count = RecordingProjection::count_for(backend.pool(), "event_sauce", id).await;
+            assert_eq!(
+                count, 1,
+                "event {label} ({id}) must be handled exactly once, was handled {count} times"
+            );
+        }
     }
 
     #[tokio::test]

@@ -5,8 +5,8 @@
 
 use async_trait::async_trait;
 use event_sauce_core::{
-    AggregateVersion, Error, EventEnvelope, EventStore, Position, Result, Snapshot, SnapshotConfig,
-    StreamId,
+    AggregateVersion, Error, EventEnvelope, EventLogEntry, EventStore, Position, Result, Snapshot,
+    SnapshotConfig, StreamId,
 };
 use futures::stream::{self, Stream};
 use parking_lot::RwLock;
@@ -57,9 +57,11 @@ struct InMemoryEventStoreInner {
     streams: RwLock<HashMap<StreamId, Vec<Arc<EventEnvelope>>>>,
     /// Stores snapshots by stream ID
     snapshots: RwLock<HashMap<StreamId, Snapshot>>,
-    /// All events in global order for `stream_all`. Shares `Arc`s with
-    /// `streams`, avoiding a second copy on append.
-    global_events: RwLock<Vec<Arc<EventEnvelope>>>,
+    /// All events in global order for `stream_all`, each paired with its
+    /// store-issued global [`Position`]. Positions are assigned inside the
+    /// append write lock (so position order matches insertion order) and start
+    /// at 1. Shares `Arc`s with `streams`, avoiding a second copy on append.
+    global_events: RwLock<Vec<(Position, Arc<EventEnvelope>)>>,
     /// Snapshot configuration
     snapshot_config: SnapshotConfig,
 }
@@ -186,7 +188,7 @@ impl InMemoryEventStore {
             .global_events
             .read()
             .iter()
-            .map(|e| (**e).clone())
+            .map(|(_, e)| (**e).clone())
             .collect()
     }
 
@@ -417,10 +419,14 @@ impl EventStore for InMemoryEventStore {
 
             // Append events: wrap each in Arc once and share between
             // per-stream and global views, avoiding the second envelope clone.
+            // Assign a 1-based global position inside the write lock so position
+            // order matches insertion order.
             for event in events {
                 let shared = Arc::new(event);
                 stream.push(Arc::clone(&shared));
-                global_events.push(shared);
+                #[allow(clippy::cast_possible_wrap)]
+                let position = Position::new(global_events.len() as i64 + 1);
+                global_events.push((position, shared));
             }
         } // Locks are dropped here
 
@@ -455,18 +461,29 @@ impl EventStore for InMemoryEventStore {
     async fn stream_all(
         &self,
         from_position: Position,
-    ) -> Result<impl Stream<Item = Result<EventEnvelope>> + Send> {
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let arcs: Vec<Arc<EventEnvelope>> = {
+    ) -> Result<impl Stream<Item = Result<EventLogEntry>> + Send> {
+        let entries: Vec<(Position, Arc<EventEnvelope>)> = {
             let global_events = self.inner.global_events.read();
             global_events
                 .iter()
-                .skip(from_position.as_i64() as usize)
-                .map(Arc::clone)
+                .filter(|(position, _)| *position > from_position)
+                .map(|(position, arc)| (*position, Arc::clone(arc)))
                 .collect()
         };
 
-        Ok(stream::iter(arcs.into_iter().map(|arc| Ok((*arc).clone()))))
+        Ok(stream::iter(entries.into_iter().map(|(position, arc)| {
+            Ok(EventLogEntry {
+                position,
+                envelope: (*arc).clone(),
+            })
+        })))
+    }
+
+    async fn max_position(&self) -> Result<Position> {
+        let global_events = self.inner.global_events.read();
+        Ok(global_events
+            .last()
+            .map_or_else(Position::start, |(position, _)| *position))
     }
 
     async fn get_version(&self, stream_id: StreamId) -> Result<AggregateVersion> {
@@ -772,11 +789,41 @@ mod tests {
                 .unwrap();
         }
 
-        // Stream from position 2
+        // Stream events whose position is strictly greater than 2.
+        // With five dense positions (1..=5), that leaves 3, 4, 5.
         let stream = store.stream_all(Position::new(2)).await.unwrap();
-        let events: Vec<_> = stream.collect::<Vec<_>>().await;
+        let entries: Vec<_> = stream.map(Result::unwrap).collect::<Vec<_>>().await;
 
-        assert_eq!(events.len(), 3); // Should get events 2, 3, 4
+        assert_eq!(entries.len(), 3);
+        let positions: Vec<i64> = entries.iter().map(|e| e.position.as_i64()).collect();
+        assert_eq!(positions, vec![3, 4, 5]);
+    }
+
+    #[tokio::test]
+    async fn test_max_position_tracks_last_appended_event() {
+        let store = InMemoryEventStore::new();
+
+        // Empty store reports the start sentinel.
+        assert_eq!(store.max_position().await.unwrap(), Position::start());
+
+        for i in 0..3 {
+            let aggregate_id = Uuid::new_v4();
+            let stream_id = StreamId::new("User", aggregate_id);
+            let event = create_test_envelope(&format!("Event{i}"), aggregate_id);
+            store
+                .append(
+                    stream_id,
+                    vec![event],
+                    AggregateVersion::initial(),
+                    vec![],
+                    false,
+                )
+                .await
+                .unwrap();
+        }
+
+        // Positions are 1-based and dense, so the max is the count.
+        assert_eq!(store.max_position().await.unwrap(), Position::new(3));
     }
 
     #[tokio::test]

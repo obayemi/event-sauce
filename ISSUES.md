@@ -24,9 +24,9 @@ event-sauce adopts the notification-log model (`events.id BIGSERIAL` = global `P
 
 | ID | Sev | Kind | Theme | Summary | Fix cluster |
 |----|-----|------|-------|---------|-------------|
-| C1 | critical | current-bug | ordering | `Position` has two incompatible meanings across backends; trait documents none | F1, F2 |
-| C2 | critical | design-gap | ordering | `EventRow`/`EventEnvelope` drop the global `id`, so runners *can't* checkpoint the real position | F1 |
-| C3 | critical | current-bug | ordering/projections | Runners checkpoint a synthetic `+1` ordinal vs `BIGSERIAL id` → gap re-processing (projections double-apply; new policies re-process history) | F1 |
+| C1 | ✅ fixed | current-bug | ordering | `Position` has two incompatible meanings across backends; trait documents none | F1 |
+| C2 | ✅ fixed | design-gap | ordering | `EventRow`/`EventEnvelope` drop the global `id`, so runners *can't* checkpoint the real position | F1 |
+| C3 | ✅ fixed | current-bug | ordering/projections | Runners checkpoint a synthetic `+1` ordinal vs `BIGSERIAL id` → gap re-processing (projections double-apply; new policies re-process history) | F1 |
 | C4 | critical | current-bug | ordering | No commit-order serialization on `append` → late-committing lower id permanently skipped | F2 |
 | H1 | ✅ fixed | current-bug | concurrency | UNIQUE-violation race surfaced as `Error::Backend`, not `ConcurrencyConflict`; documented retry never fires | F3 |
 | H2 | high | design-gap | serialization | No upcasting hook — `event_version` written but never read on load; `@version` is write-only | F4 |
@@ -62,6 +62,8 @@ event-sauce adopts the notification-log model (`events.id BIGSERIAL` = global `P
 ## 🔴 Critical — the Position / gaps-in-sequence cluster
 
 These four share one root cause: `Position` is underspecified and the real global `id` is discarded at the read boundary, so consumers track an ordinal instead of the truth. Fixed by **F1** (plumb the real id + checkpoint by it) and **F2** (serialize commit order). Both are required — neither alone is sufficient.
+
+> **✅ C1, C2, C3 fixed (F1).** `EventStore::stream_all` now yields `EventLogEntry { position, envelope }` and `fetch_events_batch` returns `Vec<EventLogEntry>` (postgres `EventRow` gained the BIGSERIAL `id`); all runners (`backend.rs` ×3, `subscription.rs`, `policy.rs`) checkpoint `entry.position` (the real id) instead of a synthetic `+1` counter; new `EventStore::max_position()` (generic default + postgres `MAX(id)` + memory overrides) replaces `resolve_checkpoint`'s row-count; `Position` is now documented as an opaque, store-issued, strictly-monotonic token, and the in-memory/mock stores assign real monotonic positions (id-threshold semantics, not `.skip(n)`). RED regression test: a counting projection no longer re-applies an event after an id gap. **C4 still open (F2).**
 
 ### C1 — `Position` has two incompatible meanings; the trait documents none
 - **Evidence:** core trait `crates/event-sauce-core/src/event_store.rs:240-244` (no semantics documented); memory `crates/event-sauce-memory/src/event_store.rs:464` uses `.skip(n)` (offset); postgres `crates/event-sauce-postgres/src/event_store.rs:278,1082` uses `WHERE id > $1` (id threshold). Both backends ship tests asserting *opposite* interpretations are "correct."

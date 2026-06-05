@@ -325,7 +325,8 @@ async fn test_causation_tracking() {
 
     let mut kick_event = None;
     let mut removal_event = None;
-    while let Some(Ok(envelope)) = stream.next().await {
+    while let Some(Ok(entry)) = stream.next().await {
+        let envelope = entry.envelope;
         if envelope.event_type == "User.Kicked" {
             kick_event = Some(envelope);
         } else if envelope.event_type == "Group.MemberRemoved" {
@@ -403,7 +404,8 @@ async fn test_cascading_reactions() {
     let mut removal_event = None;
     let mut notification_event = None;
 
-    while let Some(Ok(envelope)) = stream.next().await {
+    while let Some(Ok(entry)) = stream.next().await {
+        let envelope = entry.envelope;
         if envelope.event_type == "User.Kicked" {
             kick_event = Some(envelope);
         } else if envelope.event_type == "Group.MemberRemoved" {
@@ -711,7 +713,8 @@ async fn test_correlation_id_defaults_to_source_id() {
 
     let mut kick_event = None;
     let mut removal_event = None;
-    while let Some(Ok(envelope)) = stream.next().await {
+    while let Some(Ok(entry)) = stream.next().await {
+        let envelope = entry.envelope;
         if envelope.event_type == "User.Kicked" {
             kick_event = Some(envelope);
         } else if envelope.event_type == "Group.MemberRemoved" {
@@ -863,7 +866,8 @@ async fn test_policy_runner_no_duplicate_cascades_on_restart() {
             .unwrap();
         futures::pin_mut!(stream);
         let mut count = 0;
-        while let Some(Ok(envelope)) = stream.next().await {
+        while let Some(Ok(entry)) = stream.next().await {
+            let envelope = entry.envelope;
             if envelope.event_type == "Group.MemberRemoved" {
                 count += 1;
             }
@@ -1559,7 +1563,8 @@ async fn test_failed_handler_does_not_persist_committed_events() {
     futures::pin_mut!(stream);
 
     let mut notification_count = 0;
-    while let Some(Ok(envelope)) = stream.next().await {
+    while let Some(Ok(entry)) = stream.next().await {
+        let envelope = entry.envelope;
         if envelope.event_type == "Notification.Sent" {
             notification_count += 1;
         }
@@ -1648,7 +1653,8 @@ async fn test_retry_discards_failed_attempt_commits() {
     futures::pin_mut!(stream);
 
     let mut notification_count = 0;
-    while let Some(Ok(envelope)) = stream.next().await {
+    while let Some(Ok(entry)) = stream.next().await {
+        let envelope = entry.envelope;
         if envelope.event_type == "Notification.Sent" {
             notification_count += 1;
         }
@@ -1710,7 +1716,8 @@ async fn test_skip_with_commit_before_fail_does_not_leak_events() {
     futures::pin_mut!(stream);
 
     let mut notification_count = 0;
-    while let Some(Ok(envelope)) = stream.next().await {
+    while let Some(Ok(entry)) = stream.next().await {
+        let envelope = entry.envelope;
         if envelope.event_type == "Notification.Sent" {
             notification_count += 1;
         }

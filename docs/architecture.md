@@ -243,11 +243,17 @@ pub trait EventStore: Send + Sync {
         from_version: Version,
     ) -> Result<impl Stream<Item = Result<EventEnvelope, Self::Error>> + Send, Self::Error>;
 
-    // Stream all events (for projections)
+    // Stream all events (for projections). Each item is an `EventLogEntry`
+    // pairing the store-issued global `Position` with the `EventEnvelope`;
+    // checkpoint `entry.position` of the last processed entry to resume.
     async fn stream_all(
         &self,
-        from_position: Option<GlobalPosition>,
-    ) -> Result<impl Stream<Item = Result<EventEnvelope, Self::Error>> + Send, Self::Error>;
+        from_position: Position,
+    ) -> Result<impl Stream<Item = Result<EventLogEntry, Self::Error>> + Send, Self::Error>;
+
+    // Highest position in the log (or `Position::start()` if empty). New
+    // consumers checkpoint this to skip existing history.
+    async fn max_position(&self) -> Result<Position, Self::Error>;
 }
 ```
 

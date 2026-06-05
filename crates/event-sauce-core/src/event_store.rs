@@ -10,8 +10,8 @@ use uuid::Uuid;
 
 use crate::{
     Aggregate, AggregateClaim, AggregateRoot, AggregateType, AggregateVersion,
-    DeletedAggregateRoot, DomainEvent, EntityId, EventEnvelope, Loaded, Repository, Result,
-    SnapshotConfig,
+    DeletedAggregateRoot, DomainEvent, EntityId, EventEnvelope, EventLogEntry, Loaded, Repository,
+    Result, SnapshotConfig,
 };
 
 /// A prepared but not-yet-persisted commit.
@@ -85,9 +85,19 @@ impl std::fmt::Display for StreamId {
     }
 }
 
-/// Position in the global event stream.
+/// An opaque, store-issued, strictly-monotonic position in the global event log.
 ///
-/// Used for resuming event streaming from a specific point.
+/// A position is a token the store assigns to each appended event in insertion
+/// order — for the `PostgreSQL` backend it is the `BIGSERIAL` `events.id`. Treat
+/// it as opaque: do not assume positions are dense (gaps can appear when an
+/// append is rolled back, e.g. a unique-violation conflict), and do not
+/// reconstruct it by counting events. To resume processing, checkpoint the
+/// [`Position`] of the last entry you handled, then call
+/// [`EventStore::stream_all`] with it; the store yields only entries whose
+/// position is strictly greater.
+///
+/// [`Position::start`] is the position before any event — passing it streams the
+/// whole log.
 ///
 /// # Examples
 ///
@@ -237,11 +247,47 @@ pub trait EventStore: Send + Sync {
         from_version: AggregateVersion,
     ) -> Result<impl Stream<Item = Result<EventEnvelope>> + Send>;
 
-    /// Streams all events from the store.
+    /// Streams every event in the global log whose position is strictly greater
+    /// than `from_position`, in ascending position order.
+    ///
+    /// Each item is an [`EventLogEntry`] pairing the store-issued global
+    /// [`Position`] with the [`EventEnvelope`]. Checkpoint
+    /// [`entry.position`](EventLogEntry::position) of the last processed entry to
+    /// resume exactly where you left off — positions are opaque, strictly
+    /// monotonic tokens, never a reconstructed count (see [`Position`]).
+    ///
+    /// Pass [`Position::start`] to stream the whole log.
     async fn stream_all(
         &self,
         from_position: Position,
-    ) -> Result<impl Stream<Item = Result<EventEnvelope>> + Send>;
+    ) -> Result<impl Stream<Item = Result<EventLogEntry>> + Send>;
+
+    /// Returns the highest position currently in the global event log, or
+    /// [`Position::start`] if the log is empty.
+    ///
+    /// This is the position a brand-new consumer should checkpoint to skip all
+    /// existing history and only process events appended from now on.
+    ///
+    /// The default implementation streams the whole log via
+    /// [`stream_all`](Self::stream_all) and returns the last entry's position;
+    /// backends that can answer cheaply (e.g. `SELECT MAX(id)`) should override
+    /// it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying store fails.
+    async fn max_position(&self) -> Result<Position> {
+        use futures::StreamExt;
+
+        let stream = self.stream_all(Position::start()).await?;
+        futures::pin_mut!(stream);
+
+        let mut max = Position::start();
+        while let Some(entry) = stream.next().await {
+            max = entry?.position;
+        }
+        Ok(max)
+    }
 
     /// Gets the current version of a stream.
     async fn get_version(&self, stream_id: StreamId) -> Result<AggregateVersion>;
@@ -1219,7 +1265,7 @@ mod tests {
         async fn stream_all(
             &self,
             _from_position: Position,
-        ) -> Result<impl Stream<Item = Result<EventEnvelope>> + Send> {
+        ) -> Result<impl Stream<Item = Result<EventLogEntry>> + Send> {
             Ok(stream::empty())
         }
 
@@ -1361,7 +1407,7 @@ mod tests {
         async fn stream_all(
             &self,
             _from_position: Position,
-        ) -> Result<impl Stream<Item = Result<EventEnvelope>> + Send> {
+        ) -> Result<impl Stream<Item = Result<EventLogEntry>> + Send> {
             Ok(stream::empty())
         }
 

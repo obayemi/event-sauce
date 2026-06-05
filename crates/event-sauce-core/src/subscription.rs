@@ -561,9 +561,10 @@ where
         let mut events_processed = 0usize;
         let mut current_position = start_position;
 
-        while let Some(event_result) = event_stream.next().await {
-            let event = event_result?;
-            current_position = Position::new(current_position.as_i64() + 1);
+        while let Some(entry_result) = event_stream.next().await {
+            let entry = entry_result?;
+            current_position = entry.position;
+            let event = entry.envelope;
 
             // Apply filter
             if !self.config.filter.matches(&event) {
@@ -716,13 +717,13 @@ where
             futures::pin_mut!(event_stream);
 
             let mut events_processed = 0usize;
-            let mut current_position = start_position;
             let mut last_position = start_position;
 
-            while let Some(event_result) = event_stream.next().await {
-                match event_result {
-                    Ok(event) => {
-                        current_position = Position::new(current_position.as_i64() + 1);
+            while let Some(entry_result) = event_stream.next().await {
+                match entry_result {
+                    Ok(entry) => {
+                        let position = entry.position;
+                        let event = entry.envelope;
 
                         // Apply filter
                         if !filter.matches(&event) {
@@ -731,7 +732,7 @@ where
 
                         // Update counters
                         events_processed += 1;
-                        last_position = current_position;
+                        last_position = position;
 
                         // Save checkpoint according to strategy
                         let should_save = match checkpoint_strategy {
@@ -743,7 +744,7 @@ where
                         if should_save {
                             if let Some(ref checkpoint_store) = checkpoint_store {
                                 if let Err(e) = checkpoint_store
-                                    .save_checkpoint(&name, current_position)
+                                    .save_checkpoint(&name, position)
                                     .await
                                 {
                                     yield Err(e);

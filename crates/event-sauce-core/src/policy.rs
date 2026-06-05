@@ -46,7 +46,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use futures::StreamExt;
 
 use crate::{
     event_store::PreparedCommit, Aggregate, AggregateId, AggregateRoot, CheckpointStoreRef,
@@ -509,22 +508,16 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
     /// Resolves the starting position for a policy from its checkpoint.
     ///
     /// If a checkpoint exists, returns it. If no checkpoint exists (new policy),
-    /// resolves to the current max position in the store by streaming all events.
+    /// resolves to the store's current max position so all existing history is
+    /// skipped and only future events are processed.
     async fn resolve_checkpoint(&self, policy_name: &str) -> Result<Position> {
         if let Some(pos) = self.checkpoint_store.load_checkpoint(policy_name).await? {
             return Ok(pos);
         }
 
-        // New policy: skip all existing events by finding the current max position
-        let stream = self.store.stream_all(Position::start()).await?;
-        futures::pin_mut!(stream);
-
-        let mut max_pos: i64 = 0;
-        while let Some(result) = stream.next().await {
-            result?;
-            max_pos += 1;
-        }
-        Ok(Position::new(max_pos))
+        // New policy: skip all existing events by starting from the current max
+        // global position.
+        self.store.max_position().await
     }
 
     /// Processes all pending events in one-shot mode with checkpoint support.
@@ -574,11 +567,12 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
             let mut round_processed = 0;
             let mut last_position = from_position;
 
-            while let Some(envelope_result) = event_stream.next().await {
-                let envelope = envelope_result?;
+            while let Some(entry_result) = event_stream.next().await {
+                let entry = entry_result?;
+                let envelope = entry.envelope;
 
                 // Track position for next round
-                last_position = Position::new(last_position.as_i64() + 1);
+                last_position = entry.position;
 
                 // Route to matching policies, respecting per-policy checkpoints
                 for (i, policy) in self.policies.iter().enumerate() {

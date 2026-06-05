@@ -258,9 +258,11 @@ impl PostgresEventStore {
     /// drive a loop of these to drain new events without occupying a
     /// connection between transactions.
     ///
-    /// `limit` caps the batch size; pass a small value (e.g. 500) to keep
-    /// memory bounded. The caller is responsible for advancing `from_position`
-    /// after each batch.
+    /// Each returned [`EventLogEntry`](event_sauce_core::EventLogEntry) pairs
+    /// the event's global [`Position`] (its `id`) with the envelope. `limit`
+    /// caps the batch size; pass a small value (e.g. 500) to keep memory
+    /// bounded. The caller advances `from_position` to the last entry's
+    /// position after each batch.
     ///
     /// # Errors
     ///
@@ -269,10 +271,10 @@ impl PostgresEventStore {
         &self,
         from_position: Position,
         limit: i64,
-    ) -> Result<Vec<EventEnvelope>> {
+    ) -> Result<Vec<event_sauce_core::EventLogEntry>> {
         let events_table = self.qualify_table("events");
         let query = format!(
-            "SELECT event_id, aggregate_id, aggregate_type, event_type, event_version,
+            "SELECT id, event_id, aggregate_id, aggregate_type, event_type, event_version,
                     event_data, created_by, created_at, correlation_id, causation_id, metadata
              FROM {events_table}
              WHERE id > $1
@@ -287,7 +289,7 @@ impl PostgresEventStore {
             .await
             .map_err(|e| Error::backend("Failed to fetch event batch", e))?;
 
-        Ok(rows.into_iter().map(EventEnvelope::from).collect())
+        Ok(rows.into_iter().map(EventRow::log_entry).collect())
     }
 
     /// Subscribes to `NOTIFY` wake-ups for new event commits.
@@ -1107,10 +1109,10 @@ impl EventStore for PostgresEventStore {
     async fn stream_all(
         &self,
         from_position: Position,
-    ) -> Result<impl Stream<Item = Result<EventEnvelope>> + Send> {
+    ) -> Result<impl Stream<Item = Result<event_sauce_core::EventLogEntry>> + Send> {
         let events_table = self.qualify_table("events");
         let query = format!(
-            "SELECT event_id, aggregate_id, aggregate_type, event_type, event_version,
+            "SELECT id, event_id, aggregate_id, aggregate_type, event_type, event_version,
                     event_data, created_by, created_at, correlation_id, causation_id, metadata
              FROM {events_table}
              WHERE id > $1
@@ -1126,9 +1128,21 @@ impl EventStore for PostgresEventStore {
                 .fetch(&pool);
             while let Some(row) = rows.try_next().await
                 .map_err(|e| Error::backend("Failed to stream all", e))? {
-                yield EventEnvelope::from(row);
+                yield row.log_entry();
             }
         }))
+    }
+
+    async fn max_position(&self) -> Result<Position> {
+        let events_table = self.qualify_table("events");
+        let query = format!("SELECT COALESCE(MAX(id), 0) FROM {events_table}");
+
+        let max: i64 = sqlx::query_scalar(&query)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| Error::backend("Failed to fetch max position", e))?;
+
+        Ok(Position::new(max))
     }
 
     async fn get_version(&self, stream_id: StreamId) -> Result<AggregateVersion> {
@@ -1263,6 +1277,11 @@ impl PostgresEventStore {
 // Database row types
 #[derive(sqlx::FromRow)]
 struct EventRow {
+    /// Global BIGSERIAL position. Only selected by the global-log queries
+    /// (`stream_all`, `fetch_events_batch`); per-stream `load_stream` leaves it
+    /// unset, so it is read solely through [`EventRow::log_entry`].
+    #[sqlx(default)]
+    id: i64,
     event_id: uuid::Uuid,
     aggregate_id: uuid::Uuid,
     aggregate_type: String,
@@ -1274,6 +1293,18 @@ struct EventRow {
     correlation_id: Option<uuid::Uuid>,
     causation_id: Option<uuid::Uuid>,
     metadata: Option<serde_json::Value>,
+}
+
+impl EventRow {
+    /// Converts a row that includes the global `id` column into an
+    /// [`EventLogEntry`](event_sauce_core::EventLogEntry), pairing the
+    /// store-issued [`Position`] with the envelope.
+    fn log_entry(self) -> event_sauce_core::EventLogEntry {
+        event_sauce_core::EventLogEntry {
+            position: Position::new(self.id),
+            envelope: EventEnvelope::from(self),
+        }
+    }
 }
 
 impl From<EventRow> for EventEnvelope {
@@ -1786,11 +1817,130 @@ mod tests {
                 .unwrap();
         }
 
-        // Stream from position 2
+        // Stream events whose id is strictly greater than 2. The five appends
+        // get dense ids 1..=5 in a fresh database, so this leaves 3, 4, 5 and
+        // each entry carries its real BIGSERIAL id as the position.
         let stream = store.stream_all(Position::new(2)).await.unwrap();
-        let events: Vec<_> = stream.collect::<Vec<_>>().await;
+        let entries: Vec<_> = stream.map(Result::unwrap).collect::<Vec<_>>().await;
 
-        assert_eq!(events.len(), 3); // Should get events at positions 2, 3, 4
+        assert_eq!(entries.len(), 3);
+        let positions: Vec<i64> = entries.iter().map(|e| e.position.as_i64()).collect();
+        assert_eq!(positions, vec![3, 4, 5]);
+    }
+
+    #[tokio::test]
+    async fn test_stream_all_surfaces_real_bigserial_id_as_position() {
+        let db = TestDatabase::new().await.unwrap();
+        let store = db.store();
+        let aggregate_id = Uuid::new_v4();
+        let stream_id = StreamId::new("User", aggregate_id);
+        let event = create_test_envelope("UserCreated", aggregate_id);
+
+        store
+            .append(
+                stream_id,
+                vec![event],
+                AggregateVersion::initial(),
+                vec![],
+                false,
+            )
+            .await
+            .unwrap();
+
+        // The first (and only) entry's position must equal the row's real
+        // BIGSERIAL id, not a reconstructed ordinal.
+        let real_id: i64 = sqlx::query_scalar("SELECT id FROM public.events")
+            .fetch_one(store.pool())
+            .await
+            .unwrap();
+
+        let stream = store.stream_all(Position::start()).await.unwrap();
+        let entries: Vec<_> = stream.map(Result::unwrap).collect::<Vec<_>>().await;
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].position, Position::new(real_id));
+    }
+
+    #[tokio::test]
+    async fn test_max_position_empty_and_after_gap() {
+        let db = TestDatabase::new().await.unwrap();
+        let store = db.store();
+
+        // Empty store: max position is the start sentinel.
+        assert_eq!(store.max_position().await.unwrap(), Position::start());
+
+        // Append two events (ids 1, 2), then burn id 3 by inserting and
+        // deleting a row so the sequence advances past a hole.
+        for _ in 0..2 {
+            let aggregate_id = Uuid::new_v4();
+            let stream_id = StreamId::new("User", aggregate_id);
+            let event = create_test_envelope("UserCreated", aggregate_id);
+            store
+                .append(
+                    stream_id,
+                    vec![event],
+                    AggregateVersion::initial(),
+                    vec![],
+                    false,
+                )
+                .await
+                .unwrap();
+        }
+
+        let burned: i64 = sqlx::query_scalar(
+            "INSERT INTO public.events (
+                event_id, aggregate_id, aggregate_type, event_type, event_version,
+                event_data, stream_version
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
+        )
+        .bind(Uuid::new_v4())
+        .bind(Uuid::new_v4())
+        .bind("Burner")
+        .bind("UserCreated")
+        .bind(1_i64)
+        .bind(json!({"data": "burn"}))
+        .bind(0_i64)
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+        sqlx::query("DELETE FROM public.events WHERE id = $1")
+            .bind(burned)
+            .execute(store.pool())
+            .await
+            .unwrap();
+
+        // A final committed event lands above the gap.
+        let aggregate_id = Uuid::new_v4();
+        let stream_id = StreamId::new("User", aggregate_id);
+        let event = create_test_envelope("UserCreated", aggregate_id);
+        store
+            .append(
+                stream_id,
+                vec![event],
+                AggregateVersion::initial(),
+                vec![],
+                false,
+            )
+            .await
+            .unwrap();
+
+        // max_position is the real MAX(id) over committed rows, above the gap.
+        let real_max: i64 = sqlx::query_scalar("SELECT MAX(id) FROM public.events")
+            .fetch_one(store.pool())
+            .await
+            .unwrap();
+        let store_max = store.max_position().await.unwrap();
+        assert_eq!(store_max, Position::new(real_max));
+        assert!(store_max.as_i64() > burned, "max must sit above the gap");
+
+        // The postgres override and the generic stream-and-find-last default
+        // must agree on the same scenario.
+        let stream = store.stream_all(Position::start()).await.unwrap();
+        let generic_max = stream
+            .map(Result::unwrap)
+            .fold(Position::start(), |_, e| async move { e.position })
+            .await;
+        assert_eq!(store_max, generic_max);
     }
 
     #[tokio::test]

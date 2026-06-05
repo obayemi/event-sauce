@@ -659,10 +659,12 @@ pg_restore -h localhost -U postgres \
 async fn rebuild_projections(store: &PostgresEventStore) -> Result<()> {
     let mut stream = store.stream_all(Position::start()).await?;
 
-    while let Some(event) = stream.next().await {
-        let event = event?;
+    // `stream_all` yields `EventLogEntry { position, envelope }`. Checkpoint
+    // `entry.position` (the real global id) to resume; never reconstruct it.
+    while let Some(entry) = stream.next().await {
+        let entry = entry?;
         // Rebuild projection state
-        projection.handle_event(&event).await?;
+        projection.handle_event(&entry.envelope).await?;
     }
 
     Ok(())

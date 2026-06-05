@@ -668,7 +668,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let stream = store.stream_all(Position::start()).await?;
     futures::pin_mut!(stream);
 
-    while let Some(Ok(envelope)) = stream.next().await {
+    while let Some(Ok(entry)) = stream.next().await {
+        let envelope = entry.envelope;
         // Only show events with causation metadata (i.e., policy-produced)
         if let Some(ref meta) = envelope.metadata {
             if meta.causation_id.is_some() {

@@ -147,6 +147,17 @@ The checkpoint table (managed by `PostgresCheckpointStore`) tracks the last
 committed position per `NAME`. On startup the runner loads the checkpoint
 and streams from there — no extra wiring required.
 
+The position is the event's real global id (the `events.id` BIGSERIAL), not a
+count of processed events — the runner reads it straight off each
+`EventLogEntry` rather than reconstructing it. Ids are strictly increasing but
+may have gaps (a rolled-back append, e.g. a concurrency conflict, burns a
+sequence value); the runner resumes from `WHERE id > checkpoint`, so gaps are
+skipped harmlessly and an event is never re-applied because the checkpoint
+lagged the id. A checkpoint written before this contract landed is reinterpreted
+as an id threshold; in the rare case it sits inside a gap, a bounded tail of
+already-seen events may be re-processed once on the next run — always the safe
+direction (never a skip).
+
 ## Multiple projections
 
 Each projection has its own `NAME` and therefore its own checkpoint row. Run
