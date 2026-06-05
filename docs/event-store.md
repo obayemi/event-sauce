@@ -178,10 +178,18 @@ where
 
 **What it does:**
 
-1. Creates a new `AggregateRoot<A>` with `AggregateRoot::new(id)`
-2. Loads all events for that aggregate
-3. Replays events using `apply_unchecked()` (no validation)
+1. Loads all events for that aggregate
+2. If there are no events (and no snapshot), returns `Error::NotFound` — an empty
+   stream means the aggregate does not exist. This is uniform for both legacy
+   (default-state) and `@init` aggregates.
+3. Otherwise reconstructs the `AggregateRoot<A>` from the first event (init or
+   legacy) and replays the remaining events using `apply_unchecked()` (no validation)
 4. Returns the reconstructed `AggregateRoot<A>`
+
+> **Note:** `load()` never returns a synthetic empty/default aggregate. To create
+> a brand-new aggregate, use the create/init path (e.g. `repo.create()` or an
+> `@init` command), not `load()`. Handle `Error::NotFound` (`err.is_not_found()`)
+> when an ID may not exist yet.
 
 **Example:**
 

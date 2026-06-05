@@ -933,9 +933,19 @@ where
     futures::pin_mut!(event_stream);
 
     let Some(first_envelope) = event_stream.next().await else {
-        // No events: backward compat — returns default-state aggregate.
-        // For init-event aggregates, Entity::new panics (data integrity issue).
-        return Ok(Loaded::Active(AggregateRoot::new_for_replay(id)));
+        // No events and no snapshot: the aggregate does not exist. Return a
+        // recoverable `NotFound` for ALL aggregate kinds. Synthesizing a
+        // default-state root here only ever worked for `DefaultEntity` types
+        // and was a foot-gun (callers could not distinguish a brand-new empty
+        // aggregate from a genuinely missing one); for init-event aggregates
+        // `Entity::new` panics by design, so this path used to crash on any
+        // unknown ID. `load_any` is generic over `A`, so it cannot branch on
+        // whether `A: DefaultEntity` at runtime — universal `NotFound` is the
+        // clean, panic-free behavior.
+        return Err(crate::Error::not_found(
+            A::aggregate_type().as_str(),
+            uuid.to_string(),
+        ));
     };
     let mut first_envelope = first_envelope?;
 
@@ -981,6 +991,9 @@ where
 ///
 /// # Errors
 ///
+/// Returns `Error::NotFound` if the aggregate does not exist (no events and no
+/// snapshot). This is uniform for both legacy and `@init` aggregates: `load`
+/// never synthesizes an empty default-state aggregate.
 /// Returns `Error::AggregateDeleted` if the aggregate has been deleted.
 /// Returns an error if events cannot be deserialized or replay fails.
 pub(crate) async fn load<S, A>(store: &S, id: EntityId) -> Result<AggregateRoot<A>>
@@ -1785,17 +1798,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_load_with_no_events_returns_default() {
+    async fn test_load_with_no_events_returns_not_found() {
         let store = CommitTestStore::new(SnapshotConfig::disabled());
         let id = crate::EntityId::new();
 
-        // Load entity that has no events at all
-        let loaded: AggregateRoot<SimpleTestEntity> = load(&store, id).await.unwrap();
+        // Load an entity that has no events at all: an empty stream means the
+        // aggregate does not exist, so `load` must return `NotFound` rather than
+        // a synthetic default-state root (unified behavior across all aggregate
+        // kinds — see the empty-stream branch of `load_any`).
+        let result: Result<AggregateRoot<SimpleTestEntity>> = load(&store, id).await;
 
-        assert_eq!(loaded.value, 0, "Default entity should have value 0");
-        assert_eq!(loaded.version(), AggregateVersion::initial());
-        assert!(loaded.pending_events().is_empty());
-        assert_eq!(loaded.entity_id(), id);
+        let err = result.expect_err("loading an aggregate with no events must be NotFound");
+        assert!(err.is_not_found(), "expected NotFound, got: {err:?}");
     }
 
     // -- repository() convenience method tests --

@@ -186,7 +186,8 @@ where
     ///
     /// # Errors
     ///
-    /// Returns an error if the aggregate doesn't exist or deserialization fails.
+    /// Returns `Error::NotFound` if the aggregate doesn't exist (no events and
+    /// no snapshot), or an error if deserialization fails.
     pub async fn load(&self, id: impl EntityIdFor<A>) -> Result<AggregateRoot<A>> {
         load(&*self.store, id.entity_id()).await
     }

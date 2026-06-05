@@ -32,7 +32,7 @@ event-sauce adopts the notification-log model (`events.id BIGSERIAL` = global `P
 | H2 | high | design-gap | serialization | No upcasting hook — `event_version` written but never read on load; `@version` is write-only | F4 |
 | H3 | high | current-bug | encryption | Snapshot encryption fails *open* — silently persists plaintext on key/encrypt failure | F5 |
 | H4 | high | design-gap | encryption | Field-encrypted aggregates degrade silently after key deletion (no `KeyNotFound`) | F5 |
-| H5 | high | current-bug | domain-model | `load()` on an empty-stream `#[aggregate(init)]` **panics** instead of `NotFound` | F7 |
+| H5 | ✅ fixed | current-bug | domain-model | `load()` on an empty-stream `#[aggregate(init)]` **panics** instead of `NotFound` | F7 |
 | H6 | high | current-bug | projections | Projection lease has no fencing token; checkpoint write unconditional & non-monotonic | F6 |
 | M1 | medium | design-gap | exactly-once | Outbox delivery is at-least-once (effect + `mark_done` not in one tx) | F6 |
 | M2 | medium | current-bug | exactly-once | In-process `PolicyRunner` = consume-side dual-write; advances checkpoint unconditionally | F6 |
@@ -100,6 +100,7 @@ These four share one root cause: `Position` is underspecified and the real globa
 
 ### H5 — `load()` on an empty-stream init aggregate panics
 - **Evidence:** empty stream + no snapshot → `AggregateRoot::new_for_replay(id)` → `A::new(id)`, which for `#[aggregate(init)]` is `panic!` by design (`event_store.rs:876-880`, `entity.rs:82-89`). Reachable from `Repository::load`/`modify` with **any nonexistent/stale id** (no `DefaultEntity` bound on that impl block, `repository.rs:45-51`). `Error::NotFound` already exists. (`TODO.md` already lists "remove code that panics.")
+- **✅ Fixed:** the empty-stream branch of `load_any` now returns `Err(Error::not_found(A::aggregate_type(), id))` for **all** aggregates (Rust can't runtime-branch on `A: DefaultEntity` in the generic path, and a synthetic default-state root for a nonexistent id is itself a foot-gun). `new_for_replay` is kept for the legacy non-empty-first-event branch (a non-init first event implies a `DefaultEntity` aggregate). Unified behavior: `load`/`modify` of a missing id → `NotFound`, never a panic, never a synthetic default. Blast radius was one renamed unit test + rustdoc/`docs/event-store.md` updates. RED test (`load_missing.rs`): loading a nonexistent init aggregate panicked before, returns `NotFound` after.
 
 ### H6 — Projection lease has no fencing token
 - **Evidence:** `save_checkpoint_tx` is an unconditional `ON CONFLICT DO UPDATE SET position=$2` — no `worker_id`/`leased_until`/monotonicity guard (`checkpoint_store.rs:153-189`). Lease renewal happens only *between* events (`backend.rs:419`); a stalled worker past `leased_until` still commits its in-flight tx, **double-applying** and even moving the checkpoint **backward**. `docs/projections.md:236` claims "exactly-once-across-workers holds."
