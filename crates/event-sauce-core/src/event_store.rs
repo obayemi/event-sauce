@@ -640,8 +640,9 @@ where
         let provider = require_crypto_provider(store)?;
 
         for envelope in &mut envelopes {
+            let aad = event_aad(aggregate_id, envelope.id);
             envelope.event_data =
-                crate::crypto::encrypt_value(provider, &crypto_key, &envelope.event_data)?;
+                crate::crypto::encrypt_value(provider, &crypto_key, &envelope.event_data, &aad)?;
         }
     } else if A::Event::has_any_encrypted_fields() {
         // Field-level encryption: encrypt only specific fields per event
@@ -651,11 +652,13 @@ where
         for (envelope, pe) in envelopes.iter_mut().zip(pending.iter()) {
             let fields = pe.event.encrypted_fields();
             if !fields.is_empty() {
+                let aad = event_aad(aggregate_id, envelope.id);
                 crate::crypto::encrypt_fields(
                     provider,
                     &crypto_key,
                     &mut envelope.event_data,
                     fields,
+                    &aad,
                 )?;
             }
         }
@@ -748,8 +751,9 @@ where
         let provider = require_crypto_provider(store)?;
 
         for envelope in &mut envelopes {
+            let aad = event_aad(aggregate_id, envelope.id);
             envelope.event_data =
-                crate::crypto::encrypt_value(provider, &crypto_key, &envelope.event_data)?;
+                crate::crypto::encrypt_value(provider, &crypto_key, &envelope.event_data, &aad)?;
         }
     } else if A::Event::has_any_encrypted_fields() {
         let crypto_key = ensure_crypto_key(store, aggregate_id).await?;
@@ -758,11 +762,13 @@ where
         for (envelope, pe) in envelopes.iter_mut().zip(pending.iter()) {
             let fields = pe.event.encrypted_fields();
             if !fields.is_empty() {
+                let aad = event_aad(aggregate_id, envelope.id);
                 crate::crypto::encrypt_fields(
                     provider,
                     &crypto_key,
                     &mut envelope.event_data,
                     fields,
+                    &aad,
                 )?;
             }
         }
@@ -979,7 +985,8 @@ async fn encrypt_snapshot_data<S: EventStore + ?Sized>(
         .await?
         .ok_or_else(|| crate::Error::key_not_found(aggregate_id))?;
 
-    *snapshot_data = crate::crypto::encrypt_value(provider, &crypto_key, snapshot_data)?;
+    let aad = snapshot_aad(aggregate_id);
+    *snapshot_data = crate::crypto::encrypt_value(provider, &crypto_key, snapshot_data, &aad)?;
     Ok(())
 }
 
@@ -1014,19 +1021,52 @@ fn require_crypto_provider<S: EventStore + ?Sized>(
         .ok_or_else(|| crate::Error::invalid_state("Encrypted aggregate requires crypto_provider"))
 }
 
+/// Builds the AAD that binds an event's ciphertext to that specific event.
+///
+/// AAD = `aggregate_id (16) || event_id (16)`. The per-event UUID makes the AAD
+/// unique per event, so a ciphertext produced for one event fails to authenticate
+/// if relocated onto another event row of the same aggregate (the per-aggregate
+/// key alone cannot distinguish events). `stream_version` is deliberately NOT
+/// included — it is assigned by the backend at append time and is unavailable
+/// when the ciphertext is produced.
+fn event_aad(aggregate_id: Uuid, event_id: Uuid) -> [u8; 32] {
+    let mut aad = [0u8; 32];
+    aad[..16].copy_from_slice(aggregate_id.as_bytes());
+    aad[16..].copy_from_slice(event_id.as_bytes());
+    aad
+}
+
+/// Builds the AAD that binds a snapshot's ciphertext to its aggregate.
+///
+/// A snapshot has no per-event UUID, so it is bound to `aggregate_id || "snap"`.
+/// This separates the snapshot domain from event ciphertext (an event blob cannot
+/// be relocated into the snapshot slot, and vice versa) while staying stable
+/// across the encrypt (write) and decrypt (load) sides.
+fn snapshot_aad(aggregate_id: Uuid) -> Vec<u8> {
+    let mut aad = Vec::with_capacity(20);
+    aad.extend_from_slice(aggregate_id.as_bytes());
+    aad.extend_from_slice(b"snap");
+    aad
+}
+
 /// Decrypts event envelope data using either full-value or field-level decryption.
+///
+/// `aad` binds the ciphertext to its context (event or snapshot); see
+/// [`event_aad`]/[`snapshot_aad`]. Legacy (v1) rows ignore the AAD via the
+/// versioned envelope, so pre-existing ciphertext stays readable.
 fn decrypt_event_data<S: EventStore + ?Sized>(
     store: &S,
     crypto_key: Option<&[u8]>,
     event_data: &mut serde_json::Value,
+    aad: &[u8],
 ) -> Result<()> {
     if let Some(key) = crypto_key {
         if crate::crypto::is_encrypted(event_data) {
             let provider = require_crypto_provider(store)?;
-            *event_data = crate::crypto::decrypt_value(provider, key, event_data)?;
+            *event_data = crate::crypto::decrypt_value(provider, key, event_data, aad)?;
         } else if crate::crypto::has_encrypted_fields(event_data) {
             let provider = require_crypto_provider(store)?;
-            crate::crypto::decrypt_encrypted_fields(provider, key, event_data)?;
+            crate::crypto::decrypt_encrypted_fields(provider, key, event_data, aad)?;
         }
     }
     Ok(())
@@ -1160,7 +1200,8 @@ where
 
     while let Some(envelope) = event_stream.next().await {
         let mut envelope = envelope?;
-        decrypt_event_data(store, crypto_key, &mut envelope.event_data)?;
+        let aad = event_aad(aggregate_id, envelope.id);
+        decrypt_event_data(store, crypto_key, &mut envelope.event_data, &aad)?;
         let event = A::Event::from_envelope(&envelope)?;
 
         if EventApplicator::is_delete(&event) {
@@ -1255,7 +1296,13 @@ where
     let config = store.snapshot_config();
     if config.use_snapshots_on_load() {
         if let Some(mut snapshot) = store.load_snapshot(stream_id.clone()).await? {
-            decrypt_event_data(store, crypto_key.as_deref(), &mut snapshot.snapshot_data)?;
+            let snap_aad = snapshot_aad(uuid);
+            decrypt_event_data(
+                store,
+                crypto_key.as_deref(),
+                &mut snapshot.snapshot_data,
+                &snap_aad,
+            )?;
 
             // If the snapshot is still ciphertext after the decryption pass, we
             // lacked the key to read it — the aggregate was crypto-shredded.
@@ -1302,7 +1349,13 @@ where
     };
     let mut first_envelope = first_envelope?;
 
-    decrypt_event_data(store, crypto_key.as_deref(), &mut first_envelope.event_data)?;
+    let first_aad = event_aad(uuid, first_envelope.id);
+    decrypt_event_data(
+        store,
+        crypto_key.as_deref(),
+        &mut first_envelope.event_data,
+        &first_aad,
+    )?;
 
     let first_event = A::Event::from_envelope(&first_envelope)?;
 
@@ -1320,7 +1373,8 @@ where
     // Replay remaining events
     while let Some(envelope) = event_stream.next().await {
         let mut envelope = envelope?;
-        decrypt_event_data(store, crypto_key.as_deref(), &mut envelope.event_data)?;
+        let aad = event_aad(uuid, envelope.id);
+        decrypt_event_data(store, crypto_key.as_deref(), &mut envelope.event_data, &aad)?;
         let event = A::Event::from_envelope(&envelope)?;
 
         if EventApplicator::is_delete(&event) {

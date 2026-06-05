@@ -33,9 +33,10 @@ When you `commit()` events for an encrypted aggregate:
 
 1. A per-aggregate encryption key is generated (or retrieved if it already exists)
 2. Each event's `event_data` is serialized to JSON, then encrypted with AES-256-GCM
-3. The encrypted payload replaces the plaintext in the `EventEnvelope`
-4. Snapshots are encrypted the same way
-5. The backend stores the encrypted data — it never sees plaintext
+3. The ciphertext is bound to its event via **associated data (AAD)** = `aggregate_id || event_id` (and `|| field_name` for field-level encryption), so a ciphertext can only be decrypted in the same context
+4. The encrypted payload replaces the plaintext in the `EventEnvelope`
+5. Snapshots are encrypted the same way (bound to `aggregate_id || "snap"`)
+6. The backend stores the encrypted data — it never sees plaintext
 
 ### Decryption Flow
 
@@ -48,13 +49,41 @@ When you `load()` an encrypted aggregate:
 
 ### Encrypted Format
 
-Encrypted values are stored as JSON:
+Encrypted values are stored as a **versioned** JSON envelope:
 
 ```json
-{"__encrypted": "base64(nonce_12_bytes || aes_gcm_ciphertext)"}
+{"__encrypted": "base64(nonce_12_bytes || aes_gcm_ciphertext)", "__enc_v": 2}
 ```
 
-The `__encrypted` key signals that the value needs decryption. Unencrypted values pass through unchanged, providing backward compatibility.
+The `__encrypted` key signals that the value needs decryption; `__enc_v` is the
+envelope version. Both keys are **reserved** and must not be used as user field
+names. Unencrypted values pass through unchanged, providing backward
+compatibility.
+
+**Envelope versions:**
+
+| `__enc_v` | Meaning | Decryption AAD |
+|-----------|---------|----------------|
+| absent (or `1`) | Legacy row written before AAD binding | empty AAD |
+| `2` | Ciphertext bound to its event/snapshot | `aggregate_id \|\| event_id` (events) or `aggregate_id \|\| "snap"` (snapshots) |
+
+The version drives backward compatibility: rows written before AAD binding have
+no `__enc_v` marker and are decrypted with an empty AAD, exactly as they were
+written, so a mixed-version dataset stays fully readable. New rows are written as
+version `2`. This means **changing the AAD scheme is non-breaking for existing
+data** — only fresh writes adopt it.
+
+#### Why AAD binding matters
+
+The per-aggregate key is shared by every event of that aggregate, so AES-GCM
+alone authenticates only that a blob was produced under the key — not *which*
+event it belongs to. Without AAD, an attacker (or a buggy migration) with write
+access could copy one event's encrypted payload onto a different event row of the
+same aggregate, or restore an old encrypted value, and it would decrypt and
+authenticate cleanly, silently corrupting replayed state. Binding the per-event
+UUID into the AAD makes each ciphertext context-unique, so a relocated or replayed
+ciphertext fails authentication on load. Field-level encryption additionally binds
+the field name to prevent intra-event field swapping.
 
 ## Setup
 
@@ -250,6 +279,7 @@ The system handles mixed encrypted/unencrypted data gracefully:
 - `decrypt_value()` checks for the `__encrypted` marker
 - Unencrypted JSON values pass through unchanged
 - You can add `encrypted` to an existing aggregate — new events will be encrypted, old events remain readable
+- Mixed envelope versions coexist permanently: legacy ciphertext (no `__enc_v`) is decrypted with an empty AAD, while new `__enc_v: 2` rows are decrypted with the bound AAD — no rewrite of stored ciphertext is required (see [Encrypted Format](#encrypted-format))
 
 ### Schema Evolution (Upcasting)
 
@@ -278,6 +308,9 @@ match repo.load(user_id).await {
 ## Security Considerations
 
 - **Key storage**: In production, consider using a dedicated secrets manager or HSM for key storage instead of the same database
-- **Key rotation**: The current implementation does not support key rotation. If needed, implement a migration that decrypts with the old key and re-encrypts with a new one
+- **Ciphertext binding (AAD)**: Each ciphertext is bound to its context via AES-GCM associated data (`aggregate_id || event_id`, plus `|| field_name` for field-level; `aggregate_id || "snap"` for snapshots). This defeats relocation/replay of a ciphertext onto a different event of the same aggregate. The on-disk `__enc_v` envelope version keeps legacy (pre-binding) rows readable — see [Encrypted Format](#encrypted-format).
+- **Nonce ceiling**: `Aes256GcmProvider` draws a fresh random 96-bit nonce per encryption. With random nonces under a single key, collision probability grows with the message count — stay well under **~2³² encryptions per key** for a < 2⁻³² collision bound. A nonce collision under a fixed GCM key is catastrophic (it can leak the authentication subkey). event-sauce uses **one key per aggregate**, so each key only encrypts that aggregate's events and snapshots — the ceiling is reached only by aggregates with on the order of billions of events. If you expect such volume per aggregate, prefer a nonce-misuse-resistant scheme (see below).
+- **Key rotation**: The current implementation deliberately uses **one key per aggregate for its lifetime and does not rotate keys**. This keeps crypto-shredding simple (delete the one key, the aggregate is unrecoverable). If you need rotation — to bound the per-key message count above, or for periodic key hygiene — implement an opt-in migration that, per aggregate: reads the current key, decrypts every event and snapshot, generates a new key, re-encrypts under it (writing fresh `__enc_v: 2` envelopes bound to the same AAD), and finally upserts the new key. A future `CryptoKeyStore::rotate_key(aggregate_id)` + a re-encryption pass over the stream is the natural shape for this.
+- **Alternative providers**: `CryptoProvider` is pluggable. For very high per-key message counts, a provider built on **XChaCha20-Poly1305** (192-bit nonce, making random-nonce collision negligible) or **AES-GCM-SIV** (nonce-misuse-resistant: a repeated nonce degrades to deterministic encryption rather than catastrophic failure) sidesteps the AES-GCM nonce ceiling. Such a provider can coexist with existing data by writing a new `__enc_v` version; older envelopes keep decrypting under the original provider.
 - **Backup**: Ensure encryption keys are included in your backup strategy. Lost keys = lost data (by design for crypto-shredding, but accidental key loss is permanent)
 - **Audit trail**: The encrypted events themselves remain in the event store, providing proof that data existed even after shredding

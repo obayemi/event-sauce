@@ -1246,13 +1246,19 @@ mod tests {
         /// Minimal mock provider for builder testing.
         struct MockProvider;
         impl event_sauce_core::CryptoProvider for MockProvider {
-            fn encrypt(&self, _key: &[u8], _plaintext: &[u8]) -> event_sauce_core::Result<Vec<u8>> {
+            fn encrypt(
+                &self,
+                _key: &[u8],
+                _plaintext: &[u8],
+                _aad: &[u8],
+            ) -> event_sauce_core::Result<Vec<u8>> {
                 Ok(vec![])
             }
             fn decrypt(
                 &self,
                 _key: &[u8],
                 _ciphertext: &[u8],
+                _aad: &[u8],
             ) -> event_sauce_core::Result<Vec<u8>> {
                 Ok(vec![])
             }

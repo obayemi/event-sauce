@@ -391,10 +391,20 @@ async fn backward_compat_loading_unencrypted_events() {
     // The decrypt_value function should pass through unencrypted data
     struct MockProv;
     impl event_sauce_core::CryptoProvider for MockProv {
-        fn encrypt(&self, _key: &[u8], _plaintext: &[u8]) -> event_sauce_core::Result<Vec<u8>> {
+        fn encrypt(
+            &self,
+            _key: &[u8],
+            _plaintext: &[u8],
+            _aad: &[u8],
+        ) -> event_sauce_core::Result<Vec<u8>> {
             Ok(vec![])
         }
-        fn decrypt(&self, _key: &[u8], _ciphertext: &[u8]) -> event_sauce_core::Result<Vec<u8>> {
+        fn decrypt(
+            &self,
+            _key: &[u8],
+            _ciphertext: &[u8],
+            _aad: &[u8],
+        ) -> event_sauce_core::Result<Vec<u8>> {
             Ok(vec![])
         }
         fn generate_key(&self) -> Vec<u8> {
@@ -402,7 +412,7 @@ async fn backward_compat_loading_unencrypted_events() {
         }
     }
 
-    let result = event_sauce_core::crypto::decrypt_value(&MockProv, &[0; 32], &plain_value);
+    let result = event_sauce_core::crypto::decrypt_value(&MockProv, &[0; 32], &plain_value, &[]);
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), plain_value);
 

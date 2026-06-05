@@ -59,33 +59,69 @@ pub trait CryptoKeyStore: Send + Sync {
 /// Implementations supply the actual cryptographic operations.
 /// The default implementation in `event-sauce-crypto` uses AES-256-GCM.
 ///
+/// # Associated data (AAD)
+///
+/// `encrypt`/`decrypt` take an `aad: &[u8]` (additional authenticated data).
+/// The AAD is authenticated but not encrypted: it is bound to the ciphertext so
+/// that decryption fails unless the *same* AAD is supplied. event-sauce binds
+/// each event's ciphertext to `aggregate_id || event_id` (and `|| field_name`
+/// for field-level encryption). Because the per-aggregate key is shared by every
+/// event of an aggregate, this binding prevents a ciphertext from one event being
+/// relocated onto another event row of the same aggregate (replay/relocation
+/// attacks). Implementations MUST authenticate the AAD; a different AAD on
+/// decrypt MUST fail.
+///
+/// # On-disk envelope versioning
+///
+/// Stored ciphertext carries a version marker: `{"__encrypted": "<base64>",
+/// "__enc_v": 2}`. Version `2` rows are decrypted with the bound AAD; rows with
+/// no `__enc_v` marker (or `__enc_v: 1`) are *legacy* rows written before AAD
+/// binding and are decrypted with an EMPTY AAD to stay readable. The `__encrypted`
+/// and `__enc_v` keys are reserved and must not be used as user field names.
+///
 /// # Contract
 ///
-/// - `decrypt(key, encrypt(key, plaintext))` must return the original plaintext
-/// - `decrypt` with a wrong key or corrupted ciphertext must return an error
+/// - `decrypt(key, encrypt(key, plaintext, aad), aad)` must return the original plaintext
+/// - `decrypt` with a wrong key, corrupted ciphertext, or a different `aad` must return an error
 /// - `generate_key()` must produce keys suitable for `encrypt`/`decrypt`
 pub trait CryptoProvider: Send + Sync {
-    /// Encrypts plaintext bytes with the given key.
+    /// Encrypts plaintext bytes with the given key, binding `aad` as additional
+    /// authenticated data.
     ///
     /// The output format is implementation-defined (e.g., nonce prepended to ciphertext).
+    /// Pass an empty slice for `aad` when no binding is required.
     ///
     /// # Errors
     ///
     /// Returns an error if encryption fails.
-    fn encrypt(&self, key: &[u8], plaintext: &[u8]) -> Result<Vec<u8>>;
+    fn encrypt(&self, key: &[u8], plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>>;
 
-    /// Decrypts ciphertext bytes with the given key.
+    /// Decrypts ciphertext bytes with the given key, requiring `aad` to match the
+    /// additional authenticated data supplied at encryption time.
     ///
     /// # Errors
     ///
-    /// Returns an error if decryption fails (wrong key, corrupted data, etc.).
-    fn decrypt(&self, key: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>>;
+    /// Returns an error if decryption fails (wrong key, corrupted data, mismatched
+    /// `aad`, etc.).
+    fn decrypt(&self, key: &[u8], ciphertext: &[u8], aad: &[u8]) -> Result<Vec<u8>>;
 
     /// Generates a new random encryption key.
     fn generate_key(&self) -> Vec<u8>;
 }
 
-/// Encrypts a JSON value, wrapping the result in `{"__encrypted": "<base64>"}`.
+/// On-disk envelope version for AAD-bound ciphertext.
+///
+/// Version `1` (the *absence* of `__enc_v`) marks legacy rows written with no
+/// associated data; version `2` marks rows whose ciphertext is bound to its
+/// event via AAD.
+const ENVELOPE_VERSION: u64 = 2;
+
+/// Encrypts a JSON value, wrapping the result in a versioned envelope
+/// `{"__encrypted": "<base64>", "__enc_v": 2}`.
+///
+/// The `aad` is bound into the ciphertext as additional authenticated data so
+/// the result can only be decrypted in the same context (see
+/// [`CryptoProvider`]).
 ///
 /// # Errors
 ///
@@ -94,16 +130,22 @@ pub fn encrypt_value(
     provider: &dyn CryptoProvider,
     key: &[u8],
     value: &serde_json::Value,
+    aad: &[u8],
 ) -> Result<serde_json::Value> {
     let plaintext = serde_json::to_vec(value)?;
-    let ciphertext = provider.encrypt(key, &plaintext)?;
+    let ciphertext = provider.encrypt(key, &plaintext, aad)?;
     let encoded = BASE64.encode(&ciphertext);
-    Ok(serde_json::json!({ "__encrypted": encoded }))
+    Ok(serde_json::json!({ "__encrypted": encoded, "__enc_v": ENVELOPE_VERSION }))
 }
 
 /// Decrypts a JSON value that was encrypted with [`encrypt_value`].
 ///
 /// If the value is not encrypted (no `__encrypted` key), it is returned as-is.
+///
+/// The envelope version drives AAD handling: version `2` rows are decrypted with
+/// the supplied `aad`; legacy rows (no `__enc_v` marker, or `__enc_v: 1`) were
+/// written before AAD binding and are decrypted with an EMPTY AAD so they remain
+/// readable regardless of the `aad` the caller supplies for fresh rows.
 ///
 /// # Errors
 ///
@@ -112,24 +154,37 @@ pub fn decrypt_value(
     provider: &dyn CryptoProvider,
     key: &[u8],
     value: &serde_json::Value,
+    aad: &[u8],
 ) -> Result<serde_json::Value> {
     let Some(encoded) = value.get("__encrypted").and_then(serde_json::Value::as_str) else {
         // Not encrypted — return as-is (backward compatibility)
         return Ok(value.clone());
     };
 
+    // Version-absent (or v1) rows predate AAD binding: decrypt with empty AAD to
+    // reproduce exactly how they were written. v2 rows bind the supplied AAD.
+    let effective_aad: &[u8] = match value.get("__enc_v").and_then(serde_json::Value::as_u64) {
+        Some(v) if v >= ENVELOPE_VERSION => aad,
+        _ => &[],
+    };
+
     let ciphertext = BASE64
         .decode(encoded)
         .map_err(|e| crate::Error::encryption(format!("base64 decode failed: {e}")))?;
-    let plaintext = provider.decrypt(key, &ciphertext)?;
+    let plaintext = provider.decrypt(key, &ciphertext, effective_aad)?;
     let decrypted: serde_json::Value = serde_json::from_slice(&plaintext)?;
     Ok(decrypted)
 }
 
 /// Encrypts specific named fields within a JSON object in-place.
 ///
-/// Each field listed in `fields` is replaced with `{"__encrypted": "<base64>"}`.
-/// Fields that are not present in the object are silently skipped.
+/// Each field listed in `fields` is replaced with `{"__encrypted": "<base64>",
+/// "__enc_v": 2}`. Fields that are not present in the object are silently skipped.
+///
+/// The per-field AAD is `aad || field_name`: because multiple fields of one event
+/// share the same base `aad` (`aggregate_id || event_id`), binding the field name
+/// additionally prevents intra-event field swapping (relocating one encrypted
+/// field's ciphertext onto another field of the same event).
 ///
 /// # Errors
 ///
@@ -139,6 +194,7 @@ pub fn encrypt_fields(
     key: &[u8],
     data: &mut serde_json::Value,
     fields: &[&str],
+    aad: &[u8],
 ) -> Result<()> {
     let obj = data
         .as_object_mut()
@@ -146,7 +202,7 @@ pub fn encrypt_fields(
 
     for &field in fields {
         if let Some(value) = obj.get(field) {
-            let encrypted = encrypt_value(provider, key, value)?;
+            let encrypted = encrypt_value(provider, key, value, &field_aad(aad, field))?;
             obj.insert(field.to_string(), encrypted);
         }
     }
@@ -156,9 +212,12 @@ pub fn encrypt_fields(
 
 /// Decrypts any individually-encrypted fields within a JSON object in-place.
 ///
-/// Walks all top-level fields; any value matching `{"__encrypted": "..."}` is
+/// Walks all top-level fields; any value matching the encrypted-envelope shape is
 /// decrypted and replaced with its plaintext form. Non-encrypted fields are
 /// left untouched.
+///
+/// The per-field AAD mirrors [`encrypt_fields`] (`aad || field_name`). Legacy
+/// rows with no `__enc_v` marker ignore the AAD (see [`decrypt_value`]).
 ///
 /// # Errors
 ///
@@ -167,6 +226,7 @@ pub fn decrypt_encrypted_fields(
     provider: &dyn CryptoProvider,
     key: &[u8],
     data: &mut serde_json::Value,
+    aad: &[u8],
 ) -> Result<()> {
     let obj = data.as_object_mut().ok_or_else(|| {
         crate::Error::encryption("decrypt_encrypted_fields requires a JSON object")
@@ -180,12 +240,21 @@ pub fn decrypt_encrypted_fields(
 
     for field in fields_to_decrypt {
         if let Some(value) = obj.get(&field) {
-            let decrypted = decrypt_value(provider, key, value)?;
+            let decrypted = decrypt_value(provider, key, value, &field_aad(aad, &field))?;
             obj.insert(field, decrypted);
         }
     }
 
     Ok(())
+}
+
+/// Builds the per-field AAD (`base_aad || field_name`) used by field-level
+/// encryption to defeat intra-event field swapping.
+fn field_aad(base: &[u8], field: &str) -> Vec<u8> {
+    let mut aad = Vec::with_capacity(base.len() + field.len());
+    aad.extend_from_slice(base);
+    aad.extend_from_slice(field.as_bytes());
+    aad
 }
 
 /// Returns `true` if any top-level field in a JSON object is individually encrypted.
@@ -214,11 +283,11 @@ pub fn has_encrypted_fields(value: &serde_json::Value) -> bool {
 
 /// Returns `true` if the JSON value is in encrypted form.
 ///
-/// Encrypted values are objects whose *sole* key is `__encrypted` and whose
-/// value is a base64 string — the exact shape produced by [`encrypt_value`].
-/// An object that carries a `__encrypted` key alongside other keys, or whose
-/// `__encrypted` value is not a string, is a legitimate user payload, not
-/// ciphertext, and is reported as `false`.
+/// Encrypted values are objects whose keys are exactly `__encrypted` (a base64
+/// string) and OPTIONALLY `__enc_v` (a numeric envelope version) — the shape
+/// produced by [`encrypt_value`]. An object that carries a `__encrypted` key
+/// alongside any *other* key, or whose `__encrypted` value is not a string, is a
+/// legitimate user payload, not ciphertext, and is reported as `false`.
 ///
 /// # Examples
 ///
@@ -227,18 +296,28 @@ pub fn has_encrypted_fields(value: &serde_json::Value) -> bool {
 /// use serde_json::json;
 ///
 /// assert!(is_encrypted(&json!({"__encrypted": "abc"})));
+/// // A versioned envelope is also ciphertext:
+/// assert!(is_encrypted(&json!({"__encrypted": "abc", "__enc_v": 2})));
 /// assert!(!is_encrypted(&json!({"name": "Alice"})));
-/// // Extra keys or a non-string value mean it is not ciphertext:
+/// // A non-`__enc_v` extra key or a non-string value mean it is not ciphertext:
 /// assert!(!is_encrypted(&json!({"__encrypted": "abc", "name": "Alice"})));
 /// assert!(!is_encrypted(&json!({"__encrypted": 5})));
 /// ```
 #[must_use]
 pub fn is_encrypted(value: &serde_json::Value) -> bool {
     value.as_object().is_some_and(|obj| {
-        obj.len() == 1
-            && obj
-                .get("__encrypted")
-                .is_some_and(serde_json::Value::is_string)
+        let encrypted_is_string = obj
+            .get("__encrypted")
+            .is_some_and(serde_json::Value::is_string);
+        // Only `__encrypted` (string) plus an OPTIONAL numeric `__enc_v` are
+        // allowed; any other key means this is a user payload, not ciphertext.
+        let only_reserved_keys = obj.keys().all(|k| k == "__encrypted" || k == "__enc_v");
+        // `__enc_v`, when present, must be numeric (a non-numeric companion makes
+        // this a user payload, not ciphertext).
+        let version_is_numeric = obj
+            .get("__enc_v")
+            .map_or(true, serde_json::Value::is_number);
+        encrypted_is_string && only_reserved_keys && version_is_numeric
     })
 }
 
@@ -251,7 +330,7 @@ mod tests {
     struct MockCryptoProvider;
 
     impl CryptoProvider for MockCryptoProvider {
-        fn encrypt(&self, key: &[u8], plaintext: &[u8]) -> Result<Vec<u8>> {
+        fn encrypt(&self, key: &[u8], plaintext: &[u8], _aad: &[u8]) -> Result<Vec<u8>> {
             Ok(plaintext
                 .iter()
                 .enumerate()
@@ -259,9 +338,9 @@ mod tests {
                 .collect())
         }
 
-        fn decrypt(&self, key: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>> {
+        fn decrypt(&self, key: &[u8], ciphertext: &[u8], _aad: &[u8]) -> Result<Vec<u8>> {
             // XOR is its own inverse
-            self.encrypt(key, ciphertext)
+            self.encrypt(key, ciphertext, &[])
         }
 
         fn generate_key(&self) -> Vec<u8> {
@@ -273,11 +352,11 @@ mod tests {
     struct FailingCryptoProvider;
 
     impl CryptoProvider for FailingCryptoProvider {
-        fn encrypt(&self, _key: &[u8], _plaintext: &[u8]) -> Result<Vec<u8>> {
+        fn encrypt(&self, _key: &[u8], _plaintext: &[u8], _aad: &[u8]) -> Result<Vec<u8>> {
             Err(crate::Error::encryption("encryption failed"))
         }
 
-        fn decrypt(&self, _key: &[u8], _ciphertext: &[u8]) -> Result<Vec<u8>> {
+        fn decrypt(&self, _key: &[u8], _ciphertext: &[u8], _aad: &[u8]) -> Result<Vec<u8>> {
             Err(crate::Error::encryption("decryption failed"))
         }
 
@@ -292,7 +371,7 @@ mod tests {
         let key = provider.generate_key();
         let value = serde_json::json!({"name": "Alice", "age": 30});
 
-        let encrypted = encrypt_value(&provider, &key, &value).unwrap();
+        let encrypted = encrypt_value(&provider, &key, &value, &[]).unwrap();
 
         assert!(is_encrypted(&encrypted));
         assert!(encrypted.get("__encrypted").unwrap().is_string());
@@ -304,8 +383,8 @@ mod tests {
         let key = provider.generate_key();
         let value = serde_json::json!({"order_id": "abc-123", "items": [1, 2, 3]});
 
-        let encrypted = encrypt_value(&provider, &key, &value).unwrap();
-        let decrypted = decrypt_value(&provider, &key, &encrypted).unwrap();
+        let encrypted = encrypt_value(&provider, &key, &value, b"aad").unwrap();
+        let decrypted = decrypt_value(&provider, &key, &encrypted, b"aad").unwrap();
 
         assert_eq!(decrypted, value);
     }
@@ -316,7 +395,7 @@ mod tests {
         let key = provider.generate_key();
         let value = serde_json::json!({"name": "Bob"});
 
-        let result = decrypt_value(&provider, &key, &value).unwrap();
+        let result = decrypt_value(&provider, &key, &value, &[]).unwrap();
         assert_eq!(result, value);
     }
 
@@ -371,7 +450,7 @@ mod tests {
         let key = vec![0; 32];
         let value = serde_json::json!({"data": "test"});
 
-        let result = encrypt_value(&provider, &key, &value);
+        let result = encrypt_value(&provider, &key, &value, &[]);
         assert!(result.is_err());
         assert!(result.unwrap_err().is_encryption());
     }
@@ -382,11 +461,11 @@ mod tests {
         let mock = MockCryptoProvider;
         let key = mock.generate_key();
         let value = serde_json::json!({"data": "test"});
-        let encrypted = encrypt_value(&mock, &key, &value).unwrap();
+        let encrypted = encrypt_value(&mock, &key, &value, &[]).unwrap();
 
         // Then try to decrypt with failing provider
         let failing = FailingCryptoProvider;
-        let result = decrypt_value(&failing, &key, &encrypted);
+        let result = decrypt_value(&failing, &key, &encrypted, &[]);
         assert!(result.is_err());
         assert!(result.unwrap_err().is_encryption());
     }
@@ -397,7 +476,7 @@ mod tests {
         let key = provider.generate_key();
         let value = serde_json::json!({"__encrypted": "not-valid-base64!!!"});
 
-        let result = decrypt_value(&provider, &key, &value);
+        let result = decrypt_value(&provider, &key, &value, &[]);
         assert!(result.is_err());
         assert!(result.unwrap_err().is_encryption());
     }
@@ -415,8 +494,8 @@ mod tests {
         let key = provider.generate_key();
         let value = serde_json::json!({});
 
-        let encrypted = encrypt_value(&provider, &key, &value).unwrap();
-        let decrypted = decrypt_value(&provider, &key, &encrypted).unwrap();
+        let encrypted = encrypt_value(&provider, &key, &value, b"aad").unwrap();
+        let decrypted = decrypt_value(&provider, &key, &encrypted, b"aad").unwrap();
         assert_eq!(decrypted, value);
     }
 
@@ -434,9 +513,9 @@ mod tests {
             "tags": ["admin", "user"]
         });
 
-        let encrypted = encrypt_value(&provider, &key, &value).unwrap();
+        let encrypted = encrypt_value(&provider, &key, &value, b"aad").unwrap();
         assert!(is_encrypted(&encrypted));
-        let decrypted = decrypt_value(&provider, &key, &encrypted).unwrap();
+        let decrypted = decrypt_value(&provider, &key, &encrypted, b"aad").unwrap();
         assert_eq!(decrypted, value);
     }
 
@@ -452,7 +531,7 @@ mod tests {
             "visit_count": 3
         });
 
-        encrypt_fields(&provider, &key, &mut data, &["name", "diagnosis"]).unwrap();
+        encrypt_fields(&provider, &key, &mut data, &["name", "diagnosis"], b"aad").unwrap();
 
         assert!(is_encrypted(&data["name"]));
         assert!(is_encrypted(&data["diagnosis"]));
@@ -470,8 +549,8 @@ mod tests {
         });
         let mut data = original.clone();
 
-        encrypt_fields(&provider, &key, &mut data, &["name", "diagnosis"]).unwrap();
-        decrypt_encrypted_fields(&provider, &key, &mut data).unwrap();
+        encrypt_fields(&provider, &key, &mut data, &["name", "diagnosis"], b"aad").unwrap();
+        decrypt_encrypted_fields(&provider, &key, &mut data, b"aad").unwrap();
 
         assert_eq!(data, original);
     }
@@ -482,7 +561,7 @@ mod tests {
         let key = provider.generate_key();
         let mut data = serde_json::json!({"name": "Alice"});
 
-        encrypt_fields(&provider, &key, &mut data, &["name", "nonexistent"]).unwrap();
+        encrypt_fields(&provider, &key, &mut data, &["name", "nonexistent"], b"aad").unwrap();
 
         assert!(is_encrypted(&data["name"]));
         assert!(data.get("nonexistent").is_none());
@@ -494,7 +573,7 @@ mod tests {
         let key = provider.generate_key();
         let mut data = serde_json::json!([1, 2, 3]);
 
-        let result = encrypt_fields(&provider, &key, &mut data, &["name"]);
+        let result = encrypt_fields(&provider, &key, &mut data, &["name"], b"aad");
         assert!(result.is_err());
         assert!(result.unwrap_err().is_encryption());
     }
@@ -505,7 +584,7 @@ mod tests {
         let key = vec![0; 32];
         let mut data = serde_json::json!({"name": "Alice"});
 
-        let result = encrypt_fields(&provider, &key, &mut data, &["name"]);
+        let result = encrypt_fields(&provider, &key, &mut data, &["name"], b"aad");
         assert!(result.is_err());
         assert!(result.unwrap_err().is_encryption());
     }
@@ -522,11 +601,11 @@ mod tests {
             "visit_count": 3
         });
 
-        encrypt_fields(&provider, &key, &mut data, &["name"]).unwrap();
+        encrypt_fields(&provider, &key, &mut data, &["name"], b"aad").unwrap();
         assert!(is_encrypted(&data["name"]));
         assert_eq!(data["diagnosis"], "flu");
 
-        decrypt_encrypted_fields(&provider, &key, &mut data).unwrap();
+        decrypt_encrypted_fields(&provider, &key, &mut data, b"aad").unwrap();
 
         assert_eq!(data["name"], "Alice");
         assert_eq!(data["diagnosis"], "flu");
@@ -540,7 +619,7 @@ mod tests {
         let mut data = serde_json::json!({"name": "Alice", "age": 30});
         let original = data.clone();
 
-        decrypt_encrypted_fields(&provider, &key, &mut data).unwrap();
+        decrypt_encrypted_fields(&provider, &key, &mut data, b"aad").unwrap();
 
         assert_eq!(data, original);
     }
@@ -551,7 +630,7 @@ mod tests {
         let key = provider.generate_key();
         let mut data = serde_json::json!("a string");
 
-        let result = decrypt_encrypted_fields(&provider, &key, &mut data);
+        let result = decrypt_encrypted_fields(&provider, &key, &mut data, b"aad");
         assert!(result.is_err());
         assert!(result.unwrap_err().is_encryption());
     }
@@ -583,5 +662,149 @@ mod tests {
     #[test]
     fn has_encrypted_fields_false_for_empty_object() {
         assert!(!has_encrypted_fields(&serde_json::json!({})));
+    }
+
+    // --- RED (L5): versioned envelope `__enc_v` companion key ---
+    //
+    // Binding ciphertext to its event via AAD changes how new rows are written,
+    // which would break decryption of already-stored ciphertext. The fix versions
+    // the on-disk marker: going forward it writes
+    // `{"__encrypted": "<base64>", "__enc_v": 2}`. The `is_encrypted` predicate
+    // (tightened by F5 to require the SOLE key `__encrypted`) must be relaxed to
+    // also accept an OPTIONAL numeric `__enc_v` companion key — and nothing else.
+    #[test]
+    fn is_encrypted_returns_true_with_version_marker() {
+        // A v2 marker carries `__encrypted` (string) plus `__enc_v` (number).
+        let value = serde_json::json!({"__encrypted": "abc", "__enc_v": 2});
+        assert!(
+            is_encrypted(&value),
+            "a versioned envelope {{__encrypted, __enc_v}} must be recognized as ciphertext"
+        );
+    }
+
+    #[test]
+    fn is_encrypted_still_false_for_extra_non_version_key() {
+        // F5 invariant preserved: a legitimate user object that carries
+        // `__encrypted` alongside an unrelated key is NOT ciphertext.
+        let value = serde_json::json!({"__encrypted": "abc", "name": "Alice"});
+        assert!(
+            !is_encrypted(&value),
+            "an object with a non-`__enc_v` extra key is not ciphertext"
+        );
+    }
+
+    #[test]
+    fn is_encrypted_still_false_for_non_string_payload() {
+        // F5 invariant preserved: a non-string `__encrypted` is not ciphertext,
+        // even paired with a version marker.
+        assert!(
+            !is_encrypted(&serde_json::json!({"__encrypted": 5})),
+            "`__encrypted` with a non-string value is not ciphertext"
+        );
+        assert!(
+            !is_encrypted(&serde_json::json!({"__encrypted": 5, "__enc_v": 2})),
+            "`__encrypted` with a non-string value is not ciphertext even with a version marker"
+        );
+    }
+
+    // --- RED (L5): legacy v1 ciphertext stays readable via empty-AAD path ---
+    //
+    // Pre-existing rows were written with NO associated data and NO `__enc_v`
+    // marker (version 1). After the fix threads `aad` through the helpers, those
+    // legacy rows must still decrypt: the version is ABSENT, so `decrypt_value`
+    // must reproduce how they were written (EMPTY aad), regardless of the `aad`
+    // argument the caller supplies for fresh (v2) rows.
+    //
+    // An AAD-binding mock provider (mirrors `Aes256GcmProvider`, which lives in
+    // a separate crate that core cannot depend on) so the v2 relocation assertion
+    // is provider-driven, not a no-op.
+    struct AadBindingProvider;
+
+    impl CryptoProvider for AadBindingProvider {
+        fn encrypt(&self, key: &[u8], plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
+            // Bind aad by prefixing it; decrypt verifies the prefix matches.
+            let mut out = Vec::new();
+            #[allow(clippy::cast_possible_truncation)]
+            out.extend_from_slice(&(aad.len() as u32).to_le_bytes());
+            out.extend_from_slice(aad);
+            out.extend(
+                plaintext
+                    .iter()
+                    .enumerate()
+                    .map(|(i, b)| b ^ key[i % key.len()]),
+            );
+            Ok(out)
+        }
+
+        fn decrypt(&self, key: &[u8], ciphertext: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
+            if ciphertext.len() < 4 {
+                return Err(crate::Error::encryption("ciphertext too short"));
+            }
+            let (len_bytes, rest) = ciphertext.split_at(4);
+            let aad_len = u32::from_le_bytes(len_bytes.try_into().unwrap()) as usize;
+            if rest.len() < aad_len {
+                return Err(crate::Error::encryption("ciphertext too short"));
+            }
+            let (bound_aad, body) = rest.split_at(aad_len);
+            if bound_aad != aad {
+                return Err(crate::Error::encryption("aad mismatch"));
+            }
+            Ok(body
+                .iter()
+                .enumerate()
+                .map(|(i, b)| b ^ key[i % key.len()])
+                .collect())
+        }
+
+        fn generate_key(&self) -> Vec<u8> {
+            vec![0x42; 32]
+        }
+    }
+
+    #[test]
+    fn legacy_v1_ciphertext_decrypts_with_empty_aad() {
+        let provider = AadBindingProvider;
+        let key = provider.generate_key();
+        let value = serde_json::json!({"order_id": "abc-123"});
+
+        // Hand-craft a v1 marker: base64 of a ciphertext produced with EMPTY aad,
+        // and NO `__enc_v` field — exactly how legacy rows look on disk.
+        let plaintext = serde_json::to_vec(&value).unwrap();
+        let ciphertext = provider.encrypt(&key, &plaintext, &[]).unwrap();
+        let legacy = serde_json::json!({ "__encrypted": BASE64.encode(&ciphertext) });
+
+        // A v1 row must decrypt even when the caller passes a non-empty aad
+        // (the decoder reads the version and uses empty aad for legacy rows).
+        let aad = b"aggregate-id||event-id";
+        let decrypted = decrypt_value(&provider, &key, &legacy, aad).unwrap();
+        assert_eq!(
+            decrypted, value,
+            "legacy v1 ciphertext must remain readable"
+        );
+    }
+
+    // --- RED (L5): v2 roundtrip binds ciphertext to its aad ---
+    #[test]
+    fn v2_encrypt_value_binds_aad() {
+        let provider = AadBindingProvider;
+        let key = provider.generate_key();
+        let value = serde_json::json!({"email": "alice@example.com"});
+
+        let aad = b"aggregate||event-a";
+        let other_aad = b"aggregate||event-b";
+
+        let encrypted = encrypt_value(&provider, &key, &value, aad).unwrap();
+        assert!(is_encrypted(&encrypted));
+
+        // Same aad roundtrips.
+        let ok = decrypt_value(&provider, &key, &encrypted, aad).unwrap();
+        assert_eq!(ok, value);
+
+        // A different aad (relocating the ciphertext to another event) must fail.
+        let relocated = decrypt_value(&provider, &key, &encrypted, other_aad);
+        assert!(
+            relocated.is_err(),
+            "a v2 ciphertext must not decrypt under a different aad (relocation)"
+        );
     }
 }

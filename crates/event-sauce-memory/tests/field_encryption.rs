@@ -307,10 +307,20 @@ async fn field_encrypted_snapshot_encryption() {
 struct FailingEncryptProvider;
 
 impl event_sauce_core::CryptoProvider for FailingEncryptProvider {
-    fn encrypt(&self, _key: &[u8], _plaintext: &[u8]) -> event_sauce_core::Result<Vec<u8>> {
+    fn encrypt(
+        &self,
+        _key: &[u8],
+        _plaintext: &[u8],
+        _aad: &[u8],
+    ) -> event_sauce_core::Result<Vec<u8>> {
         Err(event_sauce_core::Error::encryption("encrypt always fails"))
     }
-    fn decrypt(&self, _key: &[u8], _ciphertext: &[u8]) -> event_sauce_core::Result<Vec<u8>> {
+    fn decrypt(
+        &self,
+        _key: &[u8],
+        _ciphertext: &[u8],
+        _aad: &[u8],
+    ) -> event_sauce_core::Result<Vec<u8>> {
         Err(event_sauce_core::Error::encryption("decrypt always fails"))
     }
     fn generate_key(&self) -> Vec<u8> {

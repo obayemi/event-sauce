@@ -266,6 +266,10 @@ fn create_encrypted_store() -> (Arc<InMemoryEventStore>, Arc<InMemoryCryptoKeySt
 /// under a freshly generated key registered for `aggregate_id`, exactly as a
 /// full-encryption `commit()` would have stored it at the time. The same key is
 /// resolved by the load path, so loading decrypts back to this plaintext shape.
+///
+/// The ciphertext is bound to the same AAD the load path reconstructs
+/// (`aggregate_id || event_id`), mirroring how `commit()` binds each event's
+/// ciphertext to its envelope id (see the AAD binding in `event_store.rs`).
 async fn seed_encrypted_raw(
     store: &Arc<InMemoryEventStore>,
     key_store: &Arc<InMemoryCryptoKeyStore>,
@@ -283,8 +287,14 @@ async fn seed_encrypted_raw(
         .await
         .expect("seeding the crypto key must succeed");
 
-    // Encrypt the historical plaintext payload under that key.
-    let encrypted = crypto::encrypt_value(&provider, &key, &plaintext_payload)
+    // Reconstruct the per-event AAD the load path will use: aggregate_id || event_id.
+    let event_id = Uuid::new_v4();
+    let mut aad = Vec::with_capacity(32);
+    aad.extend_from_slice(aggregate_id.as_bytes());
+    aad.extend_from_slice(event_id.as_bytes());
+
+    // Encrypt the historical plaintext payload under that key, bound to the AAD.
+    let encrypted = crypto::encrypt_value(&provider, &key, &plaintext_payload, &aad)
         .expect("encrypting the historical payload must succeed");
     assert!(
         crypto::is_encrypted(&encrypted),
@@ -293,7 +303,7 @@ async fn seed_encrypted_raw(
 
     let stream_id = StreamId::new(aggregate_type, aggregate_id);
     let envelope = EventEnvelope::new(
-        Uuid::new_v4(),
+        event_id,
         aggregate_id,
         aggregate_type,
         event_type.to_string(),
