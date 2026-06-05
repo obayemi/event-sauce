@@ -386,11 +386,28 @@ impl<S: EventStore + 'static> std::fmt::Debug for PolicyContext<S> {
 }
 
 /// What to do when a policy handler returns an error.
+///
+/// The variants differ in how they affect the per-policy checkpoint, and hence
+/// what a subsequent [`PolicyRunner::process_pending`] call re-attempts:
+///
+/// - [`OnError::Fail`] **stops and resumes at the failing event**. Checkpoints
+///   are persisted up to the last event each policy fully handled, but never
+///   past the failing event — so a re-run resumes at it and never replays the
+///   already-flushed effects of earlier events in the batch.
+/// - [`OnError::Skip`] **permanently skips the failing event**: the checkpoint
+///   advances past it and the source event is never retried. Use this only when
+///   dropping the event is acceptable.
+/// - [`OnError::Retry`] retries the same event with backoff; on exhaustion it
+///   either fails (resume at the event) or skips it, per [`OnRetryExhausted`].
 #[derive(Debug, Clone)]
 pub enum OnError {
-    /// Abort processing immediately. Checkpoint NOT advanced past failed event.
+    /// Stop immediately and resume at the failing event on the next run.
+    ///
+    /// Checkpoints are persisted up to the last successfully-handled event but
+    /// NOT advanced past the failing event.
     Fail,
-    /// Log warning, skip the event, advance checkpoint, continue processing.
+    /// Log a warning and permanently skip the event: advance the checkpoint past
+    /// it and continue. The source event is not retried on subsequent runs.
     Skip,
     /// Retry with exponential backoff before giving up.
     Retry(RetryConfig),
@@ -594,7 +611,18 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
                                 round_processed += 1;
                             }
                             Err(e) => match &self.on_error {
-                                OnError::Fail => return Err(e),
+                                OnError::Fail => {
+                                    // Persist every policy's checkpoint up to the
+                                    // last event it fully handled *before* failing.
+                                    // This policy's checkpoint is intentionally NOT
+                                    // advanced past the failing event (the loop-end
+                                    // advance at the bottom of this iteration is
+                                    // skipped by the early return), so a re-run
+                                    // resumes at the failing event and never replays
+                                    // the already-flushed effects of events 1..N-1.
+                                    self.save_checkpoints(&policy_checkpoints).await?;
+                                    return Err(e);
+                                }
                                 OnError::Skip => {
                                     tracing::warn!(
                                         policy = policy.name(),
@@ -604,8 +632,23 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
                                     );
                                 }
                                 OnError::Retry(config) => {
-                                    let should_skip =
-                                        self.retry_handler(policy, &envelope, config).await?;
+                                    let should_skip = match self
+                                        .retry_handler(policy, &envelope, config)
+                                        .await
+                                    {
+                                        Ok(skip) => skip,
+                                        Err(e) => {
+                                            // Retries exhausted under
+                                            // OnRetryExhausted::Fail. This is the
+                                            // OnError::Fail path: persist progress up
+                                            // to the last fully-handled event (this
+                                            // failing event is NOT advanced) before
+                                            // failing, so a re-run resumes here and
+                                            // does not replay already-flushed effects.
+                                            self.save_checkpoints(&policy_checkpoints).await?;
+                                            return Err(e);
+                                        }
+                                    };
                                     if !should_skip {
                                         round_processed += 1;
                                     }
@@ -631,13 +674,25 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
         }
 
         // Save checkpoints for all policies
-        for (i, policy) in self.policies.iter().enumerate() {
-            self.checkpoint_store
-                .save_checkpoint(policy.name(), policy_checkpoints[i])
-                .await?;
-        }
+        self.save_checkpoints(&policy_checkpoints).await?;
 
         Ok(total_processed)
+    }
+
+    /// Persists each policy's checkpoint at its current position.
+    ///
+    /// `checkpoints[i]` is the highest position policy `i` has fully processed
+    /// (handled-`Ok`, skipped because non-matching, or `OnError::Skip`'d). This
+    /// is called on both the success and the `OnError::Fail` paths so that a
+    /// mid-batch failure does not lose the progress of earlier events whose
+    /// side effects were already flushed.
+    async fn save_checkpoints(&self, checkpoints: &[Position]) -> Result<()> {
+        for (i, policy) in self.policies.iter().enumerate() {
+            self.checkpoint_store
+                .save_checkpoint(policy.name(), checkpoints[i])
+                .await?;
+        }
+        Ok(())
     }
 
     /// Retries a failed handler with exponential backoff.

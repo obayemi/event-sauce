@@ -146,6 +146,9 @@ let handled = runner.process_event(&envelope).await?;
 - **No duplicate processing**: Restarting `process_pending()` picks up where it left off
 - **No duplicate cascades**: Events produced by policies are not re-processed on restart
 - **New policy skip**: A newly registered policy (no checkpoint) starts from the current max position, skipping all historical events
+- **Resume at the failing event on `Fail`**: If a handler fails mid-batch under `OnError::Fail`, each policy's checkpoint is persisted up to the **last event it fully handled** before the error — never past the failing event. A subsequent `process_pending()` resumes at the failing event and does **not** re-run the already-flushed handlers of earlier events in the batch.
+
+> **At-least-once on the consume side.** The in-process `PolicyRunner` advances the per-policy checkpoint *after* a handler's buffered commits are flushed, in a separate write. These are not a single transaction, so a crash between the flush and the checkpoint save can re-deliver the last handled event on restart. Keep handlers idempotent. For exactly-once-style guarantees with per-event retry/DLQ, use the Postgres outbox dispatcher (see [Two ways to dispatch](#two-ways-to-dispatch-in-process-runner-vs-queue)).
 
 ### Cascade Depth Limits
 
@@ -181,12 +184,14 @@ let runner = PolicyRunner::new(store, cp)
 
 | Strategy | Checkpoint | Processing |
 |----------|-----------|------------|
-| `OnError::Fail` | NOT advanced | Stops with error |
-| `OnError::Skip` | Advanced | Continues |
+| `OnError::Fail` | Advanced to last fully-handled event, **not** past the failing one | Stops with error; resumes at the failing event |
+| `OnError::Skip` | Advanced **past** the failing event (event permanently skipped, never retried) | Continues |
 | `Retry` → success | Advanced | Continues |
-| `Retry` → exhausted + `Fail` | NOT advanced | Stops with error |
-| `Retry` → exhausted + `Skip` | Advanced | Continues |
+| `Retry` → exhausted + `Fail` | Advanced to last fully-handled event, not past the failing one | Stops with error; resumes at the failing event |
+| `Retry` → exhausted + `Skip` | Advanced past the failing event | Continues |
 | `Retry` → `Indefinite` | Blocks until success | Continues after success |
+
+`OnError::Fail` and `OnError::Skip` differ in what a re-run does with the failing event: `Fail` stops and **resumes at it** on the next `process_pending()`; `Skip` advances past it and **never retries** it.
 
 ### RetryLimit Options
 

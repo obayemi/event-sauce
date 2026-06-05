@@ -1665,6 +1665,320 @@ async fn test_retry_discards_failed_attempt_commits() {
     );
 }
 
+// ============================================================================
+// M2: Checkpoint advances to last successfully-handled event on Fail
+// ============================================================================
+
+/// RED (M2): When `OnError::Fail` and a handler succeeds on event 1 (flushing
+/// its side effect) but fails on event 2, the runner must persist the
+/// checkpoint up to event 1's position BEFORE returning the error. A re-run
+/// must then resume at the FAILING event (event 2) and NOT replay event 1's
+/// already-flushed effect.
+///
+/// Today the checkpoint is only saved at the end of the loop (after all events),
+/// so the `Fail` path returns before any save. The checkpoint stays at the
+/// pre-batch start, and the second `process_pending` re-runs event 1 — the
+/// success handler fires a second time and the side effect is applied twice.
+#[tokio::test]
+async fn test_fail_persists_checkpoint_up_to_last_handled_event() {
+    use futures::StreamExt;
+
+    let store = create_store();
+    let cp = checkpoint_store(&store);
+    seed_checkpoint(&cp, "PartialFailPolicy").await;
+
+    // Policy: succeeds on the user named "first", fails on "second".
+    // `success_count` records how many times the SUCCESS path runs across all
+    // process_pending invocations — it must be exactly 1 (no replay of event 1).
+    struct PartialFailPolicy {
+        success_count: Arc<std::sync::Mutex<usize>>,
+    }
+
+    #[async_trait::async_trait]
+    impl<S: EventStore + 'static> event_sauce_core::Policy<S> for PartialFailPolicy {
+        fn name(&self) -> &'static str {
+            "PartialFailPolicy"
+        }
+        fn event_filter(&self) -> EventFilter {
+            EventFilter::by_event_type("User.Registered")
+        }
+        async fn handle(
+            &self,
+            event: &EventEnvelope,
+            _ctx: &PolicyContext<S>,
+        ) -> event_sauce_core::Result<()> {
+            let name = event
+                .event_data
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            if name == "second" {
+                return Err(event_sauce_core::Error::custom("fail on second event"));
+            }
+            // Success path (the "first" event): record the invocation.
+            *self.success_count.lock().unwrap() += 1;
+            Ok(())
+        }
+    }
+
+    // Commit TWO matching source events.
+    let mut user1 = AggregateRoot::<User>::new(EntityId::new());
+    user1.register("first".to_string()).unwrap();
+    store.commit(&mut user1).await.unwrap();
+
+    let mut user2 = AggregateRoot::<User>::new(EntityId::new());
+    user2.register("second".to_string()).unwrap();
+    store.commit(&mut user2).await.unwrap();
+
+    // Find the position of the first (successfully-handled) event so we can
+    // assert the checkpoint lands exactly there.
+    let first_event_position = {
+        let stream = store
+            .stream_all(event_sauce_core::Position::start())
+            .await
+            .unwrap();
+        futures::pin_mut!(stream);
+        let mut pos = None;
+        while let Some(Ok(entry)) = stream.next().await {
+            if entry.envelope.event_type == "User.Registered"
+                && entry
+                    .envelope
+                    .event_data
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("first")
+            {
+                pos = Some(entry.position);
+                break;
+            }
+        }
+        pos.expect("first event should exist in the log")
+    };
+
+    let success_count = Arc::new(std::sync::Mutex::new(0_usize));
+
+    // First run: OnError::Fail. Event 1 succeeds, event 2 fails.
+    let runner = PolicyRunner::new(Arc::clone(&store), Arc::clone(&cp)).register(Arc::new(
+        PartialFailPolicy {
+            success_count: Arc::clone(&success_count),
+        },
+    ));
+    let result = runner.process_pending().await;
+    assert!(result.is_err(), "process_pending should fail on event 2");
+
+    // (a) Checkpoint must be persisted up to the FIRST event's position
+    //     (the last successfully-handled event), not the pre-batch start.
+    let saved = cp.load_checkpoint("PartialFailPolicy").await.unwrap();
+    assert_eq!(
+        saved,
+        Some(first_event_position),
+        "checkpoint should advance to the last successfully-handled event's position on Fail, \
+         not stay at the pre-batch start"
+    );
+
+    // (b) A second run must re-attempt ONLY the failing (second) event — the
+    //     first event's success handler must NOT run again.
+    let runner2 = PolicyRunner::new(Arc::clone(&store), Arc::clone(&cp)).register(Arc::new(
+        PartialFailPolicy {
+            success_count: Arc::clone(&success_count),
+        },
+    ));
+    let result2 = runner2.process_pending().await;
+    assert!(result2.is_err(), "second run still fails on event 2");
+
+    assert_eq!(
+        *success_count.lock().unwrap(),
+        1,
+        "the first event's success handler must run exactly once across both runs \
+         (no replay of already-flushed effects)"
+    );
+}
+
+/// The `OnError::Retry` -> retries-exhausted -> `OnRetryExhausted::Fail` path
+/// must persist progress up to the last successfully-handled event, exactly
+/// like the direct `OnError::Fail` path — so a re-run does not replay
+/// already-flushed effects. The pre-existing retry-fail test fails on the FIRST
+/// event (checkpoint stays at start either way), so it cannot catch a mid-batch
+/// retry-exhaustion replay; this one does.
+#[tokio::test]
+async fn test_retry_exhausted_fail_persists_checkpoint_up_to_last_handled_event() {
+    use futures::StreamExt;
+
+    let store = create_store();
+    let cp = checkpoint_store(&store);
+    seed_checkpoint(&cp, "RetryPartialFailPolicy").await;
+
+    struct RetryPartialFailPolicy {
+        success_count: Arc<std::sync::Mutex<usize>>,
+    }
+
+    #[async_trait::async_trait]
+    impl<S: EventStore + 'static> event_sauce_core::Policy<S> for RetryPartialFailPolicy {
+        fn name(&self) -> &'static str {
+            "RetryPartialFailPolicy"
+        }
+        fn event_filter(&self) -> EventFilter {
+            EventFilter::by_event_type("User.Registered")
+        }
+        async fn handle(
+            &self,
+            event: &EventEnvelope,
+            _ctx: &PolicyContext<S>,
+        ) -> event_sauce_core::Result<()> {
+            let name = event
+                .event_data
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            if name == "second" {
+                return Err(event_sauce_core::Error::custom("fail on second event"));
+            }
+            *self.success_count.lock().unwrap() += 1;
+            Ok(())
+        }
+    }
+
+    let mut user1 = AggregateRoot::<User>::new(EntityId::new());
+    user1.register("first".to_string()).unwrap();
+    store.commit(&mut user1).await.unwrap();
+
+    let mut user2 = AggregateRoot::<User>::new(EntityId::new());
+    user2.register("second".to_string()).unwrap();
+    store.commit(&mut user2).await.unwrap();
+
+    let first_event_position = {
+        let stream = store
+            .stream_all(event_sauce_core::Position::start())
+            .await
+            .unwrap();
+        futures::pin_mut!(stream);
+        let mut pos = None;
+        while let Some(Ok(entry)) = stream.next().await {
+            if entry.envelope.event_type == "User.Registered"
+                && entry
+                    .envelope
+                    .event_data
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("first")
+            {
+                pos = Some(entry.position);
+                break;
+            }
+        }
+        pos.expect("first event should exist in the log")
+    };
+
+    // Fresh config per run (avoids assuming RetryConfig: Clone). MaxRetries(1)
+    // with sub-millisecond backoff keeps the test fast.
+    let make_config = || RetryConfig {
+        base_delay: std::time::Duration::from_millis(1),
+        max_delay: std::time::Duration::from_millis(5),
+        limit: RetryLimit::MaxRetries(1),
+        on_exhausted: OnRetryExhausted::Fail,
+    };
+
+    let success_count = Arc::new(std::sync::Mutex::new(0_usize));
+
+    let runner = PolicyRunner::new(Arc::clone(&store), Arc::clone(&cp))
+        .on_error(OnError::Retry(make_config()))
+        .register(Arc::new(RetryPartialFailPolicy {
+            success_count: Arc::clone(&success_count),
+        }));
+    let result = runner.process_pending().await;
+    assert!(
+        result.is_err(),
+        "process_pending should fail when retries are exhausted on event 2"
+    );
+
+    let saved = cp.load_checkpoint("RetryPartialFailPolicy").await.unwrap();
+    assert_eq!(
+        saved,
+        Some(first_event_position),
+        "retry-exhausted Fail must persist the checkpoint up to the last \
+         successfully-handled event, not stay at the pre-batch start"
+    );
+
+    let runner2 = PolicyRunner::new(Arc::clone(&store), Arc::clone(&cp))
+        .on_error(OnError::Retry(make_config()))
+        .register(Arc::new(RetryPartialFailPolicy {
+            success_count: Arc::clone(&success_count),
+        }));
+    let _ = runner2.process_pending().await;
+
+    assert_eq!(
+        *success_count.lock().unwrap(),
+        1,
+        "the first event's success handler must run exactly once across both runs \
+         (no replay of already-flushed effects on the retry-exhausted path)"
+    );
+}
+
+/// A clean all-success run must advance the checkpoint to the last event's
+/// position so a re-run processes nothing. (Guards against the fix regressing
+/// the happy path.)
+#[tokio::test]
+async fn test_all_success_advances_checkpoint_to_last_position() {
+    let store = create_store();
+    let cp = checkpoint_store(&store);
+    seed_checkpoint(&cp, "AllSuccessPolicy").await;
+
+    let count = Arc::new(std::sync::Mutex::new(0_usize));
+
+    struct AllSuccessPolicy(Arc<std::sync::Mutex<usize>>);
+
+    #[async_trait::async_trait]
+    impl<S: EventStore + 'static> event_sauce_core::Policy<S> for AllSuccessPolicy {
+        fn name(&self) -> &'static str {
+            "AllSuccessPolicy"
+        }
+        fn event_filter(&self) -> EventFilter {
+            EventFilter::by_event_type("User.Registered")
+        }
+        async fn handle(
+            &self,
+            _event: &EventEnvelope,
+            _ctx: &PolicyContext<S>,
+        ) -> event_sauce_core::Result<()> {
+            *self.0.lock().unwrap() += 1;
+            Ok(())
+        }
+    }
+
+    for i in 0..3 {
+        let mut user = AggregateRoot::<User>::new(EntityId::new());
+        user.register(format!("ok{i}")).unwrap();
+        store.commit(&mut user).await.unwrap();
+    }
+
+    let last_position = store.max_position().await.unwrap();
+
+    let runner = PolicyRunner::new(Arc::clone(&store), Arc::clone(&cp))
+        .register(Arc::new(AllSuccessPolicy(Arc::clone(&count))));
+    let processed = runner.process_pending().await.unwrap();
+    assert_eq!(processed, 3);
+    assert_eq!(*count.lock().unwrap(), 3);
+
+    let saved = cp.load_checkpoint("AllSuccessPolicy").await.unwrap();
+    assert_eq!(
+        saved,
+        Some(last_position),
+        "clean all-success run should advance the checkpoint to the last position"
+    );
+
+    // Re-run processes nothing.
+    let runner2 = PolicyRunner::new(Arc::clone(&store), cp)
+        .register(Arc::new(AllSuccessPolicy(Arc::clone(&count))));
+    let processed2 = runner2.process_pending().await.unwrap();
+    assert_eq!(
+        processed2, 0,
+        "re-run after full success should process nothing"
+    );
+    assert_eq!(*count.lock().unwrap(), 3, "handler should not run again");
+}
+
 #[tokio::test]
 async fn test_skip_with_commit_before_fail_does_not_leak_events() {
     let store = create_store();
