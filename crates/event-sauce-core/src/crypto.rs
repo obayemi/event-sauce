@@ -248,6 +248,29 @@ pub fn decrypt_encrypted_fields(
     Ok(())
 }
 
+/// Builds the canonical per-event AAD that binds an event's ciphertext to that
+/// specific event: `aggregate_id (16 bytes) || event_id (16 bytes)`.
+///
+/// This is the exact associated data the event store threads into
+/// [`encrypt_value`]/[`encrypt_fields`] when persisting an encrypted aggregate's
+/// events (field-level encryption additionally appends the field name). The
+/// per-event UUID makes the AAD unique per event, so a v2 ciphertext produced
+/// for one event fails to authenticate if relocated onto another event row of
+/// the same aggregate (the per-aggregate key alone cannot distinguish events).
+///
+/// Callers that load and decrypt event envelopes *outside* the aggregate replay
+/// path — e.g. a projection or an audit viewer reading raw rows — MUST pass this
+/// same AAD to [`decrypt_value`]/[`decrypt_encrypted_fields`], or v2 ciphertext
+/// will fail to decrypt. (Legacy v1 rows ignore the AAD, so they stay readable
+/// regardless.)
+#[must_use]
+pub fn event_aad(aggregate_id: Uuid, event_id: Uuid) -> [u8; 32] {
+    let mut aad = [0u8; 32];
+    aad[..16].copy_from_slice(aggregate_id.as_bytes());
+    aad[16..].copy_from_slice(event_id.as_bytes());
+    aad
+}
+
 /// Builds the per-field AAD (`base_aad || field_name`) used by field-level
 /// encryption to defeat intra-event field swapping.
 fn field_aad(base: &[u8], field: &str) -> Vec<u8> {
@@ -805,6 +828,82 @@ mod tests {
         assert!(
             relocated.is_err(),
             "a v2 ciphertext must not decrypt under a different aad (relocation)"
+        );
+    }
+
+    // --- event_aad: the canonical per-event binding layout ---
+    //
+    // External callers that decrypt event envelopes manually (projections,
+    // audit viewers) reconstruct the AAD via this helper, so its byte layout is
+    // a stable contract: `aggregate_id (16) || event_id (16)`, in that order.
+    #[test]
+    fn event_aad_layout_is_aggregate_then_event() {
+        let aggregate_id = Uuid::from_bytes([0xAA; 16]);
+        let event_id = Uuid::from_bytes([0xEE; 16]);
+
+        let aad = event_aad(aggregate_id, event_id);
+
+        assert_eq!(aad.len(), 32, "AAD is aggregate_id (16) || event_id (16)");
+        assert_eq!(
+            &aad[..16],
+            aggregate_id.as_bytes(),
+            "first half is aggregate_id"
+        );
+        assert_eq!(&aad[16..], event_id.as_bytes(), "second half is event_id");
+    }
+
+    #[test]
+    fn event_aad_is_deterministic_and_distinguishes_events() {
+        let aggregate_id = Uuid::from_bytes([1; 16]);
+        let event_a = Uuid::from_bytes([2; 16]);
+        let event_b = Uuid::from_bytes([3; 16]);
+
+        // Same inputs → same AAD (encrypt and decrypt sides must agree).
+        assert_eq!(
+            event_aad(aggregate_id, event_a),
+            event_aad(aggregate_id, event_a)
+        );
+        // Different events of the same aggregate → different AAD (defeats
+        // relocating one event's ciphertext onto another event row).
+        assert_ne!(
+            event_aad(aggregate_id, event_a),
+            event_aad(aggregate_id, event_b)
+        );
+    }
+
+    // The public helper must produce exactly what the AAD-binding provider
+    // expects, so a value encrypted under `event_aad(agg, ev)` round-trips only
+    // under the same (agg, ev) and is rejected when relocated to another event.
+    #[test]
+    fn event_aad_binds_value_to_its_event() {
+        let provider = AadBindingProvider;
+        let key = provider.generate_key();
+        let aggregate_id = Uuid::from_bytes([7; 16]);
+        let event_a = Uuid::from_bytes([8; 16]);
+        let event_b = Uuid::from_bytes([9; 16]);
+        let value = serde_json::json!({"email": "alice@example.com"});
+
+        let encrypted =
+            encrypt_value(&provider, &key, &value, &event_aad(aggregate_id, event_a)).unwrap();
+
+        let same = decrypt_value(
+            &provider,
+            &key,
+            &encrypted,
+            &event_aad(aggregate_id, event_a),
+        )
+        .unwrap();
+        assert_eq!(same, value);
+
+        let relocated = decrypt_value(
+            &provider,
+            &key,
+            &encrypted,
+            &event_aad(aggregate_id, event_b),
+        );
+        assert!(
+            relocated.is_err(),
+            "ciphertext must not decrypt under another event's AAD"
         );
     }
 }

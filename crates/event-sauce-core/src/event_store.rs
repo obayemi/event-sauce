@@ -640,7 +640,7 @@ where
         let provider = require_crypto_provider(store)?;
 
         for envelope in &mut envelopes {
-            let aad = event_aad(aggregate_id, envelope.id);
+            let aad = crate::crypto::event_aad(aggregate_id, envelope.id);
             envelope.event_data =
                 crate::crypto::encrypt_value(provider, &crypto_key, &envelope.event_data, &aad)?;
         }
@@ -652,7 +652,7 @@ where
         for (envelope, pe) in envelopes.iter_mut().zip(pending.iter()) {
             let fields = pe.event.encrypted_fields();
             if !fields.is_empty() {
-                let aad = event_aad(aggregate_id, envelope.id);
+                let aad = crate::crypto::event_aad(aggregate_id, envelope.id);
                 crate::crypto::encrypt_fields(
                     provider,
                     &crypto_key,
@@ -751,7 +751,7 @@ where
         let provider = require_crypto_provider(store)?;
 
         for envelope in &mut envelopes {
-            let aad = event_aad(aggregate_id, envelope.id);
+            let aad = crate::crypto::event_aad(aggregate_id, envelope.id);
             envelope.event_data =
                 crate::crypto::encrypt_value(provider, &crypto_key, &envelope.event_data, &aad)?;
         }
@@ -762,7 +762,7 @@ where
         for (envelope, pe) in envelopes.iter_mut().zip(pending.iter()) {
             let fields = pe.event.encrypted_fields();
             if !fields.is_empty() {
-                let aad = event_aad(aggregate_id, envelope.id);
+                let aad = crate::crypto::event_aad(aggregate_id, envelope.id);
                 crate::crypto::encrypt_fields(
                     provider,
                     &crypto_key,
@@ -1021,21 +1021,6 @@ fn require_crypto_provider<S: EventStore + ?Sized>(
         .ok_or_else(|| crate::Error::invalid_state("Encrypted aggregate requires crypto_provider"))
 }
 
-/// Builds the AAD that binds an event's ciphertext to that specific event.
-///
-/// AAD = `aggregate_id (16) || event_id (16)`. The per-event UUID makes the AAD
-/// unique per event, so a ciphertext produced for one event fails to authenticate
-/// if relocated onto another event row of the same aggregate (the per-aggregate
-/// key alone cannot distinguish events). `stream_version` is deliberately NOT
-/// included — it is assigned by the backend at append time and is unavailable
-/// when the ciphertext is produced.
-fn event_aad(aggregate_id: Uuid, event_id: Uuid) -> [u8; 32] {
-    let mut aad = [0u8; 32];
-    aad[..16].copy_from_slice(aggregate_id.as_bytes());
-    aad[16..].copy_from_slice(event_id.as_bytes());
-    aad
-}
-
 /// Builds the AAD that binds a snapshot's ciphertext to its aggregate.
 ///
 /// A snapshot has no per-event UUID, so it is bound to `aggregate_id || "snap"`.
@@ -1200,7 +1185,7 @@ where
 
     while let Some(envelope) = event_stream.next().await {
         let mut envelope = envelope?;
-        let aad = event_aad(aggregate_id, envelope.id);
+        let aad = crate::crypto::event_aad(aggregate_id, envelope.id);
         decrypt_event_data(store, crypto_key, &mut envelope.event_data, &aad)?;
         let event = A::Event::from_envelope(&envelope)?;
 
@@ -1349,7 +1334,7 @@ where
     };
     let mut first_envelope = first_envelope?;
 
-    let first_aad = event_aad(uuid, first_envelope.id);
+    let first_aad = crate::crypto::event_aad(uuid, first_envelope.id);
     decrypt_event_data(
         store,
         crypto_key.as_deref(),
@@ -1373,7 +1358,7 @@ where
     // Replay remaining events
     while let Some(envelope) = event_stream.next().await {
         let mut envelope = envelope?;
-        let aad = event_aad(uuid, envelope.id);
+        let aad = crate::crypto::event_aad(uuid, envelope.id);
         decrypt_event_data(store, crypto_key.as_deref(), &mut envelope.event_data, &aad)?;
         let event = A::Event::from_envelope(&envelope)?;
 
