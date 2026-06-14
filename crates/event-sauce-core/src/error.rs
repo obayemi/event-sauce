@@ -150,6 +150,28 @@ pub enum Error {
     Custom(String),
 }
 
+/// A borrow-view of an [`Error::ClaimConflict`]'s fields.
+///
+/// Returned by [`Error::as_claim_conflict`] and
+/// [`ModifyError::save_claim_conflict`](crate::ModifyError::save_claim_conflict)
+/// so a consumer can decode a save-time uniqueness ([claim](crate::AggregateClaim))
+/// violation — a duplicate email, slug, share-code, … — into its own
+/// user-facing error taxonomy without manually destructuring the [`Error`] enum.
+///
+/// Borrows from the underlying error, so it carries the claim namespace and the
+/// conflicting key without cloning. `held_by` is preserved (it is the aggregate
+/// that already holds the claim, when the backend reports it) because it is the
+/// one field with real diagnostic value beyond the namespace.
+#[derive(Debug, Clone, Copy)]
+pub struct ClaimConflict<'a> {
+    /// The claim type namespace (e.g. `"Profile.email"`).
+    pub claim_type: &'a str,
+    /// The value that was attempted but is already claimed.
+    pub claim_key: &'a serde_json::Value,
+    /// The aggregate that currently holds the claim, if the backend reported it.
+    pub held_by: Option<Uuid>,
+}
+
 impl Error {
     /// Creates a concurrency conflict error.
     ///
@@ -472,6 +494,40 @@ impl Error {
     #[must_use]
     pub fn is_claim_conflict(&self) -> bool {
         matches!(self, Self::ClaimConflict { .. })
+    }
+
+    /// Returns a borrow-view of this error's claim-conflict fields, or `None` if
+    /// it is not an [`Error::ClaimConflict`].
+    ///
+    /// A one-call alternative to destructuring the enum when decoding a
+    /// uniqueness violation into a domain-specific error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use event_sauce_core::Error;
+    /// use serde_json::json;
+    ///
+    /// let error = Error::claim_conflict("Profile.email", json!("user@example.com"), None);
+    /// let conflict = error.as_claim_conflict().expect("claim conflict");
+    /// assert_eq!(conflict.claim_type, "Profile.email");
+    ///
+    /// assert!(Error::not_found("User", "1").as_claim_conflict().is_none());
+    /// ```
+    #[must_use]
+    pub fn as_claim_conflict(&self) -> Option<ClaimConflict<'_>> {
+        match self {
+            Self::ClaimConflict {
+                claim_type,
+                claim_key,
+                held_by,
+            } => Some(ClaimConflict {
+                claim_type,
+                claim_key,
+                held_by: *held_by,
+            }),
+            _ => None,
+        }
     }
 
     /// Returns true if this is a lease lost error.
@@ -875,5 +931,26 @@ mod tests {
         } else {
             panic!("Expected AggregateDeleted variant");
         }
+    }
+
+    #[test]
+    fn as_claim_conflict_returns_view_for_claim_conflict() {
+        let holder = uuid::Uuid::new_v4();
+        let error = Error::claim_conflict(
+            "Profile.email",
+            serde_json::json!("user@example.com"),
+            Some(holder),
+        );
+
+        let view = error.as_claim_conflict().expect("claim conflict view");
+        assert_eq!(view.claim_type, "Profile.email");
+        assert_eq!(view.claim_key, &serde_json::json!("user@example.com"));
+        assert_eq!(view.held_by, Some(holder));
+    }
+
+    #[test]
+    fn as_claim_conflict_returns_none_for_other_errors() {
+        assert!(Error::not_found("User", "1").as_claim_conflict().is_none());
+        assert!(Error::custom("boom").as_claim_conflict().is_none());
     }
 }

@@ -51,6 +51,45 @@ pub enum ModifyError<E> {
     Save(#[source] crate::Error),
 }
 
+impl<E> ModifyError<E> {
+    /// Returns a borrow-view of a save-time uniqueness
+    /// ([claim](crate::AggregateClaim)) conflict, or `None`.
+    ///
+    /// Yields `Some` only for the [`Save`](ModifyError::Save) variant carrying an
+    /// [`Error::ClaimConflict`](crate::Error::ClaimConflict): claim conflicts are
+    /// raised when *appending* events, so a `Load` or `Domain` failure never
+    /// produces one. This lets a `From<ModifyError<_>>` bridge decode a duplicate
+    /// email/slug/share-code into its own error taxonomy in one call, without
+    /// destructuring the variants by hand.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use event_sauce_core::{AggregateError, Error, ModifyError};
+    /// # use thiserror::Error as ThisError;
+    /// # #[derive(Debug, ThisError)]
+    /// # #[error("domain")]
+    /// # struct DomainErr;
+    /// # impl AggregateError for DomainErr {}
+    /// use serde_json::json;
+    ///
+    /// let err: ModifyError<DomainErr> =
+    ///     ModifyError::Save(Error::claim_conflict("Group.slug", json!("weddings"), None));
+    /// let conflict = err.save_claim_conflict().expect("claim conflict");
+    /// assert_eq!(conflict.claim_type, "Group.slug");
+    ///
+    /// let domain: ModifyError<DomainErr> = ModifyError::Domain(DomainErr);
+    /// assert!(domain.save_claim_conflict().is_none());
+    /// ```
+    #[must_use]
+    pub fn save_claim_conflict(&self) -> Option<crate::ClaimConflict<'_>> {
+        match self {
+            ModifyError::Save(err) => err.as_claim_conflict(),
+            ModifyError::Load(_) | ModifyError::Domain(_) => None,
+        }
+    }
+}
+
 impl<E: std::error::Error + Send + Sync + 'static> ModifyError<E> {
     /// Returns `true` if the failure came from the closure (domain logic), not load/save.
     ///
@@ -202,5 +241,42 @@ mod tests {
         }
         let result = handler(Err(ModifyError::Domain(TestError)));
         assert!(matches!(result.unwrap_err(), crate::Error::InvalidState(_)));
+    }
+
+    // --- save_claim_conflict() ---
+
+    #[test]
+    fn save_claim_conflict_returns_view_for_save_claim_conflict() {
+        let err: ModifyError<TestError> = ModifyError::Save(crate::Error::claim_conflict(
+            "Group.slug",
+            serde_json::json!("weddings"),
+            None,
+        ));
+
+        let view = err.save_claim_conflict().expect("claim conflict view");
+        assert_eq!(view.claim_type, "Group.slug");
+        assert_eq!(view.claim_key, &serde_json::json!("weddings"));
+        assert_eq!(view.held_by, None);
+    }
+
+    #[test]
+    fn save_claim_conflict_none_for_non_claim_save_error() {
+        let err: ModifyError<TestError> = ModifyError::Save(crate::Error::custom("disk full"));
+        assert!(err.save_claim_conflict().is_none());
+    }
+
+    #[test]
+    fn save_claim_conflict_none_for_load_and_domain() {
+        // Claim conflicts only arise on save; a load/domain failure never yields
+        // one even if it somehow carried a ClaimConflict inner error.
+        let load: ModifyError<TestError> = ModifyError::Load(crate::Error::claim_conflict(
+            "X",
+            serde_json::json!(1),
+            None,
+        ));
+        assert!(load.save_claim_conflict().is_none());
+
+        let domain: ModifyError<TestError> = ModifyError::Domain(TestError);
+        assert!(domain.save_claim_conflict().is_none());
     }
 }

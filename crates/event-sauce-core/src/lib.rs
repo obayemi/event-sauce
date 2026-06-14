@@ -107,7 +107,7 @@ pub use deleted_aggregate_root::DeletedAggregateRoot;
 pub use domain_event::{DomainEvent, EventType};
 pub use entity::{DefaultEntity, Entity};
 pub use entity_id::EntityId;
-pub use error::{Error, Result};
+pub use error::{ClaimConflict, Error, Result};
 pub use event_applicator::EventApplicator;
 pub use event_envelope::{EventEnvelope, EventMetadata};
 pub use event_filter::EventFilter;
