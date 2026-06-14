@@ -59,6 +59,7 @@ base64 = "0.22"
 
 # Cryptography
 aes-gcm = "0.10"
+zeroize = "1"
 sha2 = "0.10"
 
 # Additional utilities

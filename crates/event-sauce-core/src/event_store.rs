@@ -7,6 +7,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use futures::Stream;
 use uuid::Uuid;
+use zeroize::Zeroizing;
 
 use crate::{
     Aggregate, AggregateClaim, AggregateRoot, AggregateType, AggregateVersion,
@@ -842,10 +843,12 @@ async fn encrypt_snapshot_data<S: EventStore + ?Sized>(
     })?;
     let provider = require_crypto_provider(store)?;
 
-    let crypto_key = key_store
-        .get_key(aggregate_id)
-        .await?
-        .ok_or_else(|| crate::Error::key_not_found(aggregate_id))?;
+    let crypto_key = Zeroizing::new(
+        key_store
+            .get_key(aggregate_id)
+            .await?
+            .ok_or_else(|| crate::Error::key_not_found(aggregate_id))?,
+    );
 
     let aad = snapshot_aad(aggregate_id);
     *snapshot_data = crate::crypto::encrypt_value(provider, &crypto_key, snapshot_data, &aad)?;
@@ -859,18 +862,22 @@ async fn encrypt_snapshot_data<S: EventStore + ?Sized>(
 async fn ensure_crypto_key<S: EventStore + ?Sized>(
     store: &S,
     aggregate_id: Uuid,
-) -> Result<Vec<u8>> {
+) -> Result<Zeroizing<Vec<u8>>> {
     let key_store = store.crypto_key_store().ok_or_else(|| {
         crate::Error::invalid_state("Encrypted aggregate requires crypto_key_store")
     })?;
     let provider = require_crypto_provider(store)?;
 
+    // Hold key material in `Zeroizing` so the buffer is wiped when this engine
+    // copy is dropped (after encryption), rather than lingering in freed heap.
+    // The `CryptoKeyStore` trait still exchanges plain `Vec<u8>`, so the upsert
+    // takes a short-lived copy bound straight to the backend write.
     if let Some(existing) = key_store.get_key(aggregate_id).await? {
-        return Ok(existing);
+        return Ok(Zeroizing::new(existing));
     }
 
-    let new_key = provider.generate_key();
-    key_store.upsert_key(aggregate_id, new_key.clone()).await?;
+    let new_key = Zeroizing::new(provider.generate_key());
+    key_store.upsert_key(aggregate_id, new_key.to_vec()).await?;
     Ok(new_key)
 }
 
@@ -1098,7 +1105,7 @@ where
             .get_key(uuid)
             .await?
             .ok_or_else(|| crate::Error::key_not_found(uuid))?;
-        Some(key)
+        Some(Zeroizing::new(key))
     } else if A::Event::has_any_encrypted_fields() {
         // Field-level encryption. The key may legitimately not exist yet when no
         // data has been committed. But if data EXISTS and the key is gone, it was
@@ -1107,7 +1114,7 @@ where
         // detect GDPR erasure uniformly via `is_key_not_found()`.
         if let Some(key_store) = store.crypto_key_store() {
             if let Some(key) = key_store.get_key(uuid).await? {
-                Some(key)
+                Some(Zeroizing::new(key))
             } else {
                 if has_committed_data(store, &stream_id).await? {
                     return Err(crate::Error::key_not_found(uuid));
@@ -1146,7 +1153,7 @@ where
             let snap_aad = snapshot_aad(uuid);
             decrypt_event_data(
                 store,
-                crypto_key.as_deref(),
+                crypto_key.as_deref().map(Vec::as_slice),
                 &mut snapshot.snapshot_data,
                 &snap_aad,
             )?;
@@ -1162,7 +1169,7 @@ where
             if let Some(loaded) = try_load_from_snapshot::<S, A>(
                 store,
                 stream_id.clone(),
-                crypto_key.as_deref(),
+                crypto_key.as_deref().map(Vec::as_slice),
                 snapshot,
             )
             .await?
@@ -1199,7 +1206,7 @@ where
     let first_aad = crate::crypto::event_aad(uuid, first_envelope.id);
     decrypt_event_data(
         store,
-        crypto_key.as_deref(),
+        crypto_key.as_deref().map(Vec::as_slice),
         &mut first_envelope.event_data,
         &first_aad,
     )?;
@@ -1221,7 +1228,12 @@ where
     while let Some(envelope) = event_stream.next().await {
         let mut envelope = envelope?;
         let aad = crate::crypto::event_aad(uuid, envelope.id);
-        decrypt_event_data(store, crypto_key.as_deref(), &mut envelope.event_data, &aad)?;
+        decrypt_event_data(
+            store,
+            crypto_key.as_deref().map(Vec::as_slice),
+            &mut envelope.event_data,
+            &aad,
+        )?;
         let event = A::Event::from_envelope(&envelope)?;
 
         if EventApplicator::is_delete(&event) {
