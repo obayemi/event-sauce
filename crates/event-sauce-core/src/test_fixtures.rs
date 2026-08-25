@@ -3,18 +3,26 @@
 //! Provides reusable test types and mocks to reduce scaffolding duplication
 //! across test modules.
 
+#[cfg(any(feature = "event-sourcing", feature = "state-store"))]
 use async_trait::async_trait;
 use chrono::Utc;
+#[cfg(feature = "event-sourcing")]
 use futures::stream;
 use serde::{Deserialize, Serialize};
+#[cfg(any(feature = "event-sourcing", feature = "state-store"))]
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, RwLock};
+#[cfg(feature = "event-sourcing")]
+use std::sync::Arc;
+#[cfg(any(feature = "event-sourcing", feature = "state-store"))]
+use std::sync::{Mutex, RwLock};
 
-use crate::{
-    AggregateError, AggregateVersion, ApplyEvent, CheckpointStore, EntityId, EventApplicator,
-    EventEnvelope, EventLogEntry, EventStore, EventVersion, Position, Result, StateCommit,
-    StateStore, StoredState, StreamId,
-};
+use crate::{AggregateError, ApplyEvent, EntityId, EventApplicator, EventEnvelope, EventVersion};
+#[cfg(any(feature = "event-sourcing", feature = "state-store"))]
+use crate::{AggregateVersion, Result, StreamId};
+#[cfg(feature = "event-sourcing")]
+use crate::{CheckpointStore, EventLogEntry, EventStore, Position};
+#[cfg(feature = "state-store")]
+use crate::{StateCommit, StateStore, StoredState};
 
 /// Simple error type for test aggregates.
 #[derive(Debug, thiserror::Error)]
@@ -172,6 +180,7 @@ impl crate::Aggregate for SimpleTestEntity {
 ///
 /// Tracks events per-stream (for `load_stream`) and globally (for `stream_all`),
 /// preserving insertion order across streams.
+#[cfg(feature = "event-sourcing")]
 #[derive(Debug)]
 pub struct MockEventStore {
     streams: Arc<Mutex<HashMap<StreamId, Vec<EventEnvelope>>>>,
@@ -179,12 +188,14 @@ pub struct MockEventStore {
     global_log: Arc<Mutex<Vec<(Position, EventEnvelope)>>>,
 }
 
+#[cfg(feature = "event-sourcing")]
 impl Default for MockEventStore {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(feature = "event-sourcing")]
 impl MockEventStore {
     /// Creates a new empty mock event store.
     #[must_use]
@@ -229,6 +240,7 @@ impl MockEventStore {
     }
 }
 
+#[cfg(feature = "event-sourcing")]
 #[async_trait]
 impl EventStore for MockEventStore {
     async fn append(
@@ -310,17 +322,20 @@ impl EventStore for MockEventStore {
 }
 
 /// Mock checkpoint store for subscription tests.
+#[cfg(feature = "event-sourcing")]
 #[derive(Clone)]
 pub struct MockCheckpointStore {
     checkpoints: Arc<RwLock<HashMap<String, MockCheckpointEntry>>>,
 }
 
+#[cfg(feature = "event-sourcing")]
 #[derive(Clone)]
 struct MockCheckpointEntry {
     position: Position,
     lease: Option<MockLease>,
 }
 
+#[cfg(feature = "event-sourcing")]
 impl Default for MockCheckpointEntry {
     fn default() -> Self {
         Self {
@@ -330,18 +345,21 @@ impl Default for MockCheckpointEntry {
     }
 }
 
+#[cfg(feature = "event-sourcing")]
 #[derive(Clone)]
 struct MockLease {
     worker_id: String,
     expires_at: std::time::Instant,
 }
 
+#[cfg(feature = "event-sourcing")]
 impl Default for MockCheckpointStore {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(feature = "event-sourcing")]
 impl MockCheckpointStore {
     /// Creates a new empty mock checkpoint store.
     #[must_use]
@@ -362,6 +380,7 @@ impl MockCheckpointStore {
     }
 }
 
+#[cfg(feature = "event-sourcing")]
 #[async_trait]
 impl CheckpointStore for MockCheckpointStore {
     async fn save_checkpoint(&self, subscription_name: &str, position: Position) -> Result<()> {
@@ -466,12 +485,14 @@ pub fn create_test_envelope(event_type: &str, aggregate_type: &str) -> EventEnve
 ///
 /// Enforces optimistic concurrency on save; claims and projections are
 /// backend concerns and are not modeled here.
+#[cfg(feature = "state-store")]
 #[derive(Debug, Default)]
 pub struct MockStateStore {
     states: RwLock<HashMap<StreamId, StoredState>>,
     commits: Mutex<Vec<StateCommit>>,
 }
 
+#[cfg(feature = "state-store")]
 impl MockStateStore {
     /// Creates an empty mock state store.
     #[must_use]
@@ -494,6 +515,7 @@ impl MockStateStore {
     }
 }
 
+#[cfg(feature = "state-store")]
 #[async_trait]
 impl StateStore for MockStateStore {
     async fn load(&self, stream_id: StreamId) -> Result<Option<StoredState>> {
@@ -588,7 +610,7 @@ impl crate::Aggregate for TestCounter {
     type DeletedState = Self;
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "event-sourcing"))]
 mod tests {
     use super::*;
     use crate::{

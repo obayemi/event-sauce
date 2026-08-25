@@ -63,6 +63,7 @@ impl<A: Aggregate> DeletedAggregateRoot<A> {
     ///
     /// A poisoned deleted root holds inconsistent state and is refused by the
     /// commit path with [`crate::Error::InvalidState`].
+    #[cfg(any(feature = "event-sourcing", feature = "state-store"))]
     pub(crate) fn is_poisoned(&self) -> bool {
         self.poisoned
     }
@@ -80,6 +81,7 @@ impl<A: Aggregate> DeletedAggregateRoot<A> {
     }
 
     /// Returns uncommitted events with actor information (for commit).
+    #[cfg(any(feature = "event-sourcing", feature = "state-store"))]
     pub(crate) fn pending_events_with_actors(&self) -> &[PendingEvent<A::Event>] {
         &self.pending_events
     }
@@ -95,6 +97,7 @@ impl<A: Aggregate> DeletedAggregateRoot<A> {
     ///
     /// Used by `PolicyContext::commit_deleted()` to inject causation tracking
     /// into pending events before delegating to the event store.
+    #[cfg(feature = "event-sourcing")]
     pub(crate) fn set_pending_metadata(&mut self, metadata: &crate::EventMetadata) {
         for pe in &mut self.pending_events {
             if pe.metadata.is_none() {
@@ -127,6 +130,7 @@ impl<A: Aggregate> DeletedAggregateRoot<A> {
     /// Creates a deleted aggregate root from replay (no pending events).
     ///
     /// Used by `load_any()` when replaying events that include a delete event.
+    #[cfg(feature = "event-sourcing")]
     pub(crate) fn from_delete_replay(
         state: A::DeletedState,
         entity_id: EntityId,
@@ -144,6 +148,7 @@ impl<A: Aggregate> DeletedAggregateRoot<A> {
     /// Creates a deleted aggregate root from a snapshot (no pending events).
     ///
     /// Used by `load_any()` when loading a snapshot with `is_deleted = true`.
+    #[cfg(any(feature = "event-sourcing", feature = "state-store"))]
     pub(crate) fn from_snapshot(
         state: A::DeletedState,
         entity_id: EntityId,

@@ -25,6 +25,7 @@ pub(crate) struct PendingEvent<E> {
 /// Builds event envelopes from pending events, attaching actor and metadata.
 ///
 /// Shared by the event-sourced commit path and the state-stored save path.
+#[cfg(any(feature = "event-sourcing", feature = "state-store"))]
 pub(crate) fn envelopes_from_pending<E: crate::DomainEvent>(
     pending: &[PendingEvent<E>],
     aggregate_id: uuid::Uuid,
@@ -202,6 +203,7 @@ impl<A: Aggregate> AggregateRoot<A> {
     }
 
     /// Returns uncommitted events with actor information (for commit).
+    #[cfg(any(feature = "event-sourcing", feature = "state-store"))]
     pub(crate) fn pending_events_with_actors(&self) -> &[PendingEvent<A::Event>] {
         &self.pending_events
     }
@@ -317,6 +319,7 @@ impl<A: Aggregate> AggregateRoot<A> {
     ///
     /// Used by `PolicyContext::commit()` to inject causation tracking
     /// into pending events before delegating to the event store.
+    #[cfg(feature = "event-sourcing")]
     pub(crate) fn set_pending_metadata(&mut self, metadata: &EventMetadata) {
         for pe in &mut self.pending_events {
             if pe.metadata.is_none() {
@@ -382,6 +385,7 @@ impl<A: Aggregate> AggregateRoot<A> {
     /// Creates an aggregate root from an init event replay (no pending events).
     ///
     /// Used by `UninitAggregateRoot::apply_init_unchecked()`.
+    #[cfg(feature = "event-sourcing")]
     pub(crate) fn from_init_replay(entity: A) -> Self {
         Self {
             entity,
@@ -395,6 +399,7 @@ impl<A: Aggregate> AggregateRoot<A> {
     ///
     /// Used by `load()` for legacy aggregates. For init-event aggregates,
     /// the first event is always an init event, so this path is never reached.
+    #[cfg(feature = "event-sourcing")]
     pub(crate) fn new_for_replay(id: EntityId) -> Self {
         Self {
             entity: A::new(id),
@@ -474,6 +479,7 @@ impl<A: Aggregate> AggregateRoot<A> {
     ///
     /// Uses `EventApplicator::dispatch_delete_unchecked` which skips validation.
     /// Consumes the aggregate root.
+    #[cfg(feature = "event-sourcing")]
     pub(crate) fn apply_delete_unchecked(self, event: &A::Event) -> DeletedAggregateRoot<A> {
         let entity_id = self.entity.entity_id();
         let version = self.version.next();

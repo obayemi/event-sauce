@@ -6,7 +6,9 @@
 
 use std::marker::PhantomData;
 
-use crate::{Aggregate, AggregateRoot, EntityId, EventApplicator, InitEvent};
+#[cfg(feature = "event-sourcing")]
+use crate::EventApplicator;
+use crate::{Aggregate, AggregateRoot, EntityId, InitEvent};
 
 /// An uninitialized aggregate root awaiting an init event.
 ///
@@ -91,6 +93,7 @@ impl<A: Aggregate> UninitAggregateRoot<A> {
     }
 
     /// Replays an init event without validation. Used by `load()`.
+    #[cfg(feature = "event-sourcing")]
     pub(crate) fn apply_init_unchecked(self, event: &A::Event) -> AggregateRoot<A> {
         let entity = EventApplicator::dispatch_init_unchecked(event, self.id);
         AggregateRoot::from_init_replay(entity)

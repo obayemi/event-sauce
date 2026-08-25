@@ -2308,6 +2308,7 @@ macro_rules! spec {
 /// let runner = PolicyRunner::new(store, checkpoint_store)
 ///     .register(Arc::new(KickUserPolicy));
 /// ```
+#[cfg(feature = "event-sourcing")]
 #[macro_export]
 macro_rules! policy {
     // Entry point: with doc comments

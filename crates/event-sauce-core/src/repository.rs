@@ -9,15 +9,21 @@
 //! `load` replays the aggregate's event stream (optionally from a snapshot)
 //! and `save` appends the pending events with optimistic concurrency control.
 
+#[cfg(feature = "event-sourcing")]
 use std::marker::PhantomData;
+#[cfg(feature = "event-sourcing")]
 use std::sync::Arc;
 
 use async_trait::async_trait;
 
+#[cfg(feature = "event-sourcing")]
 use crate::{
     event_store::{count_events, load, load_any, load_deleted},
+    EventStore, StreamId,
+};
+use crate::{
     Aggregate, AggregateRoot, AggregateVersion, DefaultEntity, DeletedAggregateRoot, EntityId,
-    EntityIdFor, EventStore, InitEvent, Loaded, Result, StreamId, UninitAggregateRoot,
+    EntityIdFor, InitEvent, Loaded, Result, UninitAggregateRoot,
 };
 
 /// Persistence-style-agnostic aggregate persistence.
@@ -317,12 +323,14 @@ pub trait Repository<A: Aggregate>: Send + Sync {
 /// // Load an existing aggregate
 /// let loaded = repo.load(user.entity_id()).await?;
 /// ```
+#[cfg(feature = "event-sourcing")]
 #[derive(Debug)]
 pub struct EventSourcedRepository<S, A> {
     store: Arc<S>,
     _phantom: PhantomData<A>,
 }
 
+#[cfg(feature = "event-sourcing")]
 impl<S, A> EventSourcedRepository<S, A>
 where
     S: EventStore + 'static,
@@ -357,6 +365,7 @@ where
     }
 }
 
+#[cfg(feature = "event-sourcing")]
 #[async_trait]
 impl<S, A> Repository<A> for EventSourcedRepository<S, A>
 where
@@ -413,6 +422,7 @@ where
     }
 }
 
+#[cfg(feature = "event-sourcing")]
 impl<S, A> Clone for EventSourcedRepository<S, A> {
     fn clone(&self) -> Self {
         Self {
@@ -422,7 +432,7 @@ impl<S, A> Clone for EventSourcedRepository<S, A> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "event-sourcing"))]
 mod tests {
     use super::*;
     use crate::test_fixtures::{
