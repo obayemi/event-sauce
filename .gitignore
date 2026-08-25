@@ -28,3 +28,6 @@ test_*.db
 
 # OS
 Thumbs.db
+
+# direnv
+.direnv/
