@@ -22,6 +22,28 @@ pub(crate) struct PendingEvent<E> {
     pub metadata: Option<EventMetadata>,
 }
 
+/// Builds event envelopes from pending events, attaching actor and metadata.
+///
+/// Shared by the event-sourced commit path and the state-stored save path.
+pub(crate) fn envelopes_from_pending<E: crate::DomainEvent>(
+    pending: &[PendingEvent<E>],
+    aggregate_id: uuid::Uuid,
+) -> crate::Result<Vec<crate::EventEnvelope>> {
+    pending
+        .iter()
+        .map(|pe| {
+            let mut envelope = pe.event.to_envelope(aggregate_id)?;
+            if let Some(actor_id) = pe.actor_id {
+                envelope = envelope.with_created_by(actor_id.as_uuid());
+            }
+            if let Some(metadata) = &pe.metadata {
+                envelope = envelope.with_metadata(metadata.clone());
+            }
+            Ok(envelope)
+        })
+        .collect()
+}
+
 /// Infrastructure wrapper for event-sourced aggregates.
 ///
 /// Wraps an entity that implements `Aggregate`, providing all infrastructure

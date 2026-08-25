@@ -12,7 +12,8 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use crate::{
     AggregateError, AggregateVersion, ApplyEvent, CheckpointStore, EntityId, EventApplicator,
-    EventEnvelope, EventLogEntry, EventStore, EventVersion, Position, Result, StreamId,
+    EventEnvelope, EventLogEntry, EventStore, EventVersion, Position, Result, StateCommit,
+    StateStore, StoredState, StreamId,
 };
 
 /// Simple error type for test aggregates.
@@ -58,6 +59,8 @@ pub enum SimpleTestEvent {
     },
     /// Entity was deleted.
     Deleted,
+    /// Always rejected on apply; used to test poisoning paths.
+    Rejected,
 }
 
 impl crate::DomainEvent for SimpleTestEvent {
@@ -68,6 +71,7 @@ impl crate::DomainEvent for SimpleTestEvent {
             Self::Created { .. } => "SimpleTestEntity.Created",
             Self::Updated { .. } => "SimpleTestEntity.Updated",
             Self::Deleted => "SimpleTestEntity.Deleted",
+            Self::Rejected => "SimpleTestEntity.Rejected",
         }
     }
 
@@ -86,13 +90,16 @@ impl ApplyEvent<SimpleTestEntity> for SimpleTestEvent {
             Self::Created { value } | Self::Updated { value } => {
                 entity.value = *value;
             }
-            Self::Deleted => {}
+            Self::Deleted | Self::Rejected => {}
         }
     }
 }
 
 impl EventApplicator<SimpleTestEntity> for SimpleTestEvent {
     fn dispatch(&self, entity: &mut SimpleTestEntity) -> std::result::Result<(), SimpleTestError> {
+        if matches!(self, Self::Rejected) {
+            return Err(SimpleTestError);
+        }
         self.apply(entity);
         Ok(())
     }
@@ -453,6 +460,62 @@ pub fn create_test_envelope(event_type: &str, aggregate_type: &str) -> EventEnve
         EventVersion::new(1),
         serde_json::json!({}),
     )
+}
+
+/// HashMap-based mock state store for testing.
+///
+/// Enforces optimistic concurrency on save; claims and projections are
+/// backend concerns and are not modeled here.
+#[derive(Debug, Default)]
+pub struct MockStateStore {
+    states: RwLock<HashMap<StreamId, StoredState>>,
+    commits: Mutex<Vec<StateCommit>>,
+}
+
+impl MockStateStore {
+    /// Creates an empty mock state store.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Inserts a raw state row, bypassing version checks (for test setup).
+    pub fn insert_raw(&self, state: StoredState) {
+        self.states
+            .write()
+            .unwrap()
+            .insert(state.stream_id(), state);
+    }
+
+    /// Returns every commit accepted by [`save`](StateStore::save), in order.
+    #[must_use]
+    pub fn recorded_commits(&self) -> Vec<StateCommit> {
+        self.commits.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl StateStore for MockStateStore {
+    async fn load(&self, stream_id: StreamId) -> Result<Option<StoredState>> {
+        Ok(self.states.read().unwrap().get(&stream_id).cloned())
+    }
+
+    async fn save(&self, commit: StateCommit) -> Result<()> {
+        let mut states = self.states.write().unwrap();
+        let key = commit.state.stream_id();
+        let current = states
+            .get(&key)
+            .map_or_else(AggregateVersion::initial, |state| state.version);
+        if current != commit.expected_version {
+            return Err(crate::Error::concurrency_conflict(
+                commit.expected_version,
+                current,
+            ));
+        }
+        states.insert(key, commit.state.clone());
+        self.commits.lock().unwrap().push(commit);
+        Ok(())
+    }
 }
 
 /// A simple counter entity for testing and doc examples.

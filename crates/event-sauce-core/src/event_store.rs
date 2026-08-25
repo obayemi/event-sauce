@@ -619,20 +619,8 @@ where
     let expected_version =
         AggregateVersion::new(aggregate.version().as_i64().saturating_sub(pending_count));
 
-    let envelopes: Result<Vec<EventEnvelope>> = pending
-        .iter()
-        .map(|pe| {
-            let mut envelope = pe.event.to_envelope(aggregate_id)?;
-            if let Some(actor_id) = pe.actor_id {
-                envelope = envelope.with_created_by(actor_id.as_uuid());
-            }
-            if let Some(metadata) = &pe.metadata {
-                envelope = envelope.with_metadata(metadata.clone());
-            }
-            Ok(envelope)
-        })
-        .collect();
-    let mut envelopes = envelopes?;
+    let mut envelopes =
+        crate::aggregate_root::envelopes_from_pending::<A::Event>(pending, aggregate_id)?;
 
     // Encrypt event data for encrypted aggregates
     if A::is_encrypted() {
@@ -730,20 +718,8 @@ where
     let expected_version =
         AggregateVersion::new(aggregate.version().as_i64().saturating_sub(pending_count));
 
-    let envelopes: Result<Vec<EventEnvelope>> = pending
-        .iter()
-        .map(|pe| {
-            let mut envelope = pe.event.to_envelope(aggregate_id)?;
-            if let Some(actor_id) = pe.actor_id {
-                envelope = envelope.with_created_by(actor_id.as_uuid());
-            }
-            if let Some(metadata) = &pe.metadata {
-                envelope = envelope.with_metadata(metadata.clone());
-            }
-            Ok(envelope)
-        })
-        .collect();
-    let mut envelopes = envelopes?;
+    let mut envelopes =
+        crate::aggregate_root::envelopes_from_pending::<A::Event>(pending, aggregate_id)?;
 
     // Encrypt event data for encrypted aggregates
     if A::is_encrypted() {
