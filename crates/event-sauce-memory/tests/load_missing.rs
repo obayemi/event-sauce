@@ -13,7 +13,7 @@
 
 use event_sauce_core::{
     command_handler, define_events, Aggregate, AggregateError, AggregateRoot, DefaultEntity,
-    DomainEvent, Entity, EntityId, EventApplicator, EventStore,
+    DomainEvent, Entity, EntityId, EventApplicator, EventStore, Repository,
 };
 use event_sauce_memory::InMemoryEventStore;
 use serde::{Deserialize, Serialize};

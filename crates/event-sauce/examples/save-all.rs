@@ -21,6 +21,7 @@ use std::sync::Arc;
 
 use event_sauce_core::{
     command_handler, define_events, Aggregate, AggregateError, Entity, EntityId, EventStore,
+    Repository,
 };
 use event_sauce_memory::InMemoryEventStore;
 use serde::{Deserialize, Serialize};

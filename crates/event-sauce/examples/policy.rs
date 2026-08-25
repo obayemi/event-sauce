@@ -35,7 +35,7 @@ use std::sync::Arc;
 
 use event_sauce_core::{
     command_handler, define_events, policy, Aggregate, AggregateError, AggregateRoot,
-    DefaultEntity, Entity, EntityId, EventStore, Position, Repository,
+    DefaultEntity, Entity, EntityId, EventSourcedRepository, EventStore, Position, Repository,
 };
 use event_sauce_memory::InMemoryEventStore;
 use serde::{Deserialize, Serialize};
@@ -300,7 +300,8 @@ async fn main() -> anyhow::Result<()> {
     store.commit(&mut alice).await?;
 
     println!("=== Initial State ===");
-    let group_repo: Repository<InMemoryEventStore, Group> = Repository::new(Arc::clone(&store));
+    let group_repo: EventSourcedRepository<InMemoryEventStore, Group> =
+        EventSourcedRepository::new(Arc::clone(&store));
     let loaded_group = group_repo.load(group_id).await?;
     println!(
         "Group '{}' members: {:?}",
@@ -310,7 +311,8 @@ async fn main() -> anyhow::Result<()> {
     // --- Step 2: Kick Alice ---
 
     println!("\n=== Kicking Alice ===");
-    let user_repo: Repository<InMemoryEventStore, User> = Repository::new(Arc::clone(&store));
+    let user_repo: EventSourcedRepository<InMemoryEventStore, User> =
+        EventSourcedRepository::new(Arc::clone(&store));
     let mut alice = user_repo.load(alice_id).await?;
     alice.kick(group_id, "spamming".to_string())?;
     store.commit(&mut alice).await?;

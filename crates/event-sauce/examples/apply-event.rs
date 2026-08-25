@@ -33,6 +33,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use event_sauce_core::{
     Aggregate, AggregateRoot, ApplyEvent, DefaultEntity, DomainEvent, Entity, EntityId, EventStore,
+    Repository,
 };
 use event_sauce_macros::AggregateError;
 use event_sauce_memory::InMemoryEventStore;

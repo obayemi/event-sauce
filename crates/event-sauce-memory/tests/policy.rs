@@ -6,8 +6,9 @@
 
 use event_sauce_core::{
     command_handler, define_events, policy, Aggregate, AggregateError, AggregateRoot,
-    CheckpointStore, Entity, EntityId, EventEnvelope, EventFilter, EventStore, OnError,
-    OnRetryExhausted, PolicyContext, PolicyRunner, Repository, RetryConfig, RetryLimit,
+    CheckpointStore, Entity, EntityId, EventEnvelope, EventFilter, EventSourcedRepository,
+    EventStore, OnError, OnRetryExhausted, PolicyContext, PolicyRunner, Repository, RetryConfig,
+    RetryLimit,
 };
 use event_sauce_memory::{InMemoryCheckpointStore, InMemoryEventStore};
 use serde::{Deserialize, Serialize};
@@ -285,7 +286,8 @@ async fn test_basic_policy_cross_aggregate_reaction() {
     assert!(processed > 0);
 
     // Verify the group no longer has the member
-    let repo: Repository<InMemoryEventStore, Group> = Repository::new(Arc::clone(&store));
+    let repo: EventSourcedRepository<InMemoryEventStore, Group> =
+        EventSourcedRepository::new(Arc::clone(&store));
     let loaded_group = repo.load(group_id).await.unwrap();
     assert!(loaded_group.members.is_empty());
 }
@@ -628,7 +630,8 @@ async fn test_policy_macro_integration_full_flow() {
     runner.process_pending().await.unwrap();
 
     // Verify the reaction happened
-    let repo: Repository<InMemoryEventStore, Group> = Repository::new(Arc::clone(&store));
+    let repo: EventSourcedRepository<InMemoryEventStore, Group> =
+        EventSourcedRepository::new(Arc::clone(&store));
     let loaded = repo.load(group_id).await.unwrap();
     assert!(loaded.members.is_empty());
 }

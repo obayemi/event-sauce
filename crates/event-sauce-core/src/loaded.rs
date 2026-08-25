@@ -7,7 +7,7 @@ use crate::{Aggregate, AggregateRoot, AggregateVersion, DeletedAggregateRoot, En
 
 /// Result of loading an aggregate that may be active or deleted.
 ///
-/// Use [`load_any()`](crate::EventStore::load_any) to get this type.
+/// Use [`load_any()`](crate::Repository::load_any) to get this type.
 /// Use pattern matching or the convenience methods to extract the inner type.
 ///
 /// # Examples

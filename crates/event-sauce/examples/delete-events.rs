@@ -21,6 +21,7 @@
 //! cargo run --example delete-events
 //! ```
 
+use event_sauce_core::Repository;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};

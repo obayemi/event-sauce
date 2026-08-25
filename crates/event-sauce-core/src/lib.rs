@@ -89,7 +89,7 @@ pub use modify_error::ModifyError;
 pub use policy::{
     OnError, OnRetryExhausted, Policy, PolicyContext, PolicyRunner, RetryConfig, RetryLimit,
 };
-pub use repository::Repository;
+pub use repository::{EventSourcedRepository, Repository};
 pub use snapshot_config::{SnapshotConfig, SnapshotConfigBuilder};
 pub use snapshot_strategy::{AlwaysSnapshot, EveryNEvents, NeverSnapshot, SnapshotStrategy};
 pub use specification::{Spec, Specification, SpecificationError};

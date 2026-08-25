@@ -39,6 +39,7 @@
 //!     deleted) still returns `KeyNotFound`, never silently anything, even when
 //!     an `upcast` override exists.
 
+use event_sauce_core::Repository;
 use event_sauce_core::{
     crypto, Aggregate, AggregateError, AggregateVersion, CryptoKeyStore, CryptoProvider,
     DomainEvent, Entity, EntityId, EventApplicator, EventEnvelope, EventStore, EventVersion,

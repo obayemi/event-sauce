@@ -71,7 +71,7 @@ async fn append_raw(
 // ============================================================================
 mod aliased {
     use super::{append_raw, Aggregate, AggregateError, Entity, EntityId, InMemoryEventStore};
-    use event_sauce_core::{define_events, DomainEvent, EventStore};
+    use event_sauce_core::{define_events, DomainEvent, EventStore, Repository};
     use serde::{Deserialize, Serialize};
     use serde_json::json;
     use std::sync::Arc;

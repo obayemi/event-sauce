@@ -1,9 +1,18 @@
 //! Repository pattern for high-level aggregate persistence.
 //!
-//! Provides a type-safe, domain-focused API over the raw `EventStore` trait.
+//! [`Repository`] is the persistence-style-agnostic trait that application
+//! code should depend on: it exposes aggregate lifecycle operations
+//! (`load`, `save`, `modify`, `create_*`, …) without committing to *how*
+//! aggregates are persisted.
+//!
+//! [`EventSourcedRepository`] is its event-store-backed implementation:
+//! `load` replays the aggregate's event stream (optionally from a snapshot)
+//! and `save` appends the pending events with optimistic concurrency control.
 
 use std::marker::PhantomData;
 use std::sync::Arc;
+
+use async_trait::async_trait;
 
 use crate::{
     event_store::{count_events, load, load_any, load_deleted},
@@ -11,103 +20,108 @@ use crate::{
     EntityIdFor, EventStore, InitEvent, Loaded, Result, StreamId, UninitAggregateRoot,
 };
 
-/// Repository provides a high-level API for aggregate persistence.
+/// Persistence-style-agnostic aggregate persistence.
 ///
-/// Wraps an `EventStore` and provides type-safe operations for a specific
-/// aggregate type, working with `AggregateRoot<A>` and `EntityId`.
+/// Application code written against this trait runs unchanged whether
+/// aggregates are event-sourced or state-stored — the persistence style is
+/// chosen once, at the composition root, by constructing the matching
+/// implementation (e.g. [`EventSourcedRepository`]).
 ///
-/// # Type Parameters
-///
-/// - `S`: The event store implementation
-/// - `A`: The aggregate type (entity)
+/// The `load`/`save` family are the per-implementation primitives; `modify`,
+/// `modify_deleted`, and the `create_*` constructors are generic and provided
+/// as default methods.
 ///
 /// # Examples
 ///
 /// ```ignore
-/// use event_sauce_core::Repository;
-///
-/// let repo = store.repository::<User>();
-///
-/// // Create a new aggregate
-/// let mut user = repo.create();
-/// user.apply(UserCreatedEvent { name: "Alice".into(), timestamp: Utc::now() })?;
-/// repo.save(&mut user).await?;
-///
-/// // Load an existing aggregate
-/// let loaded = repo.load(user.entity_id()).await?;
+/// async fn rename_user<R: Repository<User>>(repo: &R, id: EntityId, name: String) -> Result<()> {
+///     repo.modify(id, |user| user.rename(name)).await?;
+///     Ok(())
+/// }
 /// ```
-#[derive(Debug)]
-pub struct Repository<S, A> {
-    store: Arc<S>,
-    _phantom: PhantomData<A>,
-}
-
-impl<S, A> Repository<S, A>
-where
-    S: EventStore + 'static,
-    A: Aggregate + serde::Serialize + serde::de::DeserializeOwned,
-    A::DeletedState: serde::Serialize + serde::de::DeserializeOwned,
-    A::Event: serde::Serialize + serde::de::DeserializeOwned,
-{
-    /// Creates a new repository wrapping the given event store.
-    #[must_use]
-    pub fn new(store: Arc<S>) -> Self {
-        Self {
-            store,
-            _phantom: PhantomData,
-        }
-    }
-
-    /// Saves an aggregate root to the event store.
+#[async_trait]
+pub trait Repository<A: Aggregate>: Send + Sync {
+    /// Loads an active aggregate.
     ///
-    /// Commits all pending events and clears them on success.
+    /// Accepts both raw `EntityId` and typed IDs implementing `EntityIdFor<A>`.
     ///
     /// # Errors
     ///
-    /// Returns an error if serialization, the event store operation,
-    /// or concurrency control fails.
-    pub async fn save(&self, aggregate: &mut AggregateRoot<A>) -> Result<()> {
-        self.store.commit(aggregate).await
-    }
+    /// Returns `Error::NotFound` if the aggregate doesn't exist, or an error
+    /// if the store operation or deserialization fails.
+    async fn load<I: EntityIdFor<A> + Send>(&self, id: I) -> Result<AggregateRoot<A>>;
 
-    /// Saves several aggregate roots as one logical write.
+    /// Loads an aggregate, returning its lifecycle state.
     ///
-    /// Prepares each aggregate (events, claims, expected version, snapshot)
-    /// through the same path as [`save`](Self::save), then persists them all via
-    /// a single [`append_batch`](EventStore::append_batch). On backends with real
-    /// transactions (e.g. `PostgreSQL`) the whole set commits atomically: all
-    /// aggregates are saved or none are. The in-memory backend applies them
-    /// per-stream (not atomic).
+    /// Returns `Loaded::Active` for active aggregates or `Loaded::Deleted`
+    /// for deleted ones.
     ///
-    /// Pending events are cleared on each aggregate as it is prepared. Aggregates
-    /// with no pending events are skipped.
+    /// Accepts both raw `EntityId` and typed IDs implementing `EntityIdFor<A>`.
     ///
     /// # Errors
     ///
-    /// Returns an error if serialization, the event store operation, or
-    /// concurrency control fails. On atomic backends a failure rolls the whole
-    /// batch back.
+    /// Returns an error if the aggregate doesn't exist or deserialization fails.
+    async fn load_any<I: EntityIdFor<A> + Send>(&self, id: I) -> Result<Loaded<A>>;
+
+    /// Loads a deleted aggregate.
     ///
-    /// # Examples
+    /// Accepts both raw `EntityId` and typed IDs implementing `EntityIdFor<A>`.
     ///
-    /// ```ignore
-    /// let mut from = repo.load(from_id).await?;
-    /// let mut to = repo.load(to_id).await?;
-    /// from.apply(Withdrawn { amount })?;
-    /// to.apply(Deposited { amount })?;
-    /// repo.save_all(&mut [&mut from, &mut to]).await?;
-    /// ```
-    pub async fn save_all(&self, aggregates: &mut [&mut AggregateRoot<A>]) -> Result<()> {
-        let mut prepared = Vec::with_capacity(aggregates.len());
-        for aggregate in aggregates.iter_mut() {
-            if let Some(commit) =
-                crate::event_store::prepare_commit(&*self.store, aggregate).await?
-            {
-                prepared.push(commit);
-            }
-        }
-        crate::event_store::flush_prepared_batch(&*self.store, prepared).await
-    }
+    /// # Errors
+    ///
+    /// Returns `Error::InvalidState` if the aggregate is still active, or an
+    /// error if the aggregate doesn't exist or deserialization fails.
+    async fn load_deleted<I: EntityIdFor<A> + Send>(
+        &self,
+        id: I,
+    ) -> Result<DeletedAggregateRoot<A>>;
+
+    /// Persists an aggregate root's pending changes and clears them on success.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if serialization, the store operation, or concurrency
+    /// control fails.
+    async fn save(&self, aggregate: &mut AggregateRoot<A>) -> Result<()>;
+
+    /// Persists several aggregate roots as one logical write.
+    ///
+    /// On backends with real transactions (e.g. `PostgreSQL`) the whole set
+    /// commits atomically: all aggregates are saved or none are. The in-memory
+    /// backends apply them per-aggregate (not atomic). Aggregates with no
+    /// pending changes are skipped.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if serialization, the store operation, or concurrency
+    /// control fails. On atomic backends a failure rolls the whole batch back.
+    async fn save_all(&self, aggregates: &mut [&mut AggregateRoot<A>]) -> Result<()>;
+
+    /// Persists a deleted aggregate root's pending changes and clears them on success.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if serialization, the store operation, or concurrency
+    /// control fails.
+    async fn save_deleted(&self, aggregate: &mut DeletedAggregateRoot<A>) -> Result<()>;
+
+    /// Checks if an aggregate exists.
+    ///
+    /// Accepts both raw `EntityId` and typed IDs implementing `EntityIdFor<A>`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the store operation fails.
+    async fn exists<I: EntityIdFor<A> + Send>(&self, id: I) -> Result<bool>;
+
+    /// Gets the current version of an aggregate without loading it.
+    ///
+    /// Accepts both raw `EntityId` and typed IDs implementing `EntityIdFor<A>`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the store operation fails.
+    async fn get_version<I: EntityIdFor<A> + Send>(&self, id: I) -> Result<AggregateVersion>;
 
     /// Loads an aggregate, applies a closure that mutates it, and saves the result.
     ///
@@ -117,12 +131,12 @@ where
     /// Returns `Result<R, ModifyError<A::Error>>`, which distinguishes three
     /// failure modes:
     ///
-    /// - [`ModifyError::Load`](crate::ModifyError::Load) — the event store failed
+    /// - [`ModifyError::Load`](crate::ModifyError::Load) — the store failed
     ///   while loading the aggregate.
     /// - [`ModifyError::Domain`](crate::ModifyError::Domain) — the closure returned
     ///   an aggregate-defined error `A::Error`.
-    /// - [`ModifyError::Save`](crate::ModifyError::Save) — the event store failed
-    ///   while persisting pending events.
+    /// - [`ModifyError::Save`](crate::ModifyError::Save) — the store failed
+    ///   while persisting the changes.
     ///
     /// Callers that want typed-error handling can match on the variants directly.
     /// Callers whose functions return `Result<_, Error>` can still use `?` thanks
@@ -152,13 +166,15 @@ where
     ///     Ok(order.total())
     /// }).await?;
     /// ```
-    pub async fn modify<F, R>(
+    async fn modify<I, F, R>(
         &self,
-        id: impl EntityIdFor<A>,
+        id: I,
         f: F,
     ) -> std::result::Result<R, crate::ModifyError<A::Error>>
     where
-        F: FnOnce(&mut AggregateRoot<A>) -> std::result::Result<R, A::Error>,
+        I: EntityIdFor<A> + Send,
+        F: FnOnce(&mut AggregateRoot<A>) -> std::result::Result<R, A::Error> + Send,
+        R: Send,
     {
         let mut aggregate = self.load(id).await.map_err(crate::ModifyError::Load)?;
         let result = f(&mut aggregate).map_err(crate::ModifyError::Domain)?;
@@ -168,26 +184,16 @@ where
         Ok(result)
     }
 
-    /// Loads a deleted aggregate, applies a closure, and saves any new pending events.
+    /// Loads a deleted aggregate, applies a closure, and saves any new pending changes.
     ///
     /// Mirrors [`modify`](Self::modify) for the deleted-state lifecycle.
     /// Note: deleted aggregates cannot accept further events through `apply()` —
-    /// the closure is mostly useful for inspecting state or appending metadata-only
-    /// events emitted via [`commit_deleted`](crate::EventStore::commit_deleted).
+    /// the closure is mostly useful for inspecting state or appending
+    /// metadata-only events.
     ///
-    /// Returns `Result<R, ModifyError<A::Error>>`, which distinguishes three
-    /// failure modes:
-    ///
-    /// - [`ModifyError::Load`](crate::ModifyError::Load) — loading the deleted
-    ///   aggregate failed (including `Error::InvalidState` when the aggregate is
-    ///   still active).
-    /// - [`ModifyError::Domain`](crate::ModifyError::Domain) — the closure returned
-    ///   an aggregate-defined error `A::Error`.
-    /// - [`ModifyError::Save`](crate::ModifyError::Save) — persisting pending events
-    ///   failed.
-    ///
-    /// Callers whose functions return `Result<_, Error>` can still use `?` via the
-    /// `From<ModifyError<E>> for Error` blanket.
+    /// Returns `Result<R, ModifyError<A::Error>>` with the same failure-mode
+    /// split as [`modify`](Self::modify); `ModifyError::Load` also covers
+    /// `Error::InvalidState` when the aggregate is still active.
     ///
     /// Accepts both raw `EntityId` and typed IDs implementing `EntityIdFor<A>`.
     ///
@@ -196,13 +202,15 @@ where
     /// Returns `ModifyError::Load` if the aggregate is not deleted or cannot be
     /// loaded, `ModifyError::Domain` if the closure fails, or `ModifyError::Save`
     /// if saving fails.
-    pub async fn modify_deleted<F, R>(
+    async fn modify_deleted<I, F, R>(
         &self,
-        id: impl EntityIdFor<A>,
+        id: I,
         f: F,
     ) -> std::result::Result<R, crate::ModifyError<A::Error>>
     where
-        F: FnOnce(&mut DeletedAggregateRoot<A>) -> std::result::Result<R, A::Error>,
+        I: EntityIdFor<A> + Send,
+        F: FnOnce(&mut DeletedAggregateRoot<A>) -> std::result::Result<R, A::Error> + Send,
+        R: Send,
     {
         let mut deleted = self
             .load_deleted(id)
@@ -215,66 +223,11 @@ where
         Ok(result)
     }
 
-    /// Loads an aggregate from the event store.
-    ///
-    /// Reconstructs the aggregate by replaying all its events,
-    /// potentially using a snapshot for optimization. Works for both
-    /// `DefaultEntity` aggregates and init-event aggregates.
-    ///
-    /// Accepts both raw `EntityId` and typed IDs implementing `EntityIdFor<A>`.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Error::NotFound` if the aggregate doesn't exist (no events and
-    /// no snapshot), or an error if deserialization fails.
-    pub async fn load(&self, id: impl EntityIdFor<A>) -> Result<AggregateRoot<A>> {
-        load(&*self.store, id.entity_id()).await
-    }
-
-    /// Checks if an aggregate exists in the event store.
-    ///
-    /// Accepts both raw `EntityId` and typed IDs implementing `EntityIdFor<A>`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the event store operation fails.
-    pub async fn exists(&self, id: impl EntityIdFor<A>) -> Result<bool> {
-        let id = id.entity_id();
-        let stream_id = StreamId::new(A::aggregate_type(), id.as_uuid());
-        self.store.stream_exists(stream_id).await
-    }
-
-    /// Gets the current version of an aggregate without loading it.
-    ///
-    /// Accepts both raw `EntityId` and typed IDs implementing `EntityIdFor<A>`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the event store operation fails.
-    pub async fn get_version(&self, id: impl EntityIdFor<A>) -> Result<AggregateVersion> {
-        let id = id.entity_id();
-        let stream_id = StreamId::new(A::aggregate_type(), id.as_uuid());
-        self.store.get_version(stream_id).await
-    }
-
-    /// Counts the number of events for an aggregate.
-    ///
-    /// Accepts both raw `EntityId` and typed IDs implementing `EntityIdFor<A>`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the event store operation fails.
-    pub async fn count_events(&self, id: impl EntityIdFor<A>) -> Result<usize> {
-        let id = id.entity_id();
-        let stream_id = StreamId::new(A::aggregate_type(), id.as_uuid());
-        count_events(&*self.store, stream_id).await
-    }
-
     /// Creates an uninitialized aggregate root with a random `EntityId`.
     ///
     /// Use with aggregates that require init events.
     #[must_use]
-    pub fn create_uninit(&self) -> UninitAggregateRoot<A> {
+    fn create_uninit(&self) -> UninitAggregateRoot<A> {
         UninitAggregateRoot::new(EntityId::new())
     }
 
@@ -282,7 +235,7 @@ where
     ///
     /// Use with aggregates that require init events.
     #[must_use]
-    pub fn create_uninit_with_id(&self, id: EntityId) -> UninitAggregateRoot<A> {
+    fn create_uninit_with_id(&self, id: EntityId) -> UninitAggregateRoot<A> {
         UninitAggregateRoot::new(id)
     }
 
@@ -293,7 +246,7 @@ where
     /// # Errors
     ///
     /// Returns an error if init event validation fails.
-    pub fn create_with<E: InitEvent<A> + Into<A::Event>>(
+    fn create_with<E: InitEvent<A> + Into<A::Event>>(
         &self,
         event: E,
     ) -> std::result::Result<AggregateRoot<A>, A::Error> {
@@ -305,7 +258,7 @@ where
     /// # Errors
     ///
     /// Returns an error if init event validation fails.
-    pub fn create_with_id_and<E: InitEvent<A> + Into<A::Event>>(
+    fn create_with_id_and<E: InitEvent<A> + Into<A::Event>>(
         &self,
         id: EntityId,
         event: E,
@@ -313,60 +266,15 @@ where
         UninitAggregateRoot::new(id).apply_init(event)
     }
 
-    /// Loads an aggregate, returning its lifecycle state.
-    ///
-    /// Returns `Loaded::Active` for active aggregates or
-    /// `Loaded::Deleted` for deleted ones.
-    ///
-    /// Accepts both raw `EntityId` and typed IDs implementing `EntityIdFor<A>`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the aggregate doesn't exist or deserialization fails.
-    pub async fn load_any(&self, id: impl EntityIdFor<A>) -> Result<Loaded<A>> {
-        load_any(&*self.store, id.entity_id()).await
-    }
-
-    /// Loads a deleted aggregate from the event store.
-    ///
-    /// Returns `DeletedAggregateRoot<A>` if the aggregate has been deleted.
-    ///
-    /// Accepts both raw `EntityId` and typed IDs implementing `EntityIdFor<A>`.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Error::InvalidState` if the aggregate is still active.
-    /// Returns an error if the aggregate doesn't exist or deserialization fails.
-    pub async fn load_deleted(&self, id: impl EntityIdFor<A>) -> Result<DeletedAggregateRoot<A>> {
-        load_deleted(&*self.store, id.entity_id()).await
-    }
-
-    /// Saves a deleted aggregate root to the event store.
-    ///
-    /// Commits all pending events and clears them on success.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if serialization, the event store operation,
-    /// or concurrency control fails.
-    pub async fn save_deleted(&self, aggregate: &mut DeletedAggregateRoot<A>) -> Result<()> {
-        self.store.commit_deleted(aggregate).await
-    }
-}
-
-/// Methods that require `DefaultEntity` (old-style aggregates).
-impl<S, A> Repository<S, A>
-where
-    S: EventStore + 'static,
-    A: Aggregate + DefaultEntity + serde::Serialize + serde::de::DeserializeOwned,
-    A::Event: serde::Serialize + serde::de::DeserializeOwned,
-{
     /// Creates a new aggregate root with a random `EntityId`.
     ///
     /// Requires `DefaultEntity`. For init-event aggregates, use
     /// [`create_uninit()`](Self::create_uninit) or [`create_with()`](Self::create_with).
     #[must_use]
-    pub fn create(&self) -> AggregateRoot<A> {
+    fn create(&self) -> AggregateRoot<A>
+    where
+        A: DefaultEntity,
+    {
         AggregateRoot::new(EntityId::new())
     }
 
@@ -376,12 +284,136 @@ where
     /// [`create_uninit_with_id()`](Self::create_uninit_with_id) or
     /// [`create_with_id_and()`](Self::create_with_id_and).
     #[must_use]
-    pub fn create_with_id(&self, id: EntityId) -> AggregateRoot<A> {
+    fn create_with_id(&self, id: EntityId) -> AggregateRoot<A>
+    where
+        A: DefaultEntity,
+    {
         AggregateRoot::new(id)
     }
 }
 
-impl<S, A> Clone for Repository<S, A> {
+/// Event-store-backed [`Repository`] implementation.
+///
+/// Wraps an `EventStore` and provides type-safe operations for a specific
+/// aggregate type: `load` reconstructs the aggregate by replaying its events
+/// (optionally from a snapshot), `save` appends the pending events with
+/// optimistic concurrency control.
+///
+/// # Type Parameters
+///
+/// - `S`: The event store implementation
+/// - `A`: The aggregate type (entity)
+///
+/// # Examples
+///
+/// ```ignore
+/// let repo = store.repository::<User>();
+///
+/// // Create a new aggregate
+/// let mut user = repo.create();
+/// user.apply(UserCreatedEvent { name: "Alice".into(), timestamp: Utc::now() })?;
+/// repo.save(&mut user).await?;
+///
+/// // Load an existing aggregate
+/// let loaded = repo.load(user.entity_id()).await?;
+/// ```
+#[derive(Debug)]
+pub struct EventSourcedRepository<S, A> {
+    store: Arc<S>,
+    _phantom: PhantomData<A>,
+}
+
+impl<S, A> EventSourcedRepository<S, A>
+where
+    S: EventStore + 'static,
+    A: Aggregate + serde::Serialize + serde::de::DeserializeOwned,
+    A::DeletedState: serde::Serialize + serde::de::DeserializeOwned,
+    A::Event: serde::Serialize + serde::de::DeserializeOwned,
+{
+    /// Creates a new repository wrapping the given event store.
+    #[must_use]
+    pub fn new(store: Arc<S>) -> Self {
+        Self {
+            store,
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Counts the number of events for an aggregate.
+    ///
+    /// Event-sourcing-specific: only meaningful when aggregates are persisted
+    /// as event streams, so this lives on the concrete repository rather than
+    /// the [`Repository`] trait.
+    ///
+    /// Accepts both raw `EntityId` and typed IDs implementing `EntityIdFor<A>`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the event store operation fails.
+    pub async fn count_events(&self, id: impl EntityIdFor<A>) -> Result<usize> {
+        let id = id.entity_id();
+        let stream_id = StreamId::new(A::aggregate_type(), id.as_uuid());
+        count_events(&*self.store, stream_id).await
+    }
+}
+
+#[async_trait]
+impl<S, A> Repository<A> for EventSourcedRepository<S, A>
+where
+    S: EventStore + 'static,
+    A: Aggregate + serde::Serialize + serde::de::DeserializeOwned,
+    A::DeletedState: serde::Serialize + serde::de::DeserializeOwned,
+    A::Event: serde::Serialize + serde::de::DeserializeOwned,
+{
+    async fn load<I: EntityIdFor<A> + Send>(&self, id: I) -> Result<AggregateRoot<A>> {
+        load(&*self.store, id.entity_id()).await
+    }
+
+    async fn load_any<I: EntityIdFor<A> + Send>(&self, id: I) -> Result<Loaded<A>> {
+        load_any(&*self.store, id.entity_id()).await
+    }
+
+    async fn load_deleted<I: EntityIdFor<A> + Send>(
+        &self,
+        id: I,
+    ) -> Result<DeletedAggregateRoot<A>> {
+        load_deleted(&*self.store, id.entity_id()).await
+    }
+
+    async fn save(&self, aggregate: &mut AggregateRoot<A>) -> Result<()> {
+        self.store.commit(aggregate).await
+    }
+
+    async fn save_all(&self, aggregates: &mut [&mut AggregateRoot<A>]) -> Result<()> {
+        let mut prepared = Vec::with_capacity(aggregates.len());
+        for aggregate in aggregates.iter_mut() {
+            if let Some(commit) =
+                crate::event_store::prepare_commit(&*self.store, aggregate).await?
+            {
+                prepared.push(commit);
+            }
+        }
+        crate::event_store::flush_prepared_batch(&*self.store, prepared).await
+    }
+
+    async fn save_deleted(&self, aggregate: &mut DeletedAggregateRoot<A>) -> Result<()> {
+        self.store.commit_deleted(aggregate).await
+    }
+
+    async fn exists<I: EntityIdFor<A> + Send>(&self, id: I) -> Result<bool> {
+        let id = id.entity_id();
+        let stream_id = StreamId::new(A::aggregate_type(), id.as_uuid());
+        self.store.stream_exists(stream_id).await
+    }
+
+    async fn get_version<I: EntityIdFor<A> + Send>(&self, id: I) -> Result<AggregateVersion> {
+        let id = id.entity_id();
+        let stream_id = StreamId::new(A::aggregate_type(), id.as_uuid());
+        self.store.get_version(stream_id).await
+    }
+}
+
+impl<S, A> Clone for EventSourcedRepository<S, A> {
     fn clone(&self) -> Self {
         Self {
             store: Arc::clone(&self.store),
@@ -393,19 +425,84 @@ impl<S, A> Clone for Repository<S, A> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_fixtures::{MockEventStore, SimpleTestEntity, SimpleTestEvent};
+    use crate::test_fixtures::{
+        MockEventStore, SimpleTestDelete, SimpleTestEntity, SimpleTestEvent, SimpleTestInit,
+    };
     use crate::EntityId;
+
+    #[tokio::test]
+    async fn test_repository_create_uninit_and_with_id() {
+        let store = Arc::new(MockEventStore::new());
+        let repo = store.repository::<SimpleTestEntity>();
+
+        let uninit = repo.create_uninit();
+        let generated_id = uninit.entity_id();
+
+        let id = EntityId::new();
+        let uninit_with_id = repo.create_uninit_with_id(id);
+        assert_eq!(uninit_with_id.entity_id(), id);
+        assert_ne!(generated_id, id);
+    }
+
+    #[tokio::test]
+    async fn test_repository_create_with_init_event() {
+        let store = Arc::new(MockEventStore::new());
+        let repo = store.repository::<SimpleTestEntity>();
+
+        let mut aggregate = repo.create_with(SimpleTestInit { value: 7 }).unwrap();
+        assert_eq!(aggregate.value, 7);
+
+        repo.save(&mut aggregate).await.unwrap();
+        let loaded = repo.load(aggregate.entity_id()).await.unwrap();
+        assert_eq!(loaded.value, 7);
+    }
+
+    #[tokio::test]
+    async fn test_repository_create_with_id_and_init_event() {
+        let store = Arc::new(MockEventStore::new());
+        let repo = store.repository::<SimpleTestEntity>();
+
+        let id = EntityId::new();
+        let aggregate = repo
+            .create_with_id_and(id, SimpleTestInit { value: 3 })
+            .unwrap();
+        assert_eq!(aggregate.entity_id(), id);
+        assert_eq!(aggregate.value, 3);
+    }
+
+    #[tokio::test]
+    async fn test_repository_modify_deleted_roundtrip() {
+        let store = Arc::new(MockEventStore::new());
+        let repo = store.repository::<SimpleTestEntity>();
+
+        let id = EntityId::new();
+        let mut aggregate = repo.create_with_id(id);
+        aggregate
+            .apply(SimpleTestEvent::Created { value: 12 })
+            .unwrap();
+        repo.save(&mut aggregate).await.unwrap();
+
+        let aggregate = repo.load(id).await.unwrap();
+        let mut deleted = aggregate.apply_delete(SimpleTestDelete).unwrap();
+        repo.save_deleted(&mut deleted).await.unwrap();
+
+        let value = repo
+            .modify_deleted(id, |deleted| Ok(deleted.state().value))
+            .await
+            .unwrap();
+        assert_eq!(value, 12);
+    }
 
     #[tokio::test]
     async fn test_repository_new() {
         let store = Arc::new(MockEventStore::new());
-        let _repo = Repository::<MockEventStore, SimpleTestEntity>::new(store);
+        let _repo = EventSourcedRepository::<MockEventStore, SimpleTestEntity>::new(store);
     }
 
     #[tokio::test]
     async fn test_repository_save_and_load() {
         let store = Arc::new(MockEventStore::new());
-        let repo = Repository::<MockEventStore, SimpleTestEntity>::new(store);
+        let repo = EventSourcedRepository::<MockEventStore, SimpleTestEntity>::new(store);
 
         let test_id = EntityId::new();
         let mut aggregate = AggregateRoot::<SimpleTestEntity>::new(test_id);
@@ -420,9 +517,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_generic_code_runs_against_repository_trait() {
+        // The acceptance criterion of the state-store split: application code
+        // written against `R: Repository<A>` must be persistence-agnostic.
+        async fn set_value<R: Repository<SimpleTestEntity>>(
+            repo: &R,
+            id: EntityId,
+            value: i32,
+        ) -> Result<i32> {
+            let mut aggregate = repo.create_with_id(id);
+            aggregate.apply(SimpleTestEvent::Created { value })?;
+            repo.save(&mut aggregate).await?;
+            let loaded = repo.load(id).await?;
+            Ok(loaded.value)
+        }
+
+        let store = Arc::new(MockEventStore::new());
+        let repo = store.repository::<SimpleTestEntity>();
+
+        let id = EntityId::new();
+        assert_eq!(set_value(&repo, id, 41).await.unwrap(), 41);
+    }
+
+    #[tokio::test]
     async fn test_repository_exists() {
         let store = Arc::new(MockEventStore::new());
-        let repo = Repository::<MockEventStore, SimpleTestEntity>::new(store);
+        let repo = EventSourcedRepository::<MockEventStore, SimpleTestEntity>::new(store);
 
         let test_id = EntityId::new();
 
@@ -440,7 +560,7 @@ mod tests {
     #[tokio::test]
     async fn test_repository_get_version() {
         let store = Arc::new(MockEventStore::new());
-        let repo = Repository::<MockEventStore, SimpleTestEntity>::new(store);
+        let repo = EventSourcedRepository::<MockEventStore, SimpleTestEntity>::new(store);
 
         let test_id = EntityId::new();
         let mut aggregate = AggregateRoot::<SimpleTestEntity>::new(test_id);
@@ -460,7 +580,7 @@ mod tests {
     #[tokio::test]
     async fn test_repository_count_events() {
         let store = Arc::new(MockEventStore::new());
-        let repo = Repository::<MockEventStore, SimpleTestEntity>::new(store);
+        let repo = EventSourcedRepository::<MockEventStore, SimpleTestEntity>::new(store);
 
         let test_id = EntityId::new();
         let mut aggregate = AggregateRoot::<SimpleTestEntity>::new(test_id);
@@ -483,7 +603,7 @@ mod tests {
     #[tokio::test]
     async fn test_repository_from_store_convenience() {
         let store = Arc::new(MockEventStore::new());
-        // Use the convenience method instead of Repository::<S, A>::new()
+        // Use the convenience method instead of EventSourcedRepository::<S, A>::new()
         let repo = store.repository::<SimpleTestEntity>();
 
         let test_id = EntityId::new();
@@ -533,7 +653,7 @@ mod tests {
     #[tokio::test]
     async fn test_repository_clone_shares_arc_store() {
         let store = Arc::new(MockEventStore::new());
-        let repo = Repository::<MockEventStore, SimpleTestEntity>::new(store);
+        let repo = EventSourcedRepository::<MockEventStore, SimpleTestEntity>::new(store);
         let repo_clone = repo.clone();
 
         let test_id = EntityId::new();
@@ -629,7 +749,7 @@ mod tests {
         // Verify backward-compat: ? in a function returning Result<_, Error> still works.
         // The inner helper is declared before any statements to satisfy clippy::items_after_statements.
         async fn try_modify(
-            repo: &crate::Repository<MockEventStore, SimpleTestEntity>,
+            repo: &crate::EventSourcedRepository<MockEventStore, SimpleTestEntity>,
             id: EntityId,
         ) -> crate::Result<()> {
             repo.modify(id, |_agg| -> std::result::Result<(), _> {

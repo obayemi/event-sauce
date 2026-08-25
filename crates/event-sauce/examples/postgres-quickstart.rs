@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 use event_sauce_core::{
     command_handler, crypto, define_events, policy, Aggregate, AggregateRoot, AggregateVersion,
-    EntityId, EventStore, Loaded, Position, Specification, StreamId,
+    EntityId, EventStore, Loaded, Position, Repository, Specification, StreamId,
 };
 use event_sauce_macros::{aggregate, aggregate_error, specification, AggregateError, AggregateId};
 use event_sauce_postgres::PostgresBackend;

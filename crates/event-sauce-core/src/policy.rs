@@ -257,7 +257,7 @@ impl<S: EventStore + 'static> PolicyContext<S> {
     ///
     /// Injects causation metadata into all pending events and buffers the
     /// prepared commit. The buffered events are only persisted when
-    /// [`flush()`](Self::flush) is called (typically by [`PolicyRunner`] after
+    /// `flush()` is called (typically by [`PolicyRunner`] after
     /// the handler returns `Ok`). If the handler returns `Err`, the buffer is
     /// dropped and nothing is persisted.
     ///

@@ -56,6 +56,8 @@ pub enum SimpleTestEvent {
         /// New value.
         value: i32,
     },
+    /// Entity was deleted.
+    Deleted,
 }
 
 impl crate::DomainEvent for SimpleTestEvent {
@@ -65,6 +67,7 @@ impl crate::DomainEvent for SimpleTestEvent {
         match self {
             Self::Created { .. } => "SimpleTestEntity.Created",
             Self::Updated { .. } => "SimpleTestEntity.Updated",
+            Self::Deleted => "SimpleTestEntity.Deleted",
         }
     }
 
@@ -83,6 +86,7 @@ impl ApplyEvent<SimpleTestEntity> for SimpleTestEvent {
             Self::Created { value } | Self::Updated { value } => {
                 entity.value = *value;
             }
+            Self::Deleted => {}
         }
     }
 }
@@ -95,6 +99,59 @@ impl EventApplicator<SimpleTestEntity> for SimpleTestEvent {
 
     fn dispatch_unchecked(&self, entity: &mut SimpleTestEntity) {
         self.apply(entity);
+    }
+
+    fn is_delete(&self) -> bool {
+        matches!(self, Self::Deleted)
+    }
+
+    fn dispatch_delete(
+        &self,
+        entity: SimpleTestEntity,
+    ) -> std::result::Result<SimpleTestEntity, SimpleTestError> {
+        Ok(entity)
+    }
+
+    fn dispatch_delete_unchecked(&self, entity: SimpleTestEntity) -> SimpleTestEntity {
+        entity
+    }
+}
+
+/// Init event fixture for [`SimpleTestEntity`].
+#[derive(Debug, Clone)]
+pub struct SimpleTestInit {
+    /// Initial value.
+    pub value: i32,
+}
+
+impl crate::InitEvent<SimpleTestEntity> for SimpleTestInit {
+    fn init(&self, id: EntityId) -> SimpleTestEntity {
+        SimpleTestEntity {
+            id,
+            value: self.value,
+        }
+    }
+}
+
+impl From<SimpleTestInit> for SimpleTestEvent {
+    fn from(event: SimpleTestInit) -> Self {
+        Self::Created { value: event.value }
+    }
+}
+
+/// Delete event fixture for [`SimpleTestEntity`].
+#[derive(Debug, Clone)]
+pub struct SimpleTestDelete;
+
+impl crate::DeleteEvent<SimpleTestEntity> for SimpleTestDelete {
+    fn delete(&self, entity: SimpleTestEntity) -> SimpleTestEntity {
+        entity
+    }
+}
+
+impl From<SimpleTestDelete> for SimpleTestEvent {
+    fn from(_event: SimpleTestDelete) -> Self {
+        Self::Deleted
     }
 }
 

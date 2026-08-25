@@ -10,6 +10,7 @@
 //! commit-preparation path refuse a poisoned root with `Error::InvalidState`,
 //! forcing the caller to discard and reload. These tests assert that contract.
 
+use event_sauce_core::Repository;
 use event_sauce_core::{
     command_handler, define_events, Aggregate, AggregateError, Entity, EntityId, Error, EventStore,
 };

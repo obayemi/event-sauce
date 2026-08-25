@@ -1,5 +1,6 @@
 //! Integration tests for encrypted aggregate crypto-shredding support.
 
+use event_sauce_core::Repository;
 use event_sauce_core::{
     Aggregate, AggregateError, AggregateRoot, AggregateVersion, ApplyEvent, CryptoKeyStore,
     DomainEvent, Entity, EntityId, EventApplicator, EventStore, EventVersion, SnapshotConfig,

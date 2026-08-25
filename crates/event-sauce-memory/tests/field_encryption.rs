@@ -1,5 +1,6 @@
 //! Integration tests for field-level encryption support.
 
+use event_sauce_core::Repository;
 use event_sauce_core::{
     define_events, Aggregate, AggregateError, AggregateRoot, AggregateVersion, CryptoKeyStore,
     DomainEvent, Entity, EntityId, EventStore, SnapshotConfig, StreamId,

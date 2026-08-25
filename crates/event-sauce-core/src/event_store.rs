@@ -10,8 +10,8 @@ use uuid::Uuid;
 
 use crate::{
     Aggregate, AggregateClaim, AggregateRoot, AggregateType, AggregateVersion,
-    DeletedAggregateRoot, DomainEvent, EntityId, EventEnvelope, EventLogEntry, Loaded, Repository,
-    Result, SnapshotConfig,
+    DeletedAggregateRoot, DomainEvent, EntityId, EventEnvelope, EventLogEntry,
+    EventSourcedRepository, Loaded, Result, SnapshotConfig,
 };
 
 /// A prepared but not-yet-persisted commit.
@@ -37,7 +37,7 @@ pub(crate) struct PreparedCommit {
 /// implementation simply loops [`append`](EventStore::append).
 ///
 /// This is the consistency-boundary primitive behind atomic multi-aggregate
-/// policy reactions and [`Repository::save_all`].
+/// policy reactions and [`Repository::save_all`](crate::Repository::save_all).
 ///
 /// # Examples
 ///
@@ -363,7 +363,7 @@ pub trait EventStore: Send + Sync {
     ///
     /// This is the consistency-boundary primitive behind atomic multi-aggregate
     /// policy reactions (see [`PolicyContext::flush`](crate::PolicyContext)) and
-    /// [`Repository::save_all`]. Each [`StreamCommit`] carries the same data as a
+    /// [`Repository::save_all`](crate::Repository::save_all). Each [`StreamCommit`] carries the same data as a
     /// single [`append`](Self::append) call for one stream.
     ///
     /// # Atomicity
@@ -513,7 +513,7 @@ pub trait EventStore: Send + Sync {
         Ok(crate::PolicyRunner::new(Arc::clone(self), cp))
     }
 
-    /// Creates a [`Repository`] for the given aggregate type, wrapping this event store.
+    /// Creates an [`EventSourcedRepository`] for the given aggregate type, wrapping this event store.
     ///
     /// This is a convenience method that avoids verbose turbofish syntax.
     ///
@@ -523,14 +523,14 @@ pub trait EventStore: Send + Sync {
     /// let store = Arc::new(MyEventStore::new());
     /// let user_repo = store.repository::<User>();
     /// ```
-    fn repository<A>(self: &Arc<Self>) -> Repository<Self, A>
+    fn repository<A>(self: &Arc<Self>) -> EventSourcedRepository<Self, A>
     where
         Self: Sized + 'static,
         A: Aggregate + serde::Serialize + serde::de::DeserializeOwned,
         A::DeletedState: serde::Serialize + serde::de::DeserializeOwned,
         A::Event: serde::Serialize + serde::de::DeserializeOwned,
     {
-        Repository::new(Arc::clone(self))
+        EventSourcedRepository::new(Arc::clone(self))
     }
 
     /// Commits pending events from an aggregate root to the event store.
@@ -1446,6 +1446,7 @@ where
 #[allow(clippy::map_unwrap_or)]
 mod tests {
     use super::*;
+    use crate::Repository;
 
     #[test]
     fn test_stream_id_new() {

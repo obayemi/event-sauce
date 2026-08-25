@@ -20,6 +20,7 @@
 //! cargo run --example upcasting
 //! ```
 
+use event_sauce_core::Repository;
 use std::sync::Arc;
 
 use event_sauce_core::{

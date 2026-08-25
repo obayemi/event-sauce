@@ -11,6 +11,7 @@
 //! whereas `alias.rs` references the not-yet-existing `@aliases(...)` clause and
 //! is a compile-fail RED until the GREEN stage lands it.
 
+use event_sauce_core::Repository;
 use event_sauce_core::{
     define_events, Aggregate, AggregateError, AggregateVersion, Entity, EntityId, EventEnvelope,
     EventStore, EventVersion, StreamId,

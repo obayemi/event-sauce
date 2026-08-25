@@ -27,6 +27,7 @@
 //!   migrating load SUCCEEDS and the field carries the upcast default, while a
 //!   current-version (v2) payload passes through `upcast` UNTOUCHED.
 
+use event_sauce_core::Repository;
 use event_sauce_core::{
     Aggregate, AggregateError, AggregateVersion, DomainEvent, Entity, EntityId, EventApplicator,
     EventEnvelope, EventStore, EventVersion, StreamId,
@@ -396,7 +397,7 @@ async fn test_upcast_leaves_current_payload_untouched() {
 mod macro_path {
     use event_sauce_core::{
         define_events, Aggregate, AggregateError, AggregateVersion, DomainEvent, Entity, EntityId,
-        EventStore, StreamId,
+        EventStore, Repository, StreamId,
     };
     use event_sauce_memory::InMemoryEventStore;
     use serde::{Deserialize, Serialize};

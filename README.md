@@ -49,7 +49,7 @@ event-sauce provides a powerful and ergonomic event sourcing experience with min
 - **✅ Validation & Replay**: Separate validation from application for fast replay
 - **🛡️ Rich Errors**: Aggregate-specific error types with `AggregateError` trait
 - **⚡ Zero-Cost Abstractions**: All macro-generated code optimizes away
-- **🏗️ Repository Pattern**: High-level `Repository<S, A>` abstraction for clean aggregate operations
+- **🏗️ Repository Pattern**: High-level `Repository` trait for clean, persistence-agnostic aggregate operations (with `EventSourcedRepository` as its event-store-backed implementation)
 
 ## Quick Start
 
