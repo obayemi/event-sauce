@@ -12,12 +12,11 @@ Aggregates, events, commands, `define_events!`, `command_handler!`, and every
 call through the `Repository` trait are byte-for-byte the same. The only
 thing that changes is which store you construct at the composition root.
 
-> **API status:** the `Repository` trait and `EventSourcedRepository` are
-> real and shipping today. The state-store types on this page (`StateStore`,
-> `StateCommit`, `StoredState`, `StateProjection`, `StateStoredRepository`)
-> follow the design in `STATE_STORE_PLAN.md` and are still landing — treat
-> the snippets below as illustrative of the final shape, not as compiled,
-> guaranteed signatures.
+Everything on this page ships today: the `Repository` trait with its
+`EventSourcedRepository` and `StateStoredRepository` implementations, the
+`StateStore`/`StateCommit`/`StoredState`/`StateProjection` core types, and
+the `InMemoryStateStore` and `PostgresStateStore` backends. For a complete
+runnable demonstration, see `examples/state-stored-order.rs`.
 
 ## Choosing a persistence style
 
@@ -68,12 +67,13 @@ chosen:
 
 ```rust
 // Event-sourced: streams, snapshots, policies, checkpoints, audit log.
-let store = Arc::new(PostgresEventStore::new(pool.clone()));
+let store = Arc::new(PostgresEventStore::builder().pool(pool.clone()).build()?);
 let repo = store.repository::<Order>(); // EventSourcedRepository<_, Order>
 
-// State-stored: one versioned row per aggregate. (API landing)
-let store = Arc::new(PostgresStateStore::new(pool.clone()));
-let repo = StateStoredRepository::<_, Order>::new(store);
+// State-stored: one versioned row per aggregate.
+let store = Arc::new(PostgresStateStore::builder().pool(pool.clone()).build()?);
+store.migrate().await?;
+let repo = store.repository::<Order>(); // StateStoredRepository<_, Order>
 
 // Either way, the application code above runs unchanged:
 add_item(&repo, order_id, "laptop".into(), 1, 120_000).await?;
@@ -121,8 +121,6 @@ schema version) — but where a snapshot is a *cache* in front of the event
 log, a state row is the *source of truth*:
 
 ```rust
-// Illustrative — API landing.
-
 /// One aggregate's state write (the state-path analog of StreamCommit).
 pub struct StateCommit {
     pub state: StoredState,                 // id, type, serialized state,
@@ -165,38 +163,38 @@ concrete store and invoked *inside* the save transaction, with the batch of
 events and the backend's transaction handle:
 
 ```rust
-// Illustrative — API landing.
-
 #[async_trait]
 pub trait StateProjection<Ctx: Send>: Send + Sync {
     fn name(&self) -> &str;
-    fn filter(&self) -> EventFilter;
+    fn filter(&self) -> EventFilter;   // defaults to EventFilter::All
     async fn project(&self, ctx: &mut Ctx, events: &[EventEnvelope]) -> Result<()>;
 }
 
 struct OrderTotals;
 
 #[async_trait]
-impl StateProjection<sqlx::Transaction<'static, sqlx::Postgres>> for OrderTotals {
+impl StateProjection<sqlx::PgConnection> for OrderTotals {
     fn name(&self) -> &str { "OrderTotals" }
 
     fn filter(&self) -> EventFilter {
-        EventFilter::EventType("Order.ItemAdded".into())
+        EventFilter::by_event::<ItemAddedEvent>()
     }
 
     async fn project(
         &self,
-        tx: &mut sqlx::Transaction<'static, sqlx::Postgres>,
+        conn: &mut sqlx::PgConnection,
         events: &[EventEnvelope],
     ) -> Result<()> {
-        // UPDATE/INSERT against your read-model table through `tx`.
+        // UPDATE/INSERT against your read-model table on the save transaction's
+        // connection.
         Ok(())
     }
 }
 
-let store = PostgresStateStore::builder(pool)
-    .with_projection(OrderTotals)
-    .build();
+let store = PostgresStateStore::builder()
+    .pool(pool)
+    .with_projection(Arc::new(OrderTotals))
+    .build()?;
 ```
 
 The semantics are deliberately strong:
@@ -216,9 +214,10 @@ The semantics are deliberately strong:
   outbox.
 
 Registration happens on the concrete store's builder, not on the `StateStore`
-trait, because transaction types differ per backend (`sqlx::Transaction` for
-Postgres, an in-memory context for the memory store). The core trait stays
-primitive.
+trait, because transaction handle types differ per backend
+(`sqlx::PgConnection` for Postgres, `InMemoryProjectionContext` for the
+memory store). The core trait stays primitive. Projections whose filter
+matches none of a commit's events are skipped entirely.
 
 ### Why there are no after-commit callbacks
 
@@ -249,18 +248,29 @@ policy outbox:
 3. Rows are pruned after successful dispatch, so the table stays small.
 
 ```rust
-// Illustrative — API landing.
-let store = PostgresStateStore::builder(pool)
+let store = PostgresStateStore::builder()
+    .pool(pool)
     .with_outbox()
-    .build();
+    .build()?;
 
-let dispatcher = store
-    .outbox_dispatcher()
-    .register("send-receipt", |envelope: &EventEnvelope| async move {
+struct SendReceipt;
+
+#[async_trait]
+impl StateOutboxHandler for SendReceipt {
+    async fn handle(&self, envelope: &EventEnvelope) -> Result<()> {
         // external I/O here — at-least-once, so make it idempotent
         Ok(())
-    });
-tokio::spawn(dispatcher.run());
+    }
+}
+
+let dispatcher = store
+    .outbox()
+    .dispatcher(Arc::new(SendReceipt))
+    .with_batch_size(50);
+loop {
+    dispatcher.run_once().await?;
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+}
 ```
 
 This is at-least-once delivery: a crash after your handler succeeds but

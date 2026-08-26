@@ -1,10 +1,14 @@
 # Projections (Postgres-Backed, Transactional)
 
-Projections are read models built from event streams. event-sauce ships **only
-one** projection model: postgres-backed and transactional. The runner applies
-each event and advances the subscription checkpoint **inside the same
-database transaction**, so a crash mid-batch never leaves the projection
-ahead of (or behind) its checkpoint.
+Projections are read models built from event streams. On the
+**event-sourced path** event-sauce ships one projection model:
+postgres-backed and transactional. The runner applies each event and
+advances the subscription checkpoint **inside the same database
+transaction**, so a crash mid-batch never leaves the projection ahead of
+(or behind) its checkpoint.
+
+(State-stored aggregates use a different, in-transaction projection model —
+see [State Storage](state-storage.md).)
 
 ## Why postgres-only?
 

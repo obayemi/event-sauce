@@ -4,11 +4,14 @@
 
 - [x] Phase 1 — `Repository<A>` trait extracted (`EventSourcedRepository` impl)
 - [x] Phase 2 — state-store core types + `StateStoredRepository`
-- [ ] Phase 3 — `InMemoryStateStore` (in progress)
-- [ ] Phase 4 — `PostgresStateStore` + projections + outbox (in progress)
-- [x] Phase 5 (core half) — `event-sourcing`/`state-store` features + CI matrix;
-      backend/facade feature wiring pending Phases 3–4
-- [ ] Phase 6 — docs + examples (draft written, alignment pending)
+- [x] Phase 3 — `InMemoryStateStore` with in-transaction projections
+- [x] Phase 4 — `PostgresStateStore` + projections + transactional outbox
+- [x] Phase 5 — core `event-sourcing`/`state-store` features, CI matrix,
+      optional-crypto backends, facade feature forwarding
+- [x] Phase 6 — docs (`docs/state-storage.md`, architecture refresh) +
+      `state-stored-order` example
+- [ ] Phase 7 — follow-ups (state-path encryption parity,
+      `backfill_from_states`, `DomainEvent` purity split)
 
 ## Goal
 
