@@ -10,9 +10,13 @@ description = "PostgreSQL backend for event-sauce event sourcing library"
 keywords = ["event-sourcing", "postgresql", "database"]
 categories = ["asynchronous", "database"]
 
+[features]
+default = ["crypto"]
+crypto = ["dep:event-sauce-crypto"]
+
 [dependencies]
 event-sauce-core = { path = "../event-sauce-core", version = "0.1.0" }
-event-sauce-crypto = { path = "../event-sauce-crypto", version = "0.1.0" }
+event-sauce-crypto = { path = "../event-sauce-crypto", version = "0.1.0", optional = true }
 sqlx = { workspace = true, features = ["postgres"] }
 async-trait.workspace = true
 async-stream.workspace = true

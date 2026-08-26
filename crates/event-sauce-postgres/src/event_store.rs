@@ -770,11 +770,14 @@ impl PostgresEventStoreBuilder {
     /// - **Schema**: "`event_sauce`" (isolates migrations from your app)
     /// - **Snapshot config**: Every 100 events
     /// - **Crypto key store**: [`PostgresCryptoKeyStore`](crate::PostgresCryptoKeyStore) with the same pool and schema
-    /// - **Crypto provider**: [`Aes256GcmProvider`](event_sauce_crypto::Aes256GcmProvider)
+    /// - **Crypto provider**: `Aes256GcmProvider` (with the default `crypto`
+    ///   feature; without it, none is installed and encrypted aggregates
+    ///   require an explicit [`crypto_provider()`](Self::crypto_provider))
     ///
     /// # Crypto auto-install
     ///
-    /// A key store and provider are always installed, even if your aggregates are
+    /// With the default `crypto` feature, a key store and provider are always
+    /// installed, even if your aggregates are
     /// not encrypted — they remain dormant until an encrypted aggregate (one whose
     /// `Aggregate::is_encrypted()` returns true, or one with `@encrypted_fields`)
     /// is committed or loaded. The default key store will create its `crypto_keys`
@@ -821,9 +824,13 @@ impl PostgresEventStoreBuilder {
                 )
             });
 
-        let crypto_provider: std::sync::Arc<dyn event_sauce_core::CryptoProvider> = self
-            .crypto_provider
-            .unwrap_or_else(|| std::sync::Arc::new(event_sauce_crypto::Aes256GcmProvider));
+        #[cfg(feature = "crypto")]
+        let crypto_provider: Option<std::sync::Arc<dyn event_sauce_core::CryptoProvider>> = Some(
+            self.crypto_provider
+                .unwrap_or_else(|| std::sync::Arc::new(event_sauce_crypto::Aes256GcmProvider)),
+        );
+        #[cfg(not(feature = "crypto"))]
+        let crypto_provider = self.crypto_provider;
 
         Ok(PostgresEventStore {
             pool,
@@ -836,7 +843,7 @@ impl PostgresEventStoreBuilder {
                 .unwrap_or(DEFAULT_APPEND_LOCK_TIMEOUT),
             checkpoint_store: self.checkpoint_store,
             crypto_key_store: Some(crypto_key_store),
-            crypto_provider: Some(crypto_provider),
+            crypto_provider,
         })
     }
 }
