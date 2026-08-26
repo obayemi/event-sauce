@@ -4,6 +4,7 @@
 //!
 //! This crate provides fast, in-memory implementations of:
 //! - `EventStore`
+//! - `StateStore`
 //! - `SnapshotStore`
 //! - `CheckpointStore`
 //!
@@ -17,8 +18,10 @@ mod checkpoint_store;
 mod crypto_key_store;
 mod event_log;
 mod event_store;
+mod state_store;
 
 pub use checkpoint_store::InMemoryCheckpointStore;
 pub use crypto_key_store::InMemoryCryptoKeyStore;
 pub use event_log::InMemoryEventLogQuery;
 pub use event_store::InMemoryEventStore;
+pub use state_store::{InMemoryProjectionContext, InMemoryStateStore, InMemoryStateStoreBuilder};
