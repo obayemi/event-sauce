@@ -12,19 +12,21 @@ categories = ["asynchronous", "database"]
 readme = "../../README.md"
 
 [dependencies]
-event-sauce-core = { path = "../event-sauce-core", version = "0.1.0" }
+event-sauce-core = { path = "../event-sauce-core", version = "0.1.0", default-features = false }
 event-sauce-memory = { path = "../event-sauce-memory", version = "0.1.0", optional = true }
 event-sauce-postgres = { path = "../event-sauce-postgres", version = "0.1.0", optional = true }
 event-sauce-macros = { path = "../event-sauce-macros", version = "0.1.0", optional = true }
 event-sauce-crypto = { path = "../event-sauce-crypto", version = "0.1.0", optional = true }
 
 [features]
-default = ["macros", "memory"]
+default = ["macros", "memory", "event-sourcing", "state-store"]
 macros = ["dep:event-sauce-macros"]
 memory = ["dep:event-sauce-memory"]
-postgres = ["dep:event-sauce-postgres"]
+postgres = ["dep:event-sauce-postgres", "event-sourcing"]
 crypto = ["dep:event-sauce-crypto"]
-full = ["macros", "memory", "postgres", "crypto"]
+event-sourcing = ["event-sauce-core/event-sourcing"]
+state-store = ["event-sauce-core/state-store"]
+full = ["macros", "memory", "postgres", "crypto", "event-sourcing", "state-store"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
@@ -52,6 +54,10 @@ required-features = ["postgres"]
 
 [[example]]
 name = "crypto-shredding"
+
+[[example]]
+name = "state-stored-order"
+required-features = ["memory", "state-store", "event-sourcing"]
 
 [[bench]]
 name = "event_application"
