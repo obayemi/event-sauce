@@ -14,10 +14,15 @@ categories = ["asynchronous", "database"]
 default = ["event-sourcing", "state-store"]
 event-sourcing = ["dep:base64", "dep:futures", "dep:tokio", "dep:tracing", "dep:zeroize"]
 state-store = []
+# The dependency graph between published payloads and the aggregates they read.
+# Pure declaration and lookup: no I/O, no transport, and nothing that knows what
+# a "payload" is. See `dependencies`.
+dependencies = ["dep:futures", "dep:inventory"]
 
 [dependencies]
 async-trait.workspace = true
 futures = { workspace = true, optional = true }
+inventory = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 uuid.workspace = true
@@ -30,6 +35,7 @@ base64 = { workspace = true, optional = true }
 zeroize = { workspace = true, optional = true }
 
 [dev-dependencies]
+async-trait.workspace = true
 tokio = { workspace = true, features = ["test-util", "macros", "rt", "rt-multi-thread"] }
 tokio-test.workspace = true
 proptest.workspace = true
