@@ -25,28 +25,58 @@ Event sourcing is a pattern where state changes are stored as a sequence of even
 ### Key Components
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                       Application Layer                      │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
-│  │   Commands   │  │   Queries    │  │   Handlers   │      │
-│  └──────────────┘  └──────────────┘  └──────────────┘      │
-└────────────┬────────────────┬──────────────────┬────────────┘
-             │                │                   │
-┌────────────┴────────────────┴───────────────────┴────────────┐
-│                     event-sauce Core                          │
-│  ┌─────────┐  ┌──────────┐  ┌──────────┐  ┌────────────┐   │
-│  │Aggregate│  │  Event   │  │EventStore│  │ Projection │   │
-│  │  Trait  │  │  Trait   │  │  Trait   │  │  & Policy  │   │
-│  └─────────┘  └──────────┘  └──────────┘  └────────────┘   │
-└────────────┬────────────────┬──────────────────┬────────────┘
-             │                │                   │
-┌────────────┴────────────────┴───────────────────┴────────────┐
-│                    Backend Implementations                    │
-│           ┌──────────┐            ┌──────────┐               │
-│           │PostgreSQL│            │ In-Memory│               │
-│           └──────────┘            └──────────┘               │
-└───────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│                      Application Layer                        │
+│   aggregates · events · commands · define_events! ·           │
+│   command_handler! · code written against R: Repository<A>    │
+└──────────────────────────────┬───────────────────────────────┘
+                               │  trait Repository<A>
+             ┌─────────────────┴──────────────────┐
+             │                                    │
+┌────────────┴─────────────┐        ┌─────────────┴────────────┐
+│ EventSourcedRepository   │        │ StateStoredRepository    │
+│   <S: EventStore, A>     │        │   <S: StateStore, A>     │
+│ (persists the pending    │        │ (persists current state  │
+│  events as a stream)     │        │  as one versioned row)   │
+└────────────┬─────────────┘        └─────────────┬────────────┘
+             │                                    │
+┌────────────┴─────────────┐        ┌─────────────┴────────────┐
+│ InMemoryEventStore       │        │ InMemoryStateStore       │
+│ PostgresEventStore       │        │ PostgresStateStore       │
+│ (streams, snapshots,     │        │ (state rows, in-tx       │
+│  policies, checkpoints,  │        │  projections, outbox     │
+│  audit log, crypto)      │        │  dispatcher)             │
+└──────────────────────────┘        └──────────────────────────┘
 ```
+
+The application layer depends on the `Repository<A>` trait, never on a
+concrete store. `EventSourcedRepository` (over the `EventStore` backends) is
+the classic event-sourcing path; `StateStoredRepository` (over the
+`StateStore` backends) persists only current state for applications that
+don't need an event log. The two are interchangeable at the composition
+root — see [state-storage.md](state-storage.md) for choosing between them
+and for the state-store feature status.
+
+### Domain / persistence separation
+
+The domain layer is pure: `Entity`, `Aggregate`, `ApplyEvent`, the
+`AggregateRoot` lifecycle (`UninitAggregateRoot` → `AggregateRoot` →
+`DeletedAggregateRoot`), and `Specification` know nothing about storage.
+`AggregateRoot::apply()` applies events eagerly and buffers them as
+`pending_events`, so an aggregate always carries both its current state and
+the changes that produced it. That single design choice is what makes the
+persistence style pluggable:
+
+- an **event-sourced** repository persists the buffered events (state is
+  derived by replay);
+- a **state-stored** repository persists the entity itself (`Entity` is
+  already `Serialize + DeserializeOwned`), with `AggregateVersion` acting as
+  an optimistic-lock row version.
+
+Everything above the `Repository` trait — aggregates, events, commands, the
+`define_events!` and `command_handler!` macros, validation — is identical in
+both modes; everything below it is a persistence detail chosen once, at the
+composition root.
 
 ## Crate Structure
 
@@ -62,7 +92,8 @@ The foundation providing traits and types:
 - **DomainEvent** - Something that happened in the domain
 - **ApplyEvent** - Trait for event validation and state mutation
 - **EventApplicator** - Dispatches event enum variants to individual `ApplyEvent` impls
-- **EventStore** - Persistence abstraction
+- **Repository** - Persistence-style-agnostic aggregate persistence trait (`load`/`save`/`modify`/`create_*`); `EventSourcedRepository` is its event-store-backed implementation
+- **EventStore** - Event-stream persistence abstraction
 - **EventFilter** - Predicate for selecting events a consumer cares about
 - **CheckpointStore** - Per-consumer position tracking and leasing for projections and policies
 - **Version** - Optimistic concurrency control
@@ -230,47 +261,86 @@ Repeat
 
 ### EventStore Trait
 
+A condensed view of the real trait in
+`crates/event-sauce-core/src/event_store.rs` (doc comments trimmed; all
+methods use the crate-wide `Result<T>` / `Error`):
+
 ```rust
 #[async_trait]
 pub trait EventStore: Send + Sync {
-    type Error;
+    // ── Primitives (backends must implement) ─────────────────────────────
 
-    // Append events with optimistic concurrency
+    // Append events with optimistic concurrency, enforcing uniqueness
+    // `claims` in the same write (`clear_claims` drops all claims on
+    // deletion). MUST assign global positions in commit order — the
+    // guarantee that makes `position > checkpoint` scans safe.
     async fn append(
         &self,
-        stream_id: &str,
-        stream_type: &str,
-        expected_version: Version,
+        stream_id: StreamId,
         events: Vec<EventEnvelope>,
-    ) -> Result<(), Self::Error>;
+        expected_version: AggregateVersion,
+        claims: Vec<AggregateClaim>,
+        clear_claims: bool,
+    ) -> Result<()>;
 
-    // Append several streams as one logical write — the consistency-boundary
-    // primitive behind atomic multi-aggregate policy reactions and
-    // `Repository::save_all`. PostgreSQL runs the whole batch in one
-    // transaction (all-or-nothing); the default (and the in-memory backend)
-    // loops `append` per stream and is NOT atomic.
-    async fn append_batch(&self, commits: Vec<StreamCommit>) -> Result<(), Self::Error>;
-
-    // Load events from a specific stream
+    // Load one stream's events from a version onward.
     async fn load_stream(
         &self,
-        stream_id: &str,
-        from_version: Version,
-    ) -> Result<impl Stream<Item = Result<EventEnvelope, Self::Error>> + Send, Self::Error>;
+        stream_id: StreamId,
+        from_version: AggregateVersion,
+    ) -> Result<impl Stream<Item = Result<EventEnvelope>> + Send>;
 
-    // Stream all events (for projections). Each item is an `EventLogEntry`
-    // pairing the store-issued global `Position` with the `EventEnvelope`;
-    // checkpoint `entry.position` of the last processed entry to resume.
+    // Stream the global log after `from_position`, ascending; each item is
+    // an `EventLogEntry` pairing a `Position` with its `EventEnvelope`.
     async fn stream_all(
         &self,
         from_position: Position,
-    ) -> Result<impl Stream<Item = Result<EventLogEntry, Self::Error>> + Send, Self::Error>;
+    ) -> Result<impl Stream<Item = Result<EventLogEntry>> + Send>;
 
-    // Highest position in the log (or `Position::start()` if empty). New
-    // consumers checkpoint this to skip existing history.
-    async fn max_position(&self) -> Result<Position, Self::Error>;
+    // Current version of a stream.
+    async fn get_version(&self, stream_id: StreamId) -> Result<AggregateVersion>;
+
+    // ── Default methods (generic; backends override for performance/atomicity)
+
+    // Multi-stream write — the consistency-boundary primitive behind
+    // `Repository::save_all` and atomic policy reactions. The default loops
+    // `append` (NOT atomic); PostgreSQL overrides it with one transaction.
+    async fn append_batch(&self, commits: Vec<StreamCommit>) -> Result<()>;
+
+    // Highest position in the log (`Position::start()` if empty) — what a
+    // brand-new consumer checkpoints to skip history. Default scans
+    // `stream_all`; PostgreSQL answers with a cheap MAX query.
+    async fn max_position(&self) -> Result<Position>;
+
+    async fn stream_exists(&self, stream_id: StreamId) -> Result<bool>;
+
+    // Snapshot cache hooks — no-ops by default, wired by backends that
+    // support snapshotting.
+    async fn save_snapshot(&self, snapshot: Snapshot) -> Result<()>;
+    async fn load_snapshot(&self, stream_id: StreamId) -> Result<Option<Snapshot>>;
+    fn snapshot_config(&self) -> &SnapshotConfig;
+
+    // Optional capabilities — `None` unless the backend provides them.
+    fn checkpoint_store(&self) -> Option<CheckpointStoreRef>;
+    fn crypto_key_store(&self) -> Option<&dyn CryptoKeyStore>;
+    fn crypto_provider(&self) -> Option<&dyn CryptoProvider>;
+
+    // Conveniences built on the above.
+    fn policy_runner(self: &Arc<Self>) -> Result<PolicyRunner<Self>>;
+    fn repository<A>(self: &Arc<Self>) -> EventSourcedRepository<Self, A>;
+
+    // ES-specific commit orchestration: drain an aggregate's pending events
+    // into envelopes, encrypt if needed, append with concurrency control,
+    // snapshot per strategy, clear pending on success. `commit_deleted` is
+    // the tombstone-writing sibling for `DeletedAggregateRoot`.
+    async fn commit<A>(&self, aggregate: &mut AggregateRoot<A>) -> Result<()>;
+    async fn commit_deleted<A>(&self, aggregate: &mut DeletedAggregateRoot<A>) -> Result<()>;
 }
 ```
+
+Application code normally doesn't call the store directly — it goes through
+`Repository<A>` (usually obtained via `store.repository::<A>()`), which
+delegates `save`/`save_deleted` to `commit`/`commit_deleted`.
 
 ### Event Consumption Primitives
 

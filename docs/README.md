@@ -25,6 +25,7 @@ Welcome to the event-sauce documentation! This directory contains comprehensive 
 ## Guides
 
 - **[Architecture Overview](architecture.md)** - Understand the system design, crate structure, and design decisions
+- **[State Storage](state-storage.md)** - Run the same domain layer without an event log: choosing a persistence style, in-transaction projections, and the transactional outbox
 - **[TDD Workflow](tdd-workflow.md)** - Learn how to use Test-Driven Development with event sourcing
 
 ## Examples
@@ -101,20 +102,23 @@ pub async fn handle_add_item_command(
 
 ### The Repository Pattern
 
+Don't hand-roll a repository — the `Repository` trait ships with the
+library, and application code written against it is independent of the
+persistence style (see [State Storage](state-storage.md)):
+
 ```rust
-pub struct CartRepository {
-    store: Arc<dyn EventStore>,
+async fn checkout<R: Repository<ShoppingCart>>(
+    repo: &R,
+    cart_id: EntityId,
+) -> Result<()> {
+    repo.modify(cart_id, |cart| cart.checkout()).await?;
+    Ok(())
 }
 
-impl CartRepository {
-    pub async fn save(&self, cart: &mut AggregateRoot<ShoppingCart>) -> Result<()> {
-        self.store.commit(cart).await
-    }
-
-    pub async fn load(&self, id: EntityId) -> Result<AggregateRoot<ShoppingCart>> {
-        load(&*self.store, id).await
-    }
-}
+// At the composition root:
+let store = Arc::new(PostgresEventStore::new(pool));
+let repo = store.repository::<ShoppingCart>(); // EventSourcedRepository
+checkout(&repo, cart_id).await?;
 ```
 
 ### The Projection Pattern
