@@ -4,8 +4,6 @@
 
 > **Note**: event-sauce is **not production-ready**. The current architecture targets single-node deployments and has not been validated for horizontal scalability or high-throughput distributed workloads. Use it for prototyping, learning, and small-scale applications.
 
-> 🔧 **Audit & hardening** — a [2026-06-04 audit](ISSUES.md) (benchmarked against Python's `eventsourcing`) found a latent correctness cluster invisible to the single-threaded test suite. **All 30 confirmed findings — every critical, high, medium, and low — are now fixed** (TDD, each with a regression test), including: global-ordering/`Position` plumbing + commit-order serialization, cross-process `ConcurrencyConflict`, event **upcasting** + rename aliases, snapshot schema-versioning with replay fallback, fail-closed + AAD-bound encryption and unified crypto-shredding, lease **fencing**, atomic multi-aggregate writes, the empty-stream `load()` panic, and apply-failure poisoning. See **[ISSUES.md](ISSUES.md)** for the full catalog, per-issue status, and fix designs (each verified with `file:line` evidence). Four plausible-but-wrong claims were adversarially refuted and recorded there.
-
 [![CI](https://github.com/yourusername/event-sauce/workflows/CI/badge.svg)](https://github.com/yourusername/event-sauce/actions)
 [![Coverage](https://codecov.io/gh/yourusername/event-sauce/branch/main/graph/badge.svg)](https://codecov.io/gh/yourusername/event-sauce)
 [![Crates.io](https://img.shields.io/crates/v/event-sauce.svg)](https://crates.io/crates/event-sauce)
