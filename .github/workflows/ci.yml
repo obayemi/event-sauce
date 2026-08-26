@@ -174,15 +174,15 @@ jobs:
         run: cargo audit
 
   msrv:
-    name: Check MSRV (1.93)
+    name: Check MSRV (1.98)
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
 
-      - name: Install Rust 1.93
-        uses: dtolnay/rust-toolchain@1.93.0
+      - name: Install Rust 1.98
+        uses: dtolnay/rust-toolchain@1.98.0
 
       - name: Cache dependencies
         uses: Swatinem/rust-cache@v2

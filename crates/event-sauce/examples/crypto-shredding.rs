@@ -275,7 +275,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Show the encrypted payload shape
             println!(
                 "      Payload: {{\"__encrypted\": \"{}...\"}}",
-                &envelope.event_data["__encrypted"]
+                envelope.event_data["__encrypted"]
                     .as_str()
                     .unwrap_or("")
                     .chars()

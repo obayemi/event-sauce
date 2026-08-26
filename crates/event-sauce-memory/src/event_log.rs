@@ -94,7 +94,7 @@ impl EventLogQuery for InMemoryEventLogQuery {
         let mut sorted = filtered;
         match params.order_by {
             EventLogOrder::ByIdDesc => sorted.sort_by(|(a, _), (b, _)| b.cmp(a)),
-            EventLogOrder::ByIdAsc => sorted.sort_by(|(a, _), (b, _)| a.cmp(b)),
+            EventLogOrder::ByIdAsc => sorted.sort_by_key(|(idx, _)| *idx),
             EventLogOrder::AggregateTypeAsc => {
                 sorted.sort_by(|(ia, ea), (ib, eb)| {
                     ea.aggregate_type

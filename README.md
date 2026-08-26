@@ -7,7 +7,7 @@
 [![CI](https://github.com/obayemi/event-sauce/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/obayemi/event-sauce/actions/workflows/ci.yml)
 [![Coverage](https://codecov.io/gh/obayemi/event-sauce/branch/master/graph/badge.svg)](https://codecov.io/gh/obayemi/event-sauce)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
-[![Rust](https://img.shields.io/badge/rust-1.93%2B-orange.svg)](https://www.rust-lang.org)
+[![Rust](https://img.shields.io/badge/rust-1.98%2B-orange.svg)](https://www.rust-lang.org)
 
 ## The idea
 
@@ -507,7 +507,7 @@ See [CLAUDE.md](CLAUDE.md#trait-design) for detailed guidelines and examples.
 
 ### Prerequisites
 
-- Rust 1.93+ (latest stable)
+- Rust 1.98+ (latest stable)
 - Jujutsu (`cargo install jj-cli` or `brew install jj`)
 - Docker (for PostgreSQL testcontainers)
 
