@@ -1,3 +1,5 @@
+#![cfg(feature = "crypto")]
+
 //! Integration tests for encrypted aggregate crypto-shredding support.
 
 use event_sauce_core::Repository;

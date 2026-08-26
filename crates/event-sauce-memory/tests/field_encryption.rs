@@ -1,3 +1,5 @@
+#![cfg(feature = "crypto")]
+
 //! Integration tests for field-level encryption support.
 
 use event_sauce_core::Repository;

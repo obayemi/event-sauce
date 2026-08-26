@@ -341,12 +341,15 @@ impl InMemoryEventStoreBuilder {
     /// - **Snapshot config**: Every 100 events
     /// - **Checkpoint store**: None
     /// - **Crypto key store**: [`InMemoryCryptoKeyStore`](super::InMemoryCryptoKeyStore)
-    /// - **Crypto provider**: [`Aes256GcmProvider`](event_sauce_crypto::Aes256GcmProvider)
+    /// - **Crypto provider**: `Aes256GcmProvider` (with the default `crypto`
+    ///   feature; without it, none is installed and encrypted aggregates
+    ///   require an explicit [`crypto_provider()`](Self::crypto_provider))
     ///
     /// # Crypto auto-install
     ///
-    /// A key store and provider are always installed, even if your aggregates are
-    /// not encrypted — they remain dormant until an encrypted aggregate (one whose
+    /// With the default `crypto` feature, a key store and provider are always
+    /// installed, even if your aggregates are not encrypted — they remain
+    /// dormant until an encrypted aggregate (one whose
     /// `Aggregate::is_encrypted()` returns true, or one with `@encrypted_fields`)
     /// is committed or loaded. Override either via
     /// [`crypto_key_store()`](Self::crypto_key_store) /
@@ -375,10 +378,13 @@ impl InMemoryEventStoreBuilder {
                 self.crypto_key_store
                     .unwrap_or_else(|| Arc::new(super::InMemoryCryptoKeyStore::new())),
             ),
+            #[cfg(feature = "crypto")]
             crypto_provider: Some(
                 self.crypto_provider
                     .unwrap_or_else(|| Arc::new(event_sauce_crypto::Aes256GcmProvider)),
             ),
+            #[cfg(not(feature = "crypto"))]
+            crypto_provider: self.crypto_provider,
         }
     }
 }
@@ -1221,6 +1227,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "crypto")]
     #[tokio::test]
     async fn test_crypto_provider_available_by_default() {
         let store = InMemoryEventStore::new();

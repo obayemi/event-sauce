@@ -1,3 +1,5 @@
+#![cfg(feature = "crypto")]
+
 //! Regression tests for M7: encrypted aggregates are schema-migratable via the
 //! read-time upcast hook.
 //!
