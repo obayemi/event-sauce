@@ -1,6 +1,6 @@
 # event-sauce
 
-**Event sourcing for Rust** - Simple by default, powerful when needed.
+**Event-driven modeling and event sourcing for Rust**
 
 > **Note**: event-sauce is **not production-ready**. The current architecture targets single-node deployments and has not been validated for horizontal scalability or high-throughput distributed workloads. Use it for prototyping, learning, and small-scale applications.
 
@@ -11,46 +11,56 @@
 [![Crates.io](https://img.shields.io/crates/v/event-sauce.svg)](https://crates.io/crates/event-sauce)
 [![Documentation](https://docs.rs/event-sauce/badge.svg)](https://docs.rs/event-sauce)
 
+## The idea
+
+You model your domain as **event-driven aggregates**: every state change is
+an explicit event that is validated, applied, and observable. Modeling
+stays light — `define_events!` and `command_handler!` generate the
+boilerplate, so an aggregate is little more than its state, its events,
+and the business rules that guard them.
+
+Storage is just as hands-off: aggregates are loaded and saved through the
+`Repository` trait, so command handlers read as plain domain code — load,
+apply a command, save — while the store takes care of concurrency control,
+uniqueness claims, and event propagation.
+
+The library is **CQRS-oriented** throughout: aggregates are the write
+model — consistency boundaries that guard commands, and deliberately poor
+read models. Queries never touch aggregates; they go through projections,
+read models kept up to date from the very events your aggregates emit.
+
 ## Features
 
-- 🚀 **Modern Rust**: Built with latest stable dependencies (Tokio 1.48, SQLx 0.8)
-- ✅ **100% Test Coverage**: Strict TDD with property-based testing
-- 🔄 **Async Streaming**: Memory-efficient event processing with backpressure
-- 🗄️ **Multiple Backends**: PostgreSQL, in-memory
-- 🎯 **Type-Safe**: Compile-time guarantees with derive macros
-- 📦 **Battle-Tested Patterns**: Optimistic concurrency, snapshots, distributed locking
-- 🧪 **Testing First-Class**: Built-in test helpers and fixtures
+### Event-driven core
+
+- 🎯 **Type-Safe Events**: `ApplyEvent` trait for self-contained event logic — validate → apply → post-validate
+- 📝 **Declarative Macros**: `define_events!` (events with inline validation), `command_handler!` (command methods), `#[aggregate]`, `#[derive(Event)]`, `#[derive(AggregateId)]`, `#[derive(AggregateError)]`, `#[specification]`
+- 🏗️ **Repository Pattern**: persistence-agnostic `Repository` trait with `EventSourcedRepository` and `StateStoredRepository` implementations
+- 🔀 **CQRS-Oriented**: aggregates are the write model; queries go through projections built from your events
 - 🛡️ **Rich Validation**: Aggregate-specific errors with business rule enforcement
 - 🧩 **Specification Pattern**: Composable, reusable business rules with AND/OR/NOT combinators
-- ⚡ **Optimized Replay**: Fast event replay without re-validation
-- 🔐 **Encryption & Crypto-Shredding**: Full-aggregate or field-level encryption with pluggable providers
 - 🚪 **Init Events**: Type-state aggregate construction — no more invalid uninitialized states
-- 👤 **Actor Events**: Permission validation tied to actor identity, with automatic audit trails
-- 🔗 **Policies**: Cross-aggregate event orchestration with causation tracking, checkpoint-based resumption, and configurable error handling
+- 👤 **Actor Events**: Permission validation tied to actor identity
 - 🔒 **Uniqueness Claims**: Cross-aggregate uniqueness constraints enforced transactionally (e.g., unique emails)
+- 📦 **Optimistic Concurrency**: Version-checked writes with typed `ConcurrencyConflict` errors
+- 🗄️ **Multiple Backends**: PostgreSQL, in-memory
+- 🧪 **Testing First-Class**: Built-in test helpers and fixtures; 🚀 latest stable dependencies (Tokio 1.48, SQLx 0.8); strict TDD with property-based testing
+
+### Event sourcing
+
 - 📋 **Audit Log**: Paginated event log query with filters by actor, aggregate, event type, and time range
-- 🔒 **Uniqueness Claims**: Cross-aggregate uniqueness constraints enforced transactionally (e.g., unique emails)
+- 🔄 **Async Streaming & Replay**: Memory-efficient event processing with backpressure; fast replay without re-validation
+- 🔗 **Policies**: Cross-aggregate event orchestration with causation tracking, checkpoint-based resumption, and configurable error handling
+- 📊 **Checkpointed Projections**: Transactional postgres-backed read models, rebuildable from history (`PostgresProjection`)
+- 🔐 **Encryption & Crypto-Shredding**: Full-aggregate or field-level encryption with pluggable providers
+- 📸 **Snapshots**: Replay optimization with schema versioning and replay fallback
+- ⏱️ **Battle-Tested Patterns**: Global ordering, distributed lease fencing, atomic multi-aggregate writes
 
-### Modern Event Sourcing Features
+### State storage
 
-event-sauce provides a powerful and ergonomic event sourcing experience with minimal boilerplate:
-
-- **📝 Declarative Macros**: Build event-sourced aggregates with minimal code
-  - `#[derive(AggregateId)]` - ID types with Display
-  - `#[derive(AggregateError)]` - Error marker trait
-  - `#[aggregate_error(...)]` - Error type with spec support
-  - `#[specification(...)]` - Specification struct generation
-  - `#[aggregate(...)]` - Aggregate infrastructure management
-  - `#[derive(Event)]` - Event dispatching
-  - `define_events!` - Event definitions with validation
-  - `command_handler!` - Command method generation
-  - `PostgresProjection` - Transactional postgres-backed read models
-- **🎯 Type-Safe Events**: `ApplyEvent` trait for self-contained event logic
-- **✅ Validation & Replay**: Separate validation from application for fast replay
-- **🛡️ Rich Errors**: Aggregate-specific error types with `AggregateError` trait
-- **⚡ Zero-Cost Abstractions**: All macro-generated code optimizes away
-- **🏗️ Repository Pattern**: High-level `Repository` trait for clean, persistence-agnostic aggregate operations (with `EventSourcedRepository` and `StateStoredRepository` implementations)
-- **🗃️ State Storage**: Run the same domain code without an event log — one versioned state row per aggregate, in-transaction projections, and a transactional outbox (see `docs/state-storage.md`)
+- 🗃️ **State Storage**: One versioned state row per aggregate — no log to operate
+- ⚡ **In-Transaction Projections**: Read models updated inside the save transaction — exactly-once, read-your-writes, rollback on failure
+- 📬 **Transactional Outbox**: Durable at-least-once side effects, enqueued atomically with the state write
 
 ## Quick Start
 
@@ -122,7 +132,16 @@ command_handler! {
 }
 ```
 
-That's it! Your aggregate is ready to use with full event sourcing capabilities.
+That's it! Pair your aggregate with a store and start issuing commands:
+
+```rust
+let store = Arc::new(InMemoryEventStore::builder().build());
+let repo = store.repository::<Counter>();
+
+let mut counter = repo.create();
+counter.increment(5)?;
+repo.save(&mut counter).await?;
+```
 
 ### Init Events (Type-State Construction)
 
@@ -430,34 +449,40 @@ event-sauce = { version = "0.1", features = ["postgres"] }
 
 - `macros` (default) - Derive macros for aggregates and events
 - `memory` (default) - In-memory backend for testing
-- `postgres` - PostgreSQL backend
+- `event-sourcing` (default) - The event-sourced persistence style: `EventStore`, snapshots, checkpoints, policies, audit log, encryption
+- `state-store` (default) - The state-stored persistence style: `StateStore`, in-transaction projections
+- `postgres` - PostgreSQL backend (implies `event-sourcing`)
 - `crypto` - Encryption support (AES-256-GCM provider, key stores)
 - `full` - All features enabled
+
+The event-driven domain layer (aggregates, events, commands, the `Repository`
+trait, and the macros) is always available; the two persistence styles are
+independent, additive features.
 
 ## Architecture
 
 ```
-┌───────────────────────────────────────────────────────────┐
-│                        Application                        │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐     │
-│  │   Services   │  │  Aggregates  │  │  Projections │     │
-│  └──────────────┘  └──────────────┘  └──────────────┘     │
-└────────────┬────────────────┬───────────────────┬─────────┘
-             │                │                   │
-┌────────────┴────────────────┴───────────────────┴─────────┐
-│                     event-sauce Core                      │
-│  ┌─────────┐  ┌──────────┐  ┌──────────┐  ┌────────────┐  │
-│  │Aggregate│  │  Event   │  │EventStore│  │ Projection │  │
-│  │  Trait  │  │  Trait   │  │  Trait   │  │  & Policy  │  │
-│  └─────────┘  └──────────┘  └──────────┘  └────────────┘  │
-└────────────┬────────────────┬───────────────────┬─────────┘
-             │                │                   │
-┌────────────┴────────────────┴───────────────────┴──────────┐
-│                      Backends                              │
-│           ┌──────────┐            ┌──────────┐             │
-│           │PostgreSQL│            │ In-Memory│             │
-│           └──────────┘            └──────────┘             │
-└────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────┐
+│                        Application                         │
+│      aggregates · events · commands · R: Repository<A>     │
+└─────────────────────────────┬──────────────────────────────┘
+                              │
+┌─────────────────────────────┴──────────────────────────────┐
+│              event-sauce Core (event-driven domain)        │
+│   Aggregate · ApplyEvent · Specification · Repository      │
+└──────────────┬──────────────────────────────┬──────────────┘
+               │                              │
+   EventSourcedRepository          StateStoredRepository
+   (EventStore trait)              (StateStore trait)
+               │                              │
+┌──────────────┴──────────────┐ ┌─────────────┴──────────────┐
+│  Event-sourced backends     │ │  State-stored backends     │
+│  PostgresEventStore         │ │  PostgresStateStore        │
+│  InMemoryEventStore         │ │  InMemoryStateStore        │
+│  + snapshots, checkpoints,  │ │  + in-transaction          │
+│    policies, audit log,     │ │    projections,            │
+│    crypto-shredding         │ │    transactional outbox    │
+└─────────────────────────────┘ └────────────────────────────┘
 ```
 
 ### Design Principle: Generic Implementation First
@@ -670,7 +695,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ### Guides
 
-- **[Getting Started Guide](docs/getting-started.md)** - Your first event-sourced application
+- **[Getting Started Guide](docs/getting-started.md)** - Your first event-driven application
+- **[State Storage](docs/state-storage.md)** - Choosing between the two storage options: event sourcing vs log-free state storage
 - **[Events Guide](docs/events.md)** - Event definitions, init events, actor events, and validation
 - **[Aggregates Guide](docs/aggregates.md)** - Aggregate design, type-state construction
 - **[Validation Guide](docs/validation.md)** - Business rule validation and specification pattern
@@ -711,7 +737,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 - [x] **Phase 4: Derive macros (event-sauce-macros)** - ✅ 78 tests
 - [x] **Phase 5: Event consumption primitives (event-sauce-core)** - ✅ Integrated into core (`CheckpointStore`, `EventFilter`)
 - [x] **Phase 6: Examples and documentation** - ✅ 5 examples, comprehensive guides
-- [ ] **Phase 7: Correctness hardening** - 🔴 resolve the audit findings in [ISSUES.md](ISSUES.md) (global-ordering/Position cluster, OCC error mapping, upcasting, encryption fail-closed, lease fencing)
+- [x] **Phase 7: Correctness hardening** - ✅ all 30 audit findings in [ISSUES.md](ISSUES.md) fixed with regression tests
+- [x] **Phase 7.5: Domain/persistence split** - ✅ `Repository` trait, state-stored persistence (`StateStore`, in-transaction projections, transactional outbox), feature flags
 - [ ] Phase 8: v0.1.0 release
 
 ## License

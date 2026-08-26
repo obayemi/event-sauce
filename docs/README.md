@@ -1,21 +1,30 @@
 # event-sauce Documentation
 
-Welcome to the event-sauce documentation! This directory contains comprehensive guides to help you build event-sourced applications in Rust.
+Welcome to the event-sauce documentation! This directory contains
+comprehensive guides to help you build event-driven applications in Rust —
+aggregates whose every state change is an explicit, validated event. The
+library is CQRS-oriented: aggregates are the write model (DDD aggregates
+make poor read models), and queries go through projections built from your
+events.
 
 ## Getting Started
 
-- **[Getting Started Guide](getting-started.md)** - Start here if you're new to event-sauce or event sourcing
+- **[Getting Started Guide](getting-started.md)** - Start here if you're new to event-sauce or event-driven modeling
+- **[State Storage](state-storage.md)** - Choosing a persistence style: what each mode guarantees, in-transaction projections, and the transactional outbox
 
 ## Core Concepts
 
 - **[Aggregates](aggregates.md)** - Business entities and consistency boundaries
 - **[Events](events.md)** - Domain events and event modeling
+- **[Validation](validation.md)** - Event validation and business rules
+- **[Claims](claims.md)** - Cross-aggregate uniqueness constraints (e.g., unique emails)
+
+## Event Sourcing
+
 - **[Event Store](event-store.md)** - Persisting and loading event streams
 - **[Projections](projections.md)** - Building read models with transactional, durable delivery
 - **[Policies](policies.md)** - Cross-aggregate event orchestration with causation tracking
-- **[Claims](claims.md)** - Cross-aggregate uniqueness constraints (e.g., unique emails)
 - **[Audit Log](audit-log.md)** - Event log queries, actor tracking, and causation tracing
-- **[Validation](validation.md)** - Event validation and business rules
 
 ## Production Deployment
 
@@ -25,7 +34,6 @@ Welcome to the event-sauce documentation! This directory contains comprehensive 
 ## Guides
 
 - **[Architecture Overview](architecture.md)** - Understand the system design, crate structure, and design decisions
-- **[State Storage](state-storage.md)** - Run the same domain layer without an event log: choosing a persistence style, in-transaction projections, and the transactional outbox
 - **[TDD Workflow](tdd-workflow.md)** - Learn how to use Test-Driven Development with event sourcing
 
 ## Examples
@@ -103,8 +111,7 @@ pub async fn handle_add_item_command(
 ### The Repository Pattern
 
 Don't hand-roll a repository — the `Repository` trait ships with the
-library, and application code written against it is independent of the
-persistence style (see [State Storage](state-storage.md)):
+library:
 
 ```rust
 async fn checkout<R: Repository<ShoppingCart>>(

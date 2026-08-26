@@ -1,8 +1,10 @@
 //! # event-sauce
 //!
-//! Production-ready event sourcing for Rust.
+//! Event-driven modeling and event sourcing for Rust.
 //!
-//! Simple by default, powerful when needed.
+//! Aggregates express every state change as an explicit, validated event,
+//! persisted behind the [`Repository`] trait. Simple by default, powerful
+//! when needed.
 //!
 //! ## Quick Start
 //!

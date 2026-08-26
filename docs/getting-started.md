@@ -436,9 +436,7 @@ async fn handle_increment_command(
 ### Using the Repository Pattern
 
 For cleaner code, use the `Repository` trait and its event-store-backed
-implementation, `EventSourcedRepository` (returned by `store.repository()`).
-Application code written against `Repository` stays independent of the
-persistence style:
+implementation, `EventSourcedRepository` (returned by `store.repository()`):
 
 ```rust
 use std::sync::Arc;

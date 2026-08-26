@@ -1,6 +1,6 @@
 //! # event-sauce-core
 //!
-//! Core traits and types for the event-sauce event sourcing library.
+//! Core traits and types for the event-sauce event-driven framework.
 //!
 //! This crate provides the fundamental building blocks for event-driven systems:
 //! - `Entity` trait for domain objects with identity

@@ -22,6 +22,15 @@ Event sourcing is a pattern where state changes are stored as a sequence of even
 - **Event replay** - Rebuild state from events
 - **Event-driven architecture** - React to domain events
 
+### CQRS
+
+event-sauce is CQRS-oriented: commands and queries take separate paths.
+Aggregates are the **write model** — consistency boundaries that validate
+commands and emit events. They are deliberately poor read models: small,
+normalized around invariants, and loaded one at a time. Queries never touch
+aggregates; they go through **projections**, read models denormalized for
+reading and kept up to date from the emitted events.
+
 ### Key Components
 
 ```
