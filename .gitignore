@@ -31,3 +31,6 @@ Thumbs.db
 
 # direnv
 .direnv/
+
+# jj worktrees
+/.worktree/
