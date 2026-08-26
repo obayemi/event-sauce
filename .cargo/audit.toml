@@ -1,0 +1,16 @@
+# Configuration for `cargo audit` (see the Security Audit CI job).
+#
+# `cargo audit` scans Cargo.lock, which records every *optional* dependency of
+# every resolved package — including ones this workspace never activates. The
+# ignores below cover advisories that are unreachable from the actual build
+# graph; verify with `cargo tree --workspace --all-features -i <crate>` before
+# adding to this list.
+
+[advisories]
+ignore = [
+    # RUSTSEC-2023-0071 — `rsa` (Marvin timing sidechannel), no fixed release.
+    # Reached only through `sqlx-mysql`, and this workspace enables the
+    # `postgres` driver only, so `rsa` is never compiled or linked.
+    # `cargo tree --workspace --all-features -i rsa` finds nothing.
+    "RUSTSEC-2023-0071",
+]

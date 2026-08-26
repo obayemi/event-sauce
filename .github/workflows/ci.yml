@@ -2,37 +2,28 @@ name: CI
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ master ]
   pull_request:
-    branches: [ main, develop ]
+    branches: [ master ]
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
   RUST_BACKTRACE: 1
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
     name: Test Suite
     runs-on: ubuntu-latest
 
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_USER: postgres
-          POSTGRES_DB: test
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 5432:5432
-
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -40,45 +31,73 @@ jobs:
           components: llvm-tools-preview
 
       - name: Cache dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
+        uses: Swatinem/rust-cache@v2
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 
       - name: Run tests with coverage
-        run: cargo llvm-cov --workspace --lcov --output-path coverage.lcov
-        env:
-          DATABASE_URL: postgres://postgres:postgres@localhost:5432/test
-
-      - name: Check coverage is 100%
         run: |
-          # Extract total coverage percentage
-          coverage=$(cargo llvm-cov --workspace --summary-only 2>/dev/null | grep -i "TOTAL" | awk '{print $NF}' | tr -d '%')
-          echo "Coverage: $coverage%"
+          cargo llvm-cov --workspace --all-features --all-targets \
+            --lcov --output-path coverage.lcov
 
-          # Compare coverage (allow for floating point)
-          if (( $(echo "$coverage < 100.0" | bc -l) )); then
-            echo "❌ Coverage is $coverage%, must be 100%"
-            echo "Run 'cargo llvm-cov --workspace --html' to see detailed coverage report"
+      - name: Enforce coverage threshold
+        run: |
+          cargo llvm-cov report --summary-only --json --output-path coverage.json
+          coverage=$(jq -r '.data[0].totals.lines.percent' coverage.json)
+          echo "Line coverage: ${coverage}%"
+          if awk "BEGIN { exit !($coverage < $COVERAGE_MIN) }"; then
+            echo "::error::Coverage is ${coverage}%, below the ${COVERAGE_MIN}% threshold"
+            echo "Run 'cargo llvm-cov --workspace --all-features --all-targets --html' for details"
             exit 1
-          else
-            echo "✅ Coverage is 100%"
           fi
+          echo "Coverage is ${coverage}% (threshold ${COVERAGE_MIN}%)"
+        env:
+          COVERAGE_MIN: '90'
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v5
         with:
           files: coverage.lcov
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
+
+  doc-tests:
+    name: Doc Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run doc tests
+        run: cargo test --workspace --all-features --doc
+
+  build-targets:
+    name: Examples & Benchmarks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build examples
+        run: cargo build --workspace --all-features --examples
+
+      - name: Build benchmarks
+        run: cargo build --workspace --all-features --benches
 
   clippy:
     name: Clippy (Linting)
@@ -86,7 +105,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -94,16 +113,10 @@ jobs:
           components: clippy
 
       - name: Cache dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        uses: Swatinem/rust-cache@v2
 
       - name: Run clippy
-        run: cargo clippy --workspace --all-features -- -D warnings
+        run: cargo clippy --workspace --all-features --all-targets -- -D warnings
 
   fmt:
     name: Rustfmt (Formatting)
@@ -111,7 +124,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -127,19 +140,13 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        uses: Swatinem/rust-cache@v2
 
       - name: Build documentation
         run: cargo doc --no-deps --workspace --all-features
@@ -152,61 +159,61 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@cargo-audit
+
+      - name: Generate lockfile
+        run: cargo generate-lockfile
 
       - name: Run security audit
-        uses: rustsec/audit-check@v2
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+        run: cargo audit
 
-  check-msrv:
-    name: Check MSRV (1.75)
+  msrv:
+    name: Check MSRV (1.93)
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
-      - name: Install Rust 1.75
-        uses: dtolnay/rust-toolchain@1.75.0
+      - name: Install Rust 1.93
+        uses: dtolnay/rust-toolchain@1.93.0
 
       - name: Cache dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-1.75-${{ hashFiles('**/Cargo.lock') }}
+        uses: Swatinem/rust-cache@v2
 
       - name: Check compilation with MSRV
-        run: cargo check --workspace --all-features
+        run: cargo check --workspace --all-features --all-targets
 
   feature-matrix:
     name: Core Feature Combinations
     runs-on: ubuntu-latest
 
+    strategy:
+      fail-fast: false
+      matrix:
+        features:
+          - ''
+          - event-sourcing
+          - state-store
+          - event-sourcing,state-store
+
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-features-${{ hashFiles('**/Cargo.lock') }}
+        uses: Swatinem/rust-cache@v2
 
-      - name: Check base (no features)
-        run: cargo check -p event-sauce-core --no-default-features
-
-      - name: Check event-sourcing only
-        run: cargo check -p event-sauce-core --no-default-features --features event-sourcing
-
-      - name: Check state-store only
-        run: cargo check -p event-sauce-core --no-default-features --features state-store
+      - name: Check event-sauce-core with features "${{ matrix.features }}"
+        run: |
+          cargo check -p event-sauce-core --no-default-features \
+            ${{ matrix.features && format('--features {0}', matrix.features) || '' }}

@@ -4,10 +4,10 @@
 
 > **Note**: event-sauce is **not production-ready**. The current architecture targets single-node deployments and has not been validated for horizontal scalability or high-throughput distributed workloads. Use it for prototyping, learning, and small-scale applications.
 
-[![CI](https://github.com/yourusername/event-sauce/workflows/CI/badge.svg)](https://github.com/yourusername/event-sauce/actions)
-[![Coverage](https://codecov.io/gh/yourusername/event-sauce/branch/main/graph/badge.svg)](https://codecov.io/gh/yourusername/event-sauce)
-[![Crates.io](https://img.shields.io/crates/v/event-sauce.svg)](https://crates.io/crates/event-sauce)
-[![Documentation](https://docs.rs/event-sauce/badge.svg)](https://docs.rs/event-sauce)
+[![CI](https://github.com/obayemi/event-sauce/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/obayemi/event-sauce/actions/workflows/ci.yml)
+[![Coverage](https://codecov.io/gh/obayemi/event-sauce/branch/master/graph/badge.svg)](https://codecov.io/gh/obayemi/event-sauce)
+[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
+[![Rust](https://img.shields.io/badge/rust-1.93%2B-orange.svg)](https://www.rust-lang.org)
 
 ## The idea
 
@@ -507,7 +507,7 @@ See [CLAUDE.md](CLAUDE.md#trait-design) for detailed guidelines and examples.
 
 ### Prerequisites
 
-- Rust 1.75+ (latest stable recommended)
+- Rust 1.93+ (latest stable)
 - Jujutsu (`cargo install jj-cli` or `brew install jj`)
 - Docker (for PostgreSQL testcontainers)
 
@@ -515,7 +515,7 @@ See [CLAUDE.md](CLAUDE.md#trait-design) for detailed guidelines and examples.
 
 ```bash
 # Clone repository
-jj git clone https://github.com/yourusername/event-sauce
+jj git clone https://github.com/obayemi/event-sauce
 cd event-sauce
 
 # Run all tests (COMPREHENSIVE - includes all features, examples, bins, benches, doc tests)
@@ -590,16 +590,21 @@ cargo llvm-cov --workspace --all-features --all-targets --summary-only
 cargo llvm-cov -p event-sauce-core --all-features --all-targets --summary-only
 ```
 
-**Current Test Status: across 4 crates**
+**Current test status: 1220 tests across 6 crates**
 
-- Core: 180 tests, 100% coverage
-- Memory: 33 tests, 100% coverage
-- PostgreSQL: 39 tests (uses testcontainers - requires Docker)
-- Macros: 78 tests (Aggregate, Event, AggregateState, UI tests)
+| Crate | Tests | Line coverage |
+|---|---|---|
+| `event-sauce-core` | 755 | 93.7% |
+| `event-sauce-memory` | 186 | 98.2% |
+| `event-sauce-postgres` | 129 | 93.1% |
+| `event-sauce-macros` | 121 | 79.6% |
+| `event-sauce` | 16 | — (re-exports) |
+| `event-sauce-crypto` | 13 | 99.4% |
+
+CI enforces a 90% workspace line-coverage floor.
 
 The PostgreSQL tests use [testcontainers](https://github.com/testcontainers/testcontainers-rs) to automatically spin up isolated PostgreSQL instances. Tests run automatically in CI and locally with Docker installed.
 
-CI enforces minimum 95% coverage - all PRs must maintain this standard.
 
 ### Contributing
 
@@ -608,7 +613,7 @@ See [CLAUDE.md](CLAUDE.md) for detailed development guidelines.
 All contributions must:
 
 1. Follow TDD workflow (write tests first)
-2. Maintain 100% code coverage (on all features, examples, bins, benches)
+2. Keep workspace line coverage above the 90% CI floor (on all features, examples, bins, benches)
 3. Pass all tests and clippy checks:
    - `cargo test --workspace --all-features --all-targets`
    - `cargo test --workspace --all-features --doc`
@@ -729,12 +734,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 - [x] Phase 0: Repository setup with Jujutsu
 - [x] Phase 0.5: Workspace and crate structure
-- [x] **Phase 1: Core traits and types (event-sauce-core)** - ✅ 180 tests, 100% coverage
-- [x] **Phase 2: In-memory implementation (event-sauce-memory)** - ✅ 33 tests, 100% coverage
-- [x] **Phase 3: PostgreSQL backend (event-sauce-postgres)** - ✅ 39 tests
-- [x] **Phase 4: Derive macros (event-sauce-macros)** - ✅ 78 tests
+- [x] **Phase 1: Core traits and types (event-sauce-core)** - ✅ 755 tests
+- [x] **Phase 2: In-memory implementation (event-sauce-memory)** - ✅ 186 tests
+- [x] **Phase 3: PostgreSQL backend (event-sauce-postgres)** - ✅ 129 tests
+- [x] **Phase 4: Derive macros (event-sauce-macros)** - ✅ 121 tests
 - [x] **Phase 5: Event consumption primitives (event-sauce-core)** - ✅ Integrated into core (`CheckpointStore`, `EventFilter`)
-- [x] **Phase 6: Examples and documentation** - ✅ 5 examples, comprehensive guides
+- [x] **Phase 6: Examples and documentation** - ✅ 11 examples, comprehensive guides
 - [x] **Phase 7: Correctness hardening** - ✅ all 30 audit findings in [ISSUES.md](ISSUES.md) fixed with regression tests
 - [x] **Phase 7.5: Domain/persistence split** - ✅ `Repository` trait, state-stored persistence (`StateStore`, in-transaction projections, transactional outbox), feature flags
 - [ ] Phase 8: v0.1.0 release

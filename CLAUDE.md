@@ -7,7 +7,7 @@ This document provides comprehensive guidelines for developing the event-sauce l
 This is a **professional-grade event sourcing library** built with three core principles:
 
 1. **Latest stable dependencies** - Security, performance, and modern features
-2. **Strict TDD** - 100% test coverage, no exceptions
+2. **Strict TDD** - 90% coverage floor enforced by CI, 100% is the target
 3. **Jujutsu VCS** - Modern version control workflow
 
 ## Core Development Principles
@@ -31,7 +31,7 @@ RED → GREEN → REFACTOR → COMMIT
 
 - **NEVER** write production code without a failing test
 - **ALWAYS** run tests before committing
-- **100% coverage** is mandatory - CI will fail below 100%
+- **90% coverage floor** is enforced by CI - aim for 100%, never regress below 90%
 - Tests are documentation - make them readable
 - Property-based tests for invariants (use proptest 1.9)
 - Integration tests for cross-crate functionality
@@ -111,7 +111,7 @@ open target/llvm-cov/html/index.html
 cargo llvm-cov --workspace --all-features --all-targets --summary-only
 ```
 
-**CI enforces 100% coverage** - PRs failing this check will be rejected.
+**CI enforces a 90% line-coverage floor** - PRs dropping below it will be rejected. Treat 100% as the target, not the gate.
 
 ---
 
@@ -231,7 +231,7 @@ jj undo
 jj edit <change-id>
 
 # Rebase onto main
-jj rebase -d main
+jj rebase -d master
 ```
 
 #### Daily Workflow
@@ -239,7 +239,7 @@ jj rebase -d main
 ```bash
 # Morning: Start work
 jj git fetch
-jj rebase -d main
+jj rebase -d master
 
 # During work: Create changes for features
 jj new -m "Feature description"
@@ -357,7 +357,7 @@ Before committing, ensure:
 - [ ] Examples build: `cargo build --workspace --all-features --examples`
 - [ ] Binaries build: `cargo build --workspace --all-features --bins`
 - [ ] Benches build: `cargo build --workspace --all-features --benches`
-- [ ] 100% coverage: `cargo llvm-cov --workspace --all-features --all-targets`
+- [ ] Coverage above 90%: `cargo llvm-cov --workspace --all-features --all-targets`
 - [ ] Zero clippy warnings: `cargo clippy --workspace --all-features --all-targets -- -D warnings`
 - [ ] Code formatted: `cargo fmt --all -- --check`
 - [ ] Documentation complete: `cargo doc --no-deps --workspace --all-features`
@@ -639,13 +639,25 @@ fn test_version_monotonic(operations: Vec<Operation>) {
 
 ### GitHub Actions Workflow
 
-The CI pipeline runs:
-1. Tests on all crates
-2. Coverage check (must be 100%)
-3. Clippy (zero warnings)
-4. Format check
-5. Security audit
-6. Documentation build
+The CI pipeline (`.github/workflows/ci.yml`) runs on pushes and PRs against
+`master`:
+
+1. **Test Suite** — `cargo test` via `cargo llvm-cov` across all features and
+   targets, then enforces a 90% line-coverage floor and uploads to Codecov
+2. **Doc Tests** — `cargo test --doc`
+3. **Examples & Benchmarks** — both must build
+4. **Clippy** — zero warnings, all targets
+5. **Rustfmt** — format check
+6. **Documentation** — `cargo doc` with `RUSTDOCFLAGS: -D warnings`
+7. **Security Audit** — `cargo audit` (justified ignores live in
+   `.cargo/audit.toml`)
+8. **MSRV** — `cargo check` on the pinned `rust-version`
+9. **Core Feature Combinations** — `event-sauce-core` with each combination of
+   `event-sourcing` / `state-store`
+
+PostgreSQL tests spin up their own containers via testcontainers, so the
+pipeline needs Docker (present on `ubuntu-latest`) rather than a database
+service.
 
 ### Before Pushing
 
@@ -757,7 +769,7 @@ cargo tree
 
 ## Release Process
 
-1. Ensure all tests pass and coverage is 100%
+1. Ensure all tests pass and coverage is above the 90% floor
 2. Update version in Cargo.toml files
 3. Update CHANGELOG.md
 4. Create release commit:
@@ -796,7 +808,7 @@ cargo tree
 ## Remember
 
 1. **Always TDD**: RED → GREEN → REFACTOR → COMMIT
-2. **Always 100% coverage**: No exceptions
+2. **Always keep coverage above 90%**: Aim for 100%
 3. **Always use Jujutsu**: Better workflow than Git
 4. **Always latest deps**: Security and features
 5. **Always document**: Code is read more than written

@@ -156,7 +156,7 @@ pub enum Error {
 /// [`ModifyError::save_claim_conflict`](crate::ModifyError::save_claim_conflict)
 /// so a consumer can decode a save-time uniqueness ([claim](crate::AggregateClaim))
 /// violation — a duplicate email, slug, share-code, … — into its own
-/// user-facing error taxonomy without manually destructuring the [`Error`] enum.
+/// user-facing error taxonomy without manually destructuring the [`Error`](enum@Error) enum.
 ///
 /// Borrows from the underlying error, so it carries the claim namespace and the
 /// conflicting key without cloning. `held_by` is preserved (it is the aggregate

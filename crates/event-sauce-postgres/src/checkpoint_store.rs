@@ -588,8 +588,7 @@ mod tests {
     use super::*;
     use event_sauce_core::{CheckpointStore, Position};
     use sqlx::PgPool;
-    use testcontainers::ImageExt;
-    use testcontainers_modules::{postgres::Postgres, testcontainers::runners::AsyncRunner};
+    use testcontainers_modules::postgres::Postgres;
 
     /// Test database helper using testcontainers for isolated `PostgreSQL` testing.
     struct TestDatabase {
@@ -602,9 +601,7 @@ mod tests {
         /// Creates a new test database with testcontainers.
         async fn new() -> Result<Self> {
             // Start PostgreSQL container
-            let container = Postgres::default()
-                .with_tag("16-alpine")
-                .start()
+            let container = crate::test_support::start_postgres()
                 .await
                 .map_err(|e| Error::backend("Failed to start PostgreSQL container", e))?;
 

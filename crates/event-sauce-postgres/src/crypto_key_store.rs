@@ -231,8 +231,7 @@ mod tests {
     use super::*;
     use event_sauce_core::CryptoKeyStore;
     use sqlx::PgPool;
-    use testcontainers::ImageExt;
-    use testcontainers_modules::{postgres::Postgres, testcontainers::runners::AsyncRunner};
+    use testcontainers_modules::postgres::Postgres;
     use uuid::Uuid;
 
     /// Test database helper using testcontainers.
@@ -244,9 +243,7 @@ mod tests {
 
     impl TestDatabase {
         async fn new() -> Result<Self> {
-            let container = Postgres::default()
-                .with_tag("16-alpine")
-                .start()
+            let container = crate::test_support::start_postgres()
                 .await
                 .map_err(|e| Error::backend("Failed to start PostgreSQL container", e))?;
 

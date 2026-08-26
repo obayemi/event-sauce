@@ -337,9 +337,7 @@ pub fn is_encrypted(value: &serde_json::Value) -> bool {
         let only_reserved_keys = obj.keys().all(|k| k == "__encrypted" || k == "__enc_v");
         // `__enc_v`, when present, must be numeric (a non-numeric companion makes
         // this a user payload, not ciphertext).
-        let version_is_numeric = obj
-            .get("__enc_v")
-            .map_or(true, serde_json::Value::is_number);
+        let version_is_numeric = obj.get("__enc_v").is_none_or(serde_json::Value::is_number);
         encrypted_is_string && only_reserved_keys && version_is_numeric
     })
 }

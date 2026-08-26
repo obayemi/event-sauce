@@ -591,8 +591,7 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Mutex;
     use std::time::Duration;
-    use testcontainers::ImageExt;
-    use testcontainers_modules::{postgres::Postgres, testcontainers::runners::AsyncRunner};
+    use testcontainers_modules::postgres::Postgres;
     use uuid::Uuid;
 
     struct TestDb {
@@ -603,9 +602,7 @@ mod tests {
 
     impl TestDb {
         async fn new() -> Self {
-            let container = Postgres::default()
-                .with_tag("16-alpine")
-                .start()
+            let container = crate::test_support::start_postgres()
                 .await
                 .expect("start postgres");
             let host = container.get_host().await.expect("get host");

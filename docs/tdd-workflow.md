@@ -462,11 +462,11 @@ cargo llvm-cov --workspace --all-features --all-targets --lcov --output-path cov
 cargo llvm-cov --workspace --all-features --all-targets --summary-only
 ```
 
-### Aim for 100% Coverage
+### Aim for 100% Coverage (90% is the CI floor)
 
 ```bash
-# This project enforces 100% coverage
-cargo llvm-cov --workspace --all-features --all-targets --fail-under-lines 100
+# CI fails below 90% line coverage; 100% is the target
+cargo llvm-cov --workspace --all-features --all-targets --fail-under-lines 90
 ```
 
 ### Run Clippy

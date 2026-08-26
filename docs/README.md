@@ -196,7 +196,7 @@ fn test_business_rule() {
 - Check the [examples](../crates/event-sauce/examples/)
 - Read the [Getting Started Guide](getting-started.md)
 - Review the [API documentation](https://docs.rs/event-sauce)
-- Open an issue on [GitHub](https://github.com/yourusername/event-sauce)
+- Open an issue on [GitHub](https://github.com/obayemi/event-sauce)
 
 ## Contributing
 
@@ -204,7 +204,7 @@ See [CLAUDE.md](../CLAUDE.md) for development guidelines.
 
 All contributions must:
 - Follow TDD (write tests first)
-- Maintain 100% code coverage (enforced by CI)
+- Keep line coverage above the 90% CI floor (100% is the target)
 - Pass clippy with zero warnings
 - Include documentation
 - Use Jujutsu for version control

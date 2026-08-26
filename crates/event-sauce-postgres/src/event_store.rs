@@ -1611,8 +1611,7 @@ mod tests {
     use futures::StreamExt;
     use serde_json::json;
     use sqlx::PgPool;
-    use testcontainers::ImageExt;
-    use testcontainers_modules::{postgres::Postgres, testcontainers::runners::AsyncRunner};
+    use testcontainers_modules::postgres::Postgres;
     use uuid::Uuid;
 
     /// Test database helper using testcontainers for isolated `PostgreSQL` testing.
@@ -1626,9 +1625,7 @@ mod tests {
         /// Creates a new test database with testcontainers.
         async fn new() -> Result<Self> {
             // Start PostgreSQL container
-            let container = Postgres::default()
-                .with_tag("16-alpine")
-                .start()
+            let container = crate::test_support::start_postgres()
                 .await
                 .map_err(|e| Error::backend("Failed to start PostgreSQL container", e))?;
 
@@ -2365,11 +2362,7 @@ mod tests {
     #[tokio::test]
     async fn test_migrate_creates_tables() {
         // Create a fresh database without running migrations
-        let container = Postgres::default()
-            .with_tag("16-alpine")
-            .start()
-            .await
-            .unwrap();
+        let container = crate::test_support::start_postgres().await.unwrap();
 
         let host = container.get_host().await.unwrap();
         let port = container.get_host_port_ipv4(5432).await.unwrap();
@@ -2409,11 +2402,7 @@ mod tests {
     #[tokio::test]
     async fn test_migrate_is_idempotent() {
         // Create a fresh database without running migrations
-        let container = Postgres::default()
-            .with_tag("16-alpine")
-            .start()
-            .await
-            .unwrap();
+        let container = crate::test_support::start_postgres().await.unwrap();
 
         let host = container.get_host().await.unwrap();
         let port = container.get_host_port_ipv4(5432).await.unwrap();
@@ -2568,11 +2557,7 @@ mod tests {
     #[tokio::test]
     async fn test_builder_migrate_creates_schema() {
         // Create a fresh database
-        let container = Postgres::default()
-            .with_tag("16-alpine")
-            .start()
-            .await
-            .unwrap();
+        let container = crate::test_support::start_postgres().await.unwrap();
 
         let host = container.get_host().await.unwrap();
         let port = container.get_host_port_ipv4(5432).await.unwrap();
@@ -2622,11 +2607,7 @@ mod tests {
     #[tokio::test]
     async fn test_builder_operations_use_custom_schema() {
         // Create a fresh database
-        let container = Postgres::default()
-            .with_tag("16-alpine")
-            .start()
-            .await
-            .unwrap();
+        let container = crate::test_support::start_postgres().await.unwrap();
 
         let host = container.get_host().await.unwrap();
         let port = container.get_host_port_ipv4(5432).await.unwrap();

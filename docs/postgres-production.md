@@ -823,7 +823,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 - 📚 [Architecture Overview](architecture.md)
 - 🚀 [Getting Started Guide](getting-started.md)
 - 💾 [Event Store Documentation](event-store.md)
-- 🔧 [GitHub Issues](https://github.com/yourusername/event-sauce/issues)
+- 🔧 [GitHub Issues](https://github.com/obayemi/event-sauce/issues)
 
 ---
 
