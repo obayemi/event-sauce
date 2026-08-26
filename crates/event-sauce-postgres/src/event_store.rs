@@ -547,29 +547,7 @@ impl PostgresEventStore {
             20_250_315_000_000_i64,
             "create_aggregate_claims_table",
             move |pool| async move {
-                let create_claims = format!(
-                    "CREATE TABLE IF NOT EXISTS {claims_table} (
-                        aggregate_id UUID NOT NULL,
-                        claim_type VARCHAR(255) NOT NULL,
-                        claim_hash BYTEA NOT NULL,
-                        created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-                        UNIQUE (aggregate_id, claim_type),
-                        UNIQUE (claim_type, claim_hash)
-                    )"
-                );
-                sqlx::query(&create_claims)
-                    .execute(pool)
-                    .await
-                    .map_err(|e| Error::backend("Failed to create aggregate_claims table", e))?;
-
-                let idx_query = format!(
-                    "CREATE INDEX IF NOT EXISTS idx_claims_aggregate ON {claims_table} (aggregate_id)"
-                );
-                sqlx::query(&idx_query)
-                    .execute(pool)
-                    .await
-                    .map_err(|e| Error::backend("Failed to create claims index", e))?;
-                Ok(())
+                crate::migrations::create_aggregate_claims_table(pool, &claims_table).await
             },
         )
         .await
@@ -791,7 +769,7 @@ impl PostgresEventStoreBuilder {
     ///
     /// - **Schema**: "`event_sauce`" (isolates migrations from your app)
     /// - **Snapshot config**: Every 100 events
-    /// - **Crypto key store**: [`PostgresCryptoKeyStore`] with the same pool and schema
+    /// - **Crypto key store**: [`PostgresCryptoKeyStore`](crate::PostgresCryptoKeyStore) with the same pool and schema
     /// - **Crypto provider**: [`Aes256GcmProvider`](event_sauce_crypto::Aes256GcmProvider)
     ///
     /// # Crypto auto-install
@@ -894,7 +872,7 @@ impl PostgresEventStore {
         Ok(AggregateVersion::new(current_version.unwrap_or(-1) + 1))
     }
 
-    async fn handle_claims(
+    pub(crate) async fn handle_claims(
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         claims_table: &str,
         stream_id: &StreamId,

@@ -4,6 +4,8 @@
 //!
 //! Provides production-ready `PostgreSQL` implementations of:
 //! - `EventStore` - Durable event persistence with ACID guarantees
+//! - `StateStore` - Current-state persistence (non-event-sourced style) with
+//!   in-transaction projections and a transactional outbox
 //! - `CheckpointStore` - Durable checkpoint tracking for subscriptions
 //!
 //! # Features
@@ -92,6 +94,8 @@ mod event_store;
 mod migrations;
 mod policy_outbox;
 mod projection;
+mod state_outbox;
+mod state_store;
 
 pub use backend::{PolicyDispatch, PostgresBackend, PostgresBackendBuilder};
 pub use checkpoint_store::{PostgresCheckpointStore, PostgresCheckpointStoreBuilder};
@@ -100,6 +104,10 @@ pub use event_log::PostgresEventLogQuery;
 pub use event_store::{PostgresEventStore, PostgresEventStoreBuilder};
 pub use policy_outbox::{OutboxClaim, PostgresPolicyOutbox};
 pub use projection::PostgresProjection;
+pub use state_outbox::{
+    PostgresStateOutbox, StateOutboxClaim, StateOutboxDispatcher, StateOutboxHandler,
+};
+pub use state_store::{PostgresStateStore, PostgresStateStoreBuilder};
 
 /// Outcome of a leased projection or worker run.
 ///
