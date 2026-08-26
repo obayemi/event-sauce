@@ -248,7 +248,7 @@ impl SnapshotConfigBuilder {
     /// Creates a new builder with default settings.
     ///
     /// Default settings:
-    /// - Default strategy: [`EveryNEvents(100)`] - snapshots every 100 events
+    /// - Default strategy: `EveryNEvents(100)` - snapshots every 100 events
     /// - No per-type overrides
     /// - Use snapshots on load: `true`
     #[must_use]
@@ -320,7 +320,7 @@ impl SnapshotConfigBuilder {
 
     /// Sets whether snapshots should be used when loading aggregates.
     ///
-    /// When set to `false`, the [`load`](crate::load) function will always
+    /// When set to `false`, the `load` function will always
     /// load all events from version 0, ignoring any existing snapshots.
     ///
     /// # Arguments
