@@ -31,12 +31,11 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use event_sauce_core::{
-    Aggregate, AggregateRoot, ApplyEvent, DefaultEntity, DomainEvent, Entity, EntityId, EventStore,
-    Repository,
+use event_sauce::memory::InMemoryEventStore;
+use event_sauce::{
+    Aggregate, AggregateError, AggregateRoot, ApplyEvent, DefaultEntity, DomainEvent, Entity,
+    EntityId, EventStore, Repository,
 };
-use event_sauce_macros::AggregateError;
-use event_sauce_memory::InMemoryEventStore;
 use serde::{Deserialize, Serialize};
 
 // ============================================================================
@@ -214,7 +213,7 @@ impl ApplyEvent<BankAccount> for AccountClosedEvent {
 /// - `occurred_at()` extracting timestamp from each variant
 /// - `Into` implementations for each event struct
 /// - `EventApplicator` impl that delegates to `ApplyEvent` trait
-#[derive(Debug, Clone, Serialize, Deserialize, event_sauce_macros::Event)]
+#[derive(Debug, Clone, Serialize, Deserialize, event_sauce::Event)]
 #[event(version = 1, aggregate = "BankAccount")]
 enum BankAccountEvent {
     Opened(AccountOpenedEvent),

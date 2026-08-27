@@ -263,7 +263,6 @@ fn test_add_item_to_empty_cart() {
 
 ```rust
 use event_sauce::prelude::*;
-use event_sauce_macros::AggregateError;
 use thiserror::Error;
 
 #[derive(AggregateError, Debug, Error)]

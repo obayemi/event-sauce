@@ -205,7 +205,12 @@ it, so a new consumer can be added later by replaying history.
 
 ### event-sauce (facade)
 
-Re-exports all crates with feature flags:
+The single dependency downstream crates take. It re-exports the core surface
+at its root, the backends as `event_sauce::{memory, postgres}`, and the
+AES-256-GCM provider alongside the traits it implements in
+`event_sauce::crypto`. The derive macros resolve their generated paths to
+whichever of `event-sauce` or `event-sauce-core` a crate depends on, so
+depending on the facade alone is enough:
 
 ```toml
 [dependencies]
@@ -597,7 +602,7 @@ impl DomainEvent for MyEvent {
 struct MyProjection;
 
 #[async_trait]
-impl event_sauce_postgres::PostgresProjection for MyProjection {
+impl event_sauce::postgres::PostgresProjection for MyProjection {
     const NAME: &'static str = "MyProjection";
 
     fn handled_event_types() -> Option<Vec<&'static str>> {

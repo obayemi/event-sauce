@@ -18,15 +18,14 @@
 //! cargo run --example actor-events
 //! ```
 
-use event_sauce_core::Repository;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use event_sauce_core::{
+use event_sauce::memory::InMemoryEventStore;
+use event_sauce::{
     command_handler, define_events, Aggregate, AggregateError, AggregateRoot, DefaultEntity,
-    DomainEvent, Entity, EntityId, EventApplicator, EventStore,
+    DomainEvent, Entity, EntityId, EventApplicator, EventStore, Repository,
 };
-use event_sauce_memory::InMemoryEventStore;
 use serde::{Deserialize, Serialize};
 
 // ============================================================================
@@ -80,8 +79,8 @@ impl DomainEvent for UserEvent {
             UserEvent::Registered { .. } => "User.Registered",
         }
     }
-    fn event_version(&self) -> event_sauce_core::EventVersion {
-        event_sauce_core::EventVersion::new(1)
+    fn event_version(&self) -> event_sauce::EventVersion {
+        event_sauce::EventVersion::new(1)
     }
     fn occurred_at(&self) -> DateTime<Utc> {
         match self {
@@ -362,7 +361,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // === Verify actor tracking via envelopes ===
     println!("\n=== Actor Tracking (via stored envelopes) ===\n");
 
-    use event_sauce_core::{AggregateVersion, StreamId};
+    use event_sauce::{AggregateVersion, StreamId};
     use futures::StreamExt;
     let stream_id = StreamId::new(Document::aggregate_type(), doc.entity_id().as_uuid());
     let mut event_stream = store

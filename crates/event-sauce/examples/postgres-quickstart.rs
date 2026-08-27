@@ -21,12 +21,12 @@
 
 use std::sync::Arc;
 
-use event_sauce_core::{
-    command_handler, crypto, define_events, policy, Aggregate, AggregateRoot, AggregateVersion,
-    EntityId, EventStore, Loaded, Position, Repository, Specification, StreamId,
+use event_sauce::postgres::PostgresBackend;
+use event_sauce::{
+    aggregate, aggregate_error, command_handler, crypto, define_events, policy, specification,
+    Aggregate, AggregateError, AggregateId, AggregateRoot, AggregateVersion, EntityId, EventStore,
+    Loaded, Position, Repository, Specification, StreamId,
 };
-use event_sauce_macros::{aggregate, aggregate_error, specification, AggregateError, AggregateId};
-use event_sauce_postgres::PostgresBackend;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use testcontainers_modules::postgres::Postgres;
@@ -385,28 +385,28 @@ impl OrderSummaryProjection {
 }
 
 #[async_trait::async_trait]
-impl event_sauce_postgres::PostgresProjection for OrderSummaryProjection {
+impl event_sauce::postgres::PostgresProjection for OrderSummaryProjection {
     const NAME: &'static str = "OrderSummaryProjection";
 
     fn handled_event_types() -> Option<Vec<&'static str>> {
         Some(vec![
-            <PlacedEvent as event_sauce_core::EventType>::EVENT_TYPE,
-            <ItemAddedEvent as event_sauce_core::EventType>::EVENT_TYPE,
-            <CompletedEvent as event_sauce_core::EventType>::EVENT_TYPE,
-            <CancelledEvent as event_sauce_core::EventType>::EVENT_TYPE,
+            <PlacedEvent as event_sauce::EventType>::EVENT_TYPE,
+            <ItemAddedEvent as event_sauce::EventType>::EVENT_TYPE,
+            <CompletedEvent as event_sauce::EventType>::EVENT_TYPE,
+            <CancelledEvent as event_sauce::EventType>::EVENT_TYPE,
         ])
     }
 
     async fn handle(
         &mut self,
-        envelope: &event_sauce_core::EventEnvelope,
+        envelope: &event_sauce::EventEnvelope,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    ) -> event_sauce_core::Result<()> {
+    ) -> event_sauce::Result<()> {
         let order_id = envelope.aggregate_id;
 
-        if envelope.event_type == <PlacedEvent as event_sauce_core::EventType>::EVENT_TYPE {
+        if envelope.event_type == <PlacedEvent as event_sauce::EventType>::EVENT_TYPE {
             let event: PlacedEvent = serde_json::from_value(envelope.event_data.clone())
-                .map_err(|e| event_sauce_core::Error::custom(e.to_string()))?;
+                .map_err(|e| event_sauce::Error::custom(e.to_string()))?;
             sqlx::query(
                 "INSERT INTO event_sauce.order_summary
                     (order_id, user_id, item_count, total_amount, status)
@@ -417,11 +417,10 @@ impl event_sauce_postgres::PostgresProjection for OrderSummaryProjection {
             .bind(event.user_id.as_uuid())
             .execute(&mut **tx)
             .await
-            .map_err(|e| event_sauce_core::Error::custom(e.to_string()))?;
-        } else if envelope.event_type == <ItemAddedEvent as event_sauce_core::EventType>::EVENT_TYPE
-        {
+            .map_err(|e| event_sauce::Error::custom(e.to_string()))?;
+        } else if envelope.event_type == <ItemAddedEvent as event_sauce::EventType>::EVENT_TYPE {
             let event: ItemAddedEvent = serde_json::from_value(envelope.event_data.clone())
-                .map_err(|e| event_sauce_core::Error::custom(e.to_string()))?;
+                .map_err(|e| event_sauce::Error::custom(e.to_string()))?;
             let delta = event.price * i64::from(event.quantity);
             sqlx::query(
                 "UPDATE event_sauce.order_summary
@@ -433,25 +432,23 @@ impl event_sauce_postgres::PostgresProjection for OrderSummaryProjection {
             .bind(delta)
             .execute(&mut **tx)
             .await
-            .map_err(|e| event_sauce_core::Error::custom(e.to_string()))?;
-        } else if envelope.event_type == <CompletedEvent as event_sauce_core::EventType>::EVENT_TYPE
-        {
+            .map_err(|e| event_sauce::Error::custom(e.to_string()))?;
+        } else if envelope.event_type == <CompletedEvent as event_sauce::EventType>::EVENT_TYPE {
             sqlx::query(
                 "UPDATE event_sauce.order_summary SET status = 'completed' WHERE order_id = $1",
             )
             .bind(order_id)
             .execute(&mut **tx)
             .await
-            .map_err(|e| event_sauce_core::Error::custom(e.to_string()))?;
-        } else if envelope.event_type == <CancelledEvent as event_sauce_core::EventType>::EVENT_TYPE
-        {
+            .map_err(|e| event_sauce::Error::custom(e.to_string()))?;
+        } else if envelope.event_type == <CancelledEvent as event_sauce::EventType>::EVENT_TYPE {
             sqlx::query(
                 "UPDATE event_sauce.order_summary SET status = 'cancelled' WHERE order_id = $1",
             )
             .bind(order_id)
             .execute(&mut **tx)
             .await
-            .map_err(|e| event_sauce_core::Error::custom(e.to_string()))?;
+            .map_err(|e| event_sauce::Error::custom(e.to_string()))?;
         }
 
         Ok(())

@@ -21,15 +21,14 @@
 //! cargo run --example delete-events
 //! ```
 
-use event_sauce_core::Repository;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use event_sauce_core::{
+use event_sauce::memory::InMemoryEventStore;
+use event_sauce::{
     command_handler, define_events, Aggregate, AggregateError, AggregateRoot, AggregateVersion,
-    DefaultEntity, DomainEvent, Entity, EntityId, EventApplicator, EventStore,
+    DefaultEntity, DomainEvent, Entity, EntityId, EventApplicator, EventStore, Repository,
 };
-use event_sauce_memory::InMemoryEventStore;
 use serde::{Deserialize, Serialize};
 
 // ============================================================================
@@ -66,8 +65,8 @@ impl DomainEvent for AdminEvent {
     fn event_type(&self) -> &'static str {
         "Admin.Noop"
     }
-    fn event_version(&self) -> event_sauce_core::EventVersion {
-        event_sauce_core::EventVersion::new(1)
+    fn event_version(&self) -> event_sauce::EventVersion {
+        event_sauce::EventVersion::new(1)
     }
     fn occurred_at(&self) -> DateTime<Utc> {
         Utc::now()
@@ -260,8 +259,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Using load_any()...");
     let loaded = repo.load_any(sub_id).await?;
     match loaded {
-        event_sauce_core::Loaded::Active(_) => println!("    ERROR: Should be Deleted!"),
-        event_sauce_core::Loaded::Deleted(d) => {
+        event_sauce::Loaded::Active(_) => println!("    ERROR: Should be Deleted!"),
+        event_sauce::Loaded::Deleted(d) => {
             println!(
                 "    Loaded::Deleted: plan='{}', active={}",
                 d.plan, d.active
@@ -349,7 +348,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let snapshot_store = Arc::new(
         InMemoryEventStore::builder()
-            .snapshot_config(event_sauce_core::SnapshotConfig::always())
+            .snapshot_config(event_sauce::SnapshotConfig::always())
             .build(),
     );
     let snapshot_repo = snapshot_store.repository::<Subscription>();
@@ -368,8 +367,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let loaded3 = snapshot_repo.load_any(sub3_id).await?;
     match loaded3 {
-        event_sauce_core::Loaded::Active(_) => println!("    ERROR: Should be Deleted!"),
-        event_sauce_core::Loaded::Deleted(d) => {
+        event_sauce::Loaded::Active(_) => println!("    ERROR: Should be Deleted!"),
+        event_sauce::Loaded::Deleted(d) => {
             println!(
                 "  Loaded from deleted snapshot: plan='{}', active={}",
                 d.plan, d.active

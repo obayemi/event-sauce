@@ -94,7 +94,7 @@ This is fully automatic — `PolicyContext::commit()` builds the causation chain
 Attach application-specific data using `EventMetadata::additional`:
 
 ```rust
-use event_sauce_core::EventMetadata;
+use event_sauce::EventMetadata;
 use serde_json::json;
 
 let metadata = EventMetadata::new()
@@ -117,7 +117,7 @@ The `additional` field is stored as JSONB in PostgreSQL, so it's queryable and f
 The `EventLogQuery` trait provides read-only access to the event store:
 
 ```rust
-use event_sauce_core::{EventLogQuery, EventLogParams};
+use event_sauce::{EventLogQuery, EventLogParams};
 
 async fn show_recent_events(query: &dyn EventLogQuery) -> Result<(), Box<dyn std::error::Error>> {
     let params = EventLogParams::default(); // page 0, 50 per page
@@ -145,7 +145,7 @@ async fn show_recent_events(query: &dyn EventLogQuery) -> Result<(), Box<dyn std
 `EventLogParams` supports multiple filters combined with AND logic:
 
 ```rust
-use event_sauce_core::EventLogParams;
+use event_sauce::EventLogParams;
 
 // Find all events by a specific user
 let params = EventLogParams {
@@ -211,7 +211,7 @@ informational only and is never used for ordering — which is why the
 chronological variants are named for the `id` column they actually sort by:
 
 ```rust
-use event_sauce_core::{EventLogParams, EventLogOrder};
+use event_sauce::{EventLogParams, EventLogOrder};
 
 // Oldest events first
 let params = EventLogParams {

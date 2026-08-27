@@ -20,14 +20,13 @@
 //! cargo run --example upcasting
 //! ```
 
-use event_sauce_core::Repository;
 use std::sync::Arc;
 
-use event_sauce_core::{
+use event_sauce::memory::InMemoryEventStore;
+use event_sauce::{
     define_events, Aggregate, AggregateError, AggregateVersion, DefaultEntity, Entity, EntityId,
-    EventEnvelope, EventStore, EventVersion, StreamId,
+    EventEnvelope, EventStore, EventVersion, Repository, StreamId,
 };
-use event_sauce_memory::InMemoryEventStore;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 

@@ -291,8 +291,8 @@ fits the job.
 ### Setting up the outbox
 
 ```rust
-use event_sauce_postgres::{PolicyDispatch, PostgresPolicyOutbox};
-use event_sauce_core::EventFilter;
+use event_sauce::postgres::{PolicyDispatch, PostgresPolicyOutbox};
+use event_sauce::EventFilter;
 use std::time::Duration;
 
 // Migrate the outbox table once at startup.

@@ -37,8 +37,7 @@ An aggregate is the fundamental building block of event sourcing and Domain-Driv
 The **recommended approach** is to use `#[aggregate(...)]` which generates both `Entity` and `Aggregate` trait implementations:
 
 ```rust
-use event_sauce_core::EntityId;
-use event_sauce_macros::AggregateError;
+use event_sauce::{AggregateError, EntityId};
 use thiserror::Error;
 
 // Define aggregate error (auto-implements AggregateError)
@@ -65,7 +64,7 @@ All entities use `EntityId` (a UUID-backed concrete newtype) as their identifier
 `EntityId::new()` generates a random (UUID v4) id, which is the right default when an aggregate has no natural key. When an aggregate *does* have a natural key (an email, a tenant slug, an external system id), use `EntityId::from_namespace(namespace, name)` to derive a **deterministic** (UUID v5) id instead. The same `(namespace, name)` pair always yields the same id, which makes creation idempotent under retries or message redelivery and lets you look up the aggregate by its natural key without a separate index:
 
 ```rust
-use event_sauce_core::EntityId;
+use event_sauce::EntityId;
 use uuid::Uuid;
 
 // A stable, application-specific namespace (often a constant).
@@ -442,7 +441,7 @@ Use `thiserror` for clean error definitions with `#[derive(AggregateError)]`:
 
 ```rust
 use thiserror::Error;
-use event_sauce_macros::AggregateError;
+use event_sauce::AggregateError;
 
 #[derive(AggregateError, Debug, Error)]
 enum BankAccountError {

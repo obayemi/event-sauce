@@ -120,7 +120,7 @@ When an aggregate changes a claimed value (e.g., email change), the claim is upd
 When a claim conflict occurs, `commit()` returns `Error::ClaimConflict`:
 
 ```rust
-use event_sauce_core::Error;
+use event_sauce::Error;
 
 let result = store.commit(&mut user).await;
 match result {

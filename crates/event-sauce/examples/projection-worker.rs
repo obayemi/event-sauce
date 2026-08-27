@@ -29,10 +29,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use event_sauce_core::{
-    AggregateVersion, EventEnvelope, EventStore, EventVersion, Result, StreamId,
-};
-use event_sauce_postgres::{LeaseOutcome, PostgresBackend, PostgresProjection};
+use event_sauce::postgres::{LeaseOutcome, PostgresBackend, PostgresProjection};
+use event_sauce::{AggregateVersion, EventEnvelope, EventStore, EventVersion, Result, StreamId};
 use serde_json::json;
 use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
@@ -64,7 +62,7 @@ impl PostgresProjection for OrderTotals {
         ))
         .execute(&mut **tx)
         .await
-        .map_err(|e| event_sauce_core::Error::custom(format!("update failed: {e}")))?;
+        .map_err(|e| event_sauce::Error::custom(format!("update failed: {e}")))?;
         Ok(())
     }
 }
@@ -202,7 +200,7 @@ async fn main() -> anyhow::Result<()> {
 async fn run_worker_loop(
     worker_id: &str,
     backend_for_run: &PostgresBackend,
-    listen_store: &event_sauce_postgres::PostgresEventStore,
+    listen_store: &event_sauce::postgres::PostgresEventStore,
     seen: Arc<AtomicUsize>,
     stop: Arc<tokio::sync::Notify>,
 ) {

@@ -20,16 +20,14 @@
 //! cargo run --example crypto-shredding
 //! ```
 
-use event_sauce_core::Repository;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use event_sauce_core::{
-    crypto, Aggregate, AggregateRoot, AggregateVersion, ApplyEvent, DefaultEntity, DomainEvent,
-    Entity, EntityId, EventStore, SnapshotConfig, StreamId,
+use event_sauce::memory::InMemoryEventStore;
+use event_sauce::{
+    crypto, Aggregate, AggregateError, AggregateRoot, AggregateVersion, ApplyEvent, DefaultEntity,
+    DomainEvent, Entity, EntityId, EventStore, Repository, SnapshotConfig, StreamId,
 };
-use event_sauce_macros::AggregateError;
-use event_sauce_memory::InMemoryEventStore;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 
@@ -120,7 +118,7 @@ impl ApplyEvent<Patient> for DiagnosisUpdatedEvent {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, event_sauce_macros::Event)]
+#[derive(Debug, Clone, Serialize, Deserialize, event_sauce::Event)]
 #[event(version = 1, aggregate = "Patient")]
 enum PatientEvent {
     Registered(PatientRegisteredEvent),
@@ -183,7 +181,7 @@ impl ApplyEvent<Counter> for IncrementedEvent {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, event_sauce_macros::Event)]
+#[derive(Debug, Clone, Serialize, Deserialize, event_sauce::Event)]
 #[event(version = 1, aggregate = "Counter")]
 enum CounterEvent {
     Incremented(IncrementedEvent),

@@ -6,6 +6,23 @@
 //! persisted behind the [`Repository`] trait. Simple by default, powerful
 //! when needed.
 //!
+//! ## The only dependency you need
+//!
+//! This crate is the entry point to the whole library. The core traits and
+//! types are re-exported at its root, the backends live under [`memory`] and
+//! [`postgres`], and the bundled AES-256-GCM provider sits in [`crypto`]
+//! next to the traits it implements. The derive macros expand to paths rooted
+//! here, so `event-sauce` is the single line a downstream `Cargo.toml` needs:
+//!
+//! ```toml
+//! [dependencies]
+//! event-sauce = { version = "0.1", features = ["postgres"] }
+//! ```
+//!
+//! Crates that depend on `event-sauce-core` directly keep working — the
+//! macros resolve their generated paths to whichever of the two a crate
+//! depends on, under whatever name it is renamed to.
+//!
 //! ## Quick Start
 //!
 //! ```rust,ignore

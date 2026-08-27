@@ -20,14 +20,13 @@
 //! cargo run --example field-encryption
 //! ```
 
-use event_sauce_core::Repository;
 use std::sync::Arc;
 
-use event_sauce_core::{
+use event_sauce::memory::InMemoryEventStore;
+use event_sauce::{
     crypto, define_events, Aggregate, AggregateError, AggregateRoot, AggregateVersion, Entity,
-    EntityId, EventStore, SnapshotConfig, StreamId,
+    EntityId, EventStore, Repository, SnapshotConfig, StreamId,
 };
-use event_sauce_memory::InMemoryEventStore;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 
@@ -58,7 +57,7 @@ impl Entity for Patient {
     }
 }
 
-impl event_sauce_core::DefaultEntity for Patient {}
+impl event_sauce::DefaultEntity for Patient {}
 
 #[derive(Debug, thiserror::Error)]
 #[error("patient error")]

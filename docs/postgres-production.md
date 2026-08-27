@@ -23,7 +23,7 @@ The simplest production-ready setup uses `PostgresBackend` — a single entry po
 that creates the connection pool, event store, checkpoint store, and runs all migrations:
 
 ```rust
-use event_sauce_postgres::PostgresBackend;
+use event_sauce::postgres::PostgresBackend;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -52,8 +52,8 @@ Your application's tables remain in the `public` schema with separate migrations
 For production environments with specific requirements, use the builder:
 
 ```rust
-use event_sauce_postgres::PostgresBackend;
-use event_sauce_core::SnapshotConfig;
+use event_sauce::postgres::PostgresBackend;
+use event_sauce::SnapshotConfig;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -73,8 +73,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 For fine-grained control (e.g., separate connection pools per store), create stores individually:
 
 ```rust
-use event_sauce_postgres::{PostgresEventStore, PostgresCheckpointStore};
-use event_sauce_core::{SnapshotConfig, EveryNEvents};
+use event_sauce::postgres::{PostgresEventStore, PostgresCheckpointStore};
+use event_sauce::{SnapshotConfig, EveryNEvents};
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use std::sync::Arc;
 use std::time::Duration;
@@ -266,7 +266,7 @@ Load aggregate → Load snapshot at event 900 → Replay 100 events → Return (
 ### Snapshot Strategies
 
 ```rust
-use event_sauce_core::{SnapshotConfig, EveryNEvents, Never};
+use event_sauce::{SnapshotConfig, EveryNEvents, Never};
 
 // Strategy 1: Snapshot every N events (recommended)
 let config = SnapshotConfig::builder()
@@ -793,7 +793,7 @@ Before going live, ensure:
 Complete production-ready setup:
 
 ```rust
-use event_sauce_postgres::PostgresBackend;
+use event_sauce::postgres::PostgresBackend;
 use tracing::info;
 
 #[tokio::main]

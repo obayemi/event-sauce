@@ -8,7 +8,6 @@ Here's a complete counter aggregate in ~30 lines:
 
 ```rust
 use event_sauce::prelude::*;
-use event_sauce_macros::AggregateError;
 use thiserror::Error;
 
 // 1. Define errors
@@ -100,7 +99,7 @@ Let's create a simple counter aggregate. An **aggregate** is a consistency bound
 ### Step 1: Define Domain Errors
 
 ```rust
-use event_sauce_macros::AggregateError;
+use event_sauce::AggregateError;
 use thiserror::Error;
 
 #[derive(AggregateError, Debug, Error)]
@@ -210,7 +209,7 @@ Perfect for testing and development:
 
 ```rust
 use event_sauce::prelude::*;
-use event_sauce_memory::InMemoryEventStore;
+use event_sauce::memory::InMemoryEventStore;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -244,14 +243,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 For more control over store behavior:
 
 ```rust
-use event_sauce_memory::{InMemoryEventStore, InMemoryCheckpointStore};
-use event_sauce_core::SnapshotConfig;
+use event_sauce::memory::{InMemoryEventStore, InMemoryCheckpointStore};
+use event_sauce::SnapshotConfig;
 use std::sync::Arc;
 
 // Configure with custom snapshot settings
 let store = InMemoryEventStore::builder()
     .snapshot_config(SnapshotConfig::builder()
-        .default_strategy(event_sauce_core::EveryNEvents(50))
+        .default_strategy(event_sauce::EveryNEvents(50))
         .build())
     .build();
 
@@ -271,8 +270,8 @@ each event and advance the subscription checkpoint inside the same database
 transaction — see [docs/projections.md](projections.md) for the full guide:
 
 ```rust
-use event_sauce_postgres::{PostgresBackend, PostgresProjection};
-use event_sauce_core::{EventEnvelope, Result};
+use event_sauce::postgres::{PostgresBackend, PostgresProjection};
+use event_sauce::{EventEnvelope, Result};
 
 struct CounterListProjection;
 

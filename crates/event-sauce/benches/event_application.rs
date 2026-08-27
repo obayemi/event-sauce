@@ -9,10 +9,10 @@
 
 use chrono::Utc;
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use event_sauce_core::{
-    Aggregate, AggregateRoot, DefaultEntity, DomainEvent, Entity, EntityId, EventApplicator,
+use event_sauce::{
+    Aggregate, AggregateError, AggregateRoot, DefaultEntity, DomainEvent, Entity, EntityId,
+    EventApplicator,
 };
-use event_sauce_macros::AggregateError;
 
 // ============================================================================
 // Benchmark Aggregate: BankAccount
@@ -66,8 +66,8 @@ impl DomainEvent for BenchAccountEvent {
         }
     }
 
-    fn event_version(&self) -> event_sauce_core::EventVersion {
-        event_sauce_core::EventVersion::new(1)
+    fn event_version(&self) -> event_sauce::EventVersion {
+        event_sauce::EventVersion::new(1)
     }
 
     fn occurred_at(&self) -> chrono::DateTime<Utc> {

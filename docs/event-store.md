@@ -205,7 +205,7 @@ where
 **Example:**
 
 ```rust
-use event_sauce_core::load;
+use event_sauce::load;
 
 let store = InMemoryEventStore::new();
 let counter_id = EntityId::new();
@@ -233,7 +233,7 @@ During event replay, we use `apply_unchecked()` instead of `apply()`:
 Perfect for testing, prototyping, and examples:
 
 ```rust
-use event_sauce_memory::InMemoryEventStore;
+use event_sauce::memory::InMemoryEventStore;
 
 let store = InMemoryEventStore::new();
 ```
@@ -256,7 +256,7 @@ let store = InMemoryEventStore::new();
 Production-ready with full ACID guarantees:
 
 ```rust
-use event_sauce_postgres::PostgresBackend;
+use event_sauce::postgres::PostgresBackend;
 
 // Simplest setup — creates pool, event store, checkpoint store, runs migrations
 let backend = PostgresBackend::setup("postgresql://localhost/eventstore", "event_sauce").await?;
@@ -266,7 +266,7 @@ let store = backend.event_store();
 Or create individual stores for more control:
 
 ```rust
-use event_sauce_postgres::PostgresEventStore;
+use event_sauce::postgres::PostgresEventStore;
 use sqlx::PgPool;
 
 let pool = PgPool::connect("postgresql://localhost/eventstore").await?;
@@ -295,8 +295,8 @@ store.migrate().await?;
 ### Basic Save/Load Cycle
 
 ```rust
-use event_sauce_core::{load, EventStore};
-use event_sauce_memory::InMemoryEventStore;
+use event_sauce::{load, EventStore};
+use event_sauce::memory::InMemoryEventStore;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -385,8 +385,8 @@ thundering herd.
 
 ```text
 use std::time::Duration;
-use event_sauce_core::Error;
-use event_sauce_postgres::PostgresEventStore;
+use event_sauce::Error;
+use event_sauce::postgres::PostgresEventStore;
 
 async fn safe_update(
     store: &PostgresEventStore,
@@ -714,7 +714,7 @@ Implement `EventStore` trait for custom backends:
 
 ```rust
 use async_trait::async_trait;
-use event_sauce_core::{EventStore, EventEnvelope, StreamId, Version, Result};
+use event_sauce::{EventStore, EventEnvelope, StreamId, Version, Result};
 use futures::Stream;
 
 pub struct CustomEventStore {

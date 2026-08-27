@@ -45,8 +45,7 @@ The **`define_events!` macro** is the recommended way to define events in event-
 - Field-level encryption - Encrypt sensitive fields with `@encrypted_fields` (see [Privacy](privacy.md))
 
 ```rust
-use event_sauce_core::{define_events, Aggregate};
-use event_sauce_macros::AggregateError;
+use event_sauce::{define_events, Aggregate, AggregateError};
 use thiserror::Error;
 
 // Define your aggregate error
@@ -385,8 +384,7 @@ For cases where you need more control or complex event logic, you can define eve
 The **recommended manual approach** is to define events as **separate structs** wrapped in an enum. This allows each event to have its own validation and application logic via the `ApplyEvent` trait:
 
 ```rust
-use event_sauce_core::{ApplyEvent, DomainEvent};
-use event_sauce_macros::{AggregateError, Event as DeriveEvent};
+use event_sauce::{AggregateError, ApplyEvent, DomainEvent, Event as DeriveEvent};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -444,7 +442,7 @@ so variants can evolve their schemas independently. This matters for upcasting,
 which keys on the stored `from_version`.
 
 ```rust
-#[derive(event_sauce_macros::Event, Debug, Clone, Serialize, Deserialize)]
+#[derive(event_sauce::Event, Debug, Clone, Serialize, Deserialize)]
 #[event(version = 1, aggregate = "Account")]
 enum AccountEvent {
     // No per-variant attr -> falls back to the container version (1).
@@ -479,8 +477,7 @@ AccountEvent::Withdrawn(..)   -> "Account.Withdrawn"
 The **`ApplyEvent` trait** is the recommended way to implement event logic. Each event struct implements both validation and application logic. Events operate directly on `&mut Entity`, not on `AggregateRoot`:
 
 ```rust
-use event_sauce_core::ApplyEvent;
-use event_sauce_macros::AggregateError;
+use event_sauce::{AggregateError, ApplyEvent};
 use thiserror::Error;
 
 // Define error type (auto-implements AggregateError)
@@ -938,7 +935,7 @@ canonical `EVENT_TYPE` (the current name) is unchanged — aliases are only
 current name.
 
 ```rust
-use event_sauce_core::define_events;
+use event_sauce::define_events;
 
 // The variant was renamed from `OldCreated` to `Created`. Historical events
 // were persisted as `Account.OldCreated`; the alias keeps them loadable into

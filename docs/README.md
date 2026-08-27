@@ -131,7 +131,7 @@ checkout(&repo, cart_id).await?;
 ### The Projection Pattern
 
 Read models are postgres-backed and transactional. Implement
-`event_sauce_postgres::PostgresProjection` and run it through the backend —
+`event_sauce::postgres::PostgresProjection` and run it through the backend —
 the runner applies each event and advances the checkpoint inside the same
 transaction.
 
@@ -139,7 +139,7 @@ transaction.
 struct CartSummaryProjection;
 
 #[async_trait::async_trait]
-impl event_sauce_postgres::PostgresProjection for CartSummaryProjection {
+impl event_sauce::postgres::PostgresProjection for CartSummaryProjection {
     const NAME: &'static str = "CartSummaryProjection";
 
     fn handled_event_types() -> Option<Vec<&'static str>> {
@@ -148,9 +148,9 @@ impl event_sauce_postgres::PostgresProjection for CartSummaryProjection {
 
     async fn handle(
         &mut self,
-        envelope: &event_sauce_core::EventEnvelope,
+        envelope: &event_sauce::EventEnvelope,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    ) -> event_sauce_core::Result<()> {
+    ) -> event_sauce::Result<()> {
         // UPDATE/INSERT against your read-model table through `tx`.
         let _ = (envelope, tx);
         Ok(())

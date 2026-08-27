@@ -16,11 +16,11 @@
 
 use std::sync::Arc;
 
-use event_sauce_core::{
+use event_sauce::memory::{InMemoryEventStore, InMemoryProjectionContext, InMemoryStateStore};
+use event_sauce::{
     command_handler, define_events, Aggregate, AggregateError, DefaultEntity, Entity, EntityId,
     EventEnvelope, EventFilter, EventStore, Repository, StateProjection, StateStore,
 };
-use event_sauce_memory::{InMemoryEventStore, InMemoryProjectionContext, InMemoryStateStore};
 use serde::{Deserialize, Serialize};
 
 // ============================================================================
@@ -111,7 +111,7 @@ command_handler! {
 // Application layer — generic over the persistence style
 // ============================================================================
 
-async fn place_order<R: Repository<Order>>(repo: &R) -> event_sauce_core::Result<EntityId> {
+async fn place_order<R: Repository<Order>>(repo: &R) -> event_sauce::Result<EntityId> {
     let mut order = repo.create();
     order.add_item("laptop".into(), 120_000)?;
     order.add_item("mouse".into(), 4_500)?;
@@ -154,7 +154,7 @@ impl StateProjection<InMemoryProjectionContext> for CompletedOrderCount {
         &self,
         ctx: &mut InMemoryProjectionContext,
         events: &[EventEnvelope],
-    ) -> event_sauce_core::Result<()> {
+    ) -> event_sauce::Result<()> {
         let count = ctx
             .get("completed")
             .and_then(serde_json::Value::as_u64)

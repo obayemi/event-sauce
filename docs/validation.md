@@ -634,7 +634,7 @@ spec!(HasSufficientFunds for Account, "Insufficient funds",
 #### With `#[specification]` Attribute Macro
 
 ```rust
-use event_sauce_macros::specification;
+use event_sauce::specification;
 
 #[specification("Account must be active")]
 fn is_active(account: &Account) -> bool {
@@ -690,7 +690,7 @@ let spec = (AllowedRole1 | AllowedRole2 | AllowedRole3) & IsActive;
 Use `#[aggregate_error]` to auto-inject a `SpecificationFailed` variant with `From` conversion:
 
 ```rust
-use event_sauce_macros::aggregate_error;
+use event_sauce::aggregate_error;
 
 #[aggregate_error(aggregate = "Order")]
 #[derive(Debug, thiserror::Error)]

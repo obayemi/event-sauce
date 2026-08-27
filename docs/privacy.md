@@ -92,7 +92,7 @@ All store builders include **AES-256-GCM encryption** and a key store by default
 ### In-Memory (Testing)
 
 ```rust
-use event_sauce_memory::InMemoryEventStore;
+use event_sauce::memory::InMemoryEventStore;
 
 // Crypto is included by default (AES-256-GCM + InMemoryCryptoKeyStore)
 let store = InMemoryEventStore::new();
@@ -101,7 +101,7 @@ let store = InMemoryEventStore::new();
 ### PostgreSQL (Production)
 
 ```rust
-use event_sauce_postgres::PostgresEventStore;
+use event_sauce::postgres::PostgresEventStore;
 
 // Crypto is included by default (AES-256-GCM + PostgresCryptoKeyStore)
 let store = PostgresEventStore::builder()
@@ -114,7 +114,7 @@ store.migrate().await?; // Creates events, snapshots, and crypto_keys tables
 Or using `PostgresBackend`:
 
 ```rust
-use event_sauce_postgres::PostgresBackend;
+use event_sauce::postgres::PostgresBackend;
 
 // Crypto is included by default
 let backend = PostgresBackend::builder()
@@ -128,8 +128,8 @@ let backend = PostgresBackend::builder()
 You can override the default crypto provider and key store if needed:
 
 ```rust
-use event_sauce_memory::{InMemoryEventStore, InMemoryCryptoKeyStore};
-use event_sauce_crypto::Aes256GcmProvider;
+use event_sauce::memory::{InMemoryEventStore, InMemoryCryptoKeyStore};
+use event_sauce::crypto::Aes256GcmProvider;
 use std::sync::Arc;
 
 let store = InMemoryEventStore::builder()

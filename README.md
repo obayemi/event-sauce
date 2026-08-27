@@ -64,7 +64,6 @@ read models kept up to date from the very events your aggregates emit.
 
 ```rust
 use event_sauce::prelude::*;
-use event_sauce_macros::{AggregateError, AggregateId};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -349,7 +348,7 @@ See the **[Claims Guide](docs/claims.md)** for full details.
 Every event automatically captures who did what and why. Query the full event history with paginated, filtered access:
 
 ```rust
-use event_sauce_core::{EventLogQuery, EventLogParams};
+use event_sauce::{EventLogQuery, EventLogParams};
 
 // Find all events created by a specific user
 let params = EventLogParams {
@@ -387,8 +386,8 @@ behind) its checkpoint. Implement [`PostgresProjection`] and run it with
 [`PostgresBackend::run_postgres_projection`]:
 
 ```rust
-use event_sauce_postgres::{PostgresBackend, PostgresProjection};
-use event_sauce_core::{EventEnvelope, Result};
+use event_sauce::postgres::{PostgresBackend, PostgresProjection};
+use event_sauce::{EventEnvelope, Result};
 
 struct UserListProjection;
 
@@ -433,7 +432,8 @@ backend.run_postgres_projection(&mut UserListProjection).await?;
 
 ## Installation
 
-Add to your `Cargo.toml`:
+`event-sauce` is the only dependency you need — the derive macros expand to
+paths rooted at it, so the sibling crates never appear in your `Cargo.toml`:
 
 ```toml
 [dependencies]
@@ -443,6 +443,14 @@ event-sauce = "0.1"
 event-sauce = { version = "0.1", features = ["postgres"] }
 ```
 
+Backends live under their own module, so a swap is a one-line change:
+
+```rust
+use event_sauce::memory::InMemoryEventStore;
+use event_sauce::postgres::PostgresBackend;
+use event_sauce::crypto::Aes256GcmProvider;
+```
+
 ### Feature Flags
 
 - `macros` (default) - Derive macros for aggregates and events
@@ -450,7 +458,7 @@ event-sauce = { version = "0.1", features = ["postgres"] }
 - `event-sourcing` (default) - The event-sourced persistence style: `EventStore`, snapshots, checkpoints, policies, audit log, encryption
 - `state-store` (default) - The state-stored persistence style: `StateStore`, in-transaction projections
 - `postgres` - PostgreSQL backend (implies `event-sourcing`)
-- `crypto` - Encryption support (AES-256-GCM provider, key stores)
+- `crypto` - Encryption support (AES-256-GCM provider, key stores); turns on encryption in whichever backends are enabled
 - `full` - All features enabled
 
 The event-driven domain layer (aggregates, events, commands, the `Repository`
@@ -631,8 +639,8 @@ Event-sauce provides PostgreSQL support with **schema isolation** to avoid migra
 The builder pattern provides full control over configuration:
 
 ```rust
-use event_sauce_postgres::PostgresEventStore;
-use event_sauce_core::{SnapshotConfig, EveryNEvents};
+use event_sauce::postgres::PostgresEventStore;
+use event_sauce::{SnapshotConfig, EveryNEvents};
 use sqlx::postgres::PgPoolOptions;
 use std::time::Duration;
 
@@ -671,7 +679,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 For quick setup, use the convenience constructor:
 
 ```rust
-use event_sauce_postgres::PostgresEventStore;
+use event_sauce::postgres::PostgresEventStore;
 use sqlx::PgPool;
 
 #[tokio::main]
@@ -714,9 +722,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ### API Documentation
 
-- [event-sauce (facade)](https://docs.rs/event-sauce) - Main entry point
+- [event-sauce](https://docs.rs/event-sauce) - The entry point: everything below is re-exported from here
 - [event-sauce-core](https://docs.rs/event-sauce-core) - Core traits and types (includes `EventFilter` and `CheckpointStore` for projections and policies)
-- [event-sauce-postgres](https://docs.rs/event-sauce-postgres) - PostgreSQL backend
+- [event-sauce-postgres](https://docs.rs/event-sauce-postgres) - PostgreSQL backend, re-exported as `event_sauce::postgres`
 
 ### Learn More
 

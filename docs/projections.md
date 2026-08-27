@@ -25,8 +25,8 @@ the runner owns, and the checkpoint upsert rides along.
 ## The contract
 
 ```rust
-use event_sauce_postgres::PostgresProjection;
-use event_sauce_core::{EventEnvelope, EventFilter, Result};
+use event_sauce::postgres::PostgresProjection;
+use event_sauce::{EventEnvelope, EventFilter, Result};
 
 #[async_trait::async_trait]
 pub trait PostgresProjection: Send {
@@ -51,8 +51,8 @@ pub trait PostgresProjection: Send {
 ## Defining a projection
 
 ```rust
-use event_sauce_core::{EventEnvelope, Error, Result};
-use event_sauce_postgres::PostgresProjection;
+use event_sauce::{EventEnvelope, Error, Result};
+use event_sauce::postgres::PostgresProjection;
 
 pub struct OrderTotals;
 
@@ -105,7 +105,7 @@ impl PostgresProjection for OrderTotals {
 ## Running the projection
 
 ```rust
-let backend = event_sauce_postgres::PostgresBackend::setup(
+let backend = event_sauce::postgres::PostgresBackend::setup(
     "postgresql://localhost/events",
     "event_sauce",
 ).await?;
@@ -220,7 +220,7 @@ The flow is *commit → get position → wait → read*:
 
 ```rust
 use std::time::Duration;
-use event_sauce_core::{wait_for_checkpoint, Position};
+use event_sauce::{wait_for_checkpoint, Position};
 
 // 1. Commit produces events; obtain their store-issued position.
 repository.commit(order).await?;
@@ -270,7 +270,7 @@ projection-worker binary running on N hosts — use
 
 ```rust
 use std::time::Duration;
-use event_sauce_postgres::LeaseOutcome;
+use event_sauce::postgres::LeaseOutcome;
 
 let worker_id = format!("{}-{}", hostname()?, std::process::id());
 let outcome = backend
@@ -344,7 +344,7 @@ projection bug, or recovering a corrupted table — call
 `PostgresBackend::rebuild`:
 
 ```rust
-use event_sauce_postgres::LeaseOutcome;
+use event_sauce::postgres::LeaseOutcome;
 use std::time::Duration;
 
 let mut projection = OrderTotals;
