@@ -12,8 +12,29 @@
 
 use darling::FromMeta;
 use proc_macro::TokenStream;
+use proc_macro_crate::{crate_name, FoundCrate};
 use quote::quote;
+use std::sync::OnceLock;
 use syn::{parse_macro_input, Attribute, Data, DeriveInput, Fields, Ident, Meta};
+
+/// Path prefix the generated code uses to reach the core traits and types.
+///
+/// Consumers depend on the `event-sauce` facade, which re-exports everything
+/// `event-sauce-core` defines; crates that depend on `event-sauce-core`
+/// directly keep working, and either dependency may be renamed in `Cargo.toml`.
+fn core_path() -> proc_macro2::TokenStream {
+    static RESOLVED: OnceLock<String> = OnceLock::new();
+    let name = RESOLVED.get_or_init(|| match crate_name("event-sauce") {
+        Ok(FoundCrate::Name(name)) => name,
+        Ok(FoundCrate::Itself) => "event_sauce".to_string(),
+        Err(_) => match crate_name("event-sauce-core") {
+            Ok(FoundCrate::Name(name)) => name,
+            _ => "event_sauce_core".to_string(),
+        },
+    });
+    let ident = Ident::new(name, proc_macro2::Span::call_site());
+    quote!(::#ident)
+}
 
 /// Attributes for the #[aggregate(...)] container attribute
 #[derive(Debug, FromMeta)]
@@ -75,6 +96,7 @@ struct EventAttrs {
 /// - Tuple variants do not contain exactly one field when generating `Into` implementations
 #[proc_macro_derive(Event, attributes(event))]
 pub fn derive_event(input: TokenStream) -> TokenStream {
+    let core = core_path();
     let input = parse_macro_input!(input as DeriveInput);
     let name = &input.ident;
 
@@ -129,7 +151,7 @@ pub fn derive_event(input: TokenStream) -> TokenStream {
     };
 
     let gen = quote! {
-        impl event_sauce_core::DomainEvent for #name {
+        impl #core::DomainEvent for #name {
             #aggregate_type_decl
 
             fn event_type(&self) -> &'static str {
@@ -138,7 +160,7 @@ pub fn derive_event(input: TokenStream) -> TokenStream {
                 }
             }
 
-            fn event_version(&self) -> event_sauce_core::EventVersion {
+            fn event_version(&self) -> #core::EventVersion {
                 match self {
                     #(#event_version_arms)*
                 }
@@ -234,17 +256,18 @@ fn gen_event_version_arms(
     variants: &syn::punctuated::Punctuated<syn::Variant, syn::token::Comma>,
     container_version: i64,
 ) -> Result<Vec<proc_macro2::TokenStream>, TokenStream> {
+    let core = core_path();
     let mut arms = Vec::with_capacity(variants.len());
     for variant in variants {
         let variant_name = &variant.ident;
         let version = extract_variant_version(variant)?.unwrap_or(container_version);
         let arm = if matches!(&variant.fields, Fields::Unnamed(_)) {
             quote! {
-                #name::#variant_name(..) => event_sauce_core::EventVersion::new(#version),
+                #name::#variant_name(..) => #core::EventVersion::new(#version),
             }
         } else {
             quote! {
-                #name::#variant_name { .. } => event_sauce_core::EventVersion::new(#version),
+                #name::#variant_name { .. } => #core::EventVersion::new(#version),
             }
         };
         arms.push(arm);
@@ -290,11 +313,12 @@ fn gen_event_type_impls(
     variants: &syn::punctuated::Punctuated<syn::Variant, syn::token::Comma>,
     type_prefix: &str,
 ) -> Vec<proc_macro2::TokenStream> {
+    let core = core_path();
     tuple_variants_with_single_field(variants)
         .map(|(variant_name, field_type)| {
             let event_type_name = format!("{type_prefix}.{variant_name}");
             quote! {
-                impl event_sauce_core::EventType for #field_type {
+                impl #core::EventType for #field_type {
                     const EVENT_TYPE: &'static str = #event_type_name;
                 }
             }
@@ -307,6 +331,7 @@ fn gen_event_applicator_impl(
     variants: &syn::punctuated::Punctuated<syn::Variant, syn::token::Comma>,
     aggregate: Option<&str>,
 ) -> proc_macro2::TokenStream {
+    let core = core_path();
     let has_tuple_variants = variants
         .iter()
         .any(|v| matches!(&v.fields, Fields::Unnamed(_)));
@@ -320,7 +345,7 @@ fn gen_event_applicator_impl(
         if matches!(&variant.fields, Fields::Unnamed(_)) {
             quote! {
                 #name::#variant_name(e) => {
-                    use event_sauce_core::ApplyEvent;
+                    use #core::ApplyEvent;
                     e.validate(aggregate)?;
                     e.apply(aggregate);
                     e.post_validate(aggregate)?;
@@ -336,7 +361,7 @@ fn gen_event_applicator_impl(
         if matches!(&variant.fields, Fields::Unnamed(_)) {
             quote! {
                 #name::#variant_name(e) => {
-                    use event_sauce_core::ApplyEvent;
+                    use #core::ApplyEvent;
                     e.apply(aggregate);
                 },
             }
@@ -346,8 +371,8 @@ fn gen_event_applicator_impl(
     });
 
     quote! {
-        impl event_sauce_core::EventApplicator<#aggregate_type> for #name {
-            fn dispatch(&self, aggregate: &mut #aggregate_type) -> std::result::Result<(), <#aggregate_type as event_sauce_core::Aggregate>::Error> {
+        impl #core::EventApplicator<#aggregate_type> for #name {
+            fn dispatch(&self, aggregate: &mut #aggregate_type) -> std::result::Result<(), <#aggregate_type as #core::Aggregate>::Error> {
                 match self {
                     #(#dispatch_arms)*
                 }
@@ -364,19 +389,20 @@ fn gen_event_applicator_impl(
 }
 
 fn gen_try_from_impls(name: &Ident) -> proc_macro2::TokenStream {
+    let core = core_path();
     quote! {
-        impl TryFrom<event_sauce_core::EventEnvelope> for #name {
-            type Error = event_sauce_core::Error;
+        impl TryFrom<#core::EventEnvelope> for #name {
+            type Error = #core::Error;
 
-            fn try_from(envelope: event_sauce_core::EventEnvelope) -> event_sauce_core::Result<Self> {
+            fn try_from(envelope: #core::EventEnvelope) -> #core::Result<Self> {
                 Self::from_envelope(&envelope)
             }
         }
 
-        impl TryFrom<&event_sauce_core::EventEnvelope> for #name {
-            type Error = event_sauce_core::Error;
+        impl TryFrom<&#core::EventEnvelope> for #name {
+            type Error = #core::Error;
 
-            fn try_from(envelope: &event_sauce_core::EventEnvelope) -> event_sauce_core::Result<Self> {
+            fn try_from(envelope: &#core::EventEnvelope) -> #core::Result<Self> {
                 Self::from_envelope(envelope)
             }
         }
@@ -455,8 +481,8 @@ fn find_id_field_flexible(fields: &Fields) -> Result<Ident, TokenStream> {
 /// # Examples
 ///
 /// ```ignore
-/// use event_sauce_macros::Entity;
-/// use event_sauce_core::EntityId;
+/// use event_sauce::Entity;
+/// use event_sauce::EntityId;
 /// use serde::{Serialize, Deserialize};
 ///
 /// #[derive(Entity, Serialize, Deserialize)]
@@ -480,6 +506,7 @@ fn find_id_field_flexible(fields: &Fields) -> Result<Ident, TokenStream> {
 /// Will fail to compile if not a struct with named fields or no ID field is found.
 #[proc_macro_derive(Entity, attributes(id))]
 pub fn derive_entity(input: TokenStream) -> TokenStream {
+    let core = core_path();
     let input = parse_macro_input!(input as DeriveInput);
     let name = &input.ident;
 
@@ -523,19 +550,19 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
     });
 
     let gen = quote! {
-        impl event_sauce_core::Entity for #name {
-            fn new(id: event_sauce_core::EntityId) -> Self {
+        impl #core::Entity for #name {
+            fn new(id: #core::EntityId) -> Self {
                 Self {
                     #(#field_inits),*
                 }
             }
 
-            fn entity_id(&self) -> event_sauce_core::EntityId {
+            fn entity_id(&self) -> #core::EntityId {
                 self.#id_field_name.into()
             }
         }
 
-        impl event_sauce_core::DefaultEntity for #name {}
+        impl #core::DefaultEntity for #name {}
     };
 
     gen.into()
@@ -572,7 +599,7 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
 /// # Examples
 ///
 /// ```ignore
-/// use event_sauce_macros::AggregateError;
+/// use event_sauce::AggregateError;
 /// use thiserror::Error;
 ///
 /// #[derive(AggregateError, Debug, Error)]
@@ -606,11 +633,12 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
 /// ```
 #[proc_macro_derive(AggregateError, attributes(message_key))]
 pub fn derive_aggregate_error(input: TokenStream) -> TokenStream {
+    let core = core_path();
     let input = parse_macro_input!(input as DeriveInput);
     let name = &input.ident;
 
     let marker_impl = quote! {
-        impl event_sauce_core::AggregateError for #name {}
+        impl #core::AggregateError for #name {}
     };
 
     // Enums additionally get a `user_message_key()` mapping each variant to a
@@ -741,9 +769,9 @@ struct AggregateErrorMacroAttrs {
 ///     OrderAlreadyCompleted,
 ///     /// Specification validation failure
 ///     #[error("{0}")]
-///     SpecificationFailed(#[from] event_sauce_core::SpecificationError<Order>),
+///     SpecificationFailed(#[from] event_sauce::SpecificationError<Order>),
 /// }
-/// impl event_sauce_core::AggregateError for OrderError {}
+/// impl event_sauce::AggregateError for OrderError {}
 /// ```
 ///
 /// # Panics
@@ -751,6 +779,7 @@ struct AggregateErrorMacroAttrs {
 /// Will fail to compile if not applied to an enum.
 #[proc_macro_attribute]
 pub fn aggregate_error(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let core = core_path();
     // Parse the "for = Type" attribute
     let attr_tokens: proc_macro2::TokenStream = attr.into();
     let nested_meta = match darling::ast::NestedMeta::parse_meta_list(attr_tokens) {
@@ -776,7 +805,7 @@ pub fn aggregate_error(attr: TokenStream, item: TokenStream) -> TokenStream {
             let variant: syn::Variant = syn::parse_quote! {
                 /// Specification validation failure
                 #[error("{0}")]
-                SpecificationFailed(#[from] event_sauce_core::SpecificationError<#aggregate_type>)
+                SpecificationFailed(#[from] #core::SpecificationError<#aggregate_type>)
             };
             data.variants.push(variant);
         }
@@ -790,7 +819,7 @@ pub fn aggregate_error(attr: TokenStream, item: TokenStream) -> TokenStream {
     // Emit the modified enum + AggregateError impl
     let gen = quote! {
         #input
-        impl event_sauce_core::AggregateError for #name {}
+        impl #core::AggregateError for #name {}
     };
 
     gen.into()
@@ -903,6 +932,7 @@ fn generate_unit_spec(
     candidate_type: &syn::Type,
     fn_body: &syn::Block,
 ) -> TokenStream {
+    let core = core_path();
     let message = &parsed.message;
     let error_message_body =
         build_error_message_body(message, &parsed.context, &[], candidate_name);
@@ -917,7 +947,7 @@ fn generate_unit_spec(
     let gen = quote! {
         #fn_vis struct #struct_name;
 
-        impl event_sauce_core::Specification<#candidate_type> for #struct_name {
+        impl #core::Specification<#candidate_type> for #struct_name {
             fn is_satisfied_by(&self, #candidate_name: &#candidate_type) -> bool
                 #fn_body
 
@@ -926,7 +956,7 @@ fn generate_unit_spec(
             }
         }
 
-        event_sauce_core::__impl_spec_ops!(#struct_name, #candidate_type);
+        #core::__impl_spec_ops!(#struct_name, #candidate_type);
     };
 
     gen.into()
@@ -942,6 +972,7 @@ fn generate_parameterized_spec(
     fn_body: &syn::Block,
     extra_params: &[&syn::FnArg],
 ) -> TokenStream {
+    let core = core_path();
     let message = &parsed.message;
 
     let field_defs: Vec<_> = extra_params
@@ -979,7 +1010,7 @@ fn generate_parameterized_spec(
             #(#field_defs),*
         }
 
-        impl event_sauce_core::Specification<#candidate_type> for #struct_name {
+        impl #core::Specification<#candidate_type> for #struct_name {
             fn is_satisfied_by(&self, #candidate_name: &#candidate_type) -> bool {
                 #(let #field_names = &self.#field_names;)*
                 let _ = (#(&#field_names),*);
@@ -992,7 +1023,7 @@ fn generate_parameterized_spec(
             }
         }
 
-        event_sauce_core::__impl_spec_ops!(#struct_name, #candidate_type);
+        #core::__impl_spec_ops!(#struct_name, #candidate_type);
     };
 
     gen.into()
@@ -1222,6 +1253,7 @@ fn resolve_context_expr(
 /// - No ID field is found
 #[proc_macro_attribute]
 pub fn aggregate(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let core = core_path();
     let attr_tokens: proc_macro2::TokenStream = attr.into();
     let input = parse_macro_input!(item as DeriveInput);
     let aggregate_name = &input.ident;
@@ -1268,7 +1300,7 @@ pub fn aggregate(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
     let claims_override = if aggregate_attrs.claims {
         quote! {
-            fn claims(&self) -> Vec<event_sauce_core::AggregateClaim> {
+            fn claims(&self) -> Vec<#core::AggregateClaim> {
                 self.aggregate_claims()
             }
         }
@@ -1292,7 +1324,7 @@ pub fn aggregate(attr: TokenStream, item: TokenStream) -> TokenStream {
 
         #entity_impl
 
-        impl event_sauce_core::Aggregate for #aggregate_name {
+        impl #core::Aggregate for #aggregate_name {
             type Event = #event_type;
             type Error = #error_type;
             #deleted_state_type
@@ -1376,10 +1408,11 @@ fn gen_entity_impl(
     named_fields: &syn::punctuated::Punctuated<syn::Field, syn::token::Comma>,
     is_init: bool,
 ) -> proc_macro2::TokenStream {
+    let core = core_path();
     if is_init {
         return quote! {
-            impl event_sauce_core::Entity for #aggregate_name {
-                fn entity_id(&self) -> event_sauce_core::EntityId {
+            impl #core::Entity for #aggregate_name {
+                fn entity_id(&self) -> #core::EntityId {
                     self.#id_field_name.into()
                 }
             }
@@ -1396,19 +1429,19 @@ fn gen_entity_impl(
     });
 
     quote! {
-        impl event_sauce_core::Entity for #aggregate_name {
-            fn new(id: event_sauce_core::EntityId) -> Self {
+        impl #core::Entity for #aggregate_name {
+            fn new(id: #core::EntityId) -> Self {
                 Self {
                     #(#field_inits),*
                 }
             }
 
-            fn entity_id(&self) -> event_sauce_core::EntityId {
+            fn entity_id(&self) -> #core::EntityId {
                 self.#id_field_name.into()
             }
         }
 
-        impl event_sauce_core::DefaultEntity for #aggregate_name {}
+        impl #core::DefaultEntity for #aggregate_name {}
     }
 }
 
@@ -1416,17 +1449,18 @@ fn gen_aggregate_type_override(
     aggregate_name: &Ident,
     custom_name: Option<&str>,
 ) -> proc_macro2::TokenStream {
+    let core = core_path();
     if let Some(name) = custom_name {
         let name_lit = syn::LitStr::new(name, proc_macro2::Span::call_site());
         quote! {
-            fn aggregate_type() -> event_sauce_core::AggregateType {
-                event_sauce_core::AggregateType::new(#name_lit)
+            fn aggregate_type() -> #core::AggregateType {
+                #core::AggregateType::new(#name_lit)
             }
         }
     } else {
         quote! {
-            fn aggregate_type() -> event_sauce_core::AggregateType {
-                event_sauce_core::AggregateType::new(stringify!(#aggregate_name))
+            fn aggregate_type() -> #core::AggregateType {
+                #core::AggregateType::new(stringify!(#aggregate_name))
             }
         }
     }
@@ -1440,8 +1474,8 @@ fn gen_aggregate_type_override(
 /// # Usage
 ///
 /// ```ignore
-/// use event_sauce_macros::AggregateId;
-/// use event_sauce_core::EntityId;
+/// use event_sauce::AggregateId;
+/// use event_sauce::EntityId;
 ///
 /// #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, AggregateId)]
 /// #[aggregate_id(Group)]
@@ -1464,6 +1498,7 @@ fn gen_aggregate_type_override(
 /// Will fail to compile if not a tuple struct with one field.
 #[proc_macro_derive(AggregateId, attributes(aggregate_id))]
 pub fn derive_aggregate_id(input: TokenStream) -> TokenStream {
+    let core = core_path();
     let input = parse_macro_input!(input as DeriveInput);
     let name = &input.ident;
 
@@ -1499,28 +1534,28 @@ pub fn derive_aggregate_id(input: TokenStream) -> TokenStream {
     let aggregate_ident = Ident::new(&aggregate_type, proc_macro2::Span::call_site());
 
     let gen = quote! {
-        impl event_sauce_core::AggregateId for #name {
+        impl #core::AggregateId for #name {
             type Aggregate = #aggregate_ident;
 
-            fn as_entity_id(&self) -> event_sauce_core::EntityId {
+            fn as_entity_id(&self) -> #core::EntityId {
                 self.0
             }
         }
 
-        impl From<event_sauce_core::EntityId> for #name {
-            fn from(id: event_sauce_core::EntityId) -> Self {
+        impl From<#core::EntityId> for #name {
+            fn from(id: #core::EntityId) -> Self {
                 Self(id)
             }
         }
 
-        impl From<#name> for event_sauce_core::EntityId {
+        impl From<#name> for #core::EntityId {
             fn from(id: #name) -> Self {
                 id.0
             }
         }
 
         impl std::ops::Deref for #name {
-            type Target = event_sauce_core::EntityId;
+            type Target = #core::EntityId;
 
             fn deref(&self) -> &Self::Target {
                 &self.0

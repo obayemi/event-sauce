@@ -18,6 +18,7 @@ syn.workspace = true
 quote.workspace = true
 proc-macro2.workspace = true
 darling.workspace = true
+proc-macro-crate.workspace = true
 
 [dev-dependencies]
 event-sauce-core = { path = "../event-sauce-core" }

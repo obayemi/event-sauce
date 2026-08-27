@@ -41,14 +41,29 @@ pub use event_sauce_core::*;
 #[cfg(feature = "macros")]
 pub use event_sauce_macros::*;
 
+/// Encryption traits and helpers, plus the bundled AES-256-GCM provider.
+///
+/// Shadows the `crypto` module re-exported from `event-sauce-core` so the
+/// traits and the provider that implements them share one path.
+#[cfg(feature = "event-sourcing")]
+pub mod crypto {
+    pub use event_sauce_core::crypto::*;
+
+    #[cfg(feature = "crypto")]
+    pub use event_sauce_crypto::Aes256GcmProvider;
+}
+
+/// In-memory backend: stores, projections, and test doubles.
 #[cfg(feature = "memory")]
-pub use event_sauce_memory;
+pub mod memory {
+    pub use event_sauce_memory::*;
+}
 
+/// `PostgreSQL` backend: event store, state store, checkpoints, and outbox.
 #[cfg(feature = "postgres")]
-pub use event_sauce_postgres;
-
-#[cfg(feature = "crypto")]
-pub use event_sauce_crypto;
+pub mod postgres {
+    pub use event_sauce_postgres::*;
+}
 
 /// Prelude module for convenient imports
 ///
