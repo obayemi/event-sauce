@@ -84,9 +84,9 @@ define_events! {
 
 command_handler! {
     impl Account {
-        @init fn open(opening_balance: i64) -> OpenedEvent { opening_balance };
-        fn adjust(delta: i64) -> AdjustedEvent { delta };
-        @delete fn close(reason: String) -> ClosedEvent { reason };
+        @clock @init fn open(opening_balance: i64) -> OpenedEvent { opening_balance };
+        @clock fn adjust(delta: i64) -> AdjustedEvent { delta };
+        @clock @delete fn close(reason: String) -> ClosedEvent { reason };
     }
 }
 

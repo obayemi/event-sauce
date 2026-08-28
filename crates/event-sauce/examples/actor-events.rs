@@ -243,13 +243,13 @@ define_events! {
 
 command_handler! {
     impl Document {
-        @init @actor(User)
+        @clock @init @actor(User)
         fn create_document(title: String, content: String) -> DocumentCreatedEvent { title, content };
-        @actor(User)
+        @clock @actor(User)
         fn update_content(new_content: String) -> ContentUpdatedEvent { new_content };
-        @actor(User)
+        @clock @actor(User)
         fn publish(publisher_note: String) -> DocumentPublishedEvent { publisher_note };
-        fn add_comment(comment: String) -> CommentAddedEvent { comment };
+        @clock fn add_comment(comment: String) -> CommentAddedEvent { comment };
     }
 }
 

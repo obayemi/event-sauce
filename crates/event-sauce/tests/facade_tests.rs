@@ -73,10 +73,10 @@ struct Ledger {
 command_handler! {
     impl Ledger {
         /// Open a ledger for an owner.
-        @init fn open(owner: String) -> OpenedEvent { owner };
+        @clock @init fn open(owner: String) -> OpenedEvent { owner };
 
         /// Credit the ledger.
-        fn credit(amount: i64) -> CreditedEvent { amount };
+        @clock fn credit(amount: i64) -> CreditedEvent { amount };
     }
 }
 

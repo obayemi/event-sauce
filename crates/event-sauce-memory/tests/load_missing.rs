@@ -76,8 +76,8 @@ define_events! {
 
 command_handler! {
     impl Account {
-        @init fn open_account(owner: String) -> OpenedEvent { owner };
-        fn deposit(amount: i64) -> DepositedEvent { amount };
+        @clock @init fn open_account(owner: String) -> OpenedEvent { owner };
+        @clock fn deposit(amount: i64) -> DepositedEvent { amount };
     }
 }
 

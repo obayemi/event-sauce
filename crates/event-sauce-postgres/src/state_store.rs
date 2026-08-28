@@ -692,9 +692,9 @@ mod tests {
 
     command_handler! {
         impl Ticket {
-            @init fn open(title: String) -> OpenedEvent { title };
-            fn vote(amount: i64) -> VotedEvent { amount };
-            @delete fn close(reason: String) -> ClosedEvent { reason };
+            @clock @init fn open(title: String) -> OpenedEvent { title };
+            @clock fn vote(amount: i64) -> VotedEvent { amount };
+            @clock @delete fn close(reason: String) -> ClosedEvent { reason };
         }
     }
 

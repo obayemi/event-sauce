@@ -169,10 +169,10 @@ define_events! {
 
 command_handler! {
     impl Project {
-        @init fn create_project(name: String) -> CreatedEvent { name };
-        fn rename_project(new_name: String) -> RenamedEvent { new_name };
-        @delete fn archive_project(reason: String) -> ArchivedEvent { reason };
-        @delete @actor(Admin)
+        @clock @init fn create_project(name: String) -> CreatedEvent { name };
+        @clock fn rename_project(new_name: String) -> RenamedEvent { new_name };
+        @clock @delete fn archive_project(reason: String) -> ArchivedEvent { reason };
+        @clock @delete @actor(Admin)
         fn force_delete_project(reason: String) -> ForceDeletedEvent { reason };
     }
 }

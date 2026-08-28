@@ -189,11 +189,11 @@ define_events! {
 
 command_handler! {
     impl Subscription {
-        @init fn start_subscription(plan: String) -> StartedEvent { plan };
-        fn change_plan(new_plan: String) -> PlanChangedEvent { new_plan };
-        @delete fn cancel_subscription(reason: String)
+        @clock @init fn start_subscription(plan: String) -> StartedEvent { plan };
+        @clock fn change_plan(new_plan: String) -> PlanChangedEvent { new_plan };
+        @clock @delete fn cancel_subscription(reason: String)
             -> CancelledEvent { reason };
-        @delete @actor(Admin) fn force_revoke(reason: String)
+        @clock @delete @actor(Admin) fn force_revoke(reason: String)
             -> ForceRevokedEvent { reason };
     }
 }

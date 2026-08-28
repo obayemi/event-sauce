@@ -102,8 +102,8 @@ define_events! {
 
 command_handler! {
     impl Order {
-        fn add_item(item_id: String, price: i64) -> ItemAddedEvent { item_id, price };
-        fn complete() -> CompletedEvent { };
+        @clock fn add_item(item_id: String, price: i64) -> ItemAddedEvent { item_id, price };
+        @clock fn complete() -> CompletedEvent { };
     }
 }
 

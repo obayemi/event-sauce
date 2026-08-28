@@ -166,17 +166,16 @@ fn validate_reads_the_named_instant() {
 
 command_handler! {
     impl Sensor {
-        // Every field of the event is a parameter, instants included. Nothing in the
-        // generated body calls `Utc::now()`, which is what lets an aggregate live in
-        // a crate that compiles `chrono` without the `clock` feature.
-        @no_clock fn measure(
+        // The default: every field of the event is a parameter, instants included,
+        // and nothing in the generated body calls `Utc::now()`.
+        fn measure(
             measured_at: DateTime<Utc>,
             received_at: DateTime<Utc>,
             celsius: i32,
         ) -> MeasuredEvent { measured_at, received_at, celsius };
 
-        // The default, beside it: this one is filled from the wall clock.
-        fn recalibrate(offset: i32) -> RecalibratedEvent { offset };
+        // `@clock` is the opt-in: this one is filled from the wall clock.
+        @clock fn recalibrate(offset: i32) -> RecalibratedEvent { offset };
     }
 }
 

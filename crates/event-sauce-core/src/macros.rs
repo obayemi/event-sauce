@@ -40,8 +40,9 @@
 ///
 /// 1. **Event helper function** on entity: `<command>_event(&self, params) -> EventStruct`
 ///    - Creates the event struct with provided parameters
-///    - Adds `timestamp: chrono::Utc::now()` automatically, unless the command is
-///      marked `@no_clock` — see below
+///    - Takes every field of the event as a parameter, instants included. A
+///      command marked `@clock` gets a `timestamp` stamped from the wall clock
+///      instead — see below
 ///    - Returns the event **without applying it**
 ///
 /// 2. **Commands trait + impl on `AggregateRoot`**:
@@ -88,24 +89,25 @@
 /// - Commands operate through `AggregateRoot` (events are the only mutation path)
 /// - Init creation functions provide ergonomic aggregate construction
 ///
-/// # `@no_clock`, and the aggregate that must not read one
+/// # `@clock`, for a command that means "whenever this ran"
 ///
-/// By default the generated helper stamps the event from the wall clock. That is
-/// right for a service whose commands happen when they are called, and wrong for two
-/// kinds of producer:
+/// By default a command takes every field of its event as a parameter, instants
+/// included, and the generated body reads no clock. That is the form that cannot be
+/// wrong: an event is usually ABOUT an instant, and stamping it with the moment the
+/// command happened to execute is right only when those coincide.
 ///
-/// - one whose DOMAIN crate compiles `chrono` without the `clock` feature on purpose,
-///   so that `Utc::now()` does not compile there and every instant is a parameter;
-/// - one whose facts carry more than one clock — the time the world did something,
-///   and the time this service found out — where a single injected `timestamp` can
-///   only be one of them and reads as either.
+/// It is also what lets a DOMAIN crate compile `chrono` without the `clock` feature,
+/// so `Utc::now()` does not compile there and the purity is enforced rather than
+/// agreed; and what lets a producer whose facts carry two clocks — the time the world
+/// did something, and the time this service found out — name both, where a single
+/// injected `timestamp` could only be one of them and would read as either.
 ///
-/// `@no_clock` says the command supplies every field of its event, instants included:
+/// So the default is:
 ///
 /// ```text
 /// command_handler! {
 ///     impl Sensor {
-///         @no_clock fn measure(
+///         fn measure(
 ///             measured_at: DateTime<Utc>,
 ///             received_at: DateTime<Utc>,
 ///             celsius: i32,
@@ -114,10 +116,19 @@
 /// }
 /// ```
 ///
-/// Nothing in the generated body reads a clock. It composes with
-/// [`define_events!`](crate::define_events)'s `@occurred_at`, which is what names the
-/// instant the event is generated with; use the two together, or the command will be
-/// asked for a `timestamp` the domain never wanted.
+/// `@clock` is the opt-in for the other case:
+///
+/// ```text
+/// command_handler! {
+///     impl Session {
+///         @clock fn touch() -> TouchedEvent { };
+///     }
+/// }
+/// ```
+///
+/// which stamps a `timestamp` field from `Utc::now()`. Pair the default with
+/// [`define_events!`](crate::define_events)'s `@occurred_at`, which names the instant
+/// the event declares.
 #[macro_export]
 macro_rules! command_handler {
     // Single entry point — always delegates to TT muncher.
@@ -141,13 +152,11 @@ macro_rules! command_handler {
 }
 /// The event literal a command builds, with or without a clock read.
 ///
-/// `clock: [now]` is the default and what every existing caller gets: the generated
-/// event carries a `timestamp` and the command fills it from the wall clock.
+/// `clock: [now]` is what `@clock` selects: the generated event carries a
+/// `timestamp` and the command fills it from the wall clock.
 ///
-/// `clock: [none]` is what `@no_clock` selects. The command lists every field of the
-/// event, instants included, and nothing here reads a clock — which is what lets a
-/// domain crate that compiles `chrono` WITHOUT the `clock` feature use these macros
-/// at all, and what lets a producer whose facts carry two clocks name both.
+/// `clock: [none]` is the default. The command lists every field of the event,
+/// instants included, and nothing here reads a clock.
 #[macro_export]
 #[doc(hidden)]
 macro_rules! __command_handler_event {
@@ -207,34 +216,7 @@ macro_rules! __command_handler_init_internal {
         actor_delete_commands: [ $($ad_acc:tt)* ]
 
         $(#[$attr:meta])*
-        @no_clock
-        @init
-        @actor($actor_type:ty)
-        fn $command:ident($($param:ident: $param_ty:ty),* $(,)?)
-            -> $event_struct:ident { $($field:ident),* $(,)? }
-        $(; $($rest:tt)*)?
-    ) => {
-        $crate::__command_handler_init_internal! {
-            @munch [$aggregate]
-            init_commands: [ $($i_acc)* ]
-            regular_commands: [ $($r_acc)* ]
-            actor_commands: [ $($a_acc)* ]
-            actor_init_commands: [ $($ai_acc)* { attrs: [$($attr),*] cmd: $command ($($param: $param_ty),*) -> $event_struct { $($field),* } clock: [none] actor: $actor_type } ]
-            delete_commands: [ $($d_acc)* ]
-            actor_delete_commands: [ $($ad_acc)* ]
-            $($($rest)*)?
-        }
-    };
-    (
-        @munch [$aggregate:ty]
-        init_commands: [ $($i_acc:tt)* ]
-        regular_commands: [ $($r_acc:tt)* ]
-        actor_commands: [ $($a_acc:tt)* ]
-        actor_init_commands: [ $($ai_acc:tt)* ]
-        delete_commands: [ $($d_acc:tt)* ]
-        actor_delete_commands: [ $($ad_acc:tt)* ]
-
-        $(#[$attr:meta])*
+        @clock
         @init
         @actor($actor_type:ty)
         fn $command:ident($($param:ident: $param_ty:ty),* $(,)?)
@@ -252,6 +234,33 @@ macro_rules! __command_handler_init_internal {
             $($($rest)*)?
         }
     };
+    (
+        @munch [$aggregate:ty]
+        init_commands: [ $($i_acc:tt)* ]
+        regular_commands: [ $($r_acc:tt)* ]
+        actor_commands: [ $($a_acc:tt)* ]
+        actor_init_commands: [ $($ai_acc:tt)* ]
+        delete_commands: [ $($d_acc:tt)* ]
+        actor_delete_commands: [ $($ad_acc:tt)* ]
+
+        $(#[$attr:meta])*
+        @init
+        @actor($actor_type:ty)
+        fn $command:ident($($param:ident: $param_ty:ty),* $(,)?)
+            -> $event_struct:ident { $($field:ident),* $(,)? }
+        $(; $($rest:tt)*)?
+    ) => {
+        $crate::__command_handler_init_internal! {
+            @munch [$aggregate]
+            init_commands: [ $($i_acc)* ]
+            regular_commands: [ $($r_acc)* ]
+            actor_commands: [ $($a_acc)* ]
+            actor_init_commands: [ $($ai_acc)* { attrs: [$($attr),*] cmd: $command ($($param: $param_ty),*) -> $event_struct { $($field),* } clock: [none] actor: $actor_type } ]
+            delete_commands: [ $($d_acc)* ]
+            actor_delete_commands: [ $($ad_acc)* ]
+            $($($rest)*)?
+        }
+    };
 
     // ---- TT muncher: parse @init command (no actor) ----
     (
@@ -264,7 +273,7 @@ macro_rules! __command_handler_init_internal {
         actor_delete_commands: [ $($ad_acc:tt)* ]
 
         $(#[$attr:meta])*
-        @no_clock
+        @clock
         @init
         fn $command:ident($($param:ident: $param_ty:ty),* $(,)?)
             -> $event_struct:ident { $($field:ident),* $(,)? }
@@ -272,7 +281,7 @@ macro_rules! __command_handler_init_internal {
     ) => {
         $crate::__command_handler_init_internal! {
             @munch [$aggregate]
-            init_commands: [ $($i_acc)* { attrs: [$($attr),*] cmd: $command ($($param: $param_ty),*) -> $event_struct { $($field),* } clock: [none] } ]
+            init_commands: [ $($i_acc)* { attrs: [$($attr),*] cmd: $command ($($param: $param_ty),*) -> $event_struct { $($field),* } clock: [now] } ]
             regular_commands: [ $($r_acc)* ]
             actor_commands: [ $($a_acc)* ]
             actor_init_commands: [ $($ai_acc)* ]
@@ -298,7 +307,7 @@ macro_rules! __command_handler_init_internal {
     ) => {
         $crate::__command_handler_init_internal! {
             @munch [$aggregate]
-            init_commands: [ $($i_acc)* { attrs: [$($attr),*] cmd: $command ($($param: $param_ty),*) -> $event_struct { $($field),* } clock: [now] } ]
+            init_commands: [ $($i_acc)* { attrs: [$($attr),*] cmd: $command ($($param: $param_ty),*) -> $event_struct { $($field),* } clock: [none] } ]
             regular_commands: [ $($r_acc)* ]
             actor_commands: [ $($a_acc)* ]
             actor_init_commands: [ $($ai_acc)* ]
@@ -319,34 +328,7 @@ macro_rules! __command_handler_init_internal {
         actor_delete_commands: [ $($ad_acc:tt)* ]
 
         $(#[$attr:meta])*
-        @no_clock
-        @delete
-        @actor($actor_type:ty)
-        fn $command:ident($($param:ident: $param_ty:ty),* $(,)?)
-            -> $event_struct:ident { $($field:ident),* $(,)? }
-        $(; $($rest:tt)*)?
-    ) => {
-        $crate::__command_handler_init_internal! {
-            @munch [$aggregate]
-            init_commands: [ $($i_acc)* ]
-            regular_commands: [ $($r_acc)* ]
-            actor_commands: [ $($a_acc)* ]
-            actor_init_commands: [ $($ai_acc)* ]
-            delete_commands: [ $($d_acc)* ]
-            actor_delete_commands: [ $($ad_acc)* { attrs: [$($attr),*] cmd: $command ($($param: $param_ty),*) -> $event_struct { $($field),* } clock: [none] actor: $actor_type } ]
-            $($($rest)*)?
-        }
-    };
-    (
-        @munch [$aggregate:ty]
-        init_commands: [ $($i_acc:tt)* ]
-        regular_commands: [ $($r_acc:tt)* ]
-        actor_commands: [ $($a_acc:tt)* ]
-        actor_init_commands: [ $($ai_acc:tt)* ]
-        delete_commands: [ $($d_acc:tt)* ]
-        actor_delete_commands: [ $($ad_acc:tt)* ]
-
-        $(#[$attr:meta])*
+        @clock
         @delete
         @actor($actor_type:ty)
         fn $command:ident($($param:ident: $param_ty:ty),* $(,)?)
@@ -364,6 +346,33 @@ macro_rules! __command_handler_init_internal {
             $($($rest)*)?
         }
     };
+    (
+        @munch [$aggregate:ty]
+        init_commands: [ $($i_acc:tt)* ]
+        regular_commands: [ $($r_acc:tt)* ]
+        actor_commands: [ $($a_acc:tt)* ]
+        actor_init_commands: [ $($ai_acc:tt)* ]
+        delete_commands: [ $($d_acc:tt)* ]
+        actor_delete_commands: [ $($ad_acc:tt)* ]
+
+        $(#[$attr:meta])*
+        @delete
+        @actor($actor_type:ty)
+        fn $command:ident($($param:ident: $param_ty:ty),* $(,)?)
+            -> $event_struct:ident { $($field:ident),* $(,)? }
+        $(; $($rest:tt)*)?
+    ) => {
+        $crate::__command_handler_init_internal! {
+            @munch [$aggregate]
+            init_commands: [ $($i_acc)* ]
+            regular_commands: [ $($r_acc)* ]
+            actor_commands: [ $($a_acc)* ]
+            actor_init_commands: [ $($ai_acc)* ]
+            delete_commands: [ $($d_acc)* ]
+            actor_delete_commands: [ $($ad_acc)* { attrs: [$($attr),*] cmd: $command ($($param: $param_ty),*) -> $event_struct { $($field),* } clock: [none] actor: $actor_type } ]
+            $($($rest)*)?
+        }
+    };
 
     // ---- TT muncher: parse @delete command (no actor) ----
     (
@@ -376,33 +385,7 @@ macro_rules! __command_handler_init_internal {
         actor_delete_commands: [ $($ad_acc:tt)* ]
 
         $(#[$attr:meta])*
-        @no_clock
-        @delete
-        fn $command:ident($($param:ident: $param_ty:ty),* $(,)?)
-            -> $event_struct:ident { $($field:ident),* $(,)? }
-        $(; $($rest:tt)*)?
-    ) => {
-        $crate::__command_handler_init_internal! {
-            @munch [$aggregate]
-            init_commands: [ $($i_acc)* ]
-            regular_commands: [ $($r_acc)* ]
-            actor_commands: [ $($a_acc)* ]
-            actor_init_commands: [ $($ai_acc)* ]
-            delete_commands: [ $($d_acc)* { attrs: [$($attr),*] cmd: $command ($($param: $param_ty),*) -> $event_struct { $($field),* } clock: [none] } ]
-            actor_delete_commands: [ $($ad_acc)* ]
-            $($($rest)*)?
-        }
-    };
-    (
-        @munch [$aggregate:ty]
-        init_commands: [ $($i_acc:tt)* ]
-        regular_commands: [ $($r_acc:tt)* ]
-        actor_commands: [ $($a_acc:tt)* ]
-        actor_init_commands: [ $($ai_acc:tt)* ]
-        delete_commands: [ $($d_acc:tt)* ]
-        actor_delete_commands: [ $($ad_acc:tt)* ]
-
-        $(#[$attr:meta])*
+        @clock
         @delete
         fn $command:ident($($param:ident: $param_ty:ty),* $(,)?)
             -> $event_struct:ident { $($field:ident),* $(,)? }
@@ -419,6 +402,32 @@ macro_rules! __command_handler_init_internal {
             $($($rest)*)?
         }
     };
+    (
+        @munch [$aggregate:ty]
+        init_commands: [ $($i_acc:tt)* ]
+        regular_commands: [ $($r_acc:tt)* ]
+        actor_commands: [ $($a_acc:tt)* ]
+        actor_init_commands: [ $($ai_acc:tt)* ]
+        delete_commands: [ $($d_acc:tt)* ]
+        actor_delete_commands: [ $($ad_acc:tt)* ]
+
+        $(#[$attr:meta])*
+        @delete
+        fn $command:ident($($param:ident: $param_ty:ty),* $(,)?)
+            -> $event_struct:ident { $($field:ident),* $(,)? }
+        $(; $($rest:tt)*)?
+    ) => {
+        $crate::__command_handler_init_internal! {
+            @munch [$aggregate]
+            init_commands: [ $($i_acc)* ]
+            regular_commands: [ $($r_acc)* ]
+            actor_commands: [ $($a_acc)* ]
+            actor_init_commands: [ $($ai_acc)* ]
+            delete_commands: [ $($d_acc)* { attrs: [$($attr),*] cmd: $command ($($param: $param_ty),*) -> $event_struct { $($field),* } clock: [none] } ]
+            actor_delete_commands: [ $($ad_acc)* ]
+            $($($rest)*)?
+        }
+    };
 
     // ---- TT muncher: parse @actor(Type) command (regular + actor) ----
     (
@@ -431,7 +440,7 @@ macro_rules! __command_handler_init_internal {
         actor_delete_commands: [ $($ad_acc:tt)* ]
 
         $(#[$attr:meta])*
-        @no_clock
+        @clock
         @actor($actor_type:ty)
         fn $command:ident($($param:ident: $param_ty:ty),* $(,)?)
             -> $event_struct:ident { $($field:ident),* $(,)? }
@@ -441,7 +450,7 @@ macro_rules! __command_handler_init_internal {
             @munch [$aggregate]
             init_commands: [ $($i_acc)* ]
             regular_commands: [ $($r_acc)* ]
-            actor_commands: [ $($a_acc)* { attrs: [$($attr),*] cmd: $command ($($param: $param_ty),*) -> $event_struct { $($field),* } clock: [none] actor: $actor_type } ]
+            actor_commands: [ $($a_acc)* { attrs: [$($attr),*] cmd: $command ($($param: $param_ty),*) -> $event_struct { $($field),* } clock: [now] actor: $actor_type } ]
             actor_init_commands: [ $($ai_acc)* ]
             delete_commands: [ $($d_acc)* ]
             actor_delete_commands: [ $($ad_acc)* ]
@@ -467,7 +476,7 @@ macro_rules! __command_handler_init_internal {
             @munch [$aggregate]
             init_commands: [ $($i_acc)* ]
             regular_commands: [ $($r_acc)* ]
-            actor_commands: [ $($a_acc)* { attrs: [$($attr),*] cmd: $command ($($param: $param_ty),*) -> $event_struct { $($field),* } clock: [now] actor: $actor_type } ]
+            actor_commands: [ $($a_acc)* { attrs: [$($attr),*] cmd: $command ($($param: $param_ty),*) -> $event_struct { $($field),* } clock: [none] actor: $actor_type } ]
             actor_init_commands: [ $($ai_acc)* ]
             delete_commands: [ $($d_acc)* ]
             actor_delete_commands: [ $($ad_acc)* ]
@@ -486,7 +495,7 @@ macro_rules! __command_handler_init_internal {
         actor_delete_commands: [ $($ad_acc:tt)* ]
 
         $(#[$attr:meta])*
-        @no_clock
+        @clock
         fn $command:ident($($param:ident: $param_ty:ty),* $(,)?)
             -> $event_struct:ident { $($field:ident),* $(,)? }
         $(; $($rest:tt)*)?
@@ -494,7 +503,7 @@ macro_rules! __command_handler_init_internal {
         $crate::__command_handler_init_internal! {
             @munch [$aggregate]
             init_commands: [ $($i_acc)* ]
-            regular_commands: [ $($r_acc)* { attrs: [$($attr),*] cmd: $command ($($param: $param_ty),*) -> $event_struct { $($field),* } clock: [none] } ]
+            regular_commands: [ $($r_acc)* { attrs: [$($attr),*] cmd: $command ($($param: $param_ty),*) -> $event_struct { $($field),* } clock: [now] } ]
             actor_commands: [ $($a_acc)* ]
             actor_init_commands: [ $($ai_acc)* ]
             delete_commands: [ $($d_acc)* ]
@@ -519,7 +528,7 @@ macro_rules! __command_handler_init_internal {
         $crate::__command_handler_init_internal! {
             @munch [$aggregate]
             init_commands: [ $($i_acc)* ]
-            regular_commands: [ $($r_acc)* { attrs: [$($attr),*] cmd: $command ($($param: $param_ty),*) -> $event_struct { $($field),* } clock: [now] } ]
+            regular_commands: [ $($r_acc)* { attrs: [$($attr),*] cmd: $command ($($param: $param_ty),*) -> $event_struct { $($field),* } clock: [none] } ]
             actor_commands: [ $($a_acc)* ]
             actor_init_commands: [ $($ai_acc)* ]
             delete_commands: [ $($d_acc)* ]
@@ -1082,8 +1091,8 @@ macro_rules! __check_spec_init_actor {
 /// `occurred_at()` then answers with `measured_at`, and no field is called
 /// `timestamp`. A variant with no marker is unchanged.
 ///
-/// Pair it with [`command_handler!`](crate::command_handler)'s `@no_clock`, which
-/// stops the command reading a clock to fill an instant the caller already holds.
+/// The commands over it take that instant as a parameter, which is
+/// [`command_handler!`](crate::command_handler)'s default.
 #[macro_export]
 macro_rules! define_events {
     // =========================================================================
@@ -3101,9 +3110,9 @@ mod tests {
     // This is the test for the command_handler! macro
     command_handler! {
         impl TestAggregate {
-            fn increment(amount: i32) -> IncrementedEvent { amount };
-            fn decrement(amount: i32) -> DecrementedEvent { amount };
-            fn reset() -> ResetEvent { };
+            @clock fn increment(amount: i32) -> IncrementedEvent { amount };
+            @clock fn decrement(amount: i32) -> DecrementedEvent { amount };
+            @clock fn reset() -> ResetEvent { };
         }
     }
 
@@ -4654,11 +4663,11 @@ mod tests {
 
     command_handler! {
         impl Account {
-            @init fn open_account(name: String, initial_balance: i64)
+            @clock @init fn open_account(name: String, initial_balance: i64)
                 -> AccountOpenedEvent { name, initial_balance };
-            fn deposit(amount: i64)
+            @clock fn deposit(amount: i64)
                 -> DepositedEvent { amount };
-            fn withdraw(amount: i64)
+            @clock fn withdraw(amount: i64)
                 -> WithdrawnEvent { amount };
         }
     }
@@ -4954,11 +4963,11 @@ mod tests {
 
     command_handler! {
         impl Member {
-            @init fn create_admin(email: String, name: String)
+            @clock @init fn create_admin(email: String, name: String)
                 -> AdminCreatedEvent { email, name };
-            @init fn create_by_invite(email: String, name: String, invite_code: String)
+            @clock @init fn create_by_invite(email: String, name: String, invite_code: String)
                 -> CreatedByInviteEvent { email, name, invite_code };
-            fn verify() -> VerifiedEvent { };
+            @clock fn verify() -> VerifiedEvent { };
         }
     }
 
@@ -5426,11 +5435,11 @@ mod tests {
 
         command_handler! {
             impl Ticket {
-                @init @actor(Operator)
+                @clock @init @actor(Operator)
                 fn open_ticket(title: String) -> TicketOpenedEvent { title };
-                @actor(Operator)
+                @clock @actor(Operator)
                 fn assign_ticket(assignee: String) -> TicketAssignedEvent { assignee };
-                fn close_ticket(reason: String) -> TicketClosedEvent { reason };
+                @clock fn close_ticket(reason: String) -> TicketClosedEvent { reason };
             }
         }
 
@@ -6219,10 +6228,10 @@ mod tests {
 
         command_handler! {
             impl Account {
-                @init fn create_account(name: String) -> AccountCreatedEvent { name };
-                fn update_account(name: String) -> AccountUpdatedEvent { name };
-                @delete fn deactivate_account(reason: String) -> AccountDeactivatedEvent { reason };
-                @delete @actor(Admin)
+                @clock @init fn create_account(name: String) -> AccountCreatedEvent { name };
+                @clock fn update_account(name: String) -> AccountUpdatedEvent { name };
+                @clock @delete fn deactivate_account(reason: String) -> AccountDeactivatedEvent { reason };
+                @clock @delete @actor(Admin)
                 fn admin_delete_account(reason: String) -> AccountAdminDeletedEvent { reason };
             }
         }

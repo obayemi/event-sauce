@@ -79,9 +79,9 @@ define_events! {
 
 command_handler! {
     impl Account {
-        @init fn open(owner: String, opening_balance: i64) -> OpenedEvent { owner, opening_balance };
-        fn deposit(amount: i64) -> DepositedEvent { amount };
-        @delete fn close(reason: String) -> ClosedEvent { reason };
+        @clock @init fn open(owner: String, opening_balance: i64) -> OpenedEvent { owner, opening_balance };
+        @clock fn deposit(amount: i64) -> DepositedEvent { amount };
+        @clock @delete fn close(reason: String) -> ClosedEvent { reason };
     }
 }
 

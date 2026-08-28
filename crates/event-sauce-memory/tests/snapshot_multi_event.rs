@@ -63,8 +63,8 @@ define_events! {
 
 command_handler! {
     impl Counter {
-        @init fn create(name: String) -> CreatedEvent { name };
-        fn tick() -> TickedEvent { };
+        @clock @init fn create(name: String) -> CreatedEvent { name };
+        @clock fn tick() -> TickedEvent { };
     }
 }
 

@@ -94,9 +94,9 @@ define_events! {
 
 command_handler! {
     impl Account {
-        @init fn open(holder: String, opening_balance: i64) -> OpenedEvent { holder, opening_balance };
-        fn withdraw(amount: i64) -> WithdrawnEvent { amount };
-        fn deposit(amount: i64) -> DepositedEvent { amount };
+        @clock @init fn open(holder: String, opening_balance: i64) -> OpenedEvent { holder, opening_balance };
+        @clock fn withdraw(amount: i64) -> WithdrawnEvent { amount };
+        @clock fn deposit(amount: i64) -> DepositedEvent { amount };
     }
 }
 
