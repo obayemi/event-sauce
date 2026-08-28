@@ -419,6 +419,25 @@ impl Error {
         matches!(self, Self::Serialization(_))
     }
 
+    /// Returns true if this is an invalid state error.
+    ///
+    /// Terminal by construction: the stored data breaks an invariant, and it is
+    /// the same data on the next pass. A caller that retries on it retries for
+    /// ever.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use event_sauce_core::Error;
+    ///
+    /// let error = Error::invalid_state("a snapshot with no seed anomaly");
+    /// assert!(error.is_invalid_state());
+    /// ```
+    #[must_use]
+    pub fn is_invalid_state(&self) -> bool {
+        matches!(self, Self::InvalidState(_))
+    }
+
     /// Returns true if this is a key not found error.
     ///
     /// # Examples
@@ -578,7 +597,6 @@ mod tests {
         assert!(message.contains("User"));
         assert!(message.contains("user-123"));
     }
-
     #[test]
     fn test_serialization_error() {
         let json_error = serde_json::from_str::<i32>("invalid").unwrap_err();
@@ -596,6 +614,7 @@ mod tests {
     fn test_invalid_state_error() {
         let error = Error::invalid_state("Cannot delete aggregate");
 
+        assert!(error.is_invalid_state());
         assert!(!error.is_concurrency_conflict());
         assert!(!error.is_not_found());
         assert!(!error.is_serialization());
