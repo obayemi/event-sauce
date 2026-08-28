@@ -1751,7 +1751,7 @@ macro_rules! define_events {
         // ---- Per-variant: struct, From, EventType, trait impl ----
         $(
             paste::paste! {
-                #[derive(Debug, Clone, ::serde::Serialize, ::serde::Deserialize)]
+                #[derive(Debug, Clone, PartialEq, ::serde::Serialize, ::serde::Deserialize)]
                 $vis struct [<$variant Event>] {
                     $($(#[$field_attr])* pub $field: $field_ty,)*
                     pub $clock: ::chrono::DateTime<::chrono::Utc>,
@@ -1791,7 +1791,7 @@ macro_rules! define_events {
         )*
 
         // ---- Shared: event enum ----
-        #[derive(Debug, Clone, ::serde::Serialize, ::serde::Deserialize)]
+        #[derive(Debug, Clone, PartialEq, ::serde::Serialize, ::serde::Deserialize)]
         $vis enum $event_enum {
             $(
                 $variant {
