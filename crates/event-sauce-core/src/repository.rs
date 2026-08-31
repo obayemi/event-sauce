@@ -110,21 +110,34 @@ pub trait Repository<A: Aggregate>: Send + Sync {
 
     /// Checks if an aggregate exists.
     ///
-    /// Accepts both raw `EntityId` and typed IDs implementing `EntityIdFor<A>`.
+    /// The default answers from [`load_any_by_id`](Self::load_any_by_id), so a
+    /// deleted aggregate still exists. Override it when the store can answer without
+    /// materializing the aggregate — reading a whole entity to return a `bool` is
+    /// worth avoiding on a hot path.
     ///
     /// # Errors
     ///
     /// Returns an error if the store operation fails.
-    async fn exists_by_id(&self, id: EntityId) -> Result<bool>;
+    async fn exists_by_id(&self, id: EntityId) -> Result<bool> {
+        match self.load_any_by_id(id).await {
+            Ok(_) => Ok(true),
+            Err(e) if e.is_not_found() => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
 
-    /// Gets the current version of an aggregate without loading it.
+    /// Gets the current version of an aggregate.
     ///
-    /// Accepts both raw `EntityId` and typed IDs implementing `EntityIdFor<A>`.
+    /// The default reads it off [`load_any_by_id`](Self::load_any_by_id). Override it
+    /// when the store can answer without materializing the aggregate — a version is
+    /// one column, and loading a whole entity for it is worth avoiding.
     ///
     /// # Errors
     ///
     /// Returns an error if the store operation fails.
-    async fn version_by_id(&self, id: EntityId) -> Result<AggregateVersion>;
+    async fn version_by_id(&self, id: EntityId) -> Result<AggregateVersion> {
+        Ok(self.load_any_by_id(id).await?.version())
+    }
 
     /// Loads an aggregate, applies a closure that mutates it, and saves the result.
     ///
