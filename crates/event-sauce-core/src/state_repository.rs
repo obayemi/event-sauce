@@ -7,7 +7,7 @@ use async_trait::async_trait;
 
 use crate::{
     aggregate_root::envelopes_from_pending, state_store::StateCommit, Aggregate, AggregateRoot,
-    AggregateVersion, DeletedAggregateRoot, DomainEvent, EntityId, EntityIdFor, Error, Loaded,
+    AggregateVersion, DeletedAggregateRoot, DomainEvent, EntityId, Error, Loaded,
     Repository, Result, StateStore, StoredState, StreamId,
 };
 
@@ -173,12 +173,11 @@ where
     A::DeletedState: serde::Serialize + serde::de::DeserializeOwned,
     A::Event: serde::Serialize + serde::de::DeserializeOwned,
 {
-    async fn load<I: EntityIdFor<A> + Send>(&self, id: I) -> Result<AggregateRoot<A>> {
-        self.load_any(id).await?.into_active()
+    async fn load_by_id(&self, id: EntityId) -> Result<AggregateRoot<A>> {
+        self.load_any_by_id(id).await?.into_active()
     }
 
-    async fn load_any<I: EntityIdFor<A> + Send>(&self, id: I) -> Result<Loaded<A>> {
-        let id = id.entity_id();
+    async fn load_any_by_id(&self, id: EntityId) -> Result<Loaded<A>> {
         let state = self
             .store
             .load(Self::stream_id_for(id))
@@ -204,11 +203,8 @@ where
         }
     }
 
-    async fn load_deleted<I: EntityIdFor<A> + Send>(
-        &self,
-        id: I,
-    ) -> Result<DeletedAggregateRoot<A>> {
-        self.load_any(id).await?.into_deleted()
+    async fn load_deleted_by_id(&self, id: EntityId) -> Result<DeletedAggregateRoot<A>> {
+        self.load_any_by_id(id).await?.into_deleted()
     }
 
     async fn save(&self, aggregate: &mut AggregateRoot<A>) -> Result<()> {
@@ -243,14 +239,12 @@ where
         Ok(())
     }
 
-    async fn exists<I: EntityIdFor<A> + Send>(&self, id: I) -> Result<bool> {
-        self.store.exists(Self::stream_id_for(id.entity_id())).await
+    async fn exists_by_id(&self, id: EntityId) -> Result<bool> {
+        self.store.exists(Self::stream_id_for(id)).await
     }
 
-    async fn get_version<I: EntityIdFor<A> + Send>(&self, id: I) -> Result<AggregateVersion> {
-        self.store
-            .get_version(Self::stream_id_for(id.entity_id()))
-            .await
+    async fn version_by_id(&self, id: EntityId) -> Result<AggregateVersion> {
+        self.store.get_version(Self::stream_id_for(id)).await
     }
 }
 

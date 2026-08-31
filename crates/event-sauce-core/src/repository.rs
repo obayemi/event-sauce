@@ -55,7 +55,7 @@ pub trait Repository<A: Aggregate>: Send + Sync {
     ///
     /// Returns `Error::NotFound` if the aggregate doesn't exist, or an error
     /// if the store operation or deserialization fails.
-    async fn load<I: EntityIdFor<A> + Send>(&self, id: I) -> Result<AggregateRoot<A>>;
+    async fn load_by_id(&self, id: EntityId) -> Result<AggregateRoot<A>>;
 
     /// Loads an aggregate, returning its lifecycle state.
     ///
@@ -67,7 +67,7 @@ pub trait Repository<A: Aggregate>: Send + Sync {
     /// # Errors
     ///
     /// Returns an error if the aggregate doesn't exist or deserialization fails.
-    async fn load_any<I: EntityIdFor<A> + Send>(&self, id: I) -> Result<Loaded<A>>;
+    async fn load_any_by_id(&self, id: EntityId) -> Result<Loaded<A>>;
 
     /// Loads a deleted aggregate.
     ///
@@ -77,10 +77,7 @@ pub trait Repository<A: Aggregate>: Send + Sync {
     ///
     /// Returns `Error::InvalidState` if the aggregate is still active, or an
     /// error if the aggregate doesn't exist or deserialization fails.
-    async fn load_deleted<I: EntityIdFor<A> + Send>(
-        &self,
-        id: I,
-    ) -> Result<DeletedAggregateRoot<A>>;
+    async fn load_deleted_by_id(&self, id: EntityId) -> Result<DeletedAggregateRoot<A>>;
 
     /// Persists an aggregate root's pending changes and clears them on success.
     ///
@@ -118,7 +115,7 @@ pub trait Repository<A: Aggregate>: Send + Sync {
     /// # Errors
     ///
     /// Returns an error if the store operation fails.
-    async fn exists<I: EntityIdFor<A> + Send>(&self, id: I) -> Result<bool>;
+    async fn exists_by_id(&self, id: EntityId) -> Result<bool>;
 
     /// Gets the current version of an aggregate without loading it.
     ///
@@ -127,7 +124,7 @@ pub trait Repository<A: Aggregate>: Send + Sync {
     /// # Errors
     ///
     /// Returns an error if the store operation fails.
-    async fn get_version<I: EntityIdFor<A> + Send>(&self, id: I) -> Result<AggregateVersion>;
+    async fn version_by_id(&self, id: EntityId) -> Result<AggregateVersion>;
 
     /// Loads an aggregate, applies a closure that mutates it, and saves the result.
     ///
@@ -179,6 +176,7 @@ pub trait Repository<A: Aggregate>: Send + Sync {
     ) -> std::result::Result<R, crate::ModifyError<A::Error>>
     where
         I: EntityIdFor<A> + Send,
+        Self: Sized,
         F: FnOnce(&mut AggregateRoot<A>) -> std::result::Result<R, A::Error> + Send,
         R: Send,
     {
@@ -215,6 +213,7 @@ pub trait Repository<A: Aggregate>: Send + Sync {
     ) -> std::result::Result<R, crate::ModifyError<A::Error>>
     where
         I: EntityIdFor<A> + Send,
+        Self: Sized,
         F: FnOnce(&mut DeletedAggregateRoot<A>) -> std::result::Result<R, A::Error> + Send,
         R: Send,
     {
@@ -255,7 +254,10 @@ pub trait Repository<A: Aggregate>: Send + Sync {
     fn create_with<E: InitEvent<A> + Into<A::Event>>(
         &self,
         event: E,
-    ) -> std::result::Result<AggregateRoot<A>, A::Error> {
+    ) -> std::result::Result<AggregateRoot<A>, A::Error>
+    where
+        Self: Sized,
+    {
         UninitAggregateRoot::new(EntityId::new()).apply_init(event)
     }
 
@@ -268,7 +270,10 @@ pub trait Repository<A: Aggregate>: Send + Sync {
         &self,
         id: EntityId,
         event: E,
-    ) -> std::result::Result<AggregateRoot<A>, A::Error> {
+    ) -> std::result::Result<AggregateRoot<A>, A::Error>
+    where
+        Self: Sized,
+    {
         UninitAggregateRoot::new(id).apply_init(event)
     }
 
@@ -295,6 +300,66 @@ pub trait Repository<A: Aggregate>: Send + Sync {
         A: DefaultEntity,
     {
         AggregateRoot::new(id)
+    }
+
+    /// Loads an active aggregate by its typed id.
+    ///
+    /// # Errors
+    ///
+    /// What [`Repository::load_by_id`] gives.
+    async fn load<I: EntityIdFor<A> + Send>(&self, id: I) -> Result<AggregateRoot<A>>
+    where
+        Self: Sized,
+    {
+        self.load_by_id(id.entity_id()).await
+    }
+
+    /// Loads an aggregate by its typed id, returning its lifecycle state.
+    ///
+    /// # Errors
+    ///
+    /// What [`Repository::load_any_by_id`] gives.
+    async fn load_any<I: EntityIdFor<A> + Send>(&self, id: I) -> Result<Loaded<A>>
+    where
+        Self: Sized,
+    {
+        self.load_any_by_id(id.entity_id()).await
+    }
+
+    /// Loads a deleted aggregate by its typed id.
+    ///
+    /// # Errors
+    ///
+    /// What [`Repository::load_deleted_by_id`] gives.
+    async fn load_deleted<I: EntityIdFor<A> + Send>(&self, id: I) -> Result<DeletedAggregateRoot<A>>
+    where
+        Self: Sized,
+    {
+        self.load_deleted_by_id(id.entity_id()).await
+    }
+
+    /// Whether an aggregate with this typed id exists.
+    ///
+    /// # Errors
+    ///
+    /// What [`Repository::exists_by_id`] gives.
+    async fn exists<I: EntityIdFor<A> + Send>(&self, id: I) -> Result<bool>
+    where
+        Self: Sized,
+    {
+        self.exists_by_id(id.entity_id()).await
+    }
+
+    /// The stored version of the aggregate with this typed id.
+    ///
+    /// # Errors
+    ///
+    /// What [`Repository::version_by_id`] gives.
+    async fn get_version<I: EntityIdFor<A> + Send>(&self, id: I) -> Result<AggregateVersion>
+    where
+        Self: Sized,
+    {
+        self.version_by_id(id.entity_id()).await
     }
 }
 
@@ -359,8 +424,7 @@ where
     ///
     /// Returns an error if the event store operation fails.
     pub async fn count_events(&self, id: impl EntityIdFor<A>) -> Result<usize> {
-        let id = id.entity_id();
-        let stream_id = StreamId::new(A::aggregate_type(), id.as_uuid());
+        let stream_id = StreamId::new(A::aggregate_type(), id.entity_id().as_uuid());
         count_events(&*self.store, stream_id).await
     }
 }
@@ -374,19 +438,16 @@ where
     A::DeletedState: serde::Serialize + serde::de::DeserializeOwned,
     A::Event: serde::Serialize + serde::de::DeserializeOwned,
 {
-    async fn load<I: EntityIdFor<A> + Send>(&self, id: I) -> Result<AggregateRoot<A>> {
-        load(&*self.store, id.entity_id()).await
+    async fn load_by_id(&self, id: EntityId) -> Result<AggregateRoot<A>> {
+        load(&*self.store, id).await
     }
 
-    async fn load_any<I: EntityIdFor<A> + Send>(&self, id: I) -> Result<Loaded<A>> {
-        load_any(&*self.store, id.entity_id()).await
+    async fn load_any_by_id(&self, id: EntityId) -> Result<Loaded<A>> {
+        load_any(&*self.store, id).await
     }
 
-    async fn load_deleted<I: EntityIdFor<A> + Send>(
-        &self,
-        id: I,
-    ) -> Result<DeletedAggregateRoot<A>> {
-        load_deleted(&*self.store, id.entity_id()).await
+    async fn load_deleted_by_id(&self, id: EntityId) -> Result<DeletedAggregateRoot<A>> {
+        load_deleted(&*self.store, id).await
     }
 
     async fn save(&self, aggregate: &mut AggregateRoot<A>) -> Result<()> {
@@ -409,14 +470,12 @@ where
         self.store.commit_deleted(aggregate).await
     }
 
-    async fn exists<I: EntityIdFor<A> + Send>(&self, id: I) -> Result<bool> {
-        let id = id.entity_id();
+    async fn exists_by_id(&self, id: EntityId) -> Result<bool> {
         let stream_id = StreamId::new(A::aggregate_type(), id.as_uuid());
         self.store.stream_exists(stream_id).await
     }
 
-    async fn get_version<I: EntityIdFor<A> + Send>(&self, id: I) -> Result<AggregateVersion> {
-        let id = id.entity_id();
+    async fn version_by_id(&self, id: EntityId) -> Result<AggregateVersion> {
         let stream_id = StreamId::new(A::aggregate_type(), id.as_uuid());
         self.store.get_version(stream_id).await
     }
