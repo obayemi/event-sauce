@@ -221,6 +221,16 @@ impl<A: Aggregate> AggregateRoot<A> {
         &self.entity
     }
 
+    /// Consumes the root and returns the entity it holds.
+    ///
+    /// For a caller that wanted the aggregate and not the bookkeeping — a read model
+    /// assembling a payload, say. Any pending events are dropped with the root, so
+    /// call it only where nothing is owed: after a save, or on a freshly loaded root.
+    #[must_use]
+    pub fn into_entity(self) -> A {
+        self.entity
+    }
+
     /// Applies an event to update the entity's state and records it.
     ///
     /// This method:

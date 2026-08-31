@@ -552,7 +552,7 @@ macro_rules! __command_handler_init_internal {
             $(
                 paste::paste! {
                     $(#[$i_attr])*
-                    #[allow(missing_docs, clippy::too_many_arguments)]
+                    #[allow(missing_docs)]
                     pub fn [<$i_cmd _event>]($($i_param: $i_param_ty),*) -> $i_evt {
                         $crate::__command_handler_event! {
                             clock: [$i_clock] $i_evt { $($i_field: $i_param,)* }
@@ -567,7 +567,7 @@ macro_rules! __command_handler_init_internal {
             $(
                 paste::paste! {
                     $(#[$ai_attr])*
-                    #[allow(missing_docs, clippy::too_many_arguments)]
+                    #[allow(missing_docs)]
                     pub fn [<$ai_cmd _event>]($($ai_param: $ai_param_ty),*) -> $ai_evt {
                         $crate::__command_handler_event! {
                             clock: [$ai_clock] $ai_evt { $($ai_field: $ai_param,)* }
@@ -582,7 +582,7 @@ macro_rules! __command_handler_init_internal {
             $(
                 paste::paste! {
                     $(#[$r_attr])*
-                    #[allow(missing_docs, clippy::too_many_arguments)]
+                    #[allow(missing_docs)]
                     pub fn [<$r_cmd _event>](&self, $($r_param: $r_param_ty),*) -> $r_evt {
                         $crate::__command_handler_event! {
                             clock: [$r_clock] $r_evt { $($r_field: $r_param,)* }
@@ -597,7 +597,7 @@ macro_rules! __command_handler_init_internal {
             $(
                 paste::paste! {
                     $(#[$a_attr])*
-                    #[allow(missing_docs, clippy::too_many_arguments)]
+                    #[allow(missing_docs)]
                     pub fn [<$a_cmd _event>](&self, $($a_param: $a_param_ty),*) -> $a_evt {
                         $crate::__command_handler_event! {
                             clock: [$a_clock] $a_evt { $($a_field: $a_param,)* }
@@ -651,7 +651,7 @@ macro_rules! __command_handler_init_internal {
             paste::paste! {
                 impl $aggregate {
                     $(#[$i_attr])*
-                    #[allow(missing_docs, clippy::too_many_arguments)]
+                    #[allow(missing_docs)]
                     pub fn $i_cmd($($i_param: $i_param_ty),*)
                         -> ::std::result::Result<
                             $crate::AggregateRoot<$aggregate>,
@@ -665,7 +665,7 @@ macro_rules! __command_handler_init_internal {
                     }
 
                     $(#[$i_attr])*
-                    #[allow(missing_docs, clippy::too_many_arguments)]
+                    #[allow(missing_docs)]
                     pub fn [<$i_cmd _with_id>](id: $crate::EntityId, $($i_param: $i_param_ty),*)
                         -> ::std::result::Result<
                             $crate::AggregateRoot<$aggregate>,
@@ -684,7 +684,7 @@ macro_rules! __command_handler_init_internal {
             paste::paste! {
                 impl $aggregate {
                     $(#[$ai_attr])*
-                    #[allow(missing_docs, clippy::too_many_arguments)]
+                    #[allow(missing_docs)]
                     pub fn $ai_cmd(actor: &$crate::AggregateRoot<$ai_actor>, $($ai_param: $ai_param_ty),*)
                         -> ::std::result::Result<
                             $crate::AggregateRoot<$aggregate>,
@@ -699,7 +699,7 @@ macro_rules! __command_handler_init_internal {
                     }
 
                     $(#[$ai_attr])*
-                    #[allow(missing_docs, clippy::too_many_arguments)]
+                    #[allow(missing_docs)]
                     pub fn [<$ai_cmd _with_id>](id: $crate::EntityId, actor: &$crate::AggregateRoot<$ai_actor>, $($ai_param: $ai_param_ty),*)
                         -> ::std::result::Result<
                             $crate::AggregateRoot<$aggregate>,
@@ -758,7 +758,7 @@ macro_rules! __command_handler_init_internal {
             $(
                 paste::paste! {
                     $(#[$d_attr])*
-                    #[allow(missing_docs, clippy::too_many_arguments)]
+                    #[allow(missing_docs)]
                     pub fn [<$d_cmd _event>](&self, $($d_param: $d_param_ty),*) -> $d_evt {
                         $crate::__command_handler_event! {
                             clock: [$d_clock] $d_evt { $($d_field: $d_param,)* }
@@ -773,7 +773,7 @@ macro_rules! __command_handler_init_internal {
             $(
                 paste::paste! {
                     $(#[$ad_attr])*
-                    #[allow(missing_docs, clippy::too_many_arguments)]
+                    #[allow(missing_docs)]
                     pub fn [<$ad_cmd _event>](&self, $($ad_param: $ad_param_ty),*) -> $ad_evt {
                         $crate::__command_handler_event! {
                             clock: [$ad_clock] $ad_evt { $($ad_field: $ad_param,)* }
