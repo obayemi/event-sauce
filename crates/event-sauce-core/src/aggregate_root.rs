@@ -337,11 +337,14 @@ impl<A: Aggregate> AggregateRoot<A> {
         self.version = self.version.next();
     }
 
-    /// Reconstructs an aggregate root from a snapshot.
+    /// Wraps an entity a store already rebuilt, at the version it was read at.
     ///
-    /// Used when loading from the event store with snapshot support.
+    /// This is what every [`Repository`](crate::Repository) answers a load with,
+    /// whichever way it stores an aggregate: a row of typed columns, a serialized
+    /// blob, an event-store snapshot plus its tail. The root owes nothing — its
+    /// pending list starts empty — so a load-then-save writes nothing.
     #[must_use]
-    pub fn from_snapshot(version: AggregateVersion, entity: A) -> Self {
+    pub fn restore(version: AggregateVersion, entity: A) -> Self {
         Self {
             entity,
             version,
@@ -801,14 +804,13 @@ mod tests {
     }
 
     #[test]
-    fn test_aggregate_root_from_snapshot() {
+    fn test_aggregate_root_restore() {
         let entity = CounterEntity {
             id: EntityId::new(),
             value: 42,
         };
 
-        let counter =
-            AggregateRoot::<CounterEntity>::from_snapshot(AggregateVersion::new(5), entity);
+        let counter = AggregateRoot::<CounterEntity>::restore(AggregateVersion::new(5), entity);
 
         assert_eq!(counter.value, 42);
         assert_eq!(counter.version(), AggregateVersion::new(5));

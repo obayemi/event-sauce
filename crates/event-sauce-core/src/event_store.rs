@@ -1028,7 +1028,7 @@ where
             return Ok(None);
         };
         let entity_id = EntityId::from(aggregate_id);
-        return Ok(Some(Loaded::Deleted(DeletedAggregateRoot::from_snapshot(
+        return Ok(Some(Loaded::Deleted(DeletedAggregateRoot::restore(
             deleted_state,
             entity_id,
             snapshot_version,
@@ -1047,7 +1047,7 @@ where
         return Ok(None);
     };
 
-    let mut aggregate = AggregateRoot::from_snapshot(snapshot_version, entity);
+    let mut aggregate = AggregateRoot::restore(snapshot_version, entity);
 
     let event_stream = store.load_stream(stream_id, snapshot_version).await?;
     futures::pin_mut!(event_stream);

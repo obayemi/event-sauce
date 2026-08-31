@@ -206,11 +206,11 @@ fn test_no_state_struct_generated() {
 }
 
 #[test]
-fn test_from_snapshot() {
+fn test_restore() {
     let id = EntityId::new();
     let entity = TestCounter { id, value: 100 };
 
-    let root = AggregateRoot::<TestCounter>::from_snapshot(AggregateVersion::new(5), entity);
+    let root = AggregateRoot::<TestCounter>::restore(AggregateVersion::new(5), entity);
 
     assert_eq!(root.value, 100);
     assert_eq!(root.version(), AggregateVersion::new(5));
