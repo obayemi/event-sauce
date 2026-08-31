@@ -1924,6 +1924,17 @@ macro_rules! define_events {
                     ::std::result::Result::Ok(())
                 }
 
+                fn validate_only(&self, aggregate: &$aggregate) -> ::std::result::Result<(), <$aggregate as $crate::Aggregate>::Error> {
+                    match self {
+                        $(
+                            $event_enum::$variant { $($field,)* $clock } => {
+                                define_events!(@validate_only_arm $kind [$aggregate] [[<$variant Event>]] [$($field),*] [$clock] [aggregate])
+                            }
+                        ),*
+                    }
+                    ::std::result::Result::Ok(())
+                }
+
                 fn dispatch_unchecked(&self, aggregate: &mut $aggregate) {
                     match self {
                         $(
@@ -2357,6 +2368,42 @@ macro_rules! define_events {
     // Helper: dispatch arm — called from within paste::paste! so $evt_type
     // is already resolved (e.g. CreatedEvent). No inner paste needed.
     // =========================================================================
+    (@validate_only_arm regular [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
+        {
+            use $crate::ApplyEvent;
+            let evt = $evt_type {
+                $($field: $field.clone(),)*
+                $timestamp: *$timestamp,
+            };
+            evt.validate($aggregate_var)?;
+        }
+    };
+    (@validate_only_arm actor [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
+        {
+            use $crate::ApplyEvent;
+            let evt = $evt_type {
+                $($field: $field.clone(),)*
+                $timestamp: *$timestamp,
+            };
+            evt.validate($aggregate_var)?;
+        }
+    };
+    (@validate_only_arm init [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
+        // An init fact has no aggregate to validate against yet; the post-validate
+        // that guards it runs inside `dispatch_init`.
+        {}
+    };
+    (@validate_only_arm delete [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
+        // A delete fact never reaches `dispatch`; `dispatch_delete` runs its guard.
+        {}
+    };
+    (@validate_only_arm actor_delete [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
+        // A delete fact never reaches `dispatch`; `dispatch_delete` runs its guard.
+        {}
+    };
+    (@validate_only_arm actor_init [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
+        {}
+    };
     (@dispatch_arm regular [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
         {
             use $crate::ApplyEvent;

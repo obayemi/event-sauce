@@ -254,6 +254,12 @@ impl<A: Aggregate> AggregateRoot<A> {
     /// the stored event always reproduces the same state.
     pub fn apply<E: Into<A::Event>>(&mut self, event: E) -> Result<(), A::Error> {
         let event = event.into();
+        // A REFUSAL is not a poisoning. Pre-validation runs before anything is
+        // mutated, so an aggregate that refused a command is exactly as it was and
+        // stays usable — which is the whole point of a typed refusal: a caller that
+        // expects one (`let _ = incident.raise_severity(..)`) must still be able to
+        // save what it did change.
+        EventApplicator::validate_only(&event, &self.entity)?;
         if let Err(error) = EventApplicator::dispatch(&event, &mut self.entity) {
             self.poisoned = true;
             return Err(error);
@@ -283,6 +289,7 @@ impl<A: Aggregate> AggregateRoot<A> {
         actor_id: EntityId,
     ) -> Result<(), A::Error> {
         let event = event.into();
+        EventApplicator::validate_only(&event, &self.entity)?;
         if let Err(error) = EventApplicator::dispatch(&event, &mut self.entity) {
             self.poisoned = true;
             return Err(error);
