@@ -522,6 +522,52 @@ impl PostgresPolicyOutbox {
             .map_err(|e| Error::backend("Failed to count pending outbox rows", e))?;
         Ok(count)
     }
+
+    /// Deletes up to `batch_size` `done` rows last updated more than
+    /// `older_than` ago, and returns how many were deleted.
+    ///
+    /// Unlike the state outbox (which deletes on success, since it has no log
+    /// to replay from), this outbox keeps `done` rows — see the module docs —
+    /// so nothing prunes it automatically and it grows without bound. Call
+    /// this periodically (e.g. from a scheduled task) with an `older_than`
+    /// retention longer than any deliberate checkpoint rewind you rely on for
+    /// a policy, so the rewind can still re-enqueue idempotently against rows
+    /// the `UNIQUE(policy_name, event_id)` constraint would otherwise still
+    /// hold. A policy's own checkpoint only ever moves forward or rewinds
+    /// deliberately — it is never rewound by another policy joining or
+    /// leaving a
+    /// [`dispatch_policies_to_outbox`](crate::PostgresBackend::dispatch_policies_to_outbox)
+    /// call — so pruning one policy's `done` rows has no effect on any other
+    /// policy's delivery.
+    ///
+    /// Deletes in bounded batches rather than one unbounded statement, so a
+    /// large backlog doesn't hold a long-lived lock or a huge transaction. A
+    /// single call may leave more prunable rows behind if there are more than
+    /// `batch_size`; call it again (or loop) to fully drain a backlog.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the delete fails.
+    pub async fn prune_done(&self, older_than: Duration, batch_size: u32) -> Result<u64> {
+        let outbox_table = self.outbox_table();
+        let query = format!(
+            "DELETE FROM {outbox_table}
+             WHERE id IN (
+                 SELECT id FROM {outbox_table}
+                 WHERE status = 'done'
+                   AND updated_at < NOW() - make_interval(secs => $1::float8)
+                 LIMIT $2
+             )"
+        );
+        let deleted = sqlx::query(&query)
+            .bind(older_than.as_secs_f64())
+            .bind(i64::from(batch_size))
+            .execute(&self.pool)
+            .await
+            .map_err(|e| Error::backend("Failed to prune done outbox rows", e))?
+            .rows_affected();
+        Ok(deleted)
+    }
 }
 
 #[cfg(test)]
@@ -1159,5 +1205,88 @@ mod tests {
             .unwrap();
         let positions: Vec<i64> = claims.iter().map(|c| c.event_position).collect();
         assert_eq!(positions, vec![1, 2, 3]);
+    }
+
+    /// Enqueues, claims and marks a row done, then backdates its
+    /// `updated_at` by `age` so it looks like it finished `age` ago.
+    async fn done_row_aged(outbox: &PostgresPolicyOutbox, policy: &str, age: Duration) -> i64 {
+        let event_id = enqueue_one(outbox, policy, 1).await;
+        let claims = outbox
+            .claim_batch(policy, "pruner-setup", 10, Duration::from_secs(60))
+            .await
+            .unwrap();
+        let id = claims.iter().find(|c| c.event_id == event_id).unwrap().id;
+        assert!(outbox.mark_done(id, "pruner-setup").await.unwrap());
+        sqlx::query(
+            "UPDATE event_sauce.policy_outbox
+             SET updated_at = NOW() - make_interval(secs => $2::float8)
+             WHERE id = $1",
+        )
+        .bind(id)
+        .bind(age.as_secs_f64())
+        .execute(outbox.pool())
+        .await
+        .unwrap();
+        id
+    }
+
+    #[tokio::test]
+    async fn test_prune_done_removes_only_old_done_rows() {
+        let db = TestDb::new().await;
+        let outbox = PostgresPolicyOutbox::new(db.pool.clone(), "event_sauce");
+        outbox.migrate().await.unwrap();
+
+        let old_done = done_row_aged(&outbox, "policy-a", Duration::from_secs(3600)).await;
+        let recent_done = done_row_aged(&outbox, "policy-a", Duration::from_secs(1)).await;
+        enqueue_one(&outbox, "policy-a", 2).await;
+
+        let deleted = outbox
+            .prune_done(Duration::from_secs(60), 100)
+            .await
+            .unwrap();
+        assert_eq!(deleted, 1, "only the old done row is prunable");
+
+        let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM event_sauce.policy_outbox")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            remaining, 2,
+            "the recent done row and the pending row must survive"
+        );
+        assert_eq!(status_of(&outbox, recent_done).await, "done");
+        let old_exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM event_sauce.policy_outbox WHERE id = $1)",
+        )
+        .bind(old_done)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert!(!old_exists, "the old done row must have been pruned");
+    }
+
+    #[tokio::test]
+    async fn test_prune_done_respects_batch_size() {
+        let db = TestDb::new().await;
+        let outbox = PostgresPolicyOutbox::new(db.pool.clone(), "event_sauce");
+        outbox.migrate().await.unwrap();
+
+        for _ in 0..5 {
+            done_row_aged(&outbox, "policy-a", Duration::from_secs(3600)).await;
+        }
+
+        let deleted = outbox.prune_done(Duration::from_secs(60), 2).await.unwrap();
+        assert_eq!(
+            deleted, 2,
+            "a call must not delete more than batch_size rows"
+        );
+
+        let remaining: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM event_sauce.policy_outbox WHERE status = 'done'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(remaining, 3, "the rest must survive this one call");
     }
 }
