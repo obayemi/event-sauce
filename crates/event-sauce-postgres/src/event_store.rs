@@ -83,6 +83,13 @@ pub(crate) fn append_lock_key(qualified_events_table: &str) -> i64 {
     crate::migrations::advisory_lock_key(qualified_events_table)
 }
 
+/// A commit with nothing to persist: no events, no claims, and no claim
+/// clearing. `append`/`append_batch` drop these rather than opening a
+/// transaction for them.
+fn is_noop_commit(commit: &event_sauce_core::StreamCommit) -> bool {
+    commit.events.is_empty() && commit.claims.is_empty() && !commit.clear_claims
+}
+
 /// Builder for configuring `PostgresEventStore`.
 ///
 /// Provides a flexible way to configure the event store with:
@@ -1256,53 +1263,19 @@ impl EventStore for PostgresEventStore {
         claims: Vec<event_sauce_core::AggregateClaim>,
         clear_claims: bool,
     ) -> Result<()> {
-        if events.is_empty() && claims.is_empty() && !clear_claims {
-            return Ok(());
-        }
-
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .map_err(|e| Error::backend("Failed to start transaction", e))?;
-
-        let events_table = self.qualify_table("events");
-
-        // Only id-allocating appends take the serialization lock.
-        if !events.is_empty() {
-            self.acquire_append_lock(&mut tx, &events_table).await?;
-        }
-
-        let last_inserted_id = self
-            .write_commit_in_tx(
-                &mut tx,
-                &events_table,
-                event_sauce_core::StreamCommit {
-                    stream_id,
-                    events,
-                    expected_version,
-                    claims,
-                    clear_claims,
-                },
-            )
-            .await?;
-
-        self.notify_inserted(&mut tx, last_inserted_id).await?;
-
-        tx.commit()
-            .await
-            .map_err(|e| Error::backend("Failed to commit transaction", e))?;
-
-        Ok(())
+        self.append_batch(vec![event_sauce_core::StreamCommit {
+            stream_id,
+            events,
+            expected_version,
+            claims,
+            clear_claims,
+        }])
+        .await
     }
 
     async fn append_batch(&self, commits: Vec<event_sauce_core::StreamCommit>) -> Result<()> {
-        // Drop no-op commits so a batch of only empty commits stays a true no-op
-        // (matching `append`'s early return).
-        let commits: Vec<event_sauce_core::StreamCommit> = commits
-            .into_iter()
-            .filter(|c| !(c.events.is_empty() && c.claims.is_empty() && !c.clear_claims))
-            .collect();
+        let commits: Vec<event_sauce_core::StreamCommit> =
+            commits.into_iter().filter(|c| !is_noop_commit(c)).collect();
         if commits.is_empty() {
             return Ok(());
         }

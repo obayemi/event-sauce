@@ -524,18 +524,7 @@ impl StateStore for PostgresStateStore {
     }
 
     async fn save(&self, commit: StateCommit) -> Result<()> {
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .map_err(|e| Error::backend("Failed to start transaction", e))?;
-
-        self.write_commit_in_tx(&mut tx, commit).await?;
-
-        tx.commit()
-            .await
-            .map_err(|e| Error::backend("Failed to commit transaction", e))?;
-        Ok(())
+        self.save_batch(vec![commit]).await
     }
 
     async fn save_batch(&self, commits: Vec<StateCommit>) -> Result<()> {
