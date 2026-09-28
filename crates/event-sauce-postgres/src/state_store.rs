@@ -996,6 +996,63 @@ mod tests {
         assert_eq!(repo.load(second_id).await.unwrap().title, "duplicate");
     }
 
+    /// Regression test for CLAIM-RACE-1: two transactions racing to claim the
+    /// same `(claim_type, claim_hash)` for different aggregates must surface
+    /// [`Error::ClaimConflict`] for the loser, not a generic backend error.
+    ///
+    /// The claim-enforcement CTE first checks for a *committed* conflicting
+    /// claim, then inserts. When two transactions run this concurrently for
+    /// different aggregates, neither sees the other's uncommitted row, so both
+    /// pass the check and race on the `UNIQUE(claim_type, claim_hash)` index —
+    /// the loser's insert raises a unique violation that is not the `ON
+    /// CONFLICT` arbiter, aborting its transaction. The interleave is forced
+    /// deterministically: a seeding transaction reserves the same claim for a
+    /// different aggregate and is held open until the real save has blocked on
+    /// its own insert of the same key.
+    #[tokio::test]
+    async fn test_concurrent_same_claim_race_is_claim_conflict() {
+        use sha2::{Digest, Sha256};
+
+        let db = TestDb::new().await;
+        let store = db.store().await;
+
+        let claim_type = "Ticket.title";
+        let claim_key = json!("raced");
+        let claim_hash =
+            Sha256::digest(serde_json::to_string(&claim_key).unwrap().as_bytes()).to_vec();
+
+        let mut seeder = db.pool.begin().await.unwrap();
+        sqlx::query(
+            "INSERT INTO event_sauce.aggregate_claims (aggregate_id, claim_type, claim_hash)
+             VALUES ($1, $2, $3)",
+        )
+        .bind(Uuid::new_v4())
+        .bind(claim_type)
+        .bind(&claim_hash)
+        .execute(&mut *seeder)
+        .await
+        .unwrap();
+
+        let loser_aggregate_id = Uuid::new_v4();
+        let commit = manual_commit(loser_aggregate_id, 1, 0);
+        let commit = StateCommit {
+            claims: vec![AggregateClaim::new(claim_type, claim_key)],
+            ..commit
+        };
+        let loser = tokio::spawn(async move { store.save(commit).await });
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        seeder.commit().await.unwrap();
+
+        let result = loser.await.unwrap();
+        let err = result.expect_err("racing claim insert must fail");
+        assert!(
+            err.is_claim_conflict(),
+            "expected ClaimConflict for a raced claim insert, got: {err:?}"
+        );
+    }
+
     #[tokio::test]
     async fn test_projection_commits_with_save() {
         let db = TestDb::new().await;

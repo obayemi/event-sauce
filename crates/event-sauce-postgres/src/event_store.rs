@@ -902,6 +902,80 @@ impl PostgresEventStore {
         Ok(AggregateVersion::new(current_version.unwrap_or(-1) + 1))
     }
 
+    /// Detects a conflicting committed claim and, if none, upserts the
+    /// caller's claims — all in one round-trip via a CTE that returns any
+    /// conflicting row (an empty result means success).
+    ///
+    /// Runs behind a savepoint: two transactions racing this for different
+    /// aggregates can both see no conflict, then collide on the non-arbiter
+    /// `UNIQUE(claim_type, claim_hash)` index. That aborts whichever
+    /// transaction loses the race, and [`Self::recover_concurrent_conflict`]
+    /// needs to issue a further `SELECT` afterwards. Rolling back to the
+    /// savepoint (rather than the whole transaction) clears the abort while
+    /// keeping the version precheck and any already-inserted events.
+    async fn upsert_or_conflict(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        claims_table: &str,
+        aggregate_id: uuid::Uuid,
+        hashed: &[(&event_sauce_core::AggregateClaim, Vec<u8>)],
+    ) -> Result<()> {
+        use sqlx::Acquire;
+
+        let row_placeholders: Vec<String> = (0..hashed.len())
+            .map(|i| format!("(${}::text, ${}::bytea)", 2 + 2 * i, 3 + 2 * i))
+            .collect();
+        let combined_query = format!(
+            "WITH input(claim_type, claim_hash) AS (VALUES {rows}),
+                  conflicts AS (
+                      SELECT i.claim_type, i.claim_hash, c.aggregate_id AS holder
+                      FROM input i
+                      JOIN {claims_table} c USING (claim_type, claim_hash)
+                      WHERE c.aggregate_id <> $1
+                  ),
+                  upsert AS (
+                      INSERT INTO {claims_table} (aggregate_id, claim_type, claim_hash)
+                      SELECT $1, claim_type, claim_hash FROM input
+                      WHERE NOT EXISTS (SELECT 1 FROM conflicts)
+                      ON CONFLICT (aggregate_id, claim_type)
+                      DO UPDATE SET claim_hash = EXCLUDED.claim_hash
+                      RETURNING aggregate_id
+                  )
+              SELECT claim_type, claim_hash, holder FROM conflicts LIMIT 1",
+            rows = row_placeholders.join(", "),
+        );
+
+        let mut query =
+            sqlx::query_as::<_, (String, Vec<u8>, uuid::Uuid)>(&combined_query).bind(aggregate_id);
+        for (claim, hash) in hashed {
+            query = query.bind(claim.claim_type).bind(hash);
+        }
+
+        let mut savepoint = tx
+            .begin()
+            .await
+            .map_err(|e| Error::backend("Failed to open claims savepoint", e))?;
+        match query.fetch_optional(&mut *savepoint).await {
+            Ok(None) => savepoint
+                .commit()
+                .await
+                .map_err(|e| Error::backend("Failed to commit claims savepoint", e)),
+            Ok(Some((claim_type, claim_hash, holder))) => Err(Self::build_conflict_error(
+                hashed,
+                &claim_type,
+                &claim_hash,
+                holder,
+            )),
+            Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => {
+                savepoint
+                    .rollback()
+                    .await
+                    .map_err(|e| Error::backend("Failed to roll back claims savepoint", e))?;
+                Self::recover_concurrent_conflict(tx, claims_table, aggregate_id, hashed).await
+            }
+            Err(e) => Err(Error::backend("Failed to upsert claims", e)),
+        }
+    }
+
     pub(crate) async fn handle_claims(
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         claims_table: &str,
@@ -928,63 +1002,8 @@ impl PostgresEventStore {
                 .map(|(c, _)| c.claim_type.to_string())
                 .collect();
 
-            // Single round-trip: a CTE that detects conflicts (different aggregate
-            // already holds one of our (claim_type, claim_hash) pairs) and, if
-            // none, performs a batched upsert. The query returns one row per
-            // detected conflict; an empty result means success.
             let aggregate_id = stream_id.aggregate_id();
-            let row_placeholders: Vec<String> = (0..hashed.len())
-                .map(|i| format!("(${}::text, ${}::bytea)", 2 + 2 * i, 3 + 2 * i))
-                .collect();
-            let combined_query = format!(
-                "WITH input(claim_type, claim_hash) AS (VALUES {rows}),
-                      conflicts AS (
-                          SELECT i.claim_type, i.claim_hash, c.aggregate_id AS holder
-                          FROM input i
-                          JOIN {claims_table} c USING (claim_type, claim_hash)
-                          WHERE c.aggregate_id <> $1
-                      ),
-                      upsert AS (
-                          INSERT INTO {claims_table} (aggregate_id, claim_type, claim_hash)
-                          SELECT $1, claim_type, claim_hash FROM input
-                          WHERE NOT EXISTS (SELECT 1 FROM conflicts)
-                          ON CONFLICT (aggregate_id, claim_type)
-                          DO UPDATE SET claim_hash = EXCLUDED.claim_hash
-                          RETURNING aggregate_id
-                      )
-                  SELECT claim_type, claim_hash, holder FROM conflicts LIMIT 1",
-                rows = row_placeholders.join(", "),
-            );
-
-            let mut query = sqlx::query_as::<_, (String, Vec<u8>, uuid::Uuid)>(&combined_query)
-                .bind(aggregate_id);
-            for (claim, hash) in &hashed {
-                query = query.bind(claim.claim_type).bind(hash);
-            }
-
-            match query.fetch_optional(&mut **tx).await {
-                Ok(None) => {}
-                Ok(Some((claim_type, claim_hash, holder))) => {
-                    return Err(Self::build_conflict_error(
-                        &hashed,
-                        &claim_type,
-                        &claim_hash,
-                        holder,
-                    ));
-                }
-                Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => {
-                    return Self::recover_concurrent_conflict(
-                        tx,
-                        claims_table,
-                        aggregate_id,
-                        &hashed,
-                    )
-                    .await;
-                }
-                Err(e) => {
-                    return Err(Error::backend("Failed to upsert claims", e));
-                }
-            }
+            Self::upsert_or_conflict(tx, claims_table, aggregate_id, &hashed).await?;
 
             // Clean up claims for types no longer in the current claims set
             if !current_claim_types.is_empty() {
