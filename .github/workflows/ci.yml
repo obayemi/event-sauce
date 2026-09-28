@@ -217,3 +217,43 @@ jobs:
         run: |
           cargo check -p event-sauce-core --no-default-features \
             ${{ matrix.features && format('--features {0}', matrix.features) || '' }}
+
+  feature-matrix-memory-facade:
+    name: Memory/Facade Feature Combinations
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Clippy event-sauce-memory with no persistence style
+        run: cargo clippy -p event-sauce-memory --no-default-features --lib -- -D warnings
+
+      - name: Clippy event-sauce-memory with event-sourcing
+        run: cargo clippy -p event-sauce-memory --no-default-features --features event-sourcing --lib -- -D warnings
+
+      - name: Clippy event-sauce-memory with state-store
+        run: cargo clippy -p event-sauce-memory --no-default-features --features state-store --lib -- -D warnings
+
+      - name: Clippy event-sauce-memory with crypto
+        run: cargo clippy -p event-sauce-memory --no-default-features --features crypto --lib -- -D warnings
+
+      - name: Clippy event-sauce facade with memory alone
+        run: cargo clippy -p event-sauce --no-default-features --features memory --lib -- -D warnings
+
+      - name: Clippy event-sauce facade with memory and event-sourcing
+        run: cargo clippy -p event-sauce --no-default-features --features memory,event-sourcing --lib -- -D warnings
+
+      - name: Clippy event-sauce facade with memory and state-store
+        run: cargo clippy -p event-sauce --no-default-features --features memory,state-store --lib -- -D warnings
+
+      - name: Clippy event-sauce facade with postgres
+        run: cargo clippy -p event-sauce --no-default-features --features postgres --lib -- -D warnings

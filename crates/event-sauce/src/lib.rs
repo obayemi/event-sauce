@@ -71,7 +71,13 @@ pub mod crypto {
 }
 
 /// In-memory backend: stores, projections, and test doubles.
-#[cfg(feature = "memory")]
+///
+/// Needs a persistence style (`event-sourcing` and/or `state-store`)
+/// enabled alongside `memory`, otherwise the backend has nothing to export.
+#[cfg(all(
+    feature = "memory",
+    any(feature = "event-sourcing", feature = "state-store")
+))]
 pub mod memory {
     pub use event_sauce_memory::*;
 }

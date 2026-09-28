@@ -11,7 +11,9 @@ keywords = ["event-sourcing", "encryption", "gdpr", "crypto-shredding"]
 categories = ["cryptography"]
 
 [dependencies]
-event-sauce-core = { path = "../event-sauce-core", version = "0.1.0" }
+event-sauce-core = { path = "../event-sauce-core", version = "0.1.0", default-features = false, features = [
+    "event-sourcing",
+] }
 aes-gcm.workspace = true
 
 [dev-dependencies]

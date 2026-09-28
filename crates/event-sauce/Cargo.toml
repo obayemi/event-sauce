@@ -22,15 +22,21 @@ event-sauce-crypto = { path = "../event-sauce-crypto", version = "0.1.0", option
 default = ["macros", "memory", "event-sourcing", "state-store"]
 macros = ["dep:event-sauce-macros"]
 memory = ["dep:event-sauce-memory"]
-postgres = ["dep:event-sauce-postgres", "event-sourcing"]
+postgres = ["dep:event-sauce-postgres", "event-sourcing", "state-store"]
 crypto = [
     "dep:event-sauce-crypto",
     "event-sourcing",
     "event-sauce-memory?/crypto",
     "event-sauce-postgres?/crypto",
 ]
-event-sourcing = ["event-sauce-core/event-sourcing"]
-state-store = ["event-sauce-core/state-store"]
+event-sourcing = [
+    "event-sauce-core/event-sourcing",
+    "event-sauce-memory?/event-sourcing",
+]
+state-store = [
+    "event-sauce-core/state-store",
+    "event-sauce-memory?/state-store",
+]
 # The read graph between published payloads and the aggregates they read.
 # `event_sauce::dependencies`, and its items at the root, come through the core
 # re-export; the flag is all the facade adds.
