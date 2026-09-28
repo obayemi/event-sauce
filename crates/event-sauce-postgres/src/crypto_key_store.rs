@@ -101,6 +101,13 @@ impl PostgresCryptoKeyStore {
     /// - The database connection fails
     /// - The migrations cannot be applied due to permission issues
     pub async fn migrate(&self) -> Result<()> {
+        crate::migrations::with_migration_lock(&self.pool, &self.schema, || self.apply_migrations())
+            .await
+    }
+
+    /// Applies every crypto-key-store migration step, run by [`Self::migrate`]
+    /// while it holds the cross-store migration lock.
+    async fn apply_migrations(&self) -> Result<()> {
         crate::migrations::ensure_schema(&self.pool, &self.schema).await?;
 
         let migrations_table = self.qualify_table("_crypto_key_migrations");
@@ -806,6 +813,69 @@ mod tests {
                 result.unwrap_err().is_key_not_found(),
                 "committing after the key is gone must fail instead of re-keying"
             );
+        }
+
+        /// A fresh deployment whose replicas only ever run
+        /// `PostgresEventStore::migrate()`, all at once, must end up with the
+        /// whole schema the default key store relies on, `shredded_at`
+        /// included, so its first encrypted commit succeeds and reloads.
+        #[tokio::test]
+        async fn concurrent_event_store_migrates_install_a_working_crypto_schema() {
+            let db = TestDatabase::new().await.unwrap();
+            let store = crate::PostgresEventStore::builder()
+                .pool(db.pool().clone())
+                .build()
+                .unwrap();
+            let migrations: Vec<_> = (0..4)
+                .map(|_| {
+                    let replica = store.clone();
+                    tokio::spawn(async move { replica.migrate().await })
+                })
+                .collect();
+            for migration in migrations {
+                migration.await.unwrap().unwrap();
+            }
+
+            let tables: Vec<String> = sqlx::query_scalar(
+                "SELECT table_name::text FROM information_schema.tables
+                 WHERE table_schema = $1 ORDER BY table_name",
+            )
+            .bind(store.schema())
+            .fetch_all(db.pool())
+            .await
+            .unwrap();
+            assert_eq!(
+                tables,
+                [
+                    "_event_sauce_migrations",
+                    "aggregate_claims",
+                    "crypto_keys",
+                    "events",
+                    "snapshots"
+                ]
+            );
+            let has_shredded_at: bool = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.columns
+                 WHERE table_schema = $1 AND table_name = 'crypto_keys'
+                   AND column_name = 'shredded_at')",
+            )
+            .bind(store.schema())
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+            assert!(has_shredded_at, "crypto_keys must carry shredded_at");
+
+            let store = Arc::new(store);
+            let id = EntityId::new();
+            let mut agg = AggregateRoot::<SecretUser>::new(id);
+            agg.apply(SecretUserEvent::Created {
+                email: "fresh-deploy@example.com".into(),
+            })
+            .unwrap();
+            store.commit(&mut agg).await.unwrap();
+
+            let loaded = store.repository::<SecretUser>().load(id).await.unwrap();
+            assert_eq!(loaded.entity().email, "fresh-deploy@example.com");
         }
     }
 }

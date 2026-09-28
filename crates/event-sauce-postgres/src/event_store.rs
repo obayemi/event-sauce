@@ -79,18 +79,8 @@ const DEFAULT_APPEND_LOCK_TIMEOUT: std::time::Duration = std::time::Duration::fr
 /// store's wire contract and must remain stable.
 ///
 /// [FNV-1a]: https://en.wikipedia.org/wiki/Fowler%E2%80%93Noll%E2%80%93Vo_hash_function
-#[allow(clippy::cast_possible_wrap)]
 pub(crate) fn append_lock_key(qualified_events_table: &str) -> i64 {
-    // Standard FNV-1a 64-bit constants.
-    const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
-
-    let mut hash = FNV_OFFSET_BASIS;
-    for byte in qualified_events_table.as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(FNV_PRIME);
-    }
-    hash as i64
+    crate::migrations::advisory_lock_key(qualified_events_table)
 }
 
 /// Builder for configuring `PostgresEventStore`.
@@ -421,6 +411,13 @@ impl PostgresEventStore {
     /// - The migrations cannot be applied due to permission issues
     /// - There are SQL syntax errors in migration files
     pub async fn migrate(&self) -> Result<()> {
+        crate::migrations::with_migration_lock(&self.pool, &self.schema, || self.apply_migrations())
+            .await
+    }
+
+    /// Applies every event-store migration step, run by [`Self::migrate`]
+    /// while it holds the cross-store migration lock.
+    async fn apply_migrations(&self) -> Result<()> {
         crate::migrations::ensure_schema(&self.pool, &self.schema).await?;
 
         let migrations_table = self.qualify_table("_event_sauce_migrations");
@@ -1736,6 +1733,38 @@ mod tests {
     async fn test_create_store() {
         let db = TestDatabase::new().await.unwrap();
         let _store = db.store();
+    }
+
+    /// Regression test for XN-7: several nodes calling `migrate()` at once
+    /// against a fresh database (e.g. a deploy with several replicas starting
+    /// together) must not crash any of them. Each store shares one pool but
+    /// is its own `PostgresEventStore`, matching independent processes hitting
+    /// the same database concurrently.
+    #[tokio::test]
+    async fn test_concurrent_migrate_calls_do_not_crash() {
+        let container = crate::test_support::start_postgres().await.unwrap();
+        let host = container.get_host().await.unwrap();
+        let port = container.get_host_port_ipv4(5432).await.unwrap();
+        let url = format!("postgresql://postgres:postgres@{host}:{port}/postgres");
+        let pool = PgPool::connect(&url).await.unwrap();
+
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let store = PostgresEventStore::builder()
+                    .pool(pool.clone())
+                    .schema("public")
+                    .build()
+                    .expect("pool was set");
+                tokio::spawn(async move { store.migrate().await })
+            })
+            .collect();
+
+        for handle in handles {
+            handle
+                .await
+                .expect("migrate task must not panic")
+                .expect("concurrent migrate() must not fail");
+        }
     }
 
     #[tokio::test]

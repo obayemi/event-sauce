@@ -170,15 +170,25 @@ impl PostgresStateStore {
     /// Returns an error if the database connection fails or the migration
     /// statements cannot be applied.
     pub async fn migrate(&self) -> Result<()> {
-        crate::migrations::ensure_schema(&self.pool, &self.schema).await?;
-
         let migrations_table = self.qualify_table("_state_store_migrations");
-        crate::migrations::ensure_migrations_table(&self.pool, &migrations_table).await?;
 
+        crate::migrations::with_migration_lock(&self.pool, &self.schema, || async {
+            crate::migrations::ensure_schema(&self.pool, &self.schema).await?;
+            crate::migrations::ensure_migrations_table(&self.pool, &migrations_table).await?;
+            self.run_migration_steps(&migrations_table).await
+        })
+        .await
+    }
+
+    /// Runs the state store's individual migration steps. Split out of
+    /// [`Self::migrate`] so the outer method reads as "set up, then run the
+    /// steps under the cross-process lock" and stays under clippy's line
+    /// budget.
+    async fn run_migration_steps(&self, migrations_table: &str) -> Result<()> {
         let states_table = self.qualify_table("aggregate_states");
         crate::migrations::apply_once(
             &self.pool,
-            &migrations_table,
+            migrations_table,
             20_260_825_000_001_i64,
             "create_aggregate_states_table",
             move |pool| async move {
@@ -207,7 +217,7 @@ impl PostgresStateStore {
         let outbox_table = self.qualify_table("state_outbox");
         crate::migrations::apply_once(
             &self.pool,
-            &migrations_table,
+            migrations_table,
             20_260_825_000_002_i64,
             "create_state_outbox_table",
             move |pool| async move {
@@ -248,7 +258,7 @@ impl PostgresStateStore {
         let claims_table = self.qualify_table("aggregate_claims");
         crate::migrations::apply_once(
             &self.pool,
-            &migrations_table,
+            migrations_table,
             20_260_825_000_003_i64,
             "create_aggregate_claims_table",
             move |pool| async move {
@@ -902,6 +912,27 @@ mod tests {
             store.get_version(missing).await.unwrap(),
             AggregateVersion::initial()
         );
+    }
+
+    /// Regression test for XN-7: several nodes calling `migrate()` at once
+    /// against a fresh database must not crash any of them.
+    #[tokio::test]
+    async fn test_concurrent_migrate_calls_do_not_crash() {
+        let db = TestDb::new().await;
+
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let store = db.store_builder().build().expect("pool was set");
+                tokio::spawn(async move { store.migrate().await })
+            })
+            .collect();
+
+        for handle in handles {
+            handle
+                .await
+                .expect("migrate task must not panic")
+                .expect("concurrent migrate() must not fail");
+        }
     }
 
     async fn ticket_lifecycle<R: Repository<Ticket>>(repo: &R) {
