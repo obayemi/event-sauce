@@ -6,7 +6,7 @@
 use crate::event_store::EventRow;
 use async_trait::async_trait;
 use event_sauce_core::{EventLogPage, EventLogParams, EventLogQuery, Result};
-use sqlx::PgPool;
+use sqlx::{PgPool, Postgres, QueryBuilder};
 
 /// `PostgreSQL` implementation of [`EventLogQuery`].
 ///
@@ -44,97 +44,78 @@ impl PostgresEventLogQuery {
     }
 }
 
+/// Appends ` WHERE <cond> AND <cond> ...` for every filter `params` sets,
+/// each as its own bound parameter. `QueryBuilder` numbers the placeholders
+/// itself, so the count and data queries below can push the same filters
+/// independently without a hand-maintained placeholder index or two parallel
+/// bind chains kept in sync by hand.
+fn push_filters(qb: &mut QueryBuilder<'_, Postgres>, params: &EventLogParams) {
+    let has_filters = params.aggregate_type.is_some()
+        || params.event_type.is_some()
+        || params.aggregate_id.is_some()
+        || params.created_by.is_some()
+        || params.from_date.is_some()
+        || params.to_date.is_some();
+    if !has_filters {
+        return;
+    }
+
+    qb.push(" WHERE ");
+    let mut separated = qb.separated(" AND ");
+    if let Some(v) = params.aggregate_type.clone() {
+        separated.push("aggregate_type = ").push_bind_unseparated(v);
+    }
+    if let Some(v) = params.event_type.clone() {
+        separated.push("event_type = ").push_bind_unseparated(v);
+    }
+    if let Some(v) = params.aggregate_id {
+        separated.push("aggregate_id = ").push_bind_unseparated(v);
+    }
+    if let Some(v) = params.created_by {
+        separated.push("created_by = ").push_bind_unseparated(v);
+    }
+    if let Some(v) = params.from_date {
+        separated.push("created_at >= ").push_bind_unseparated(v);
+    }
+    if let Some(v) = params.to_date {
+        separated.push("created_at <= ").push_bind_unseparated(v);
+    }
+}
+
 #[async_trait]
 impl EventLogQuery for PostgresEventLogQuery {
     async fn query_events(&self, params: EventLogParams) -> Result<EventLogPage> {
-        let mut conditions = Vec::new();
-        let mut bind_idx = 1u32;
-
-        if params.aggregate_type.is_some() {
-            conditions.push(format!("aggregate_type = ${bind_idx}"));
-            bind_idx += 1;
-        }
-        if params.event_type.is_some() {
-            conditions.push(format!("event_type = ${bind_idx}"));
-            bind_idx += 1;
-        }
-        if params.aggregate_id.is_some() {
-            conditions.push(format!("aggregate_id = ${bind_idx}"));
-            bind_idx += 1;
-        }
-        if params.created_by.is_some() {
-            conditions.push(format!("created_by = ${bind_idx}"));
-            bind_idx += 1;
-        }
-        if params.from_date.is_some() {
-            conditions.push(format!("created_at >= ${bind_idx}"));
-            bind_idx += 1;
-        }
-        if params.to_date.is_some() {
-            conditions.push(format!("created_at <= ${bind_idx}"));
-            bind_idx += 1;
-        }
-
-        let where_clause = if conditions.is_empty() {
-            String::new()
-        } else {
-            format!("WHERE {}", conditions.join(" AND "))
-        };
-
         let events_table = crate::migrations::qualify(&self.schema, "events");
-        let count_sql = format!("SELECT COUNT(*) FROM {events_table} {where_clause}");
-        let data_sql = format!(
-            "SELECT {columns} FROM {events_table} {where_clause} \
-             ORDER BY {order} LIMIT ${bind_idx} OFFSET ${next}",
-            columns = crate::event_store::EVENT_COLUMNS,
-            order = params.order_by.order_sql(),
-            next = bind_idx + 1,
-        );
 
-        // Build count query
-        let mut count_query = sqlx::query_scalar::<_, i64>(&count_sql);
-        let mut data_query = sqlx::query_as::<_, EventRow>(&data_sql);
+        let mut count_qb: QueryBuilder<Postgres> =
+            QueryBuilder::new(format!("SELECT COUNT(*) FROM {events_table}"));
+        push_filters(&mut count_qb, &params);
 
-        // Bind parameters in the same order
-        if let Some(ref v) = params.aggregate_type {
-            count_query = count_query.bind(v);
-            data_query = data_query.bind(v);
-        }
-        if let Some(ref v) = params.event_type {
-            count_query = count_query.bind(v);
-            data_query = data_query.bind(v);
-        }
-        if let Some(v) = params.aggregate_id {
-            count_query = count_query.bind(v);
-            data_query = data_query.bind(v);
-        }
-        if let Some(v) = params.created_by {
-            count_query = count_query.bind(v);
-            data_query = data_query.bind(v);
-        }
-        if let Some(v) = params.from_date {
-            count_query = count_query.bind(v);
-            data_query = data_query.bind(v);
-        }
-        if let Some(v) = params.to_date {
-            count_query = count_query.bind(v);
-            data_query = data_query.bind(v);
-        }
+        let mut data_qb: QueryBuilder<Postgres> = QueryBuilder::new(format!(
+            "SELECT {columns} FROM {events_table}",
+            columns = crate::event_store::EVENT_COLUMNS
+        ));
+        push_filters(&mut data_qb, &params);
 
         #[allow(clippy::cast_possible_wrap)]
         let limit = params.per_page as i64;
         #[allow(clippy::cast_possible_wrap)]
         let offset = (params.page * params.per_page) as i64;
-        data_query = data_query.bind(limit).bind(offset);
+        data_qb.push(format!(" ORDER BY {} LIMIT ", params.order_by.order_sql()));
+        data_qb.push_bind(limit);
+        data_qb.push(" OFFSET ");
+        data_qb.push_bind(offset);
 
         #[allow(clippy::cast_sign_loss)]
-        let total_count = count_query
+        let total_count = count_qb
+            .build_query_scalar::<i64>()
             .fetch_one(&self.pool)
             .await
             .map_err(|e| event_sauce_core::Error::backend("Event log count query failed", e))?
             as u64;
 
-        let rows = data_query
+        let rows = data_qb
+            .build_query_as::<EventRow>()
             .fetch_all(&self.pool)
             .await
             .map_err(|e| event_sauce_core::Error::backend("Event log data query failed", e))?;
