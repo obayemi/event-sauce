@@ -857,8 +857,18 @@ async fn encrypt_snapshot_data<S: EventStore + ?Sized>(
 
 /// Gets or creates a crypto key for an aggregate.
 ///
-/// If the key already exists, returns it. Otherwise, generates a new key
-/// and upserts it.
+/// If the key already exists, returns it. Otherwise, generates a candidate key
+/// and atomically inserts it via
+/// [`get_or_insert_key`](crate::CryptoKeyStore::get_or_insert_key), always
+/// encrypting with whichever key won that race — never the locally generated
+/// candidate blindly. This is what keeps two concurrent first commits of the
+/// same aggregate from encrypting under two different keys.
+///
+/// The returned key is held in [`Zeroizing`] so the buffer is wiped when this
+/// engine copy is dropped (after encryption), rather than lingering in freed
+/// heap. [`CryptoKeyStore`](crate::CryptoKeyStore) still exchanges plain
+/// `Vec<u8>`, so each call takes a short-lived copy bound straight to the
+/// backend read/write.
 async fn ensure_crypto_key<S: EventStore + ?Sized>(
     store: &S,
     aggregate_id: Uuid,
@@ -868,17 +878,13 @@ async fn ensure_crypto_key<S: EventStore + ?Sized>(
     })?;
     let provider = require_crypto_provider(store)?;
 
-    // Hold key material in `Zeroizing` so the buffer is wiped when this engine
-    // copy is dropped (after encryption), rather than lingering in freed heap.
-    // The `CryptoKeyStore` trait still exchanges plain `Vec<u8>`, so the upsert
-    // takes a short-lived copy bound straight to the backend write.
     if let Some(existing) = key_store.get_key(aggregate_id).await? {
         return Ok(Zeroizing::new(existing));
     }
 
-    let new_key = Zeroizing::new(provider.generate_key());
-    key_store.upsert_key(aggregate_id, new_key.to_vec()).await?;
-    Ok(new_key)
+    let candidate = provider.generate_key();
+    let winner = key_store.get_or_insert_key(aggregate_id, candidate).await?;
+    Ok(Zeroizing::new(winner))
 }
 
 /// Unwraps the crypto provider or returns an error.

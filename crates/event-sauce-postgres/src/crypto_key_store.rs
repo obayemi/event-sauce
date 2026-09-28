@@ -224,6 +224,29 @@ impl CryptoKeyStore for PostgresCryptoKeyStore {
 
         Ok(())
     }
+
+    /// `DO UPDATE SET key_data = <table>.key_data` is a no-op write that lets
+    /// the conflicting row be returned by the same statement, so the insert
+    /// and the "someone already won" read happen as one atomic operation.
+    async fn get_or_insert_key(&self, aggregate_id: Uuid, candidate: Vec<u8>) -> Result<Vec<u8>> {
+        let crypto_keys_table = self.qualify_table("crypto_keys");
+        let query = format!(
+            "INSERT INTO {crypto_keys_table} (aggregate_id, key_data)
+             VALUES ($1, $2)
+             ON CONFLICT (aggregate_id)
+             DO UPDATE SET key_data = {crypto_keys_table}.key_data
+             RETURNING key_data"
+        );
+
+        let key_data: Vec<u8> = sqlx::query_scalar(&query)
+            .bind(aggregate_id)
+            .bind(&candidate)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| Error::backend("Failed to get or insert crypto key", e))?;
+
+        Ok(key_data)
+    }
 }
 
 #[cfg(test)]
@@ -437,6 +460,74 @@ mod tests {
     async fn test_builder_errors_without_pool() {
         let result = PostgresCryptoKeyStore::builder().build();
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_get_or_insert_key_inserts_when_absent() {
+        let db = TestDatabase::new().await.unwrap();
+        let store = db.store();
+        store.migrate().await.unwrap();
+
+        let id = Uuid::new_v4();
+        let candidate = vec![1, 2, 3];
+
+        let winner = store
+            .get_or_insert_key(id, candidate.clone())
+            .await
+            .unwrap();
+
+        assert_eq!(winner, candidate);
+        assert_eq!(store.get_key(id).await.unwrap(), Some(candidate));
+    }
+
+    #[tokio::test]
+    async fn test_get_or_insert_key_returns_existing_key_unchanged() {
+        let db = TestDatabase::new().await.unwrap();
+        let store = db.store();
+        store.migrate().await.unwrap();
+
+        let id = Uuid::new_v4();
+        store.upsert_key(id, vec![1, 2, 3]).await.unwrap();
+
+        let winner = store.get_or_insert_key(id, vec![9, 9, 9]).await.unwrap();
+
+        assert_eq!(
+            winner,
+            vec![1, 2, 3],
+            "existing key must win over candidate"
+        );
+        assert_eq!(store.get_key(id).await.unwrap(), Some(vec![1, 2, 3]));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn test_concurrent_get_or_insert_key_agree_on_one_winner() {
+        let db = TestDatabase::new().await.unwrap();
+        let store = std::sync::Arc::new(db.store());
+        store.migrate().await.unwrap();
+        let id = Uuid::new_v4();
+        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(8));
+
+        let handles = (0_u8..8).map(|n| {
+            let store = store.clone();
+            let barrier = barrier.clone();
+            tokio::spawn(async move {
+                barrier.wait().await;
+                store.get_or_insert_key(id, vec![n; 16]).await.unwrap()
+            })
+        });
+
+        let winners: Vec<Vec<u8>> = futures::future::join_all(handles)
+            .await
+            .into_iter()
+            .map(|joined| joined.unwrap())
+            .collect();
+
+        let first = winners[0].clone();
+        assert!(
+            winners.iter().all(|w| *w == first),
+            "every racer must agree on the same winning key, got {winners:?}"
+        );
+        assert_eq!(store.get_key(id).await.unwrap().unwrap(), first);
     }
 
     #[tokio::test]

@@ -52,6 +52,25 @@ pub trait CryptoKeyStore: Send + Sync {
     ///
     /// Returns an error if the underlying storage fails.
     async fn delete_key(&self, aggregate_id: Uuid) -> Result<()>;
+
+    /// Atomically returns the aggregate's key, inserting `candidate` as the
+    /// key if none exists yet, and returning whichever key won the race.
+    ///
+    /// Two concurrent first commits of the same aggregate must never end up
+    /// encrypting under two different keys: whichever caller's insert lands
+    /// first, every caller gets that same key back, so `candidate` is only
+    /// ever kept when this call created the row. Implementations MUST make
+    /// this a single atomic insert-if-absent operation (e.g. a
+    /// `HashMap::entry` under one write lock, or SQL `INSERT ... ON
+    /// CONFLICT DO NOTHING/UPDATE ... RETURNING`) — a get-then-upsert
+    /// sequence lets two concurrent callers both see no key, both insert,
+    /// and the last upsert win, silently orphaning the other caller's
+    /// already-encrypted data.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying storage fails.
+    async fn get_or_insert_key(&self, aggregate_id: Uuid, candidate: Vec<u8>) -> Result<Vec<u8>>;
 }
 
 /// Pluggable encryption/decryption provider.

@@ -483,3 +483,112 @@ async fn multiple_encrypted_aggregates_use_different_keys() {
     let loaded2 = repo.load(id2).await.unwrap();
     assert_eq!(loaded2.entity().name, "User2");
 }
+
+/// Wraps [`InMemoryCryptoKeyStore`], rendezvousing the first two `get_key`
+/// callers at a barrier before either sees a result.
+///
+/// `ensure_crypto_key`'s `get_key` fast path is the first thing two
+/// concurrent first commits of the same aggregate race on. Gating it here
+/// forces both callers to observe "no key yet" in lockstep, every run,
+/// instead of depending on scheduler luck to interleave them that way.
+struct BarrierGatedKeyStore {
+    inner: InMemoryCryptoKeyStore,
+    barrier: tokio::sync::Barrier,
+    gated_calls: std::sync::atomic::AtomicUsize,
+}
+
+impl BarrierGatedKeyStore {
+    fn new() -> Self {
+        Self {
+            inner: InMemoryCryptoKeyStore::new(),
+            barrier: tokio::sync::Barrier::new(2),
+            gated_calls: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl CryptoKeyStore for BarrierGatedKeyStore {
+    /// Both callers reach this point agreeing there is no key yet. The
+    /// barrier leader (the call the scheduler completed the rendezvous
+    /// second for) gets an extra nudge so it also finishes its own
+    /// commit second, deterministically making it the one whose key
+    /// write lands last — the exact interleaving that orphans the
+    /// other caller's already-encrypted events under a non-atomic
+    /// store.
+    async fn get_key(&self, aggregate_id: uuid::Uuid) -> event_sauce_core::Result<Option<Vec<u8>>> {
+        let existing = self.inner.get_key(aggregate_id).await?;
+        if self
+            .gated_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            < 2
+        {
+            let result = self.barrier.wait().await;
+            if result.is_leader() {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        }
+        Ok(existing)
+    }
+
+    async fn upsert_key(
+        &self,
+        aggregate_id: uuid::Uuid,
+        key: Vec<u8>,
+    ) -> event_sauce_core::Result<()> {
+        self.inner.upsert_key(aggregate_id, key).await
+    }
+
+    async fn delete_key(&self, aggregate_id: uuid::Uuid) -> event_sauce_core::Result<()> {
+        self.inner.delete_key(aggregate_id).await
+    }
+
+    async fn get_or_insert_key(
+        &self,
+        aggregate_id: uuid::Uuid,
+        candidate: Vec<u8>,
+    ) -> event_sauce_core::Result<Vec<u8>> {
+        self.inner.get_or_insert_key(aggregate_id, candidate).await
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn concurrent_first_commits_of_same_aggregate_share_one_key() {
+    let key_store = Arc::new(BarrierGatedKeyStore::new());
+    let store = Arc::new(
+        InMemoryEventStore::builder()
+            .snapshot_config(SnapshotConfig::disabled())
+            .crypto_key_store(key_store)
+            .build(),
+    );
+    let id = EntityId::new();
+
+    let commit = |name: &'static str| {
+        let store = store.clone();
+        tokio::spawn(async move {
+            let mut agg = AggregateRoot::<SecretUser>::new(id);
+            agg.apply(SecretUserEvent::Created {
+                name: name.into(),
+                email: format!("{name}@example.com"),
+            })
+            .unwrap();
+            store.commit(&mut agg).await
+        })
+    };
+
+    let (a, b) = tokio::join!(commit("Winner"), commit("Loser"));
+    let results = [a.unwrap(), b.unwrap()];
+
+    let successes = results.iter().filter(|r| r.is_ok()).count();
+    assert_eq!(
+        successes, 1,
+        "exactly one of two concurrent first commits of the same aggregate must win"
+    );
+
+    let repo = store.repository::<SecretUser>();
+    let loaded = repo.load(id).await.expect(
+        "the winning commit's events must decrypt cleanly with the stored key, \
+         never orphaned by a key the other racer overwrote",
+    );
+    assert!(loaded.entity().name == "Winner" || loaded.entity().name == "Loser");
+}
