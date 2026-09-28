@@ -955,8 +955,7 @@ fn generate_unit_spec(
 ) -> TokenStream {
     let core = core_path();
     let message = &parsed.message;
-    let error_message_body =
-        build_error_message_body(message, &parsed.context, &[], candidate_name);
+    let error_message_body = build_error_message_body(message, &parsed.context);
 
     // If the error message doesn't reference the candidate, prefix with _ to avoid warning
     let err_msg_param = if parsed.context.is_empty() {
@@ -1016,8 +1015,7 @@ fn generate_parameterized_spec(
         })
         .collect();
 
-    let error_message_body =
-        build_error_message_body(message, &parsed.context, &field_names, candidate_name);
+    let error_message_body = build_error_message_body(message, &parsed.context);
 
     // If no context expr references the candidate, prefix with _ to avoid warning
     let err_msg_param = if context_references_candidate(&parsed.context, candidate_name) {
@@ -1054,8 +1052,6 @@ fn generate_parameterized_spec(
 fn build_error_message_body(
     message: &str,
     context: &[(Ident, proc_macro2::TokenStream)],
-    field_names: &[&syn::Pat],
-    candidate_name: &Ident,
 ) -> proc_macro2::TokenStream {
     if context.is_empty() {
         quote! { #message.to_string() }
@@ -1064,8 +1060,7 @@ fn build_error_message_body(
             .iter()
             .map(|(key, expr)| {
                 let key_str = key.to_string();
-                let resolved = resolve_context_expr(expr, field_names, candidate_name);
-                quote! { format!("{}={}", #key_str, #resolved) }
+                quote! { format!("{}={}", #key_str, #expr) }
             })
             .collect();
         quote! {
@@ -1205,20 +1200,6 @@ fn extract_ref_param(param: &syn::FnArg) -> Result<(Ident, syn::Type), syn::Erro
             "#[specification] functions cannot have self parameters",
         )),
     }
-}
-
-/// Resolve a context expression:
-/// - If expr is a bare ident matching an extra param -> `self.ident`
-/// - If expr references candidate param -> passed through as-is
-fn resolve_context_expr(
-    expr: &proc_macro2::TokenStream,
-    _field_names: &[&syn::Pat],
-    _candidate_name: &Ident,
-) -> proc_macro2::TokenStream {
-    // Just pass through - the let bindings in is_satisfied_by/error_message
-    // handle the resolution (spec fields are bound as local vars,
-    // candidate param is the function parameter)
-    expr.clone()
 }
 
 /// Attribute macro for aggregate transformation.
