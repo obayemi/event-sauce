@@ -898,6 +898,98 @@ async fn has_committed_data<S: EventStore + ?Sized>(
     Ok(event_stream.next().await.is_some())
 }
 
+/// Resolves the crypto key to use when loading an aggregate, or `None` for a
+/// plaintext one.
+///
+/// For a fully encrypted aggregate the key must exist: `Error::KeyNotFound`
+/// otherwise. For field-level encryption the key may legitimately be absent
+/// when nothing has been committed yet — but if data already exists and the
+/// key is gone, it was crypto-shredded out from under it, so that also
+/// surfaces as `KeyNotFound`, uniformly with the fully-encrypted case.
+///
+/// # Errors
+///
+/// Returns `Error::InvalidState` if a fully encrypted aggregate has no
+/// configured [`CryptoKeyStore`](crate::CryptoKeyStore), or `Error::KeyNotFound`
+/// if the aggregate was crypto-shredded.
+async fn resolve_crypto_key<S: EventStore + ?Sized, A: Aggregate>(
+    store: &S,
+    uuid: Uuid,
+    stream_id: &StreamId,
+) -> Result<Option<Zeroizing<Vec<u8>>>> {
+    if A::is_encrypted() {
+        let key_store = store.crypto_key_store().ok_or_else(|| {
+            crate::Error::invalid_state("Encrypted aggregate requires crypto_key_store")
+        })?;
+        let key = key_store
+            .get_key(uuid)
+            .await?
+            .ok_or_else(|| crate::Error::key_not_found(uuid))?;
+        return Ok(Some(Zeroizing::new(key)));
+    }
+
+    if !A::Event::has_any_encrypted_fields() {
+        return Ok(None);
+    }
+    let Some(key_store) = store.crypto_key_store() else {
+        return Ok(None);
+    };
+    if let Some(key) = key_store.get_key(uuid).await? {
+        return Ok(Some(Zeroizing::new(key)));
+    }
+    if has_committed_data(store, stream_id).await? {
+        return Err(crate::Error::key_not_found(uuid));
+    }
+    Ok(None)
+}
+
+/// Decrypts (if needed) and deserializes one event envelope.
+fn decode_event<S: EventStore + ?Sized, A: Aggregate>(
+    store: &S,
+    key: Option<&[u8]>,
+    aggregate_id: Uuid,
+    mut envelope: EventEnvelope,
+) -> Result<A::Event>
+where
+    A::Event: serde::de::DeserializeOwned,
+{
+    let aad = crate::crypto::event_aad(aggregate_id, envelope.id);
+    decrypt_event_data(store, key, &mut envelope.event_data, &aad)?;
+    A::Event::from_envelope(&envelope)
+}
+
+/// Replays every remaining item of an event stream onto an in-progress
+/// aggregate, stopping early (as [`Loaded::Deleted`]) if a delete event is
+/// found — shared by [`try_load_from_snapshot`] (replaying the events after a
+/// snapshot) and [`load_any`] (replaying the events after the first one).
+async fn replay_onto<S, A, St>(
+    store: &S,
+    mut stream: St,
+    key: Option<&[u8]>,
+    mut aggregate: AggregateRoot<A>,
+) -> Result<Loaded<A>>
+where
+    S: EventStore + ?Sized,
+    A: Aggregate,
+    A::Event: serde::de::DeserializeOwned,
+    St: Stream<Item = Result<EventEnvelope>> + Unpin,
+{
+    use crate::EventApplicator;
+    use futures::StreamExt;
+
+    let aggregate_id = aggregate.entity_id().as_uuid();
+
+    while let Some(envelope) = stream.next().await {
+        let event = decode_event::<S, A>(store, key, aggregate_id, envelope?)?;
+        if EventApplicator::is_delete(&event) {
+            return Ok(Loaded::Deleted(aggregate.apply_delete_unchecked(&event)));
+        }
+        aggregate.apply_unchecked(&event);
+    }
+
+    Ok(Loaded::Active(aggregate))
+}
+
 /// Attempts to reconstruct an aggregate from a (decrypted) snapshot plus its
 /// post-snapshot events.
 ///
@@ -929,9 +1021,6 @@ where
     A::DeletedState: serde::de::DeserializeOwned,
     A::Event: serde::de::DeserializeOwned,
 {
-    use crate::EventApplicator;
-    use futures::StreamExt;
-
     // (i) Type-tag mismatch: a different aggregate's snapshot was stored under
     // this id, or the type name changed. Discard and replay.
     if snapshot.aggregate_type != A::aggregate_type() {
@@ -993,26 +1082,14 @@ where
         return Ok(None);
     };
 
-    let mut aggregate = AggregateRoot::restore(snapshot_version, entity);
+    let aggregate = AggregateRoot::restore(snapshot_version, entity);
 
     let event_stream = store.load_stream(stream_id, snapshot_version).await?;
     futures::pin_mut!(event_stream);
 
-    while let Some(envelope) = event_stream.next().await {
-        let mut envelope = envelope?;
-        let aad = crate::crypto::event_aad(aggregate_id, envelope.id);
-        decrypt_event_data(store, crypto_key, &mut envelope.event_data, &aad)?;
-        let event = A::Event::from_envelope(&envelope)?;
-
-        if EventApplicator::is_delete(&event) {
-            let deleted = aggregate.apply_delete_unchecked(&event);
-            return Ok(Some(Loaded::Deleted(deleted)));
-        }
-
-        aggregate.apply_unchecked(&event);
-    }
-
-    Ok(Some(Loaded::Active(aggregate)))
+    replay_onto(store, event_stream, crypto_key, aggregate)
+        .await
+        .map(Some)
 }
 
 /// Loads an aggregate from the event store, returning its lifecycle state.
@@ -1027,7 +1104,6 @@ where
 /// # Errors
 ///
 /// Returns an error if events cannot be deserialized or replay fails.
-#[allow(clippy::too_many_lines)]
 pub(crate) async fn load_any<S, A>(store: &S, id: EntityId) -> Result<Loaded<A>>
 where
     S: EventStore,
@@ -1042,37 +1118,8 @@ where
     let aggregate_type = A::aggregate_type();
     let stream_id = StreamId::new(aggregate_type, uuid);
 
-    // Resolve crypto key for encrypted aggregates (required before any decryption)
-    let crypto_key = if A::is_encrypted() {
-        let key_store = store.crypto_key_store().ok_or_else(|| {
-            crate::Error::invalid_state("Encrypted aggregate requires crypto_key_store")
-        })?;
-        let key = key_store
-            .get_key(uuid)
-            .await?
-            .ok_or_else(|| crate::Error::key_not_found(uuid))?;
-        Some(Zeroizing::new(key))
-    } else if A::Event::has_any_encrypted_fields() {
-        // Field-level encryption. The key may legitimately not exist yet when no
-        // data has been committed. But if data EXISTS and the key is gone, it was
-        // crypto-shredded out from under existing data — surface that as
-        // `KeyNotFound`, exactly like a fully-encrypted aggregate, so callers can
-        // detect GDPR erasure uniformly via `is_key_not_found()`.
-        if let Some(key_store) = store.crypto_key_store() {
-            if let Some(key) = key_store.get_key(uuid).await? {
-                Some(Zeroizing::new(key))
-            } else {
-                if has_committed_data(store, &stream_id).await? {
-                    return Err(crate::Error::key_not_found(uuid));
-                }
-                None
-            }
-        } else {
-            None
-        }
-    } else {
-        None
-    };
+    let crypto_key = resolve_crypto_key::<S, A>(store, uuid, &stream_id).await?;
+    let key = crypto_key.as_deref().map(Vec::as_slice);
 
     // Try to load snapshot if enabled.
     //
@@ -1097,12 +1144,7 @@ where
     if config.use_snapshots_on_load() {
         if let Some(mut snapshot) = store.load_snapshot(stream_id.clone()).await? {
             let snap_aad = snapshot_aad(uuid);
-            decrypt_event_data(
-                store,
-                crypto_key.as_deref().map(Vec::as_slice),
-                &mut snapshot.snapshot_data,
-                &snap_aad,
-            )?;
+            decrypt_event_data(store, key, &mut snapshot.snapshot_data, &snap_aad)?;
 
             // If the snapshot is still ciphertext after the decryption pass, we
             // lacked the key to read it — the aggregate was crypto-shredded.
@@ -1112,13 +1154,8 @@ where
                 return Err(crate::Error::key_not_found(uuid));
             }
 
-            if let Some(loaded) = try_load_from_snapshot::<S, A>(
-                store,
-                stream_id.clone(),
-                crypto_key.as_deref().map(Vec::as_slice),
-                snapshot,
-            )
-            .await?
+            if let Some(loaded) =
+                try_load_from_snapshot::<S, A>(store, stream_id.clone(), key, snapshot).await?
             {
                 return Ok(loaded);
             }
@@ -1147,20 +1184,10 @@ where
             uuid.to_string(),
         ));
     };
-    let mut first_envelope = first_envelope?;
-
-    let first_aad = crate::crypto::event_aad(uuid, first_envelope.id);
-    decrypt_event_data(
-        store,
-        crypto_key.as_deref().map(Vec::as_slice),
-        &mut first_envelope.event_data,
-        &first_aad,
-    )?;
-
-    let first_event = A::Event::from_envelope(&first_envelope)?;
+    let first_event = decode_event::<S, A>(store, key, uuid, first_envelope?)?;
 
     // Detect init vs legacy from first event
-    let mut aggregate = if EventApplicator::is_init(&first_event) {
+    let aggregate = if EventApplicator::is_init(&first_event) {
         // Init-event aggregate: type-state transition
         UninitAggregateRoot::<A>::new(id).apply_init_unchecked(&first_event)
     } else {
@@ -1171,26 +1198,7 @@ where
     };
 
     // Replay remaining events
-    while let Some(envelope) = event_stream.next().await {
-        let mut envelope = envelope?;
-        let aad = crate::crypto::event_aad(uuid, envelope.id);
-        decrypt_event_data(
-            store,
-            crypto_key.as_deref().map(Vec::as_slice),
-            &mut envelope.event_data,
-            &aad,
-        )?;
-        let event = A::Event::from_envelope(&envelope)?;
-
-        if EventApplicator::is_delete(&event) {
-            let deleted = aggregate.apply_delete_unchecked(&event);
-            return Ok(Loaded::Deleted(deleted));
-        }
-
-        aggregate.apply_unchecked(&event);
-    }
-
-    Ok(Loaded::Active(aggregate))
+    replay_onto(store, event_stream, key, aggregate).await
 }
 
 /// Loads an aggregate from the event store by its ID.
