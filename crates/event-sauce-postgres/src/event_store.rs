@@ -1436,10 +1436,11 @@ impl EventStore for PostgresEventStore {
     async fn save_snapshot(&self, snapshot: Snapshot) -> Result<()> {
         let snapshots_table = self.qualify_table("snapshots");
         let query = format!(
-            "INSERT INTO {snapshots_table} (aggregate_id, aggregate_type, snapshot_version, snapshot_data, is_deleted, snapshot_schema_version)
+            "INSERT INTO {snapshots_table} AS s (aggregate_id, aggregate_type, snapshot_version, snapshot_data, is_deleted, snapshot_schema_version)
              VALUES ($1, $2, $3, $4, $5, $6)
              ON CONFLICT (aggregate_id, aggregate_type)
-             DO UPDATE SET snapshot_version = $3, snapshot_data = $4, is_deleted = $5, snapshot_schema_version = $6, created_at = NOW()"
+             DO UPDATE SET snapshot_version = $3, snapshot_data = $4, is_deleted = $5, snapshot_schema_version = $6, created_at = NOW()
+             WHERE s.snapshot_version <= EXCLUDED.snapshot_version"
         );
 
         let snapshot_version_i64 = snapshot.snapshot_version.as_i64();
@@ -2349,6 +2350,41 @@ mod tests {
         // Should get the latest snapshot
         let loaded = store.load_snapshot(stream_id).await.unwrap().unwrap();
         assert_eq!(loaded.snapshot_version, AggregateVersion::new(10));
+    }
+
+    /// Regression test for XN-15: a lagging node saving an older snapshot
+    /// after a newer one has already been saved must not regress it. Snapshots
+    /// are only a replay-avoidance cache, but overwriting a newer one wastes
+    /// exactly the events it was meant to skip.
+    #[tokio::test]
+    async fn test_older_snapshot_does_not_regress_newer_one() {
+        let db = TestDatabase::new().await.unwrap();
+        let store = db.store();
+        let aggregate_id = Uuid::new_v4();
+        let stream_id = StreamId::new("User", aggregate_id);
+
+        let newer = Snapshot::new(
+            aggregate_id,
+            "User".to_string(),
+            AggregateVersion::new(200),
+            json!({"version": 200}),
+        );
+        store.save_snapshot(newer).await.unwrap();
+
+        let lagging = Snapshot::new(
+            aggregate_id,
+            "User".to_string(),
+            AggregateVersion::new(100),
+            json!({"version": 100}),
+        );
+        store.save_snapshot(lagging).await.unwrap();
+
+        let loaded = store.load_snapshot(stream_id).await.unwrap().unwrap();
+        assert_eq!(
+            loaded.snapshot_version,
+            AggregateVersion::new(200),
+            "a lagging snapshot save must not regress a newer committed snapshot"
+        );
     }
 
     #[tokio::test]
