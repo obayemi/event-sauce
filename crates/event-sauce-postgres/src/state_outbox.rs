@@ -357,12 +357,21 @@ impl StateOutboxDispatcher {
     /// [`PostgresStateOutbox::mark_failed`] with this dispatcher's failure
     /// threshold. Returns the number of successfully dispatched events.
     ///
+    /// The whole batch shares one lock, started at the moment it was claimed.
+    /// If handling runs long enough that the lock would already have expired,
+    /// the remaining claims in the batch are left untouched — not handled,
+    /// not acked — rather than risk acking a row another worker has since
+    /// reclaimed and is concurrently processing (they are picked up, fenced,
+    /// on the next sweep, by this worker or another). Every ack is itself
+    /// fenced on this worker still owning the row's claim.
+    ///
     /// # Errors
     ///
     /// Returns an error if claiming or the done/failed bookkeeping fails.
     /// Handler errors do **not** abort the run — they are recorded per row and
     /// the remaining claims are still processed.
     pub async fn run_once(&self) -> Result<usize> {
+        let claimed_at = std::time::Instant::now();
         let claims = self
             .outbox
             .claim_batch(&self.worker_id, self.batch_size, self.lock_duration)
@@ -370,6 +379,10 @@ impl StateOutboxDispatcher {
 
         let mut dispatched = 0;
         for claim in claims {
+            if claimed_at.elapsed() >= self.lock_duration {
+                break;
+            }
+
             match self.handler.handle(&claim.envelope).await {
                 Ok(()) => {
                     if self.outbox.mark_done(claim.id, &self.worker_id).await? {

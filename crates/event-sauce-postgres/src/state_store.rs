@@ -835,6 +835,20 @@ mod tests {
         }
     }
 
+    struct SlowHandler {
+        calls: Arc<Mutex<Vec<uuid::Uuid>>>,
+        delay: Duration,
+    }
+
+    #[async_trait]
+    impl StateOutboxHandler for SlowHandler {
+        async fn handle(&self, envelope: &EventEnvelope) -> Result<()> {
+            tokio::time::sleep(self.delay).await;
+            self.calls.lock().unwrap().push(envelope.id);
+            Ok(())
+        }
+    }
+
     async fn outbox_row_count(pool: &PgPool) -> i64 {
         sqlx::query_scalar("SELECT COUNT(*) FROM event_sauce.state_outbox")
             .fetch_one(pool)
@@ -1382,5 +1396,47 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(now_reclaimable.len(), 1, "lock must expire after 300ms");
+    }
+
+    /// Each handler call takes 500ms; the batch's shared lock is 750ms.
+    /// Row 1: claimed at t=0, handled by t=500ms (elapsed 0 < 750 at start).
+    /// Row 2: elapsed 500ms < 750ms at start, handled by t=1000ms.
+    /// Row 3: elapsed 1000ms >= 750ms at start — must be left untouched
+    /// rather than risk acking a row whose lock may already be reclaimed.
+    /// The 250ms margin on both sides of the deadline keeps this immune to
+    /// scheduling jitter under a slow test runner (e.g. under `llvm-cov`).
+    #[tokio::test]
+    async fn test_dispatcher_stops_before_its_batch_lock_expires() {
+        let db = TestDb::new().await;
+        let store = db.migrated(db.store_builder().with_outbox()).await;
+        let repo = store.repository::<Ticket>();
+
+        for i in 0..3 {
+            let mut ticket = Ticket::open(format!("Slow{i}")).unwrap();
+            repo.save(&mut ticket).await.unwrap();
+        }
+        assert_eq!(outbox_row_count(&db.pool).await, 3);
+
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let dispatcher = store
+            .outbox()
+            .dispatcher(Arc::new(SlowHandler {
+                calls: Arc::clone(&calls),
+                delay: Duration::from_millis(500),
+            }))
+            .with_batch_size(10)
+            .with_lock_duration(Duration::from_millis(750));
+
+        let acked = dispatcher.run_once().await.unwrap();
+        assert_eq!(
+            acked, 2,
+            "only the rows reachable within the batch's lock window are dispatched"
+        );
+        assert_eq!(calls.lock().unwrap().len(), 2);
+        assert_eq!(
+            outbox_row_count(&db.pool).await,
+            1,
+            "the row past the lock deadline must be left untouched, not acked"
+        );
     }
 }
