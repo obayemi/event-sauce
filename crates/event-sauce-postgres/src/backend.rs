@@ -1719,7 +1719,12 @@ mod tests {
 
         // Mark all as done; pending should hit zero.
         for c in claims_a.iter().chain(claims_b.iter()) {
-            outbox.mark_done(c.id).await.unwrap();
+            let worker = if claims_a.iter().any(|a| a.id == c.id) {
+                "drainer-a"
+            } else {
+                "drainer-b"
+            };
+            outbox.mark_done(c.id, worker).await.unwrap();
         }
         assert_eq!(
             outbox

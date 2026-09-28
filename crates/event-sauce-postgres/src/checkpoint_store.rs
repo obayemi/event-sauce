@@ -503,7 +503,7 @@ impl CheckpointStore for PostgresCheckpointStore {
         let query = format!(
             "INSERT INTO {checkpoints_table}
                 (subscription_name, position, worker_id, leased_until, heartbeat_at, updated_at)
-             VALUES ($1, 0, $2, NOW() + ($3 * INTERVAL '1 second'), NOW(), NOW())
+             VALUES ($1, 0, $2, NOW() + make_interval(secs => $3::float8), NOW(), NOW())
              ON CONFLICT (subscription_name) DO UPDATE
                 SET worker_id = EXCLUDED.worker_id,
                     leased_until = EXCLUDED.leased_until,
@@ -516,12 +516,10 @@ impl CheckpointStore for PostgresCheckpointStore {
              RETURNING position"
         );
 
-        #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
-        let secs = lease_duration.as_secs() as i64;
         let position: Option<i64> = sqlx::query_scalar(&query)
             .bind(subscription_name)
             .bind(worker_id)
-            .bind(secs)
+            .bind(lease_duration.as_secs_f64())
             .fetch_optional(&self.pool)
             .await
             .map_err(|e| Error::backend("Failed to acquire lease", e))?;
@@ -538,7 +536,7 @@ impl CheckpointStore for PostgresCheckpointStore {
         let checkpoints_table = self.qualify_table("checkpoints");
         let query = format!(
             "UPDATE {checkpoints_table}
-             SET leased_until = NOW() + ($3 * INTERVAL '1 second'),
+             SET leased_until = NOW() + make_interval(secs => $3::float8),
                  heartbeat_at = NOW(),
                  updated_at = NOW()
              WHERE subscription_name = $1
@@ -547,12 +545,10 @@ impl CheckpointStore for PostgresCheckpointStore {
              RETURNING position"
         );
 
-        #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
-        let secs = lease_duration.as_secs() as i64;
         let renewed: Option<i64> = sqlx::query_scalar(&query)
             .bind(subscription_name)
             .bind(worker_id)
-            .bind(secs)
+            .bind(lease_duration.as_secs_f64())
             .fetch_optional(&self.pool)
             .await
             .map_err(|e| Error::backend("Failed to renew lease", e))?;
@@ -1050,6 +1046,49 @@ mod tests {
             .await
             .unwrap();
         assert!(taken.is_some(), "expired lease should be reclaimable");
+    }
+
+    /// A 300ms lease, truncated to whole seconds, would become 0s and let
+    /// another worker acquire it immediately.
+    #[tokio::test]
+    async fn test_lease_duration_has_millisecond_precision() {
+        let db = TestDatabase::new().await.unwrap();
+        let store = PostgresCheckpointStore::new(db.pool().clone());
+        store.migrate().await.unwrap();
+
+        store
+            .try_acquire_lease(
+                "sub-precision",
+                "worker-1",
+                std::time::Duration::from_millis(300),
+            )
+            .await
+            .unwrap();
+
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        let still_blocked = store
+            .try_acquire_lease(
+                "sub-precision",
+                "worker-2",
+                std::time::Duration::from_secs(60),
+            )
+            .await
+            .unwrap();
+        assert!(
+            still_blocked.is_none(),
+            "a sub-second lease must not truncate to zero"
+        );
+
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        let now_takeable = store
+            .try_acquire_lease(
+                "sub-precision",
+                "worker-2",
+                std::time::Duration::from_secs(60),
+            )
+            .await
+            .unwrap();
+        assert!(now_takeable.is_some(), "lease must expire after 300ms");
     }
 
     #[tokio::test]

@@ -1256,4 +1256,131 @@ mod tests {
         assert_eq!(dispatcher.run_once().await.unwrap(), 1);
         assert_eq!(outbox_row_count(&db.pool).await, 0);
     }
+
+    #[tokio::test]
+    async fn test_mark_done_is_fenced_on_claiming_worker() {
+        let db = TestDb::new().await;
+        let store = db.migrated(db.store_builder().with_outbox()).await;
+        let repo = store.repository::<Ticket>();
+        let outbox = store.outbox();
+
+        let mut ticket = Ticket::open("Fenced".to_string()).unwrap();
+        repo.save(&mut ticket).await.unwrap();
+
+        let claims = outbox
+            .claim_batch("worker-a", 10, Duration::from_millis(50))
+            .await
+            .unwrap();
+        let id = claims[0].id;
+
+        sqlx::query(
+            "UPDATE event_sauce.state_outbox SET locked_until = NOW() - INTERVAL '1 hour' WHERE id = $1",
+        )
+        .bind(id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+
+        let reclaimed = outbox
+            .claim_batch("worker-b", 10, Duration::from_secs(60))
+            .await
+            .unwrap();
+        assert_eq!(reclaimed.len(), 1);
+
+        let landed = outbox.mark_done(id, "worker-a").await.unwrap();
+        assert!(
+            !landed,
+            "a worker that no longer owns the claim must not delete the row"
+        );
+        assert_eq!(outbox_row_count(&db.pool).await, 1);
+
+        let landed = outbox.mark_done(id, "worker-b").await.unwrap();
+        assert!(landed, "the current owner must be able to prune the row");
+        assert_eq!(outbox_row_count(&db.pool).await, 0);
+    }
+
+    #[tokio::test]
+    async fn test_mark_failed_is_fenced_on_claiming_worker() {
+        let db = TestDb::new().await;
+        let store = db.migrated(db.store_builder().with_outbox()).await;
+        let repo = store.repository::<Ticket>();
+        let outbox = store.outbox();
+
+        let mut ticket = Ticket::open("FencedFail".to_string()).unwrap();
+        repo.save(&mut ticket).await.unwrap();
+
+        let claims = outbox
+            .claim_batch("worker-a", 10, Duration::from_millis(50))
+            .await
+            .unwrap();
+        let id = claims[0].id;
+
+        sqlx::query(
+            "UPDATE event_sauce.state_outbox SET locked_until = NOW() - INTERVAL '1 hour' WHERE id = $1",
+        )
+        .bind(id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+
+        outbox
+            .claim_batch("worker-b", 10, Duration::from_secs(60))
+            .await
+            .unwrap();
+
+        let landed = outbox
+            .mark_failed(id, "worker-a", "stale", Some(3))
+            .await
+            .unwrap();
+        assert!(
+            !landed,
+            "a worker that no longer owns the claim must not record a failure"
+        );
+        let (status, failures): (String, i32) =
+            sqlx::query_as("SELECT status, failures FROM event_sauce.state_outbox WHERE id = $1")
+                .bind(id)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(status, "pending");
+        assert_eq!(
+            failures, 0,
+            "the stale worker's failure must not be counted"
+        );
+    }
+
+    /// A 300ms lock, truncated to whole seconds, would become 0s and let
+    /// another worker reclaim immediately.
+    #[tokio::test]
+    async fn test_claim_lock_duration_has_millisecond_precision() {
+        let db = TestDb::new().await;
+        let store = db.migrated(db.store_builder().with_outbox()).await;
+        let repo = store.repository::<Ticket>();
+        let outbox = store.outbox();
+
+        let mut ticket = Ticket::open("Precision".to_string()).unwrap();
+        repo.save(&mut ticket).await.unwrap();
+
+        outbox
+            .claim_batch("worker-a", 10, Duration::from_millis(300))
+            .await
+            .unwrap();
+
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let still_locked = outbox
+            .claim_batch("worker-b", 10, Duration::from_secs(60))
+            .await
+            .unwrap();
+        assert!(
+            still_locked.is_empty(),
+            "a sub-second lock must not truncate to zero"
+        );
+
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let now_reclaimable = outbox
+            .claim_batch("worker-b", 10, Duration::from_secs(60))
+            .await
+            .unwrap();
+        assert_eq!(now_reclaimable.len(), 1, "lock must expire after 300ms");
+    }
 }

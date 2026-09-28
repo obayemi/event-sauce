@@ -157,7 +157,7 @@ impl PostgresStateOutbox {
             )
             UPDATE {outbox_table} o
             SET locked_by = $2,
-                locked_until = NOW() + ($3 * INTERVAL '1 second'),
+                locked_until = NOW() + make_interval(secs => $3::float8),
                 attempts = attempts + 1,
                 updated_at = NOW()
             FROM claimed
@@ -165,12 +165,10 @@ impl PostgresStateOutbox {
             RETURNING o.id, o.envelope, o.attempts, o.failures"
         );
 
-        #[allow(clippy::cast_possible_wrap)]
-        let secs = lock_duration.as_secs() as i64;
         let rows: Vec<(i64, serde_json::Value, i32, i32)> = sqlx::query_as(&query)
             .bind(i64::from(batch_size))
             .bind(worker_id)
-            .bind(secs)
+            .bind(lock_duration.as_secs_f64())
             .fetch_all(&self.pool)
             .await
             .map_err(|e| Error::backend("Failed to claim state outbox batch", e))?;
@@ -188,26 +186,41 @@ impl PostgresStateOutbox {
         Ok(claims)
     }
 
-    /// Marks an outbox row as successfully dispatched by **deleting** it.
+    /// Marks an outbox row as successfully dispatched by `worker_id` by
+    /// **deleting** it.
     ///
     /// Delivered rows are pruned, not kept: the state-stored path has no event
     /// log, so a dispatched row has no replay value.
     ///
+    /// Fenced on `locked_by = worker_id`: a worker whose lock already expired
+    /// and was reclaimed by another worker has its delete silently rejected
+    /// (`Ok(false)`) instead of deleting a row the new claimant is still
+    /// processing.
+    ///
     /// # Errors
     ///
     /// Returns an error if the delete fails.
-    pub async fn mark_done(&self, id: i64) -> Result<()> {
+    pub async fn mark_done(&self, id: i64, worker_id: &str) -> Result<bool> {
         let outbox_table = self.outbox_table();
-        let query = format!("DELETE FROM {outbox_table} WHERE id = $1");
-        sqlx::query(&query)
+        let query = format!(
+            "DELETE FROM {outbox_table} WHERE id = $1 AND locked_by = $2
+             RETURNING id"
+        );
+        let landed: Option<i64> = sqlx::query_scalar(&query)
             .bind(id)
-            .execute(&self.pool)
+            .bind(worker_id)
+            .fetch_optional(&self.pool)
             .await
             .map_err(|e| Error::backend("Failed to prune state outbox row", e))?;
-        Ok(())
+        Ok(landed.is_some())
     }
 
-    /// Records a handler failure for an outbox row.
+    /// Records a handler failure for an outbox row claimed by `worker_id`.
+    ///
+    /// Fenced on `locked_by = worker_id`, for the same reason as
+    /// [`mark_done`](Self::mark_done): a worker that no longer owns the claim
+    /// has its report rejected (`Ok(false)`) rather than clearing a new
+    /// claimant's lock or resurrecting an already-pruned row.
     ///
     /// Increments the row's `failures` counter and releases its lock. While
     /// `failures` stays below `max_failures` the row returns to `pending` for
@@ -222,31 +235,34 @@ impl PostgresStateOutbox {
     pub async fn mark_failed(
         &self,
         id: i64,
+        worker_id: &str,
         error_message: &str,
         max_failures: Option<i32>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let outbox_table = self.outbox_table();
         let query = format!(
             "UPDATE {outbox_table}
              SET failures = failures + 1,
                  status = CASE
-                    WHEN $2 IS NOT NULL AND failures + 1 >= $2 THEN 'failed'
+                    WHEN $3 IS NOT NULL AND failures + 1 >= $3 THEN 'failed'
                     ELSE 'pending'
                  END,
                  locked_by = NULL,
                  locked_until = NULL,
-                 last_error = $3,
+                 last_error = $4,
                  updated_at = NOW()
-             WHERE id = $1"
+             WHERE id = $1 AND locked_by = $2
+             RETURNING id"
         );
-        sqlx::query(&query)
+        let landed: Option<i64> = sqlx::query_scalar(&query)
             .bind(id)
+            .bind(worker_id)
             .bind(max_failures)
             .bind(error_message)
-            .execute(&self.pool)
+            .fetch_optional(&self.pool)
             .await
             .map_err(|e| Error::backend("Failed to mark state outbox row failed", e))?;
-        Ok(())
+        Ok(landed.is_some())
     }
 
     /// Returns the number of pending rows (rows in `pending` status with no
@@ -356,12 +372,13 @@ impl StateOutboxDispatcher {
         for claim in claims {
             match self.handler.handle(&claim.envelope).await {
                 Ok(()) => {
-                    self.outbox.mark_done(claim.id).await?;
-                    dispatched += 1;
+                    if self.outbox.mark_done(claim.id, &self.worker_id).await? {
+                        dispatched += 1;
+                    }
                 }
                 Err(e) => {
                     self.outbox
-                        .mark_failed(claim.id, &e.to_string(), self.max_failures)
+                        .mark_failed(claim.id, &self.worker_id, &e.to_string(), self.max_failures)
                         .await?;
                 }
             }

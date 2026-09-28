@@ -292,7 +292,7 @@ impl PostgresPolicyOutbox {
             )
             UPDATE {outbox_table} o
             SET locked_by = $3,
-                locked_until = NOW() + ($4 * INTERVAL '1 second'),
+                locked_until = NOW() + make_interval(secs => $4::float8),
                 attempts = attempts + 1,
                 updated_at = NOW()
             FROM claimed
@@ -300,13 +300,11 @@ impl PostgresPolicyOutbox {
             RETURNING o.id, o.event_id, o.event_position, o.attempts, o.failures"
         );
 
-        #[allow(clippy::cast_possible_wrap)]
-        let secs = lock_duration.as_secs() as i64;
         let rows: Vec<(i64, Uuid, i64, i32, i32)> = sqlx::query_as(&query)
             .bind(policy_name)
             .bind(i64::from(batch_size))
             .bind(worker_id)
-            .bind(secs)
+            .bind(lock_duration.as_secs_f64())
             .fetch_all(&self.pool)
             .await
             .map_err(|e| Error::backend("Failed to claim outbox batch", e))?;
@@ -325,12 +323,19 @@ impl PostgresPolicyOutbox {
             .collect())
     }
 
-    /// Marks an outbox row as successfully processed. Releases the lock.
+    /// Marks an outbox row as successfully processed by `worker_id`. Releases
+    /// the lock.
+    ///
+    /// Fenced on `locked_by = worker_id`: a worker whose claim already expired
+    /// and was reclaimed by someone else has its ack silently rejected
+    /// (`Ok(false)`) instead of overwriting the new claimant's in-flight work.
+    /// Once a row is done, `locked_by` is cleared, so a stale, delayed ack for
+    /// the same worker can never resurrect it either.
     ///
     /// # Errors
     ///
     /// Returns an error if the update fails.
-    pub async fn mark_done(&self, id: i64) -> Result<()> {
+    pub async fn mark_done(&self, id: i64, worker_id: &str) -> Result<bool> {
         let outbox_table = self.outbox_table();
         let query = format!(
             "UPDATE {outbox_table}
@@ -339,19 +344,28 @@ impl PostgresPolicyOutbox {
                  locked_until = NULL,
                  last_error = NULL,
                  updated_at = NOW()
-             WHERE id = $1"
+             WHERE id = $1 AND locked_by = $2
+             RETURNING id"
         );
-        sqlx::query(&query)
+        let landed: Option<i64> = sqlx::query_scalar(&query)
             .bind(id)
-            .execute(&self.pool)
+            .bind(worker_id)
+            .fetch_optional(&self.pool)
             .await
             .map_err(|e| Error::backend("Failed to mark outbox row done", e))?;
-        Ok(())
+        Ok(landed.is_some())
     }
 
-    /// Records a real handler failure for an outbox row. The row stays in the
-    /// table for ops inspection (DLQ); reset to `pending` manually if you want
-    /// to retry after an external fix.
+    /// Records a real handler failure for an outbox row claimed by
+    /// `worker_id`. The row stays in the table for ops inspection (DLQ);
+    /// reset to `pending` manually if you want to retry after an external
+    /// fix.
+    ///
+    /// Fenced on `locked_by = worker_id`, for the same reason as
+    /// [`mark_done`](Self::mark_done): a worker that no longer owns the claim
+    /// (reclaimed after its lock expired, or already acked) has its report
+    /// rejected (`Ok(false)`) rather than resurrecting a done row or clearing
+    /// the new claimant's lock.
     ///
     /// Increments the row's `failures` counter, then decides where it lands:
     /// if `max_attempts` is `None`, or the row's `failures` is still below
@@ -370,31 +384,34 @@ impl PostgresPolicyOutbox {
     pub async fn mark_failed(
         &self,
         id: i64,
+        worker_id: &str,
         error_message: &str,
         max_attempts: Option<i32>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let outbox_table = self.outbox_table();
         let query = format!(
             "UPDATE {outbox_table}
              SET failures = failures + 1,
                  status = CASE
-                    WHEN $2 IS NOT NULL AND failures + 1 >= $2 THEN 'failed'
+                    WHEN $3 IS NOT NULL AND failures + 1 >= $3 THEN 'failed'
                     ELSE 'pending'
                  END,
                  locked_by = NULL,
                  locked_until = NULL,
-                 last_error = $3,
+                 last_error = $4,
                  updated_at = NOW()
-             WHERE id = $1"
+             WHERE id = $1 AND locked_by = $2
+             RETURNING id"
         );
-        sqlx::query(&query)
+        let landed: Option<i64> = sqlx::query_scalar(&query)
             .bind(id)
+            .bind(worker_id)
             .bind(max_attempts)
             .bind(error_message)
-            .execute(&self.pool)
+            .fetch_optional(&self.pool)
             .await
             .map_err(|e| Error::backend("Failed to mark outbox row failed", e))?;
-        Ok(())
+        Ok(landed.is_some())
     }
 
     /// Returns the number of pending rows for `policy_name` (rows in
@@ -564,7 +581,7 @@ mod tests {
             .claim_batch("policy-a", "w-1", 10, Duration::from_secs(60))
             .await
             .unwrap();
-        outbox.mark_done(claims[0].id).await.unwrap();
+        assert!(outbox.mark_done(claims[0].id, "w-1").await.unwrap());
 
         let pending = outbox.pending_count("policy-a").await.unwrap();
         assert_eq!(pending, 0);
@@ -581,10 +598,10 @@ mod tests {
             .claim_batch("policy-a", "w-1", 10, Duration::from_secs(60))
             .await
             .unwrap();
-        outbox
-            .mark_failed(claims[0].id, "transient", Some(3))
+        assert!(outbox
+            .mark_failed(claims[0].id, "w-1", "transient", Some(3))
             .await
-            .unwrap();
+            .unwrap());
 
         // Row is back to pending (since attempts=1 < max=3); next claim sees it.
         let next = outbox
@@ -607,10 +624,10 @@ mod tests {
             .await
             .unwrap();
         // attempts is now 1; with max_attempts=1, this counts as failed.
-        outbox
-            .mark_failed(claims[0].id, "permanent", Some(1))
+        assert!(outbox
+            .mark_failed(claims[0].id, "w-1", "permanent", Some(1))
             .await
-            .unwrap();
+            .unwrap());
 
         // No more pending rows — it's in failed status.
         let pending = outbox.pending_count("policy-a").await.unwrap();
@@ -705,7 +722,10 @@ mod tests {
         // must key off real failures: first failure -> still pending (1 < 2),
         // second failure -> failed (2 >= 2). It must NOT flip to failed on the
         // first failure just because `attempts` (claims) already reached 3.
-        outbox.mark_failed(id, "transient", Some(2)).await.unwrap();
+        outbox
+            .mark_failed(id, "crasher", "transient", Some(2))
+            .await
+            .unwrap();
         let status = status_of(&outbox, id).await;
         assert_eq!(
             status, "pending",
@@ -723,7 +743,7 @@ mod tests {
             "row must still be claimable after 1st failure"
         );
         outbox
-            .mark_failed(claims[0].id, "permanent", Some(2))
+            .mark_failed(claims[0].id, "retrier", "permanent", Some(2))
             .await
             .unwrap();
         let status = status_of(&outbox, id).await;
@@ -731,6 +751,132 @@ mod tests {
             status, "failed",
             "second real failure (failures==2 >= max=2) flips to DLQ"
         );
+    }
+
+    /// Worker A claims with a short lock and "crashes"; worker B reclaims
+    /// after the lock expires. Worker A's ack, unaware it lost the claim,
+    /// must be rejected by the fence, and worker B's must land.
+    #[tokio::test]
+    async fn test_mark_done_is_fenced_on_claiming_worker() {
+        let db = TestDb::new().await;
+        let outbox = PostgresPolicyOutbox::new(db.pool.clone(), "event_sauce");
+        outbox.migrate().await.unwrap();
+        enqueue_one(&outbox, "policy-a", 1).await;
+
+        let claims = outbox
+            .claim_batch("policy-a", "worker-a", 10, Duration::from_millis(50))
+            .await
+            .unwrap();
+        let id = claims[0].id;
+        expire_lock(&outbox, id).await;
+
+        let reclaimed = outbox
+            .claim_batch("policy-a", "worker-b", 10, Duration::from_secs(60))
+            .await
+            .unwrap();
+        assert_eq!(reclaimed.len(), 1);
+
+        let landed = outbox.mark_done(id, "worker-a").await.unwrap();
+        assert!(
+            !landed,
+            "a worker that no longer owns the claim must not be able to mark it done"
+        );
+        assert_eq!(status_of(&outbox, id).await, "pending");
+
+        // Worker B, the legitimate owner, can ack.
+        let landed = outbox.mark_done(id, "worker-b").await.unwrap();
+        assert!(landed, "the current owner must be able to mark it done");
+        assert_eq!(status_of(&outbox, id).await, "done");
+    }
+
+    /// Same fencing as `test_mark_done_is_fenced_on_claiming_worker`, for
+    /// `mark_failed` instead of `mark_done`.
+    #[tokio::test]
+    async fn test_mark_failed_is_fenced_on_claiming_worker() {
+        let db = TestDb::new().await;
+        let outbox = PostgresPolicyOutbox::new(db.pool.clone(), "event_sauce");
+        outbox.migrate().await.unwrap();
+        enqueue_one(&outbox, "policy-a", 1).await;
+
+        let claims = outbox
+            .claim_batch("policy-a", "worker-a", 10, Duration::from_millis(50))
+            .await
+            .unwrap();
+        let id = claims[0].id;
+        expire_lock(&outbox, id).await;
+
+        outbox
+            .claim_batch("policy-a", "worker-b", 10, Duration::from_secs(60))
+            .await
+            .unwrap();
+
+        let landed = outbox
+            .mark_failed(id, "worker-a", "stale", Some(3))
+            .await
+            .unwrap();
+        assert!(
+            !landed,
+            "a worker that no longer owns the claim must not be able to mark it failed"
+        );
+        assert_eq!(status_of(&outbox, id).await, "pending");
+    }
+
+    /// A stale, delayed failure report for the same worker must not flip a
+    /// delivered row back to pending/failed: `mark_done` already cleared the
+    /// lock, so the fence rejects it.
+    #[tokio::test]
+    async fn test_mark_failed_cannot_resurrect_a_done_row() {
+        let db = TestDb::new().await;
+        let outbox = PostgresPolicyOutbox::new(db.pool.clone(), "event_sauce");
+        outbox.migrate().await.unwrap();
+        enqueue_one(&outbox, "policy-a", 1).await;
+
+        let claims = outbox
+            .claim_batch("policy-a", "worker-a", 10, Duration::from_secs(60))
+            .await
+            .unwrap();
+        let id = claims[0].id;
+        assert!(outbox.mark_done(id, "worker-a").await.unwrap());
+        assert_eq!(status_of(&outbox, id).await, "done");
+
+        let landed = outbox
+            .mark_failed(id, "worker-a", "late failure report", Some(3))
+            .await
+            .unwrap();
+        assert!(!landed, "a done row must never be resurrected");
+        assert_eq!(status_of(&outbox, id).await, "done");
+    }
+
+    /// A 300ms lock, truncated to whole seconds, would become 0s and let
+    /// another worker reclaim immediately. It must still be held 150ms in.
+    #[tokio::test]
+    async fn test_claim_lock_duration_has_millisecond_precision() {
+        let db = TestDb::new().await;
+        let outbox = PostgresPolicyOutbox::new(db.pool.clone(), "event_sauce");
+        outbox.migrate().await.unwrap();
+        enqueue_one(&outbox, "policy-a", 1).await;
+
+        outbox
+            .claim_batch("policy-a", "worker-a", 10, Duration::from_millis(300))
+            .await
+            .unwrap();
+
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let still_locked = outbox
+            .claim_batch("policy-a", "worker-b", 10, Duration::from_secs(60))
+            .await
+            .unwrap();
+        assert!(
+            still_locked.is_empty(),
+            "a sub-second lock must not truncate to zero"
+        );
+
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let now_reclaimable = outbox
+            .claim_batch("policy-a", "worker-b", 10, Duration::from_secs(60))
+            .await
+            .unwrap();
+        assert_eq!(now_reclaimable.len(), 1, "lock must expire after 300ms");
     }
 
     #[tokio::test]
