@@ -3,11 +3,9 @@
 //! Provides paginated, filtered access to the global event log
 //! stored in `PostgreSQL`.
 
+use crate::event_store::EventRow;
 use async_trait::async_trait;
-use event_sauce_core::{
-    AggregateType, EventEnvelope, EventLogEntry, EventLogPage, EventLogParams, EventLogQuery,
-    EventMetadata, EventVersion, Position, Result,
-};
+use event_sauce_core::{EventLogPage, EventLogParams, EventLogQuery, Result};
 use sqlx::PgPool;
 
 /// `PostgreSQL` implementation of [`EventLogQuery`].
@@ -83,24 +81,19 @@ impl EventLogQuery for PostgresEventLogQuery {
             format!("WHERE {}", conditions.join(" AND "))
         };
 
-        let count_sql = format!(
-            "SELECT COUNT(*) FROM {schema}.events {where_clause}",
-            schema = self.schema
-        );
+        let events_table = crate::migrations::qualify(&self.schema, "events");
+        let count_sql = format!("SELECT COUNT(*) FROM {events_table} {where_clause}");
         let data_sql = format!(
-            "SELECT id, event_id, aggregate_id, aggregate_type, event_type, \
-             event_version, event_data, created_by, created_at, \
-             correlation_id, causation_id, metadata \
-             FROM {schema}.events {where_clause} \
+            "SELECT {columns} FROM {events_table} {where_clause} \
              ORDER BY {order} LIMIT ${bind_idx} OFFSET ${next}",
-            schema = self.schema,
+            columns = crate::event_store::EVENT_COLUMNS,
             order = params.order_by.order_sql(),
             next = bind_idx + 1,
         );
 
         // Build count query
         let mut count_query = sqlx::query_scalar::<_, i64>(&count_sql);
-        let mut data_query = sqlx::query_as::<_, EventLogRow>(&data_sql);
+        let mut data_query = sqlx::query_as::<_, EventRow>(&data_sql);
 
         // Bind parameters in the same order
         if let Some(ref v) = params.aggregate_type {
@@ -146,7 +139,7 @@ impl EventLogQuery for PostgresEventLogQuery {
             .await
             .map_err(|e| event_sauce_core::Error::backend("Event log data query failed", e))?;
 
-        let entries = rows.into_iter().map(Into::into).collect();
+        let entries = rows.into_iter().map(EventRow::log_entry).collect();
 
         Ok(EventLogPage {
             entries,
@@ -157,9 +150,9 @@ impl EventLogQuery for PostgresEventLogQuery {
     }
 
     async fn distinct_aggregate_types(&self) -> Result<Vec<String>> {
+        let events_table = crate::migrations::qualify(&self.schema, "events");
         let rows: Vec<(String,)> = sqlx::query_as(&format!(
-            "SELECT DISTINCT aggregate_type FROM {schema}.events ORDER BY aggregate_type",
-            schema = self.schema
+            "SELECT DISTINCT aggregate_type FROM {events_table} ORDER BY aggregate_type"
         ))
         .fetch_all(&self.pool)
         .await
@@ -171,9 +164,9 @@ impl EventLogQuery for PostgresEventLogQuery {
     }
 
     async fn distinct_event_types(&self) -> Result<Vec<String>> {
+        let events_table = crate::migrations::qualify(&self.schema, "events");
         let rows: Vec<(String,)> = sqlx::query_as(&format!(
-            "SELECT DISTINCT event_type FROM {schema}.events ORDER BY event_type",
-            schema = self.schema
+            "SELECT DISTINCT event_type FROM {events_table} ORDER BY event_type"
         ))
         .fetch_all(&self.pool)
         .await
@@ -185,51 +178,337 @@ impl EventLogQuery for PostgresEventLogQuery {
     }
 }
 
-#[derive(sqlx::FromRow)]
-struct EventLogRow {
-    id: i64,
-    event_id: uuid::Uuid,
-    aggregate_id: uuid::Uuid,
-    aggregate_type: String,
-    event_type: String,
-    event_version: i64,
-    event_data: serde_json::Value,
-    created_by: Option<uuid::Uuid>,
-    created_at: chrono::DateTime<chrono::Utc>,
-    correlation_id: Option<uuid::Uuid>,
-    causation_id: Option<uuid::Uuid>,
-    metadata: Option<serde_json::Value>,
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::PostgresEventStore;
+    use chrono::{Duration, Utc};
+    use event_sauce_core::{
+        AggregateVersion, EventEnvelope, EventLogOrder, EventLogParams, EventStore, EventVersion,
+        StreamId,
+    };
+    use serde_json::json;
+    use testcontainers_modules::postgres::Postgres;
+    use uuid::Uuid;
 
-impl From<EventLogRow> for EventLogEntry {
-    fn from(row: EventLogRow) -> Self {
-        let metadata =
-            if row.correlation_id.is_some() || row.causation_id.is_some() || row.metadata.is_some()
-            {
-                Some(EventMetadata {
-                    correlation_id: row.correlation_id,
-                    causation_id: row.causation_id,
-                    causation_chain: Vec::new(),
-                    timestamp: row.created_at,
-                    additional: row.metadata,
-                })
-            } else {
-                None
-            };
+    struct TestDb {
+        pool: PgPool,
+        _container: testcontainers_modules::testcontainers::ContainerAsync<Postgres>,
+    }
 
-        Self {
-            position: Position::new(row.id),
-            envelope: EventEnvelope {
-                id: row.event_id,
-                aggregate_id: row.aggregate_id,
-                aggregate_type: AggregateType::from_owned(row.aggregate_type),
-                event_type: row.event_type,
-                event_version: EventVersion::new(row.event_version),
-                event_data: row.event_data,
-                created_by: row.created_by,
-                created_at: row.created_at,
-                metadata,
-            },
+    impl TestDb {
+        async fn new() -> Self {
+            let container = crate::test_support::start_postgres()
+                .await
+                .expect("start postgres");
+            let host = container.get_host().await.expect("get host");
+            let port = container.get_host_port_ipv4(5432).await.expect("get port");
+            let url = format!("postgresql://postgres:postgres@{host}:{port}/postgres");
+            let pool = PgPool::connect(&url).await.expect("connect");
+            let store = PostgresEventStore::builder()
+                .pool(pool.clone())
+                .schema("public")
+                .build()
+                .expect("pool was set");
+            store.migrate().await.expect("migrate");
+            Self {
+                pool,
+                _container: container,
+            }
         }
+
+        fn query(&self) -> PostgresEventLogQuery {
+            PostgresEventLogQuery::new(self.pool.clone(), "public".to_string())
+        }
+
+        fn store(&self) -> PostgresEventStore {
+            PostgresEventStore::builder()
+                .pool(self.pool.clone())
+                .schema("public")
+                .build()
+                .expect("pool was set")
+        }
+
+        async fn seed(&self, event: EventEnvelope) {
+            self.seed_stream(vec![event]).await;
+        }
+
+        /// Appends several events to the same stream (same aggregate), in
+        /// order, as a real caller would.
+        async fn seed_stream(&self, events: Vec<EventEnvelope>) {
+            let first = events.first().expect("at least one event");
+            let stream_id = StreamId::new(first.aggregate_type.clone(), first.aggregate_id);
+            self.store()
+                .append(
+                    stream_id,
+                    events,
+                    AggregateVersion::initial(),
+                    vec![],
+                    false,
+                )
+                .await
+                .expect("append seeded stream");
+        }
+
+        /// Backdates a seeded event's `created_at`. The store's own `INSERT`
+        /// always timestamps with the database's `NOW()` (it does not bind
+        /// `EventEnvelope::created_at`), so date-range tests reach around it
+        /// with a direct `UPDATE`.
+        async fn backdate(&self, event_id: Uuid, created_at: chrono::DateTime<Utc>) {
+            sqlx::query("UPDATE events SET created_at = $1 WHERE event_id = $2")
+                .bind(created_at)
+                .bind(event_id)
+                .execute(&self.pool)
+                .await
+                .expect("backdate seeded event");
+        }
+    }
+
+    fn envelope(
+        aggregate_type: &'static str,
+        event_type: &str,
+        aggregate_id: Uuid,
+    ) -> EventEnvelope {
+        EventEnvelope::new(
+            Uuid::new_v4(),
+            aggregate_id,
+            aggregate_type,
+            event_type.to_string(),
+            EventVersion::new(1),
+            json!({"k": "v"}),
+        )
+    }
+
+    /// Default order is `id DESC`, so the later insert must come first.
+    #[tokio::test]
+    async fn test_query_events_no_filters_returns_all_newest_first() {
+        let db = TestDb::new().await;
+        db.seed(envelope("User", "User.Created", Uuid::new_v4()))
+            .await;
+        db.seed(envelope("User", "User.Updated", Uuid::new_v4()))
+            .await;
+
+        let page = db
+            .query()
+            .query_events(EventLogParams::default())
+            .await
+            .unwrap();
+        assert_eq!(page.total_count, 2);
+        assert_eq!(page.entries.len(), 2);
+        assert_eq!(page.entries[0].envelope.event_type, "User.Updated");
+        assert_eq!(page.entries[1].envelope.event_type, "User.Created");
+    }
+
+    #[tokio::test]
+    async fn test_query_events_filters_by_aggregate_type() {
+        let db = TestDb::new().await;
+        db.seed(envelope("User", "User.Created", Uuid::new_v4()))
+            .await;
+        db.seed(envelope("Order", "Order.Placed", Uuid::new_v4()))
+            .await;
+
+        let page = db
+            .query()
+            .query_events(EventLogParams {
+                aggregate_type: Some("Order".to_string()),
+                ..EventLogParams::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(page.total_count, 1);
+        assert_eq!(page.entries[0].envelope.event_type, "Order.Placed");
+    }
+
+    #[tokio::test]
+    async fn test_query_events_filters_by_event_type() {
+        let db = TestDb::new().await;
+        db.seed(envelope("User", "User.Created", Uuid::new_v4()))
+            .await;
+        db.seed(envelope("User", "User.Updated", Uuid::new_v4()))
+            .await;
+
+        let page = db
+            .query()
+            .query_events(EventLogParams {
+                event_type: Some("User.Updated".to_string()),
+                ..EventLogParams::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(page.total_count, 1);
+        assert_eq!(page.entries[0].envelope.event_type, "User.Updated");
+    }
+
+    /// Combining several filters must AND them together, not just apply the
+    /// last one bound — the failure mode a hand-numbered placeholder chain
+    /// (or a `QueryBuilder` misuse) would produce.
+    #[tokio::test]
+    async fn test_query_events_combines_multiple_filters() {
+        let db = TestDb::new().await;
+        let target = Uuid::new_v4();
+        db.seed_stream(vec![
+            envelope("User", "User.Created", target),
+            envelope("User", "User.Updated", target),
+        ])
+        .await;
+        db.seed(envelope("Order", "Order.Placed", Uuid::new_v4()))
+            .await;
+
+        let page = db
+            .query()
+            .query_events(EventLogParams {
+                aggregate_type: Some("User".to_string()),
+                aggregate_id: Some(target),
+                event_type: Some("User.Updated".to_string()),
+                ..EventLogParams::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(page.total_count, 1);
+        assert_eq!(page.entries[0].envelope.event_type, "User.Updated");
+        assert_eq!(page.entries[0].envelope.aggregate_id, target);
+    }
+
+    #[tokio::test]
+    async fn test_query_events_filters_by_aggregate_id() {
+        let db = TestDb::new().await;
+        let target = Uuid::new_v4();
+        db.seed(envelope("User", "User.Created", target)).await;
+        db.seed(envelope("User", "User.Created", Uuid::new_v4()))
+            .await;
+
+        let page = db
+            .query()
+            .query_events(EventLogParams {
+                aggregate_id: Some(target),
+                ..EventLogParams::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(page.total_count, 1);
+        assert_eq!(page.entries[0].envelope.aggregate_id, target);
+    }
+
+    #[tokio::test]
+    async fn test_query_events_filters_by_created_by() {
+        let db = TestDb::new().await;
+        let user = Uuid::new_v4();
+        db.seed(envelope("User", "User.Created", Uuid::new_v4()).with_created_by(user))
+            .await;
+        db.seed(envelope("User", "User.Created", Uuid::new_v4()))
+            .await;
+
+        let page = db
+            .query()
+            .query_events(EventLogParams {
+                created_by: Some(user),
+                ..EventLogParams::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(page.total_count, 1);
+        assert_eq!(page.entries[0].envelope.created_by, Some(user));
+    }
+
+    #[tokio::test]
+    async fn test_query_events_filters_by_date_range() {
+        let db = TestDb::new().await;
+        let now = Utc::now();
+
+        let old = envelope("User", "User.Old", Uuid::new_v4());
+        let old_id = old.id;
+        db.seed(old).await;
+        db.backdate(old_id, now - Duration::days(10)).await;
+
+        let recent = envelope("User", "User.Recent", Uuid::new_v4());
+        let recent_id = recent.id;
+        db.seed(recent).await;
+        db.backdate(recent_id, now).await;
+
+        let page = db
+            .query()
+            .query_events(EventLogParams {
+                from_date: Some(now - Duration::days(1)),
+                ..EventLogParams::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(page.total_count, 1);
+        assert_eq!(page.entries[0].envelope.event_type, "User.Recent");
+
+        let page = db
+            .query()
+            .query_events(EventLogParams {
+                to_date: Some(now - Duration::days(1)),
+                ..EventLogParams::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(page.total_count, 1);
+        assert_eq!(page.entries[0].envelope.event_type, "User.Old");
+    }
+
+    #[tokio::test]
+    async fn test_query_events_paginates() {
+        let db = TestDb::new().await;
+        for i in 0..5 {
+            db.seed(envelope("User", &format!("User.Event{i}"), Uuid::new_v4()))
+                .await;
+        }
+
+        let page = db
+            .query()
+            .query_events(EventLogParams {
+                per_page: 2,
+                page: 1,
+                order_by: EventLogOrder::ByIdAsc,
+                ..EventLogParams::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(page.total_count, 5);
+        assert_eq!(page.entries.len(), 2);
+        assert_eq!(page.entries[0].envelope.event_type, "User.Event2");
+        assert_eq!(page.entries[1].envelope.event_type, "User.Event3");
+    }
+
+    #[tokio::test]
+    async fn test_distinct_aggregate_types() {
+        let db = TestDb::new().await;
+        db.seed(envelope("User", "User.Created", Uuid::new_v4()))
+            .await;
+        db.seed(envelope("Order", "Order.Placed", Uuid::new_v4()))
+            .await;
+        db.seed(envelope("Order", "Order.Shipped", Uuid::new_v4()))
+            .await;
+
+        let mut types = db.query().distinct_aggregate_types().await.unwrap();
+        types.sort();
+        assert_eq!(types, vec!["Order".to_string(), "User".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn test_distinct_event_types() {
+        let db = TestDb::new().await;
+        db.seed(envelope("User", "User.Created", Uuid::new_v4()))
+            .await;
+        db.seed(envelope("User", "User.Updated", Uuid::new_v4()))
+            .await;
+        db.seed(envelope("User", "User.Updated", Uuid::new_v4()))
+            .await;
+
+        let types = db.query().distinct_event_types().await.unwrap();
+        assert_eq!(
+            types,
+            vec!["User.Created".to_string(), "User.Updated".to_string()]
+        );
     }
 }

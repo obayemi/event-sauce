@@ -310,8 +310,7 @@ impl PostgresEventStore {
     ) -> Result<Vec<event_sauce_core::EventLogEntry>> {
         let events_table = self.qualify_table("events");
         let query = format!(
-            "SELECT id, event_id, aggregate_id, aggregate_type, event_type, event_version,
-                    event_data, created_by, created_at, correlation_id, causation_id, metadata
+            "SELECT {EVENT_COLUMNS}
              FROM {events_table}
              WHERE id > $1
              ORDER BY id ASC
@@ -1322,8 +1321,7 @@ impl EventStore for PostgresEventStore {
     ) -> Result<impl Stream<Item = Result<EventEnvelope>> + Send> {
         let events_table = self.qualify_table("events");
         let query = format!(
-            "SELECT event_id, aggregate_id, aggregate_type, event_type, event_version,
-                    event_data, created_by, created_at, correlation_id, causation_id, metadata
+            "SELECT {EVENT_COLUMNS}
              FROM {events_table}
              WHERE aggregate_id = $1 AND aggregate_type = $2 AND stream_version >= $3
              ORDER BY stream_version ASC"
@@ -1353,8 +1351,7 @@ impl EventStore for PostgresEventStore {
     ) -> Result<impl Stream<Item = Result<event_sauce_core::EventLogEntry>> + Send> {
         let events_table = self.qualify_table("events");
         let query = format!(
-            "SELECT id, event_id, aggregate_id, aggregate_type, event_type, event_version,
-                    event_data, created_by, created_at, correlation_id, causation_id, metadata
+            "SELECT {EVENT_COLUMNS}
              FROM {events_table}
              WHERE id > $1
              ORDER BY id ASC"
@@ -1518,13 +1515,16 @@ impl PostgresEventStore {
     }
 }
 
+/// Every column [`EventRow`] decodes by name, including the global `id` —
+/// shared by every query that reads events (per-stream, the global log, and
+/// the log-query filters), so a query can never omit one.
+pub(crate) const EVENT_COLUMNS: &str = "id, event_id, aggregate_id, aggregate_type, event_type, \
+     event_version, event_data, created_by, created_at, correlation_id, causation_id, metadata";
+
 // Database row types
 #[derive(sqlx::FromRow)]
-struct EventRow {
-    /// Global BIGSERIAL position. Only selected by the global-log queries
-    /// (`stream_all`, `fetch_events_batch`); per-stream `load_stream` leaves it
-    /// unset, so it is read solely through [`EventRow::log_entry`].
-    #[sqlx(default)]
+pub(crate) struct EventRow {
+    /// Global BIGSERIAL position, read solely through [`EventRow::log_entry`].
     id: i64,
     event_id: uuid::Uuid,
     aggregate_id: uuid::Uuid,
@@ -1543,7 +1543,7 @@ impl EventRow {
     /// Converts a row that includes the global `id` column into an
     /// [`EventLogEntry`](event_sauce_core::EventLogEntry), pairing the
     /// store-issued [`Position`] with the envelope.
-    fn log_entry(self) -> event_sauce_core::EventLogEntry {
+    pub(crate) fn log_entry(self) -> event_sauce_core::EventLogEntry {
         event_sauce_core::EventLogEntry {
             position: Position::new(self.id),
             envelope: EventEnvelope::from(self),
