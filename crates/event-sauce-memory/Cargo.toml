@@ -11,7 +11,7 @@ keywords = ["event-sourcing", "testing", "mock", "in-memory"]
 categories = ["asynchronous", "development-tools::testing"]
 
 [features]
-default = ["crypto", "event-sourcing", "state-store"]
+default = ["event-sourcing", "state-store"]
 crypto = ["dep:event-sauce-crypto", "event-sourcing"]
 event-sourcing = ["event-sauce-core/event-sourcing"]
 state-store = ["event-sauce-core/state-store"]

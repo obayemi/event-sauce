@@ -11,7 +11,7 @@ keywords = ["event-sourcing", "postgresql", "database"]
 categories = ["asynchronous", "database"]
 
 [features]
-default = ["crypto"]
+default = []
 crypto = ["dep:event-sauce-crypto"]
 
 [dependencies]

@@ -17,7 +17,7 @@
 //!
 //! Run with:
 //! ```bash
-//! cargo run --example crypto-shredding
+//! cargo run -p event-sauce --example crypto-shredding --features crypto
 //! ```
 
 use std::sync::Arc;
@@ -200,8 +200,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  - Crypto-shredding: deleting a key to implement right-to-be-forgotten\n");
 
     // -- Setup --
-    // InMemoryEventStore includes AES-256-GCM crypto provider and key store by default.
-
     let store = Arc::new(
         InMemoryEventStore::builder()
             .snapshot_config(SnapshotConfig::disabled())

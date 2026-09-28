@@ -16,7 +16,7 @@
 //!
 //! Run with:
 //! ```bash
-//! cargo run --example postgres-quickstart --features "postgres"
+//! cargo run -p event-sauce --example postgres-quickstart --features "postgres crypto"
 //! ```
 
 use std::sync::Arc;
@@ -479,8 +479,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let port = postgres.get_host_port_ipv4(5432).await?;
     let database_url = format!("postgres://postgres:postgres@localhost:{port}/postgres");
 
-    // Build backend — crypto key store (PostgresCryptoKeyStore) and provider
-    // (AES-256-GCM) are included and migrated automatically.
     println!("  Initializing backend with AES-256-GCM encryption...");
     let backend = PostgresBackend::builder()
         .database_url(&database_url)

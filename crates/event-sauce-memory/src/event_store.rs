@@ -216,8 +216,9 @@ impl InMemoryEventStore {
     ///
     /// Wraps the store in `Arc` and pre-installs an
     /// [`InMemoryCheckpointStore`](super::InMemoryCheckpointStore) so
-    /// projections and policies work without additional setup. Crypto defaults
-    /// (key store + AES-256-GCM provider) are also installed automatically.
+    /// projections and policies work without additional setup. A crypto key
+    /// store is installed automatically, plus the AES-256-GCM provider when
+    /// the `crypto` feature is enabled.
     ///
     /// Intended for tests and quick demos — production code should use
     /// [`builder()`](Self::builder) and pass dependencies explicitly.
@@ -341,15 +342,15 @@ impl InMemoryEventStoreBuilder {
     /// - **Snapshot config**: Every 100 events
     /// - **Checkpoint store**: None
     /// - **Crypto key store**: [`InMemoryCryptoKeyStore`](super::InMemoryCryptoKeyStore)
-    /// - **Crypto provider**: `Aes256GcmProvider` (with the default `crypto`
-    ///   feature; without it, none is installed and encrypted aggregates
-    ///   require an explicit [`crypto_provider()`](Self::crypto_provider))
+    /// - **Crypto provider**: `Aes256GcmProvider` when the `crypto` feature is
+    ///   enabled; without it (the default), none is installed and encrypted
+    ///   aggregates require an explicit [`crypto_provider()`](Self::crypto_provider)
     ///
     /// # Crypto auto-install
     ///
-    /// With the default `crypto` feature, a key store and provider are always
-    /// installed, even if your aggregates are not encrypted — they remain
-    /// dormant until an encrypted aggregate (one whose
+    /// A key store is always installed. With the opt-in `crypto` feature, a
+    /// provider is installed too, even if your aggregates are not encrypted —
+    /// it remains dormant until an encrypted aggregate (one whose
     /// `Aggregate::is_encrypted()` returns true, or one with `@encrypted_fields`)
     /// is committed or loaded. Override either via
     /// [`crypto_key_store()`](Self::crypto_key_store) /

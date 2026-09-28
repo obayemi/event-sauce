@@ -16,8 +16,9 @@
 //!   `InMemoryCryptoKeyStore` and `InMemoryEventLogQuery`, mirroring
 //!   `event-sauce-core`'s feature of the same name.
 //! - `state-store` (default): `InMemoryStateStore` and `InMemoryProjectionContext`.
-//! - `crypto` (default): installs `event-sauce-crypto`'s AES-256-GCM provider
-//!   as the default crypto provider; implies `event-sourcing`.
+//! - `crypto` (opt-in, off by default): installs `event-sauce-crypto`'s
+//!   AES-256-GCM provider as the default crypto provider; implies
+//!   `event-sourcing`.
 
 #![deny(missing_docs)]
 #![deny(clippy::all)]

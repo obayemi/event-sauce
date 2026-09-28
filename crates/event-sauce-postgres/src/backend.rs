@@ -764,8 +764,6 @@ impl PostgresBackendBuilder {
                 Arc::clone(&checkpoint_store) as Arc<dyn event_sauce_core::CheckpointStore>
             );
 
-        // Pass through user-provided crypto overrides; otherwise
-        // the event store builder defaults to PostgresCryptoKeyStore + Aes256GcmProvider.
         if let Some(key_store) = self.crypto_key_store {
             event_store_builder = event_store_builder.crypto_key_store(key_store);
         }

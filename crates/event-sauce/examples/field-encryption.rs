@@ -17,7 +17,7 @@
 //!
 //! Run with:
 //! ```bash
-//! cargo run --example field-encryption
+//! cargo run -p event-sauce --example field-encryption --features crypto
 //! ```
 
 use std::sync::Arc;
@@ -108,7 +108,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  - Crypto-shredding for selective privacy\n");
 
     // -- Setup --
-    // InMemoryEventStore includes AES-256-GCM crypto provider and key store by default.
     let store = Arc::new(
         InMemoryEventStore::builder()
             .snapshot_config(SnapshotConfig::disabled())

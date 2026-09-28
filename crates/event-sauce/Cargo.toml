@@ -69,7 +69,7 @@ paste.workspace = true
 
 [[example]]
 name = "postgres-quickstart"
-required-features = ["postgres"]
+required-features = ["postgres", "crypto"]
 
 [[example]]
 name = "projection-worker"
@@ -77,6 +77,11 @@ required-features = ["postgres"]
 
 [[example]]
 name = "crypto-shredding"
+required-features = ["memory", "crypto"]
+
+[[example]]
+name = "field-encryption"
+required-features = ["memory", "crypto"]
 
 [[example]]
 name = "state-stored-order"
