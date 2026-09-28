@@ -33,8 +33,8 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use event_sauce::memory::InMemoryEventStore;
 use event_sauce::{
-    Aggregate, AggregateError, AggregateRoot, ApplyEvent, DefaultEntity, DomainEvent, Entity,
-    EntityId, EventStore, Repository,
+    Aggregate, AggregateError, AggregateRoot, ApplyEvent, DefaultEntity, Entity, EntityId,
+    EventStore, Repository,
 };
 use serde::{Deserialize, Serialize};
 

@@ -26,7 +26,7 @@ use chrono::{DateTime, Utc};
 use event_sauce::memory::InMemoryEventStore;
 use event_sauce::{
     crypto, Aggregate, AggregateError, AggregateRoot, AggregateVersion, ApplyEvent, DefaultEntity,
-    DomainEvent, Entity, EntityId, EventStore, Repository, SnapshotConfig, StreamId,
+    Entity, EntityId, EventStore, Repository, SnapshotConfig, StreamId,
 };
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};

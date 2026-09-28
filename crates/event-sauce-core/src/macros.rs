@@ -163,7 +163,7 @@ macro_rules! __command_handler_event {
     (clock: [now] $evt:ident { $($field:ident: $value:expr,)* }) => {
         $evt {
             $($field: $value,)*
-            timestamp: ::chrono::Utc::now(),
+            timestamp: $crate::__private::chrono::Utc::now(),
         }
     };
     (clock: [none] $evt:ident { $($field:ident: $value:expr,)* }) => {
@@ -550,7 +550,7 @@ macro_rules! __command_handler_init_internal {
         // --- Init event helpers: associated functions (no &self) ---
         impl $aggregate {
             $(
-                paste::paste! {
+                $crate::__private::paste! {
                     $(#[$i_attr])*
                     #[allow(missing_docs)]
                     pub fn [<$i_cmd _event>]($($i_param: $i_param_ty),*) -> $i_evt {
@@ -565,7 +565,7 @@ macro_rules! __command_handler_init_internal {
         // --- Actor init event helpers: associated functions (no &self) ---
         impl $aggregate {
             $(
-                paste::paste! {
+                $crate::__private::paste! {
                     $(#[$ai_attr])*
                     #[allow(missing_docs)]
                     pub fn [<$ai_cmd _event>]($($ai_param: $ai_param_ty),*) -> $ai_evt {
@@ -580,7 +580,7 @@ macro_rules! __command_handler_init_internal {
         // --- Regular event helpers: instance methods ---
         impl $aggregate {
             $(
-                paste::paste! {
+                $crate::__private::paste! {
                     $(#[$r_attr])*
                     #[allow(missing_docs)]
                     pub fn [<$r_cmd _event>](&self, $($r_param: $r_param_ty),*) -> $r_evt {
@@ -595,7 +595,7 @@ macro_rules! __command_handler_init_internal {
         // --- Actor event helpers: instance methods ---
         impl $aggregate {
             $(
-                paste::paste! {
+                $crate::__private::paste! {
                     $(#[$a_attr])*
                     #[allow(missing_docs)]
                     pub fn [<$a_cmd _event>](&self, $($a_param: $a_param_ty),*) -> $a_evt {
@@ -608,7 +608,7 @@ macro_rules! __command_handler_init_internal {
         }
 
         // --- Init commands trait + impl on UninitAggregateRoot ---
-        paste::paste! {
+        $crate::__private::paste! {
             #[allow(missing_docs, private_interfaces)]
             pub trait [<$aggregate InitCommands>] {
                 $(
@@ -648,7 +648,7 @@ macro_rules! __command_handler_init_internal {
 
         // --- Init creation functions: associated functions returning AggregateRoot ---
         $(
-            paste::paste! {
+            $crate::__private::paste! {
                 impl $aggregate {
                     $(#[$i_attr])*
                     #[allow(missing_docs)]
@@ -681,7 +681,7 @@ macro_rules! __command_handler_init_internal {
 
         // --- Actor init creation functions ---
         $(
-            paste::paste! {
+            $crate::__private::paste! {
                 impl $aggregate {
                     $(#[$ai_attr])*
                     #[allow(missing_docs)]
@@ -715,7 +715,7 @@ macro_rules! __command_handler_init_internal {
         )*
 
         // --- Regular commands trait + impl on AggregateRoot ---
-        paste::paste! {
+        $crate::__private::paste! {
             #[allow(missing_docs, private_interfaces)]
             pub trait [<$aggregate Commands>] {
                 $(
@@ -756,7 +756,7 @@ macro_rules! __command_handler_init_internal {
         // --- Delete event helpers: instance methods ---
         impl $aggregate {
             $(
-                paste::paste! {
+                $crate::__private::paste! {
                     $(#[$d_attr])*
                     #[allow(missing_docs)]
                     pub fn [<$d_cmd _event>](&self, $($d_param: $d_param_ty),*) -> $d_evt {
@@ -771,7 +771,7 @@ macro_rules! __command_handler_init_internal {
         // --- Actor delete event helpers: instance methods ---
         impl $aggregate {
             $(
-                paste::paste! {
+                $crate::__private::paste! {
                     $(#[$ad_attr])*
                     #[allow(missing_docs)]
                     pub fn [<$ad_cmd _event>](&self, $($ad_param: $ad_param_ty),*) -> $ad_evt {
@@ -784,7 +784,7 @@ macro_rules! __command_handler_init_internal {
         }
 
         // --- Delete commands trait + impl on AggregateRoot ---
-        paste::paste! {
+        $crate::__private::paste! {
             #[allow(missing_docs, private_interfaces)]
             pub trait [<$aggregate DeleteCommands>] {
                 $(
@@ -1105,7 +1105,7 @@ macro_rules! define_events {
             $($rest:tt)*
         }
     ) => {
-        define_events! {
+        $crate::define_events! {
             @munch
             [$vis] [$event_enum] [$aggregate]
             upcast: [[$upcast_type, $upcast_ver, $upcast_data, $upcast_body]]
@@ -1119,7 +1119,7 @@ macro_rules! define_events {
             $($rest:tt)*
         }
     ) => {
-        define_events! {
+        $crate::define_events! {
             @munch
             [$vis] [$event_enum] [$aggregate]
             upcast: []
@@ -1153,7 +1153,7 @@ macro_rules! define_events {
             $($rest:tt)*
         ]
     ) => {
-        define_events! {
+        $crate::define_events! {
             @munch
             [$vis] [$event_enum] [$aggregate]
             upcast: [$($upcast)*]
@@ -1199,7 +1199,7 @@ macro_rules! define_events {
             $($rest:tt)*
         ]
     ) => {
-        define_events! {
+        $crate::define_events! {
             @munch
             [$vis] [$event_enum] [$aggregate]
             upcast: [$($upcast)*]
@@ -1251,7 +1251,7 @@ macro_rules! define_events {
             $($rest:tt)*
         ]
     ) => {
-        define_events! {
+        $crate::define_events! {
             @munch
             [$vis] [$event_enum] [$aggregate]
             upcast: [$($upcast)*]
@@ -1298,7 +1298,7 @@ macro_rules! define_events {
             $($rest:tt)*
         ]
     ) => {
-        define_events! {
+        $crate::define_events! {
             @munch
             [$vis] [$event_enum] [$aggregate]
             upcast: [$($upcast)*]
@@ -1350,7 +1350,7 @@ macro_rules! define_events {
             $($rest:tt)*
         ]
     ) => {
-        define_events! {
+        $crate::define_events! {
             @munch
             [$vis] [$event_enum] [$aggregate]
             upcast: [$($upcast)*]
@@ -1397,7 +1397,7 @@ macro_rules! define_events {
             $($rest:tt)*
         ]
     ) => {
-        define_events! {
+        $crate::define_events! {
             @munch
             [$vis] [$event_enum] [$aggregate]
             upcast: [$($upcast)*]
@@ -1448,7 +1448,7 @@ macro_rules! define_events {
             $($rest:tt)*
         ]
     ) => {
-        define_events! {
+        $crate::define_events! {
             @munch
             [$vis] [$event_enum] [$aggregate]
             upcast: [$($upcast)*]
@@ -1494,7 +1494,7 @@ macro_rules! define_events {
             $($rest:tt)*
         ]
     ) => {
-        define_events! {
+        $crate::define_events! {
             @munch
             [$vis] [$event_enum] [$aggregate]
             upcast: [$($upcast)*]
@@ -1544,7 +1544,7 @@ macro_rules! define_events {
             $($rest:tt)*
         ]
     ) => {
-        define_events! {
+        $crate::define_events! {
             @munch
             [$vis] [$event_enum] [$aggregate]
             upcast: [$($upcast)*]
@@ -1589,7 +1589,7 @@ macro_rules! define_events {
             $($rest:tt)*
         ]
     ) => {
-        define_events! {
+        $crate::define_events! {
             @munch
             [$vis] [$event_enum] [$aggregate]
             upcast: [$($upcast)*]
@@ -1640,7 +1640,7 @@ macro_rules! define_events {
             $($rest:tt)*
         ]
     ) => {
-        define_events! {
+        $crate::define_events! {
             @munch
             [$vis] [$event_enum] [$aggregate]
             upcast: [$($upcast)*]
@@ -1686,7 +1686,7 @@ macro_rules! define_events {
             $($rest:tt)*
         ]
     ) => {
-        define_events! {
+        $crate::define_events! {
             @munch
             [$vis] [$event_enum] [$aggregate]
             upcast: [$($upcast)*]
@@ -1722,7 +1722,7 @@ macro_rules! define_events {
         accumulated: [$($acc:tt)*]
         rest: []
     ) => {
-        define_events! {
+        $crate::define_events! {
             @build
             [$vis] [$event_enum] [$aggregate]
             upcast: [$($upcast)*]
@@ -1759,11 +1759,11 @@ macro_rules! define_events {
     ) => {
         // ---- Per-variant: struct, From, EventType, trait impl ----
         $(
-            paste::paste! {
+            $crate::__private::paste! {
                 #[derive(Debug, Clone, PartialEq, ::serde::Serialize, ::serde::Deserialize)]
                 $vis struct [<$variant Event>] {
                     $($(#[$field_attr])* pub $field: $field_ty,)*
-                    pub $clock: ::chrono::DateTime<::chrono::Utc>,
+                    pub $clock: $crate::__private::chrono::DateTime<$crate::__private::chrono::Utc>,
                 }
 
                 impl ::std::convert::From<[<$variant Event>]> for $event_enum {
@@ -1785,7 +1785,7 @@ macro_rules! define_events {
             }
 
             // Emit ApplyEvent or InitEvent (and optionally ActorEvent/ActorInitEvent) based on kind
-            define_events! {
+            $crate::define_events! {
                 @emit_trait
                 [$vis] [$aggregate] [$event_enum] [$variant]
                 [{ $($(#[$field_attr])* $field: $field_ty,)* }]
@@ -1805,7 +1805,7 @@ macro_rules! define_events {
             $(
                 $variant {
                     $($(#[$field_attr])* $field: $field_ty,)*
-                    $clock: ::chrono::DateTime<::chrono::Utc>,
+                    $clock: $crate::__private::chrono::DateTime<$crate::__private::chrono::Utc>,
                 }
             ),*
         }
@@ -1813,7 +1813,7 @@ macro_rules! define_events {
         // ---- Shared: DomainEvent ----
         // Wrapped in paste::paste! so [<$variant Event>] is available for
         // to_envelope/from_envelope which serialize/deserialize the flat struct format
-        paste::paste! {
+        $crate::__private::paste! {
             impl $crate::DomainEvent for $event_enum {
                 type Aggregate = $aggregate;
 
@@ -1831,13 +1831,13 @@ macro_rules! define_events {
                     match self {
                         $(
                             $event_enum::$variant { .. } => {
-                                $crate::EventVersion::new(define_events!(@version_from [$($version)*]))
+                                $crate::EventVersion::new($crate::define_events!(@version_from [$($version)*]))
                             }
                         ),*
                     }
                 }
 
-                fn occurred_at(&self) -> ::chrono::DateTime<::chrono::Utc> {
+                fn occurred_at(&self) -> $crate::__private::chrono::DateTime<$crate::__private::chrono::Utc> {
                     match self {
                         $(
                             $event_enum::$variant { $clock, .. } => *$clock
@@ -1845,11 +1845,11 @@ macro_rules! define_events {
                     }
                 }
 
-                fn to_envelope(&self, aggregate_id: ::uuid::Uuid) -> $crate::Result<$crate::EventEnvelope> {
+                fn to_envelope(&self, aggregate_id: $crate::__private::uuid::Uuid) -> $crate::Result<$crate::EventEnvelope> {
                     let event_data = match self {
                         $(
                             $event_enum::$variant { $($field,)* $clock } => {
-                                ::serde_json::to_value(&[<$variant Event>] {
+                                $crate::__private::serde_json::to_value(&[<$variant Event>] {
                                     $($field: $field.clone(),)*
                                     $clock: *$clock,
                                 })
@@ -1858,7 +1858,7 @@ macro_rules! define_events {
                     }.map_err(|e| $crate::Error::custom(format!("Failed to serialize event: {e}")))?;
 
                     Ok($crate::EventEnvelope::new(
-                        ::uuid::Uuid::new_v4(),
+                        $crate::__private::uuid::Uuid::new_v4(),
                         aggregate_id,
                         <Self::Aggregate as $crate::Aggregate>::aggregate_type(),
                         self.event_type().to_string(),
@@ -1871,7 +1871,7 @@ macro_rules! define_events {
                 fn from_envelope(envelope: &$crate::EventEnvelope) -> $crate::Result<Self> {
                     $(
                         if envelope.event_type == <[<$variant Event>] as $crate::EventType>::EVENT_TYPE
-                            || define_events!(@alias_match (envelope.event_type) [$($aliases)*])
+                            || $crate::define_events!(@alias_match (envelope.event_type) [$($aliases)*])
                         {
                             let mut data = envelope.event_data.clone();
                             <$event_enum as $crate::DomainEvent>::upcast(
@@ -1879,7 +1879,7 @@ macro_rules! define_events {
                                 envelope.event_version,
                                 &mut data,
                             );
-                            let event = ::serde_json::from_value::<[<$variant Event>]>(data)
+                            let event = $crate::__private::serde_json::from_value::<[<$variant Event>]>(data)
                                 .map_err(|e| $crate::Error::custom(format!("Failed to deserialize event: {e}")))?;
                             return Ok($event_enum::$variant {
                                 $($field: event.$field,)*
@@ -1894,30 +1894,30 @@ macro_rules! define_events {
                     match self {
                         $(
                             $event_enum::$variant { .. } => {
-                                define_events!(@encrypted_fields_from [$($encrypted_fields)*])
+                                $crate::define_events!(@encrypted_fields_from [$($encrypted_fields)*])
                             }
                         ),*
                     }
                 }
 
                 fn has_any_encrypted_fields() -> bool {
-                    define_events!(@has_any_encrypted_fields $([$($encrypted_fields)*])*)
+                    $crate::define_events!(@has_any_encrypted_fields $([$($encrypted_fields)*])*)
                 }
 
-                define_events!(@upcast_method [$($upcast)*]);
+                $crate::define_events!(@upcast_method [$($upcast)*]);
             }
         }
 
         // ---- Shared: EventApplicator ----
         // Wrapped in paste::paste! so [<$variant Event>] is available
-        paste::paste! {
+        $crate::__private::paste! {
             #[allow(unused_variables, unused_assignments)]
             impl $crate::EventApplicator<$aggregate> for $event_enum {
                 fn dispatch(&self, aggregate: &mut $aggregate) -> ::std::result::Result<(), <$aggregate as $crate::Aggregate>::Error> {
                     match self {
                         $(
                             $event_enum::$variant { $($field,)* $clock } => {
-                                define_events!(@dispatch_arm $kind [$aggregate] [[<$variant Event>]] [$($field),*] [$clock] [aggregate])
+                                $crate::define_events!(@dispatch_arm $kind [$aggregate] [[<$variant Event>]] [$($field),*] [$clock] [aggregate])
                             }
                         ),*
                     }
@@ -1928,7 +1928,7 @@ macro_rules! define_events {
                     match self {
                         $(
                             $event_enum::$variant { $($field,)* $clock } => {
-                                define_events!(@validate_only_arm $kind [$aggregate] [[<$variant Event>]] [$($field),*] [$clock] [aggregate])
+                                $crate::define_events!(@validate_only_arm $kind [$aggregate] [[<$variant Event>]] [$($field),*] [$clock] [aggregate])
                             }
                         ),*
                     }
@@ -1939,7 +1939,7 @@ macro_rules! define_events {
                     match self {
                         $(
                             $event_enum::$variant { $($field,)* $clock } => {
-                                define_events!(@dispatch_unchecked_arm $kind [$aggregate] [[<$variant Event>]] [$($field),*] [$clock] [aggregate])
+                                $crate::define_events!(@dispatch_unchecked_arm $kind [$aggregate] [[<$variant Event>]] [$($field),*] [$clock] [aggregate])
                             }
                         ),*
                     }
@@ -1949,7 +1949,7 @@ macro_rules! define_events {
                     match self {
                         $(
                             $event_enum::$variant { .. } => {
-                                define_events!(@is_init $kind)
+                                $crate::define_events!(@is_init $kind)
                             }
                         ),*
                     }
@@ -1959,7 +1959,7 @@ macro_rules! define_events {
                     match self {
                         $(
                             $event_enum::$variant { $($field,)* $clock } => {
-                                define_events!(@dispatch_init_arm $kind [$aggregate] [[<$variant Event>]] [$($field),*] [$clock] [id])
+                                $crate::define_events!(@dispatch_init_arm $kind [$aggregate] [[<$variant Event>]] [$($field),*] [$clock] [id])
                             }
                         ),*
                     }
@@ -1969,7 +1969,7 @@ macro_rules! define_events {
                     match self {
                         $(
                             $event_enum::$variant { $($field,)* $clock } => {
-                                define_events!(@dispatch_init_unchecked_arm $kind [$aggregate] [[<$variant Event>]] [$($field),*] [$clock] [id])
+                                $crate::define_events!(@dispatch_init_unchecked_arm $kind [$aggregate] [[<$variant Event>]] [$($field),*] [$clock] [id])
                             }
                         ),*
                     }
@@ -1979,7 +1979,7 @@ macro_rules! define_events {
                     match self {
                         $(
                             $event_enum::$variant { .. } => {
-                                define_events!(@is_delete $kind)
+                                $crate::define_events!(@is_delete $kind)
                             }
                         ),*
                     }
@@ -1989,7 +1989,7 @@ macro_rules! define_events {
                     match self {
                         $(
                             $event_enum::$variant { $($field,)* $clock } => {
-                                define_events!(@dispatch_delete_arm $kind [$aggregate] [[<$variant Event>]] [$($field),*] [$clock] [aggregate])
+                                $crate::define_events!(@dispatch_delete_arm $kind [$aggregate] [[<$variant Event>]] [$($field),*] [$clock] [aggregate])
                             }
                         ),*
                     }
@@ -1999,7 +1999,7 @@ macro_rules! define_events {
                     match self {
                         $(
                             $event_enum::$variant { $($field,)* $clock } => {
-                                define_events!(@dispatch_delete_unchecked_arm $kind [$aggregate] [[<$variant Event>]] [$($field),*] [$clock] [aggregate])
+                                $crate::define_events!(@dispatch_delete_unchecked_arm $kind [$aggregate] [[<$variant Event>]] [$($field),*] [$clock] [aggregate])
                             }
                         ),*
                     }
@@ -2023,7 +2023,7 @@ macro_rules! define_events {
         post_validate_spec: [$([$($post_val_spec:tt)*])?],
         apply: $apply:expr,
     ) => {
-        paste::paste! {
+        $crate::__private::paste! {
             impl $crate::ApplyEvent<$aggregate> for [<$variant Event>] {
                 #[allow(unused_variables, unreachable_code, clippy::redundant_closure_call)]
                 fn validate(&self, aggregate: &$aggregate)
@@ -2074,7 +2074,7 @@ macro_rules! define_events {
         post_validate_spec: [$([$($post_val_spec:tt)*])?],
         apply: $apply:expr,
     ) => {
-        paste::paste! {
+        $crate::__private::paste! {
             // ApplyEvent impl (for replay — dispatches 2-arg @validate, skips 3-arg)
             impl $crate::ApplyEvent<$aggregate> for [<$variant Event>] {
                 #[allow(unused_variables, unreachable_code, clippy::redundant_closure_call)]
@@ -2144,7 +2144,7 @@ macro_rules! define_events {
         post_validate_spec: [$([$($post_val_spec:tt)*])?],
         apply: $apply:expr,
     ) => {
-        paste::paste! {
+        $crate::__private::paste! {
             impl $crate::InitEvent<$aggregate> for [<$variant Event>] {
                 #[allow(unused_variables, unreachable_code, clippy::redundant_closure_call)]
                 fn validate_init(&self) -> ::std::result::Result<(), <$aggregate as $crate::Aggregate>::Error> {
@@ -2191,7 +2191,7 @@ macro_rules! define_events {
         post_validate_spec: [$([$($post_val_spec:tt)*])?],
         apply: $apply:expr,
     ) => {
-        paste::paste! {
+        $crate::__private::paste! {
             // InitEvent impl (for replay — dispatches 1-arg @validate, skips 2-arg)
             impl $crate::InitEvent<$aggregate> for [<$variant Event>] {
                 #[allow(unused_variables, unreachable_code, clippy::redundant_closure_call)]
@@ -2257,7 +2257,7 @@ macro_rules! define_events {
         post_validate_spec: [$([$($post_val_spec:tt)*])?],
         apply: $apply:expr,
     ) => {
-        paste::paste! {
+        $crate::__private::paste! {
             impl $crate::DeleteEvent<$aggregate> for [<$variant Event>] {
                 #[allow(unused_variables, unreachable_code, clippy::redundant_closure_call)]
                 fn validate_delete(&self, aggregate: &$aggregate)
@@ -2309,7 +2309,7 @@ macro_rules! define_events {
         post_validate_spec: [$([$($post_val_spec:tt)*])?],
         apply: $apply:expr,
     ) => {
-        paste::paste! {
+        $crate::__private::paste! {
             // DeleteEvent impl (for replay — dispatches 2-arg @validate, skips 3-arg)
             impl $crate::DeleteEvent<$aggregate> for [<$variant Event>] {
                 #[allow(unused_variables, unreachable_code, clippy::redundant_closure_call)]
@@ -2697,7 +2697,7 @@ macro_rules! define_events {
         true
     };
     (@has_any_encrypted_fields [] $($rest:tt)*) => {
-        define_events!(@has_any_encrypted_fields $($rest)*)
+        $crate::define_events!(@has_any_encrypted_fields $($rest)*)
     };
     (@has_any_encrypted_fields) => {
         false
@@ -2713,7 +2713,7 @@ macro_rules! define_events {
         fn upcast(
             $ut: &str,
             $uv: $crate::EventVersion,
-            $ud: &mut ::serde_json::Value,
+            $ud: &mut $crate::__private::serde_json::Value,
         ) $ubody
     };
     (@upcast_method []) => {};
@@ -2915,7 +2915,7 @@ macro_rules! policy {
         $(#[$meta])*
         $vis struct $name;
 
-        #[async_trait::async_trait]
+        #[$crate::__private::async_trait]
         impl<S: $crate::EventStore + 'static> $crate::policy::Policy<S> for $name {
             fn name(&self) -> &str {
                 stringify!($name)
@@ -2934,7 +2934,7 @@ macro_rules! policy {
             ) -> $crate::Result<()> {
                 $(
                     if event.event_type == <$event_struct as $crate::EventType>::EVENT_TYPE {
-                        let $event: $event_struct = ::serde_json::from_value(event.event_data.clone())?;
+                        let $event: $event_struct = $crate::__private::serde_json::from_value(event.event_data.clone())?;
                         let $ctx = ctx;
                         return $handler;
                     }

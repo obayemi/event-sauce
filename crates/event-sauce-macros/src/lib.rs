@@ -166,7 +166,7 @@ pub fn derive_event(input: TokenStream) -> TokenStream {
                 }
             }
 
-            fn occurred_at(&self) -> chrono::DateTime<chrono::Utc> {
+            fn occurred_at(&self) -> #core::__private::chrono::DateTime<#core::__private::chrono::Utc> {
                 match self {
                     #(#occurred_at_arms)*
                 }
@@ -416,7 +416,7 @@ fn gen_try_from_impls(name: &Ident) -> proc_macro2::TokenStream {
             type Error = #core::Error;
 
             fn try_from(envelope: #core::EventEnvelope) -> #core::Result<Self> {
-                Self::from_envelope(&envelope)
+                <Self as #core::DomainEvent>::from_envelope(&envelope)
             }
         }
 
@@ -424,7 +424,7 @@ fn gen_try_from_impls(name: &Ident) -> proc_macro2::TokenStream {
             type Error = #core::Error;
 
             fn try_from(envelope: &#core::EventEnvelope) -> #core::Result<Self> {
-                Self::from_envelope(envelope)
+                <Self as #core::DomainEvent>::from_envelope(envelope)
             }
         }
     }

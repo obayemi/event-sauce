@@ -31,7 +31,6 @@ sha2.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros", "rt", "rt-multi-thread"] }
-paste.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 testcontainers = "0.27"

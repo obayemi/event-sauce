@@ -3,6 +3,7 @@ members = [
     "crates/event-sauce",
     "crates/event-sauce-core",
     "crates/event-sauce-crypto",
+    "crates/event-sauce-macro-surface-test",
     "crates/event-sauce-macros",
     "crates/event-sauce-postgres",
     "crates/event-sauce-memory",

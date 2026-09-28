@@ -1,0 +1,11 @@
+[package]
+name = "event-sauce-macro-surface-test"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+event-sauce = { path = "../event-sauce", version = "0.1.0" }
+serde = { workspace = true }

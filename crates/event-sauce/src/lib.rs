@@ -6,18 +6,37 @@
 //! persisted behind the [`Repository`] trait. Simple by default, powerful
 //! when needed.
 //!
-//! ## The only dependency you need
+//! ## The only companion dependency you need
 //!
 //! This crate is the entry point to the whole library. The core traits and
 //! types are re-exported at its root, the backends live under [`memory`] and
 //! [`postgres`], and the bundled AES-256-GCM provider sits in [`crypto`]
 //! next to the traits it implements. The derive macros expand to paths rooted
-//! here, so `event-sauce` is the single line a downstream `Cargo.toml` needs:
+//! here, so `event-sauce` is the one line a downstream `Cargo.toml` needs
+//! for the library itself:
 //!
 //! ```toml
 //! [dependencies]
 //! event-sauce = { version = "0.1", features = ["postgres"] }
 //! ```
+//!
+//! [`define_events!`](crate::define_events) still expands to
+//! `#[derive(Serialize, Deserialize)]` on the generated event structs, so a
+//! caller using it also needs `serde` with the `derive` feature. `paste`,
+//! `uuid`, `serde_json` and `async-trait` (needed only by `policy!`) are
+//! macro-only: a caller adds none of them to use the macros.
+//!
+//! `chrono` is not macro-only — every command without `@clock` takes its
+//! instant as a parameter, and every generated event carries a public
+//! `DateTime<Utc>` field, so `chrono` types are part of the public API. A
+//! caller still adds no `chrono` line of its own: the crate is reachable as
+//! [`chrono`], the same one `event-sauce` already depends on. A
+//! hand-written `impl` of one of the async traits (`StateProjection`,
+//! `EventStore`, `CheckpointStore`) is a separate case: those traits are
+//! themselves declared with `#[async_trait]`, so implementing one by hand
+//! still needs the `async-trait` crate as a direct dependency, the same way
+//! implementing any other trait needs whatever attribute macros that
+//! trait's definition depends on.
 //!
 //! Crates that depend on `event-sauce-core` directly keep working — the
 //! macros resolve their generated paths to whichever of the two a crate

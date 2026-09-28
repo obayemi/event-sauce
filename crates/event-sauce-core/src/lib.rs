@@ -93,6 +93,31 @@ mod version;
 #[cfg(test)]
 mod test_fixtures;
 
+/// Re-exports the exported macros expand through, so a caller depending only
+/// on `event-sauce`/`event-sauce-core` needs no direct dependency on
+/// `paste`, `uuid`, `serde_json` or `async-trait` to use them. `chrono` is
+/// also re-exported here for the macros' own internal use, but a caller
+/// names it through the public [`chrono`](crate::chrono) re-export instead:
+/// instants are part of the public API, not a macro-only detail.
+#[doc(hidden)]
+pub mod __private {
+    pub use async_trait::async_trait;
+    pub use chrono;
+    pub use paste::paste;
+    pub use serde_json;
+    pub use uuid;
+}
+
+/// The `chrono` crate the generated code's instants are built from.
+///
+/// Every command without `@clock` takes its instant as a parameter, and
+/// every event carries its `occurred_at` through [`DomainEvent`], so
+/// `chrono` types are part of this library's public API. Re-exported here
+/// so a caller can spell
+/// `chrono::DateTime<chrono::Utc>` as `event_sauce::chrono::DateTime<..>`
+/// without adding `chrono` to its own `Cargo.toml`.
+pub use chrono;
+
 pub use actor_event::{ActorDeleteEvent, ActorEvent, ActorInitEvent};
 pub use aggregate::Aggregate;
 pub use aggregate_error::AggregateError;
