@@ -15,5 +15,4 @@ event-sauce-core = { path = "../event-sauce-core", version = "0.1.0" }
 aes-gcm.workspace = true
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["test-util", "macros", "rt", "rt-multi-thread"] }
 proptest.workspace = true

@@ -23,7 +23,6 @@ proc-macro-crate.workspace = true
 [dev-dependencies]
 event-sauce-core = { path = "../event-sauce-core" }
 trybuild = "1.0"
-tokio = { workspace = true, features = ["macros", "rt"] }
 chrono.workspace = true
 uuid.workspace = true
 thiserror.workspace = true

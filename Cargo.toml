@@ -46,7 +46,6 @@ tracing = "0.1.41"
 # Testing (latest stable)
 proptest = "1.9.0"
 proptest-derive = "0.5"
-serial_test = "3.2"
 
 # Macros (latest stable: syn 2.0.104)
 syn = { version = "2.0.104", features = ["full", "extra-traits"] }
