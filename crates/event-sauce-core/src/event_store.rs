@@ -425,16 +425,22 @@ pub trait EventStore: Send + Sync {
     /// This method:
     /// 1. Extracts pending events from the aggregate root
     /// 2. Converts them to event envelopes
-    /// 3. Encrypts event data if the aggregate is private
+    /// 3. Encrypts event data if the aggregate is encrypted or has encrypted fields
     /// 4. Appends them to the event store with optimistic concurrency control
     /// 5. Creates a snapshot if the strategy indicates it should (encrypted for encrypted aggregates)
     /// 6. Clears the pending events on success
     ///
+    /// The pending events are only cleared once the write is durable: if
+    /// `append` fails (e.g. `Error::ConcurrencyConflict`) or this call is
+    /// cancelled while awaiting it, the aggregate keeps its pending events so
+    /// a retried `commit()` persists them instead of silently doing nothing.
+    ///
     /// # Errors
     ///
     /// Returns `Error::ConcurrencyConflict` if another process modified the aggregate.
-    /// Returns `Error::Encryption` if encryption fails for a encrypted aggregate.
-    /// Returns `Error::InvalidState` if a encrypted aggregate lacks crypto configuration.
+    /// Returns `Error::Encryption` if encryption fails for an encrypted aggregate.
+    /// Returns `Error::InvalidState` if an encrypted aggregate lacks crypto configuration.
+    /// Returns `Error::KeyNotFound` if the aggregate was crypto-shredded (its key was deleted).
     async fn commit<A>(&self, aggregate: &mut AggregateRoot<A>) -> Result<()>
     where
         A: Aggregate + serde::Serialize,
@@ -442,6 +448,7 @@ pub trait EventStore: Send + Sync {
     {
         if let Some(prepared) = prepare_commit(self, aggregate).await? {
             flush_prepared(self, prepared).await?;
+            aggregate.clear_pending_events();
         }
         Ok(())
     }
@@ -455,11 +462,15 @@ pub trait EventStore: Send + Sync {
     /// with `is_deleted = true`, so `load_any()` can deserialize it correctly.
     /// Snapshots are encrypted if the aggregate uses encryption.
     ///
+    /// Like [`commit()`](Self::commit), the pending events are cleared only
+    /// after the write succeeds, so a failed or cancelled call can be retried.
+    ///
     /// # Errors
     ///
     /// Returns `Error::ConcurrencyConflict` if another process modified the aggregate.
     /// Returns `Error::Encryption` if encryption fails for an encrypted aggregate.
     /// Returns `Error::InvalidState` if an encrypted aggregate lacks crypto configuration.
+    /// Returns `Error::KeyNotFound` if the aggregate was crypto-shredded (its key was deleted).
     async fn commit_deleted<A>(&self, aggregate: &mut DeletedAggregateRoot<A>) -> Result<()>
     where
         A: Aggregate + serde::Serialize,
@@ -468,6 +479,7 @@ pub trait EventStore: Send + Sync {
     {
         if let Some(prepared) = prepare_commit_deleted(self, aggregate).await? {
             flush_prepared(self, prepared).await?;
+            aggregate.clear_pending_events();
         }
         Ok(())
     }
@@ -476,8 +488,13 @@ pub trait EventStore: Send + Sync {
 /// Prepares a commit without persisting it.
 ///
 /// Extracts pending events from the aggregate root, serializes and encrypts
-/// them, computes a snapshot if needed, and clears the pending events.
-/// Returns `None` if there are no pending events.
+/// them and computes a snapshot if needed. Returns `None` if there are no
+/// pending events.
+///
+/// This does **not** clear the aggregate's pending events — the caller must
+/// do that only once the prepared commit has actually been persisted, so a
+/// failed or cancelled write can be retried instead of silently losing the
+/// events.
 #[allow(clippy::too_many_lines)]
 pub(crate) async fn prepare_commit<S: EventStore + ?Sized, A>(
     store: &S,
@@ -559,8 +576,6 @@ where
 
     let claims = aggregate.entity().claims();
     let stream_id = StreamId::new(aggregate_type, aggregate_id);
-
-    aggregate.clear_pending_events();
 
     Ok(Some(PreparedCommit {
         stream_id,
@@ -656,8 +671,6 @@ where
     };
 
     let stream_id = StreamId::new(aggregate_type, aggregate_id);
-
-    aggregate.clear_pending_events();
 
     Ok(Some(PreparedCommit {
         stream_id,
@@ -1689,6 +1702,12 @@ mod tests {
         append_count: Arc<Mutex<u32>>,
         save_snapshot_count: Arc<Mutex<u32>>,
         fail_save_snapshot: bool,
+        /// Number of `append` calls left to fail with a `ConcurrencyConflict`
+        /// before it starts succeeding, for cancel/retry-safety tests.
+        fail_append_times: Arc<Mutex<u32>>,
+        /// When `true`, `append` never resolves — for cancellation-safety
+        /// tests that drop the in-flight commit future.
+        hang_append: bool,
     }
 
     impl CommitTestStore {
@@ -1700,11 +1719,23 @@ mod tests {
                 append_count: Arc::new(Mutex::new(0)),
                 save_snapshot_count: Arc::new(Mutex::new(0)),
                 fail_save_snapshot: false,
+                fail_append_times: Arc::new(Mutex::new(0)),
+                hang_append: false,
             }
         }
 
         fn with_fail_save_snapshot(mut self) -> Self {
             self.fail_save_snapshot = true;
+            self
+        }
+
+        fn with_fail_append_times(mut self, times: u32) -> Self {
+            self.fail_append_times = Arc::new(Mutex::new(times));
+            self
+        }
+
+        fn with_hang_append(mut self) -> Self {
+            self.hang_append = true;
             self
         }
 
@@ -1723,11 +1754,24 @@ mod tests {
             &self,
             stream_id: StreamId,
             events: Vec<EventEnvelope>,
-            _expected_version: AggregateVersion,
+            expected_version: AggregateVersion,
             _claims: Vec<AggregateClaim>,
             _clear_claims: bool,
         ) -> Result<()> {
             *self.append_count.lock().unwrap() += 1;
+            if self.hang_append {
+                futures::future::pending::<()>().await;
+            }
+            {
+                let mut remaining = self.fail_append_times.lock().unwrap();
+                if *remaining > 0 {
+                    *remaining -= 1;
+                    return Err(crate::Error::concurrency_conflict(
+                        expected_version,
+                        AggregateVersion::new(expected_version.as_i64() + 1),
+                    ));
+                }
+            }
             let mut streams = self.streams.lock().unwrap();
             streams.entry(stream_id).or_default().extend(events);
             Ok(())
@@ -2852,5 +2896,78 @@ mod tests {
         let loaded_deleted = loaded.into_deleted().unwrap();
         assert_eq!(loaded_deleted.state().value, -1);
         assert_eq!(loaded_deleted.version(), AggregateVersion::new(2));
+    }
+
+    #[tokio::test]
+    async fn commit_keeps_pending_events_when_append_fails() {
+        let store = CommitTestStore::new(SnapshotConfig::disabled()).with_fail_append_times(1);
+        let id = crate::EntityId::new();
+        let mut agg = AggregateRoot::<DeletableEntity>::new(id);
+        agg.apply(DeletableEvent::Created { value: 1 }).unwrap();
+
+        let result = store.commit(&mut agg).await;
+
+        assert!(result.is_err());
+        assert_eq!(
+            agg.pending_events().len(),
+            1,
+            "a failed commit must not drop the pending events"
+        );
+
+        store.commit(&mut agg).await.unwrap();
+        assert_eq!(
+            store.append_count(),
+            2,
+            "retrying must actually append again, not silently no-op"
+        );
+        assert!(agg.pending_events().is_empty());
+    }
+
+    #[tokio::test]
+    async fn commit_deleted_keeps_pending_events_when_append_fails() {
+        let store = CommitTestStore::new(SnapshotConfig::disabled()).with_fail_append_times(1);
+        let id = crate::EntityId::new();
+        let mut agg = AggregateRoot::<DeletableEntity>::new(id);
+        agg.apply(DeletableEvent::Created { value: 1 }).unwrap();
+        let mut deleted = agg
+            .apply_delete(DeletableEvent::Deleted {
+                reason: "done".to_string(),
+            })
+            .unwrap();
+
+        let result = store.commit_deleted(&mut deleted).await;
+
+        assert!(result.is_err());
+        assert_eq!(
+            deleted.pending_events().len(),
+            2,
+            "a failed commit_deleted must not drop the pending events"
+        );
+
+        store.commit_deleted(&mut deleted).await.unwrap();
+        assert!(deleted.pending_events().is_empty());
+    }
+
+    #[tokio::test]
+    async fn commit_keeps_pending_events_when_the_save_future_is_dropped() {
+        let store = CommitTestStore::new(SnapshotConfig::disabled()).with_hang_append();
+        let id = crate::EntityId::new();
+        let mut agg = AggregateRoot::<DeletableEntity>::new(id);
+        agg.apply(DeletableEvent::Created { value: 1 }).unwrap();
+
+        let timed_out =
+            tokio::time::timeout(std::time::Duration::from_millis(20), store.commit(&mut agg))
+                .await
+                .is_err();
+        assert!(
+            timed_out,
+            "append must hang until the timeout, simulating a cancelled request"
+        );
+
+        assert_eq!(
+            agg.pending_events().len(),
+            1,
+            "a dropped commit future must not drop the pending events"
+        );
     }
 }

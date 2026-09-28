@@ -261,6 +261,12 @@ impl<S: EventStore + 'static> PolicyContext<S> {
     /// the handler returns `Ok`). If the handler returns `Err`, the buffer is
     /// dropped and nothing is persisted.
     ///
+    /// The aggregate's pending events are cleared as soon as they are
+    /// buffered here, unlike [`EventStore::commit()`] which waits for the
+    /// write to actually persist: this context's aggregates are discarded by
+    /// the caller once the reaction returns (success or failure), so there is
+    /// no retry path that needs them kept.
+    ///
     /// # Errors
     ///
     /// Returns `Error::CascadeDepthExceeded` if the cascade depth exceeds the limit.
@@ -279,6 +285,7 @@ impl<S: EventStore + 'static> PolicyContext<S> {
         aggregate.set_pending_metadata(&metadata);
         if let Some(prepared) = crate::event_store::prepare_commit(&*self.store, aggregate).await? {
             self.pending_commits.lock().unwrap().push(prepared);
+            aggregate.clear_pending_events();
         }
         Ok(())
     }
@@ -286,7 +293,7 @@ impl<S: EventStore + 'static> PolicyContext<S> {
     /// Commits a deleted aggregate with automatic causation tracking.
     ///
     /// Like [`commit()`](Self::commit), buffers the prepared commit for later
-    /// flushing.
+    /// flushing and clears the aggregate's pending events immediately.
     ///
     /// # Errors
     ///
@@ -309,6 +316,7 @@ impl<S: EventStore + 'static> PolicyContext<S> {
             crate::event_store::prepare_commit_deleted(&*self.store, aggregate).await?
         {
             self.pending_commits.lock().unwrap().push(prepared);
+            aggregate.clear_pending_events();
         }
         Ok(())
     }
@@ -1073,6 +1081,26 @@ mod tests {
         let result = ctx.build_causation_metadata();
         assert!(result.is_ok());
         assert_eq!(result.unwrap().cascade_depth(), 5);
+    }
+
+    /// Buffering needs this clear to happen eagerly (unlike the direct
+    /// `commit`/`commit_deleted` paths, which only clear after the flush
+    /// actually persists): the runner discards this context's aggregates on
+    /// failure anyway, so a handler inspecting `pending_events()` after
+    /// `ctx.commit()` must see the buffered commit reflected immediately.
+    #[tokio::test]
+    async fn test_policy_context_commit_clears_pending_before_flush() {
+        let store = Arc::new(MockEventStore::new());
+        let envelope = test_envelope("TestEvent", "TestAggregate");
+        let ctx = PolicyContext::new(store, envelope, 10);
+
+        let id = crate::EntityId::new();
+        let mut agg = AggregateRoot::<SimpleTestEntity>::new(id);
+        agg.apply(SimpleTestEvent::Created { value: 42 }).unwrap();
+
+        ctx.commit(&mut agg).await.unwrap();
+
+        assert!(agg.pending_events().is_empty());
     }
 
     #[tokio::test]

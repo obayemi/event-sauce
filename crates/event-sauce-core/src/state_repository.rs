@@ -380,6 +380,169 @@ mod tests {
         assert!(err.is_concurrency_conflict());
     }
 
+    /// Wraps a [`MockStateStore`], failing `save`'s first `failures` calls
+    /// with `ConcurrencyConflict` before delegating to the inner store.
+    struct FailNTimesStateStore {
+        inner: Arc<MockStateStore>,
+        remaining_failures: std::sync::Mutex<usize>,
+    }
+
+    impl FailNTimesStateStore {
+        fn new(inner: Arc<MockStateStore>, failures: usize) -> Self {
+            Self {
+                inner,
+                remaining_failures: std::sync::Mutex::new(failures),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl StateStore for FailNTimesStateStore {
+        async fn load(&self, stream_id: StreamId) -> Result<Option<StoredState>> {
+            self.inner.load(stream_id).await
+        }
+
+        async fn save(&self, commit: StateCommit) -> Result<()> {
+            let should_fail = {
+                let mut remaining = self.remaining_failures.lock().unwrap();
+                if *remaining > 0 {
+                    *remaining -= 1;
+                    true
+                } else {
+                    false
+                }
+            };
+            if should_fail {
+                return Err(Error::concurrency_conflict(
+                    commit.expected_version,
+                    commit.expected_version,
+                ));
+            }
+            self.inner.save(commit).await
+        }
+    }
+
+    /// Wraps a [`MockStateStore`] whose `save` never resolves, so a caller
+    /// can observe what happens when its save future is polled once and
+    /// dropped (a cancelled request) instead of awaited to completion.
+    struct HangingStateStore {
+        inner: Arc<MockStateStore>,
+    }
+
+    #[async_trait]
+    impl StateStore for HangingStateStore {
+        async fn load(&self, stream_id: StreamId) -> Result<Option<StoredState>> {
+            self.inner.load(stream_id).await
+        }
+
+        async fn save(&self, _commit: StateCommit) -> Result<()> {
+            std::future::pending().await
+        }
+    }
+
+    #[tokio::test]
+    async fn test_save_retries_after_concurrency_conflict_keeps_pending_events() {
+        let inner = Arc::new(MockStateStore::new());
+        let flaky = Arc::new(FailNTimesStateStore::new(Arc::clone(&inner), 1));
+        let repo = flaky.repository::<SimpleTestEntity>();
+
+        let id = EntityId::new();
+        let mut aggregate = repo.create_with_id(id);
+        aggregate
+            .apply(SimpleTestEvent::Created { value: 1 })
+            .unwrap();
+
+        let err = repo.save(&mut aggregate).await.unwrap_err();
+        assert!(err.is_concurrency_conflict());
+        assert_eq!(
+            aggregate.pending_events().len(),
+            1,
+            "a failed save must not drop the pending events"
+        );
+
+        repo.save(&mut aggregate).await.unwrap();
+        assert!(aggregate.pending_events().is_empty());
+        assert_eq!(
+            inner.recorded_commits().len(),
+            1,
+            "the retry must record exactly one commit"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_save_deleted_retries_after_concurrency_conflict_keeps_pending_events() {
+        let inner = Arc::new(MockStateStore::new());
+        let setup_repo = inner.repository::<SimpleTestEntity>();
+        let id = EntityId::new();
+        let mut aggregate = setup_repo.create_with_id(id);
+        aggregate
+            .apply(SimpleTestEvent::Created { value: 1 })
+            .unwrap();
+        setup_repo.save(&mut aggregate).await.unwrap();
+        let mut deleted = setup_repo
+            .load(id)
+            .await
+            .unwrap()
+            .apply_delete(SimpleTestDelete)
+            .unwrap();
+        let pending_before = deleted.pending_events().len();
+        assert!(pending_before > 0);
+
+        let flaky = Arc::new(FailNTimesStateStore::new(Arc::clone(&inner), 1));
+        let repo = flaky.repository::<SimpleTestEntity>();
+
+        let err = repo.save_deleted(&mut deleted).await.unwrap_err();
+        assert!(err.is_concurrency_conflict());
+        assert_eq!(
+            deleted.pending_events().len(),
+            pending_before,
+            "a failed save_deleted must not drop the pending events"
+        );
+
+        repo.save_deleted(&mut deleted).await.unwrap();
+        assert!(deleted.pending_events().is_empty());
+    }
+
+    /// Polls a future exactly once and drops it, without needing an
+    /// executor or the (optional, `event-sourcing`-only) `futures` crate —
+    /// this test module also builds under `state-store` alone.
+    fn poll_once<F: std::future::Future>(fut: F) -> Option<F::Output> {
+        let waker = std::task::Waker::noop();
+        let mut cx = std::task::Context::from_waker(waker);
+        let mut fut = std::pin::pin!(fut);
+        match fut.as_mut().poll(&mut cx) {
+            std::task::Poll::Ready(value) => Some(value),
+            std::task::Poll::Pending => None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_save_dropped_future_keeps_pending_events() {
+        let inner = Arc::new(MockStateStore::new());
+        let hanging = Arc::new(HangingStateStore {
+            inner: Arc::clone(&inner),
+        });
+        let repo = hanging.repository::<SimpleTestEntity>();
+
+        let id = EntityId::new();
+        let mut aggregate = repo.create_with_id(id);
+        aggregate
+            .apply(SimpleTestEvent::Created { value: 1 })
+            .unwrap();
+        let pending_before = aggregate.pending_events().len();
+
+        assert!(
+            poll_once(repo.save(&mut aggregate)).is_none(),
+            "the hanging save must not resolve immediately"
+        );
+
+        assert_eq!(
+            aggregate.pending_events().len(),
+            pending_before,
+            "a dropped save future must not drop the pending events"
+        );
+    }
+
     #[tokio::test]
     async fn test_load_missing_is_not_found() {
         let (_store, repo) = repo();

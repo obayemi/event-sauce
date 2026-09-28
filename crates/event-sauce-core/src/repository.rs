@@ -469,14 +469,20 @@ where
 
     async fn save_all(&self, aggregates: &mut [&mut AggregateRoot<A>]) -> Result<()> {
         let mut prepared = Vec::with_capacity(aggregates.len());
-        for aggregate in aggregates.iter_mut() {
+        let mut dirty = Vec::with_capacity(aggregates.len());
+        for (index, aggregate) in aggregates.iter_mut().enumerate() {
             if let Some(commit) =
                 crate::event_store::prepare_commit(&*self.store, aggregate).await?
             {
                 prepared.push(commit);
+                dirty.push(index);
             }
         }
-        crate::event_store::flush_prepared_batch(&*self.store, prepared).await
+        crate::event_store::flush_prepared_batch(&*self.store, prepared).await?;
+        for index in dirty {
+            aggregates[index].clear_pending_events();
+        }
+        Ok(())
     }
 
     async fn save_deleted(&self, aggregate: &mut DeletedAggregateRoot<A>) -> Result<()> {
@@ -909,5 +915,101 @@ mod tests {
 
         repo.save_deleted(&mut deleted).await.unwrap();
         assert!(deleted.pending_events().is_empty());
+    }
+
+    /// A store whose `append` fails once every stream has been attempted
+    /// `succeed_first` times, for testing that a batch conflict does not
+    /// silently clear aggregates that were never actually persisted.
+    struct FailingBatchStore {
+        succeed_first: usize,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait]
+    impl EventStore for FailingBatchStore {
+        async fn append(
+            &self,
+            _stream_id: StreamId,
+            _events: Vec<crate::EventEnvelope>,
+            expected_version: AggregateVersion,
+            _claims: Vec<crate::AggregateClaim>,
+            _clear_claims: bool,
+        ) -> Result<()> {
+            let call = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if call >= self.succeed_first {
+                return Err(crate::Error::concurrency_conflict(
+                    expected_version,
+                    AggregateVersion::new(expected_version.as_i64() + 1),
+                ));
+            }
+            Ok(())
+        }
+
+        async fn load_stream(
+            &self,
+            _stream_id: StreamId,
+            _from_version: AggregateVersion,
+        ) -> Result<impl futures::Stream<Item = Result<crate::EventEnvelope>> + Send> {
+            Ok(futures::stream::empty())
+        }
+
+        async fn stream_all(
+            &self,
+            _from_position: crate::Position,
+        ) -> Result<impl futures::Stream<Item = Result<crate::EventLogEntry>> + Send> {
+            Ok(futures::stream::empty())
+        }
+
+        async fn get_version(&self, _stream_id: StreamId) -> Result<AggregateVersion> {
+            Ok(AggregateVersion::initial())
+        }
+    }
+
+    #[tokio::test]
+    async fn save_all_keeps_every_pending_event_when_the_batch_fails() {
+        let store = Arc::new(FailingBatchStore {
+            succeed_first: 1,
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let repo = EventSourcedRepository::<FailingBatchStore, SimpleTestEntity>::new(store);
+
+        let mut first = AggregateRoot::<SimpleTestEntity>::new(EntityId::new());
+        first.apply(SimpleTestEvent::Created { value: 1 }).unwrap();
+        let mut second = AggregateRoot::<SimpleTestEntity>::new(EntityId::new());
+        second.apply(SimpleTestEvent::Created { value: 2 }).unwrap();
+
+        let result = repo.save_all(&mut [&mut first, &mut second]).await;
+
+        assert!(result.is_err());
+        assert_eq!(
+            first.pending_events().len(),
+            1,
+            "the whole batch failed: the first aggregate's own append \
+             succeeded but the batch as a whole must not be treated as saved"
+        );
+        assert_eq!(
+            second.pending_events().len(),
+            1,
+            "a batch conflict must not clear an aggregate that was never persisted"
+        );
+    }
+
+    #[tokio::test]
+    async fn save_all_clears_pending_events_once_the_batch_succeeds() {
+        let store = Arc::new(FailingBatchStore {
+            succeed_first: usize::MAX,
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let repo = EventSourcedRepository::<FailingBatchStore, SimpleTestEntity>::new(store);
+
+        let mut first = AggregateRoot::<SimpleTestEntity>::new(EntityId::new());
+        first.apply(SimpleTestEvent::Created { value: 1 }).unwrap();
+        let mut second = AggregateRoot::<SimpleTestEntity>::new(EntityId::new());
+        second.apply(SimpleTestEvent::Created { value: 2 }).unwrap();
+
+        repo.save_all(&mut [&mut first, &mut second]).await.unwrap();
+
+        assert!(first.pending_events().is_empty());
+        assert!(second.pending_events().is_empty());
     }
 }
