@@ -1034,32 +1034,42 @@ macro_rules! __check_spec_init_actor {
 // The macro runs in two phases — *parse* (TT muncher) and *emit* (per-kind
 // trait emitter):
 //
-// 1. **Parse phase** (the `@munch` arms): each variant is matched against one
-//    of six arms by its annotation prefix and pushed into a normalised
-//    metadata blob (variant name, fields, kind, optional actor type, version,
-//    validate/post_validate/spec hooks, encrypted fields, apply closure).
-//    The arms must exist as separate match patterns because macro_rules!
-//    cannot capture optional `@init` / `@delete` / `@actor(Ty)` markers in a
-//    single arm — pattern matching is structural, not based on lookahead.
+// 1. **Parse phase**, itself split in two steps so the hook grammar is
+//    written once instead of once per kind:
 //
-//    | Annotations          | Kind tag        |
-//    |----------------------|-----------------|
-//    | `@actor(T)`          | `actor`         |
-//    | `@init @actor(T)`    | `actor_init`    |
-//    | `@delete @actor(T)`  | `actor_delete`  |
-//    | `@delete`            | `delete`        |
-//    | `@init`              | `init`          |
-//    | (none)               | `regular`       |
+//    - **Classify** (the `@munch` arms): six tiny arms match only the
+//      variant's marker tokens — structural, not lookahead, so a marker
+//      that requires a literal `@init`/`@delete`/`@actor(Ty)` token must be
+//      tried before the marker-less catch-all — and forward to `@hooks`
+//      with the kind tag and actor type resolved.
+//
+//      | Annotations          | Kind tag        |
+//      |----------------------|-----------------|
+//      | `@actor(T)`          | `actor`         |
+//      | `@init @actor(T)`    | `actor_init`    |
+//      | `@delete @actor(T)`  | `actor_delete`  |
+//      | `@delete`            | `delete`        |
+//      | `@init`              | `init`          |
+//      | (none)               | `regular`       |
+//
+//    - **Parse hooks** (the `@hooks` arms): the eight optional clauses
+//      (`@version`, `@occurred_at`, `@validate`, `@validate_spec`,
+//      `@post_validate`, `@post_validate_spec`, `@encrypted_fields`,
+//      `@aliases`) and the `=> apply` closure are parsed once, kind-agnostic,
+//      and pushed into the normalised metadata blob (variant name, fields,
+//      kind, optional actor type, version, validate/post_validate/spec
+//      hooks, encrypted fields, apply closure). Two arms exist here, not
+//      one, only because macro_rules can't default the `@occurred_at` field
+//      name to `timestamp` when the clause is absent.
 //
 // 2. **Emit phase** (`@emit_trait` arms): once all variants are parsed,
 //    each variant in the accumulator is dispatched to one of six emit arms
 //    (one per kind) which produces the appropriate trait impls
 //    (`ApplyEvent`/`InitEvent`/`DeleteEvent`/`ActorEvent`/`ActorInitEvent`/
-//    `ActorDeleteEvent`) plus the per-variant struct.
-//
-// The duplication between arms within each phase is necessary in
-// macro_rules! — converting to a proc-macro would let the kind-tag drive
-// emission via runtime data, but that's a larger change than this commit.
+//    `ActorDeleteEvent`) plus the per-variant struct. Unlike the parse
+//    phase, this duplication is inherent to macro_rules! today — converting
+//    to a proc-macro would let the kind-tag drive emission via runtime
+//    data, but that's a larger change than this commit.
 ///
 /// # `@occurred_at`, and the fact that carries two clocks
 ///
@@ -1129,7 +1139,22 @@ macro_rules! define_events {
     };
 
     // =========================================================================
-    // TT muncher: parse one ACTOR variant (regular + @actor(Type))
+    // TT muncher, phase 1 — classify the marker prefix.
+    //
+    // Six tiny arms match only the variant's marker tokens and forward to the
+    // single `@hooks` arm below with the kind tag and actor type resolved.
+    // Markers are matched most-specific-first: `(none)` is a catch-all (it
+    // matches any tail), so it must come after every arm that requires a
+    // literal `@init`/`@delete`/`@actor(..)` token, or it would shadow them.
+    //
+    // | Annotations          | Kind tag        |
+    // |----------------------|-----------------|
+    // | `@actor(T)`          | `actor`         |
+    // | `@init @actor(T)`    | `actor_init`    |
+    // | `@delete @actor(T)`  | `actor_delete`  |
+    // | `@delete`            | `delete`        |
+    // | `@init`              | `init`          |
+    // | (none)               | `regular`       |
     // =========================================================================
     (
         @munch
@@ -1141,139 +1166,19 @@ macro_rules! define_events {
                 $($(#[$field_attr:meta])* $field:ident: $field_ty:ty),* $(,)?
             }
             @actor($actor_type:ty)
-            $(@version($version:literal))?
-            @occurred_at($ts_field:ident)
-            $(@validate |$($val_args:ident),+| $val_body:block)?
-            $(@validate_spec($($val_spec:tt)*))?
-            $(@post_validate |$post_val_agg:ident, $post_val_evt:ident| $post_val_body:block)?
-            $(@post_validate_spec($($post_val_spec:tt)*))?
-            $(@encrypted_fields($($enc_field:ident),+ $(,)?))?
-            $(@aliases($($alias:literal),+ $(,)?))?
-            => $apply:expr,
-            $($rest:tt)*
+            $($tail:tt)*
         ]
     ) => {
         $crate::define_events! {
-            @munch
+            @hooks
             [$vis] [$event_enum] [$aggregate]
             upcast: [$($upcast)*]
-            accumulated: [
-                $($acc)*
-                {
-                    variant: $variant,
-                    fields: { $($(#[$field_attr])* $field: $field_ty),* },
-                    kind: actor,
-                    clock: [$ts_field],
-                    actor_type: [$actor_type],
-                    version: [$([$version])?],
-                    validate: [$([|$($val_args),+| $val_body])?],
-                    validate_spec: [$([$($val_spec)*])?],
-                    post_validate: [$([$post_val_agg, $post_val_evt, $post_val_body])?],
-                    post_validate_spec: [$([$($post_val_spec)*])?],
-                    encrypted_fields: [$([$($enc_field),+])?],
-                    aliases: [$([$($alias),+])?],
-                    apply: $apply,
-                }
-            ]
-            rest: [$($rest)*]
-        }
-    };
-    (
-        @munch
-        [$vis:vis] [$event_enum:ident] [$aggregate:ty]
-        upcast: [$($upcast:tt)*]
-        accumulated: [$($acc:tt)*]
-        rest: [
-            $variant:ident {
-                $($(#[$field_attr:meta])* $field:ident: $field_ty:ty),* $(,)?
-            }
-            @actor($actor_type:ty)
-            $(@version($version:literal))?
-            $(@validate |$($val_args:ident),+| $val_body:block)?
-            $(@validate_spec($($val_spec:tt)*))?
-            $(@post_validate |$post_val_agg:ident, $post_val_evt:ident| $post_val_body:block)?
-            $(@post_validate_spec($($post_val_spec:tt)*))?
-            $(@encrypted_fields($($enc_field:ident),+ $(,)?))?
-            $(@aliases($($alias:literal),+ $(,)?))?
-            => $apply:expr,
-            $($rest:tt)*
-        ]
-    ) => {
-        $crate::define_events! {
-            @munch
-            [$vis] [$event_enum] [$aggregate]
-            upcast: [$($upcast)*]
-            accumulated: [
-                $($acc)*
-                {
-                    variant: $variant,
-                    fields: { $($(#[$field_attr])* $field: $field_ty),* },
-                    kind: actor,
-                    clock: [timestamp],
-                    actor_type: [$actor_type],
-                    version: [$([$version])?],
-                    validate: [$([|$($val_args),+| $val_body])?],
-                    validate_spec: [$([$($val_spec)*])?],
-                    post_validate: [$([$post_val_agg, $post_val_evt, $post_val_body])?],
-                    post_validate_spec: [$([$($post_val_spec)*])?],
-                    encrypted_fields: [$([$($enc_field),+])?],
-                    aliases: [$([$($alias),+])?],
-                    apply: $apply,
-                }
-            ]
-            rest: [$($rest)*]
-        }
-    };
-
-    // =========================================================================
-    // TT muncher: parse one ACTOR INIT variant (@init @actor(Type))
-    // =========================================================================
-    (
-        @munch
-        [$vis:vis] [$event_enum:ident] [$aggregate:ty]
-        upcast: [$($upcast:tt)*]
-        accumulated: [$($acc:tt)*]
-        rest: [
-            $variant:ident {
-                $($(#[$field_attr:meta])* $field:ident: $field_ty:ty),* $(,)?
-            }
-            @init
-            @actor($actor_type:ty)
-            $(@version($version:literal))?
-            @occurred_at($ts_field:ident)
-            $(@validate |$($val_args:ident),+| $val_body:block)?
-            $(@validate_spec($($val_spec:tt)*))?
-            $(@post_validate |$post_val_agg:ident, $post_val_evt:ident| $post_val_body:block)?
-            $(@post_validate_spec($($post_val_spec:tt)*))?
-            $(@encrypted_fields($($enc_field:ident),+ $(,)?))?
-            $(@aliases($($alias:literal),+ $(,)?))?
-            => $apply:expr,
-            $($rest:tt)*
-        ]
-    ) => {
-        $crate::define_events! {
-            @munch
-            [$vis] [$event_enum] [$aggregate]
-            upcast: [$($upcast)*]
-            accumulated: [
-                $($acc)*
-                {
-                    variant: $variant,
-                    fields: { $($(#[$field_attr])* $field: $field_ty),* },
-                    kind: actor_init,
-                    clock: [$ts_field],
-                    actor_type: [$actor_type],
-                    version: [$([$version])?],
-                    validate: [$([|$($val_args),+| $val_body])?],
-                    validate_spec: [$([$($val_spec)*])?],
-                    post_validate: [$([$post_val_agg, $post_val_evt, $post_val_body])?],
-                    post_validate_spec: [$([$($post_val_spec)*])?],
-                    encrypted_fields: [$([$($enc_field),+])?],
-                    aliases: [$([$($alias),+])?],
-                    apply: $apply,
-                }
-            ]
-            rest: [$($rest)*]
+            accumulated: [$($acc)*]
+            kind: [actor]
+            actor_type: [$actor_type]
+            variant: $variant
+            fields: { $($(#[$field_attr])* $field: $field_ty),* }
+            rest: [$($tail)*]
         }
     };
     (
@@ -1287,92 +1192,19 @@ macro_rules! define_events {
             }
             @init
             @actor($actor_type:ty)
-            $(@version($version:literal))?
-            $(@validate |$($val_args:ident),+| $val_body:block)?
-            $(@validate_spec($($val_spec:tt)*))?
-            $(@post_validate |$post_val_agg:ident, $post_val_evt:ident| $post_val_body:block)?
-            $(@post_validate_spec($($post_val_spec:tt)*))?
-            $(@encrypted_fields($($enc_field:ident),+ $(,)?))?
-            $(@aliases($($alias:literal),+ $(,)?))?
-            => $apply:expr,
-            $($rest:tt)*
+            $($tail:tt)*
         ]
     ) => {
         $crate::define_events! {
-            @munch
+            @hooks
             [$vis] [$event_enum] [$aggregate]
             upcast: [$($upcast)*]
-            accumulated: [
-                $($acc)*
-                {
-                    variant: $variant,
-                    fields: { $($(#[$field_attr])* $field: $field_ty),* },
-                    kind: actor_init,
-                    clock: [timestamp],
-                    actor_type: [$actor_type],
-                    version: [$([$version])?],
-                    validate: [$([|$($val_args),+| $val_body])?],
-                    validate_spec: [$([$($val_spec)*])?],
-                    post_validate: [$([$post_val_agg, $post_val_evt, $post_val_body])?],
-                    post_validate_spec: [$([$($post_val_spec)*])?],
-                    encrypted_fields: [$([$($enc_field),+])?],
-                    aliases: [$([$($alias),+])?],
-                    apply: $apply,
-                }
-            ]
-            rest: [$($rest)*]
-        }
-    };
-
-    // =========================================================================
-    // TT muncher: parse one DELETE ACTOR variant (@delete @actor(Type))
-    // =========================================================================
-    (
-        @munch
-        [$vis:vis] [$event_enum:ident] [$aggregate:ty]
-        upcast: [$($upcast:tt)*]
-        accumulated: [$($acc:tt)*]
-        rest: [
-            $variant:ident {
-                $($(#[$field_attr:meta])* $field:ident: $field_ty:ty),* $(,)?
-            }
-            @delete
-            @actor($actor_type:ty)
-            $(@version($version:literal))?
-            @occurred_at($ts_field:ident)
-            $(@validate |$($val_args:ident),+| $val_body:block)?
-            $(@validate_spec($($val_spec:tt)*))?
-            $(@post_validate |$post_val_agg:ident, $post_val_evt:ident| $post_val_body:block)?
-            $(@post_validate_spec($($post_val_spec:tt)*))?
-            $(@encrypted_fields($($enc_field:ident),+ $(,)?))?
-            $(@aliases($($alias:literal),+ $(,)?))?
-            => $apply:expr,
-            $($rest:tt)*
-        ]
-    ) => {
-        $crate::define_events! {
-            @munch
-            [$vis] [$event_enum] [$aggregate]
-            upcast: [$($upcast)*]
-            accumulated: [
-                $($acc)*
-                {
-                    variant: $variant,
-                    fields: { $($(#[$field_attr])* $field: $field_ty),* },
-                    kind: actor_delete,
-                    clock: [$ts_field],
-                    actor_type: [$actor_type],
-                    version: [$([$version])?],
-                    validate: [$([|$($val_args),+| $val_body])?],
-                    validate_spec: [$([$($val_spec)*])?],
-                    post_validate: [$([$post_val_agg, $post_val_evt, $post_val_body])?],
-                    post_validate_spec: [$([$($post_val_spec)*])?],
-                    encrypted_fields: [$([$($enc_field),+])?],
-                    aliases: [$([$($alias),+])?],
-                    apply: $apply,
-                }
-            ]
-            rest: [$($rest)*]
+            accumulated: [$($acc)*]
+            kind: [actor_init]
+            actor_type: [$actor_type]
+            variant: $variant
+            fields: { $($(#[$field_attr])* $field: $field_ty),* }
+            rest: [$($tail)*]
         }
     };
     (
@@ -1386,91 +1218,19 @@ macro_rules! define_events {
             }
             @delete
             @actor($actor_type:ty)
-            $(@version($version:literal))?
-            $(@validate |$($val_args:ident),+| $val_body:block)?
-            $(@validate_spec($($val_spec:tt)*))?
-            $(@post_validate |$post_val_agg:ident, $post_val_evt:ident| $post_val_body:block)?
-            $(@post_validate_spec($($post_val_spec:tt)*))?
-            $(@encrypted_fields($($enc_field:ident),+ $(,)?))?
-            $(@aliases($($alias:literal),+ $(,)?))?
-            => $apply:expr,
-            $($rest:tt)*
+            $($tail:tt)*
         ]
     ) => {
         $crate::define_events! {
-            @munch
+            @hooks
             [$vis] [$event_enum] [$aggregate]
             upcast: [$($upcast)*]
-            accumulated: [
-                $($acc)*
-                {
-                    variant: $variant,
-                    fields: { $($(#[$field_attr])* $field: $field_ty),* },
-                    kind: actor_delete,
-                    clock: [timestamp],
-                    actor_type: [$actor_type],
-                    version: [$([$version])?],
-                    validate: [$([|$($val_args),+| $val_body])?],
-                    validate_spec: [$([$($val_spec)*])?],
-                    post_validate: [$([$post_val_agg, $post_val_evt, $post_val_body])?],
-                    post_validate_spec: [$([$($post_val_spec)*])?],
-                    encrypted_fields: [$([$($enc_field),+])?],
-                    aliases: [$([$($alias),+])?],
-                    apply: $apply,
-                }
-            ]
-            rest: [$($rest)*]
-        }
-    };
-
-    // =========================================================================
-    // TT muncher: parse one DELETE variant (@delete, no @actor)
-    // =========================================================================
-    (
-        @munch
-        [$vis:vis] [$event_enum:ident] [$aggregate:ty]
-        upcast: [$($upcast:tt)*]
-        accumulated: [$($acc:tt)*]
-        rest: [
-            $variant:ident {
-                $($(#[$field_attr:meta])* $field:ident: $field_ty:ty),* $(,)?
-            }
-            @delete
-            $(@version($version:literal))?
-            @occurred_at($ts_field:ident)
-            $(@validate |$($val_args:ident),+| $val_body:block)?
-            $(@validate_spec($($val_spec:tt)*))?
-            $(@post_validate |$post_val_agg:ident, $post_val_evt:ident| $post_val_body:block)?
-            $(@post_validate_spec($($post_val_spec:tt)*))?
-            $(@encrypted_fields($($enc_field:ident),+ $(,)?))?
-            $(@aliases($($alias:literal),+ $(,)?))?
-            => $apply:expr,
-            $($rest:tt)*
-        ]
-    ) => {
-        $crate::define_events! {
-            @munch
-            [$vis] [$event_enum] [$aggregate]
-            upcast: [$($upcast)*]
-            accumulated: [
-                $($acc)*
-                {
-                    variant: $variant,
-                    fields: { $($(#[$field_attr])* $field: $field_ty),* },
-                    kind: delete,
-                    clock: [$ts_field],
-                    actor_type: [],
-                    version: [$([$version])?],
-                    validate: [$([|$($val_args),+| $val_body])?],
-                    validate_spec: [$([$($val_spec)*])?],
-                    post_validate: [$([$post_val_agg, $post_val_evt, $post_val_body])?],
-                    post_validate_spec: [$([$($post_val_spec)*])?],
-                    encrypted_fields: [$([$($enc_field),+])?],
-                    aliases: [$([$($alias),+])?],
-                    apply: $apply,
-                }
-            ]
-            rest: [$($rest)*]
+            accumulated: [$($acc)*]
+            kind: [actor_delete]
+            actor_type: [$actor_type]
+            variant: $variant
+            fields: { $($(#[$field_attr])* $field: $field_ty),* }
+            rest: [$($tail)*]
         }
     };
     (
@@ -1483,186 +1243,19 @@ macro_rules! define_events {
                 $($(#[$field_attr:meta])* $field:ident: $field_ty:ty),* $(,)?
             }
             @delete
-            $(@version($version:literal))?
-            $(@validate |$($val_args:ident),+| $val_body:block)?
-            $(@validate_spec($($val_spec:tt)*))?
-            $(@post_validate |$post_val_agg:ident, $post_val_evt:ident| $post_val_body:block)?
-            $(@post_validate_spec($($post_val_spec:tt)*))?
-            $(@encrypted_fields($($enc_field:ident),+ $(,)?))?
-            $(@aliases($($alias:literal),+ $(,)?))?
-            => $apply:expr,
-            $($rest:tt)*
+            $($tail:tt)*
         ]
     ) => {
         $crate::define_events! {
-            @munch
+            @hooks
             [$vis] [$event_enum] [$aggregate]
             upcast: [$($upcast)*]
-            accumulated: [
-                $($acc)*
-                {
-                    variant: $variant,
-                    fields: { $($(#[$field_attr])* $field: $field_ty),* },
-                    kind: delete,
-                    clock: [timestamp],
-                    actor_type: [],
-                    version: [$([$version])?],
-                    validate: [$([|$($val_args),+| $val_body])?],
-                    validate_spec: [$([$($val_spec)*])?],
-                    post_validate: [$([$post_val_agg, $post_val_evt, $post_val_body])?],
-                    post_validate_spec: [$([$($post_val_spec)*])?],
-                    encrypted_fields: [$([$($enc_field),+])?],
-                    aliases: [$([$($alias),+])?],
-                    apply: $apply,
-                }
-            ]
-            rest: [$($rest)*]
-        }
-    };
-
-    // =========================================================================
-    // TT muncher: parse one REGULAR variant (no @init after fields)
-    // =========================================================================
-    (
-        @munch
-        [$vis:vis] [$event_enum:ident] [$aggregate:ty]
-        upcast: [$($upcast:tt)*]
-        accumulated: [$($acc:tt)*]
-        rest: [
-            $variant:ident {
-                $($(#[$field_attr:meta])* $field:ident: $field_ty:ty),* $(,)?
-            }
-            $(@version($version:literal))?
-            @occurred_at($ts_field:ident)
-            $(@validate |$($val_args:ident),+| $val_body:block)?
-            $(@validate_spec($($val_spec:tt)*))?
-            $(@post_validate |$post_val_agg:ident, $post_val_evt:ident| $post_val_body:block)?
-            $(@post_validate_spec($($post_val_spec:tt)*))?
-            $(@encrypted_fields($($enc_field:ident),+ $(,)?))?
-            $(@aliases($($alias:literal),+ $(,)?))?
-            => $apply:expr,
-            $($rest:tt)*
-        ]
-    ) => {
-        $crate::define_events! {
-            @munch
-            [$vis] [$event_enum] [$aggregate]
-            upcast: [$($upcast)*]
-            accumulated: [
-                $($acc)*
-                {
-                    variant: $variant,
-                    fields: { $($(#[$field_attr])* $field: $field_ty),* },
-                    kind: regular,
-                    clock: [$ts_field],
-                    actor_type: [],
-                    version: [$([$version])?],
-                    validate: [$([|$($val_args),+| $val_body])?],
-                    validate_spec: [$([$($val_spec)*])?],
-                    post_validate: [$([$post_val_agg, $post_val_evt, $post_val_body])?],
-                    post_validate_spec: [$([$($post_val_spec)*])?],
-                    encrypted_fields: [$([$($enc_field),+])?],
-                    aliases: [$([$($alias),+])?],
-                    apply: $apply,
-                }
-            ]
-            rest: [$($rest)*]
-        }
-    };
-    (
-        @munch
-        [$vis:vis] [$event_enum:ident] [$aggregate:ty]
-        upcast: [$($upcast:tt)*]
-        accumulated: [$($acc:tt)*]
-        rest: [
-            $variant:ident {
-                $($(#[$field_attr:meta])* $field:ident: $field_ty:ty),* $(,)?
-            }
-            $(@version($version:literal))?
-            $(@validate |$($val_args:ident),+| $val_body:block)?
-            $(@validate_spec($($val_spec:tt)*))?
-            $(@post_validate |$post_val_agg:ident, $post_val_evt:ident| $post_val_body:block)?
-            $(@post_validate_spec($($post_val_spec:tt)*))?
-            $(@encrypted_fields($($enc_field:ident),+ $(,)?))?
-            $(@aliases($($alias:literal),+ $(,)?))?
-            => $apply:expr,
-            $($rest:tt)*
-        ]
-    ) => {
-        $crate::define_events! {
-            @munch
-            [$vis] [$event_enum] [$aggregate]
-            upcast: [$($upcast)*]
-            accumulated: [
-                $($acc)*
-                {
-                    variant: $variant,
-                    fields: { $($(#[$field_attr])* $field: $field_ty),* },
-                    kind: regular,
-                    clock: [timestamp],
-                    actor_type: [],
-                    version: [$([$version])?],
-                    validate: [$([|$($val_args),+| $val_body])?],
-                    validate_spec: [$([$($val_spec)*])?],
-                    post_validate: [$([$post_val_agg, $post_val_evt, $post_val_body])?],
-                    post_validate_spec: [$([$($post_val_spec)*])?],
-                    encrypted_fields: [$([$($enc_field),+])?],
-                    aliases: [$([$($alias),+])?],
-                    apply: $apply,
-                }
-            ]
-            rest: [$($rest)*]
-        }
-    };
-
-    // =========================================================================
-    // TT muncher: parse one INIT variant (@init after fields)
-    // =========================================================================
-    (
-        @munch
-        [$vis:vis] [$event_enum:ident] [$aggregate:ty]
-        upcast: [$($upcast:tt)*]
-        accumulated: [$($acc:tt)*]
-        rest: [
-            $variant:ident {
-                $($(#[$field_attr:meta])* $field:ident: $field_ty:ty),* $(,)?
-            }
-            @init
-            $(@version($version:literal))?
-            @occurred_at($ts_field:ident)
-            $(@validate |$($val_args:ident),+| $val_body:block)?
-            $(@validate_spec($($val_spec:tt)*))?
-            $(@post_validate |$post_val_agg:ident, $post_val_evt:ident| $post_val_body:block)?
-            $(@post_validate_spec($($post_val_spec:tt)*))?
-            $(@encrypted_fields($($enc_field:ident),+ $(,)?))?
-            $(@aliases($($alias:literal),+ $(,)?))?
-            => $apply:expr,
-            $($rest:tt)*
-        ]
-    ) => {
-        $crate::define_events! {
-            @munch
-            [$vis] [$event_enum] [$aggregate]
-            upcast: [$($upcast)*]
-            accumulated: [
-                $($acc)*
-                {
-                    variant: $variant,
-                    fields: { $($(#[$field_attr])* $field: $field_ty),* },
-                    kind: init,
-                    clock: [$ts_field],
-                    actor_type: [],
-                    version: [$([$version])?],
-                    validate: [$([|$($val_args),+| $val_body])?],
-                    validate_spec: [$([$($val_spec)*])?],
-                    post_validate: [$([$post_val_agg, $post_val_evt, $post_val_body])?],
-                    post_validate_spec: [$([$($post_val_spec)*])?],
-                    encrypted_fields: [$([$($enc_field),+])?],
-                    aliases: [$([$($alias),+])?],
-                    apply: $apply,
-                }
-            ]
-            rest: [$($rest)*]
+            accumulated: [$($acc)*]
+            kind: [delete]
+            actor_type: []
+            variant: $variant
+            fields: { $($(#[$field_attr])* $field: $field_ty),* }
+            rest: [$($tail)*]
         }
     };
     (
@@ -1675,7 +1268,71 @@ macro_rules! define_events {
                 $($(#[$field_attr:meta])* $field:ident: $field_ty:ty),* $(,)?
             }
             @init
+            $($tail:tt)*
+        ]
+    ) => {
+        $crate::define_events! {
+            @hooks
+            [$vis] [$event_enum] [$aggregate]
+            upcast: [$($upcast)*]
+            accumulated: [$($acc)*]
+            kind: [init]
+            actor_type: []
+            variant: $variant
+            fields: { $($(#[$field_attr])* $field: $field_ty),* }
+            rest: [$($tail)*]
+        }
+    };
+    (
+        @munch
+        [$vis:vis] [$event_enum:ident] [$aggregate:ty]
+        upcast: [$($upcast:tt)*]
+        accumulated: [$($acc:tt)*]
+        rest: [
+            $variant:ident {
+                $($(#[$field_attr:meta])* $field:ident: $field_ty:ty),* $(,)?
+            }
+            $($tail:tt)*
+        ]
+    ) => {
+        $crate::define_events! {
+            @hooks
+            [$vis] [$event_enum] [$aggregate]
+            upcast: [$($upcast)*]
+            accumulated: [$($acc)*]
+            kind: [regular]
+            actor_type: []
+            variant: $variant
+            fields: { $($(#[$field_attr])* $field: $field_ty),* }
+            rest: [$($tail)*]
+        }
+    };
+
+    // =========================================================================
+    // TT muncher, phase 2 — the hook grammar, once, for every kind.
+    //
+    // Parses the eight optional clauses shared by every kind (`@version`,
+    // `@occurred_at`, `@validate`, `@validate_spec`, `@post_validate`,
+    // `@post_validate_spec`, `@encrypted_fields`, `@aliases`) plus the
+    // mandatory `=> apply` closure, and pushes the normalised metadata blob.
+    // Two arms, not one: macro_rules can't default a captured `@occurred_at`
+    // field name to `timestamp` within a single arm, since there is no
+    // conditional substitution between independently-optional fragments — so
+    // the arm that requires `@occurred_at` is tried first, and the arm
+    // without it (defaulting the clock field to `timestamp`) second.
+    // =========================================================================
+    (
+        @hooks
+        [$vis:vis] [$event_enum:ident] [$aggregate:ty]
+        upcast: [$($upcast:tt)*]
+        accumulated: [$($acc:tt)*]
+        kind: [$kind:ident]
+        actor_type: [$($actor_type:ty)?]
+        variant: $variant:ident
+        fields: { $($(#[$field_attr:meta])* $field:ident: $field_ty:ty),* }
+        rest: [
             $(@version($version:literal))?
+            @occurred_at($ts_field:ident)
             $(@validate |$($val_args:ident),+| $val_body:block)?
             $(@validate_spec($($val_spec:tt)*))?
             $(@post_validate |$post_val_agg:ident, $post_val_evt:ident| $post_val_body:block)?
@@ -1683,7 +1340,7 @@ macro_rules! define_events {
             $(@encrypted_fields($($enc_field:ident),+ $(,)?))?
             $(@aliases($($alias:literal),+ $(,)?))?
             => $apply:expr,
-            $($rest:tt)*
+            $($tail:tt)*
         ]
     ) => {
         $crate::define_events! {
@@ -1695,9 +1352,9 @@ macro_rules! define_events {
                 {
                     variant: $variant,
                     fields: { $($(#[$field_attr])* $field: $field_ty),* },
-                    kind: init,
-                    clock: [timestamp],
-                    actor_type: [],
+                    kind: $kind,
+                    clock: [$ts_field],
+                    actor_type: [$($actor_type)?],
                     version: [$([$version])?],
                     validate: [$([|$($val_args),+| $val_body])?],
                     validate_spec: [$([$($val_spec)*])?],
@@ -1708,7 +1365,53 @@ macro_rules! define_events {
                     apply: $apply,
                 }
             ]
-            rest: [$($rest)*]
+            rest: [$($tail)*]
+        }
+    };
+    (
+        @hooks
+        [$vis:vis] [$event_enum:ident] [$aggregate:ty]
+        upcast: [$($upcast:tt)*]
+        accumulated: [$($acc:tt)*]
+        kind: [$kind:ident]
+        actor_type: [$($actor_type:ty)?]
+        variant: $variant:ident
+        fields: { $($(#[$field_attr:meta])* $field:ident: $field_ty:ty),* }
+        rest: [
+            $(@version($version:literal))?
+            $(@validate |$($val_args:ident),+| $val_body:block)?
+            $(@validate_spec($($val_spec:tt)*))?
+            $(@post_validate |$post_val_agg:ident, $post_val_evt:ident| $post_val_body:block)?
+            $(@post_validate_spec($($post_val_spec:tt)*))?
+            $(@encrypted_fields($($enc_field:ident),+ $(,)?))?
+            $(@aliases($($alias:literal),+ $(,)?))?
+            => $apply:expr,
+            $($tail:tt)*
+        ]
+    ) => {
+        $crate::define_events! {
+            @munch
+            [$vis] [$event_enum] [$aggregate]
+            upcast: [$($upcast)*]
+            accumulated: [
+                $($acc)*
+                {
+                    variant: $variant,
+                    fields: { $($(#[$field_attr])* $field: $field_ty),* },
+                    kind: $kind,
+                    clock: [timestamp],
+                    actor_type: [$($actor_type)?],
+                    version: [$([$version])?],
+                    validate: [$([|$($val_args),+| $val_body])?],
+                    validate_spec: [$([$($val_spec)*])?],
+                    post_validate: [$([$post_val_agg, $post_val_evt, $post_val_body])?],
+                    post_validate_spec: [$([$($post_val_spec)*])?],
+                    encrypted_fields: [$([$($enc_field),+])?],
+                    aliases: [$([$($alias),+])?],
+                    apply: $apply,
+                }
+            ]
+            rest: [$($tail)*]
         }
     };
 

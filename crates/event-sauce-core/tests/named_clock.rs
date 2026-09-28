@@ -179,6 +179,159 @@ command_handler! {
     }
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct Operator {
+    id: EntityId,
+}
+
+impl Entity for Operator {
+    fn new(id: EntityId) -> Self {
+        Self { id }
+    }
+
+    fn entity_id(&self) -> EntityId {
+        self.id
+    }
+}
+
+impl event_sauce_core::DefaultEntity for Operator {}
+
+#[derive(Debug, thiserror::Error)]
+#[error("operator error")]
+struct OperatorError;
+
+impl AggregateError for OperatorError {}
+
+define_events! {
+    enum OperatorEvent for Operator {
+        Registered {} => |_, _| {},
+    }
+}
+
+impl Aggregate for Operator {
+    type Event = OperatorEvent;
+    type Error = OperatorError;
+    type DeletedState = Self;
+}
+
+/// Carries one `@occurred_at` variant per event kind (init, actor init,
+/// actor, delete, actor delete).
+#[derive(Debug, Serialize, Deserialize)]
+struct Machine {
+    id: EntityId,
+    value: i32,
+}
+
+impl Entity for Machine {
+    fn entity_id(&self) -> EntityId {
+        self.id
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("machine error")]
+struct MachineError;
+
+impl AggregateError for MachineError {}
+
+define_events! {
+    enum MachineEvent for Machine {
+        Installed {
+            model: String,
+        }
+        @init
+        @occurred_at(installed_at)
+        => |id, _event| {
+            Machine { id, value: 0 }
+        },
+
+        Commissioned {
+            model: String,
+        }
+        @init
+        @actor(Operator)
+        @occurred_at(commissioned_at)
+        => |id, _event| {
+            Machine { id, value: 0 }
+        },
+
+        Calibrated {
+            delta: i32,
+        }
+        @actor(Operator)
+        @occurred_at(calibrated_at)
+        => |machine, event| {
+            machine.value += event.delta;
+        },
+
+        Decommissioned {
+            reason: String,
+        }
+        @delete
+        @occurred_at(decommissioned_at)
+        => |machine, _event| { machine },
+
+        Scrapped {
+            reason: String,
+        }
+        @delete
+        @actor(Operator)
+        @occurred_at(scrapped_at)
+        => |machine, _event| { machine },
+    }
+}
+
+impl Aggregate for Machine {
+    type Event = MachineEvent;
+    type Error = MachineError;
+    type DeletedState = Self;
+}
+
+#[test]
+fn occurred_at_names_the_instant_on_an_init_event() {
+    let event = InstalledEvent {
+        model: "X1".to_string(),
+        installed_at: at(10),
+    };
+    assert_eq!(MachineEvent::from(event).occurred_at(), at(10));
+}
+
+#[test]
+fn occurred_at_names_the_instant_on_an_actor_init_event() {
+    let event = CommissionedEvent {
+        model: "X1".to_string(),
+        commissioned_at: at(20),
+    };
+    assert_eq!(MachineEvent::from(event).occurred_at(), at(20));
+}
+
+#[test]
+fn occurred_at_names_the_instant_on_an_actor_event() {
+    let event = CalibratedEvent {
+        delta: 3,
+        calibrated_at: at(30),
+    };
+    assert_eq!(MachineEvent::from(event).occurred_at(), at(30));
+}
+
+#[test]
+fn occurred_at_names_the_instant_on_a_delete_event() {
+    let event = DecommissionedEvent {
+        reason: "eol".to_string(),
+        decommissioned_at: at(40),
+    };
+    assert_eq!(MachineEvent::from(event).occurred_at(), at(40));
+}
+
+#[test]
+fn occurred_at_names_the_instant_on_an_actor_delete_event() {
+    let event = ScrappedEvent {
+        reason: "damaged".to_string(),
+        scrapped_at: at(50),
+    };
+    assert_eq!(MachineEvent::from(event).occurred_at(), at(50));
+}
+
 #[test]
 fn a_no_clock_command_builds_the_event_from_its_arguments() {
     let sensor = Sensor::new(EntityId::new());
