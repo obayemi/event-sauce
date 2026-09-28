@@ -1,0 +1,5 @@
+error[E0432]: unresolved import `event_sauce::test_fixtures`
+ --> tests/ui/test_fixtures_private.rs:1:18
+  |
+1 | use event_sauce::test_fixtures::MockEventStore;
+  |                  ^^^^^^^^^^^^^ could not find `test_fixtures` in `event_sauce`

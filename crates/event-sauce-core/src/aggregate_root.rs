@@ -160,9 +160,54 @@ impl<A: Aggregate + DefaultEntity> AggregateRoot<A> {
     /// # Examples
     ///
     /// ```
-    /// # use event_sauce_core::{AggregateRoot, EntityId};
-    /// # use event_sauce_core::test_fixtures::TestCounter;
-    /// let counter = AggregateRoot::<TestCounter>::new(EntityId::new());
+    /// # use event_sauce_core::{
+    /// #     Aggregate, AggregateError, AggregateRoot, DefaultEntity, DomainEvent, Entity,
+    /// #     EntityId, EventApplicator, EventVersion,
+    /// # };
+    /// # use serde::{Deserialize, Serialize};
+    /// #
+    /// # #[derive(Debug, Serialize, Deserialize)]
+    /// # struct Counter {
+    /// #     id: EntityId,
+    /// #     value: i32,
+    /// # }
+    /// # impl Entity for Counter {
+    /// #     fn new(id: EntityId) -> Self { Self { id, value: 0 } }
+    /// #     fn entity_id(&self) -> EntityId { self.id }
+    /// # }
+    /// # impl DefaultEntity for Counter {}
+    /// #
+    /// # #[derive(Debug, Clone, Serialize, Deserialize)]
+    /// # enum CounterEvent {
+    /// #     Incremented { amount: i32 },
+    /// # }
+    /// # impl DomainEvent for CounterEvent {
+    /// #     type Aggregate = Counter;
+    /// #     fn event_type(&self) -> &'static str { "Incremented" }
+    /// #     fn event_version(&self) -> EventVersion { EventVersion::new(1) }
+    /// #     fn occurred_at(&self) -> chrono::DateTime<chrono::Utc> { chrono::Utc::now() }
+    /// # }
+    /// # impl EventApplicator<Counter> for CounterEvent {
+    /// #     fn dispatch(&self, c: &mut Counter) -> Result<(), CounterError> {
+    /// #         match self { CounterEvent::Incremented { amount } => c.value += amount }
+    /// #         Ok(())
+    /// #     }
+    /// #     fn dispatch_unchecked(&self, c: &mut Counter) {
+    /// #         match self { CounterEvent::Incremented { amount } => c.value += amount }
+    /// #     }
+    /// # }
+    /// #
+    /// # #[derive(Debug, thiserror::Error)]
+    /// # #[error("counter error")]
+    /// # struct CounterError;
+    /// # impl AggregateError for CounterError {}
+    /// #
+    /// # impl Aggregate for Counter {
+    /// #     type Event = CounterEvent;
+    /// #     type Error = CounterError;
+    /// #     type DeletedState = Self;
+    /// # }
+    /// let counter = AggregateRoot::<Counter>::new(EntityId::new());
     /// ```
     #[must_use]
     pub fn new(id: EntityId) -> Self {

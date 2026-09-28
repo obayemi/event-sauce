@@ -90,8 +90,8 @@ mod types;
 mod uninit_aggregate_root;
 mod version;
 
-#[doc(hidden)]
-pub mod test_fixtures;
+#[cfg(test)]
+mod test_fixtures;
 
 pub use actor_event::{ActorDeleteEvent, ActorEvent, ActorInitEvent};
 pub use aggregate::Aggregate;
