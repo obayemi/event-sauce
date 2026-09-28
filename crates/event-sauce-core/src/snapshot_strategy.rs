@@ -26,12 +26,14 @@
 //! assert!(!never.should_snapshot(AggregateVersion::new(100)));
 //!
 //! // Strategy that snapshots every 100 events
-//! let every_100 = EveryNEvents(100);
+//! let every_100 = EveryNEvents::try_new(100).unwrap();
 //! assert!(!every_100.should_snapshot(AggregateVersion::new(99)));
 //! assert!(every_100.should_snapshot(AggregateVersion::new(100)));
 //! assert!(!every_100.should_snapshot(AggregateVersion::new(101)));
 //! assert!(every_100.should_snapshot(AggregateVersion::new(200)));
 //! ```
+
+use std::num::NonZeroU32;
 
 use crate::AggregateVersion;
 
@@ -55,7 +57,7 @@ pub trait SnapshotStrategy: Send + Sync {
     /// ```
     /// use event_sauce_core::{SnapshotStrategy, EveryNEvents, AggregateVersion};
     ///
-    /// let strategy = EveryNEvents(50);
+    /// let strategy = EveryNEvents::try_new(50).unwrap();
     /// assert!(!strategy.should_snapshot(AggregateVersion::new(49)));
     /// assert!(strategy.should_snapshot(AggregateVersion::new(50)));
     /// assert!(strategy.should_snapshot(AggregateVersion::new(100)));
@@ -92,7 +94,7 @@ pub trait SnapshotStrategy: Send + Sync {
     /// ```
     /// use event_sauce_core::{SnapshotStrategy, EveryNEvents, AggregateVersion};
     ///
-    /// let strategy = EveryNEvents(5);
+    /// let strategy = EveryNEvents::try_new(5).unwrap();
     /// // A single commit from version 1 to 6 crosses the boundary at 5.
     /// assert!(strategy.should_snapshot_range(
     ///     AggregateVersion::new(1),
@@ -198,7 +200,7 @@ impl SnapshotStrategy for NeverSnapshot {
 /// ```
 /// use event_sauce_core::{SnapshotStrategy, EveryNEvents, AggregateVersion};
 ///
-/// let strategy = EveryNEvents(100);
+/// let strategy = EveryNEvents::try_new(100).unwrap();
 ///
 /// // No snapshot at versions before the interval
 /// assert!(!strategy.should_snapshot(AggregateVersion::new(1)));
@@ -215,35 +217,50 @@ impl SnapshotStrategy for NeverSnapshot {
 /// assert!(!strategy.should_snapshot(AggregateVersion::new(250)));
 /// ```
 ///
-/// # Panics
-///
-/// Creating `EveryNEvents(0)` will panic as it would create infinite snapshots.
+/// A zero interval is unrepresentable: the field holds a [`NonZeroU32`], so
+/// there is no `should_snapshot`/`should_snapshot_range` call that could ever
+/// divide by zero.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct EveryNEvents(pub u32);
+pub struct EveryNEvents(NonZeroU32);
 
 impl EveryNEvents {
-    /// Creates a new `EveryNEvents` strategy.
+    /// The interval [`SnapshotConfig`](crate::SnapshotConfig)'s built-in
+    /// default uses: a snapshot every 100 events.
+    pub const DEFAULT_INTERVAL: NonZeroU32 = match NonZeroU32::new(100) {
+        Some(n) => n,
+        None => unreachable!(),
+    };
+
+    /// Creates a new `EveryNEvents` strategy from a non-zero interval.
     ///
-    /// # Arguments
+    /// # Examples
     ///
-    /// * `interval` - The number of events between snapshots
+    /// ```
+    /// use event_sauce_core::EveryNEvents;
+    /// use std::num::NonZeroU32;
     ///
-    /// # Panics
-    ///
-    /// Panics if `interval` is 0.
+    /// let strategy = EveryNEvents::new(NonZeroU32::new(50).unwrap());
+    /// assert_eq!(strategy.interval(), 50);
+    /// ```
+    #[must_use]
+    pub const fn new(interval: NonZeroU32) -> Self {
+        Self(interval)
+    }
+
+    /// Creates a new `EveryNEvents` strategy from a plain `u32`, or `None` if
+    /// `interval` is 0.
     ///
     /// # Examples
     ///
     /// ```
     /// use event_sauce_core::EveryNEvents;
     ///
-    /// let strategy = EveryNEvents::new(50);
-    /// assert_eq!(strategy.interval(), 50);
+    /// assert!(EveryNEvents::try_new(0).is_none());
+    /// assert_eq!(EveryNEvents::try_new(50).unwrap().interval(), 50);
     /// ```
     #[must_use]
-    pub fn new(interval: u32) -> Self {
-        assert!(interval > 0, "Snapshot interval must be greater than 0");
-        Self(interval)
+    pub fn try_new(interval: u32) -> Option<Self> {
+        NonZeroU32::new(interval).map(Self)
     }
 
     /// Returns the snapshot interval.
@@ -253,12 +270,12 @@ impl EveryNEvents {
     /// ```
     /// use event_sauce_core::EveryNEvents;
     ///
-    /// let strategy = EveryNEvents(100);
+    /// let strategy = EveryNEvents::try_new(100).unwrap();
     /// assert_eq!(strategy.interval(), 100);
     /// ```
     #[must_use]
     pub fn interval(&self) -> u32 {
-        self.0
+        self.0.get()
     }
 }
 
@@ -267,7 +284,7 @@ impl SnapshotStrategy for EveryNEvents {
         if current_version.as_i64() == 0 {
             return false;
         }
-        current_version.as_i64() % i64::from(self.0) == 0
+        current_version.as_i64() % i64::from(self.0.get()) == 0
     }
 
     fn should_snapshot_range(
@@ -275,7 +292,7 @@ impl SnapshotStrategy for EveryNEvents {
         previous_version: AggregateVersion,
         current_version: AggregateVersion,
     ) -> bool {
-        let interval = i64::from(self.0);
+        let interval = i64::from(self.0.get());
         // Number of completed intervals before and after the commit. A snapshot
         // boundary is crossed whenever the count increases, which covers both
         // exact landings (e.g. 4 -> 5) and multi-event jumps (e.g. 1 -> 6).
@@ -315,7 +332,7 @@ mod tests {
 
     #[test]
     fn test_every_n_events_snapshots_at_exact_intervals() {
-        let strategy = EveryNEvents(100);
+        let strategy = EveryNEvents::try_new(100).unwrap();
 
         // Should snapshot at exact multiples of 100
         assert!(strategy.should_snapshot(AggregateVersion::new(100)));
@@ -327,7 +344,7 @@ mod tests {
 
     #[test]
     fn test_every_n_events_does_not_snapshot_between_intervals() {
-        let strategy = EveryNEvents(100);
+        let strategy = EveryNEvents::try_new(100).unwrap();
 
         // Should not snapshot before first interval
         assert!(!strategy.should_snapshot(AggregateVersion::new(0)));
@@ -344,7 +361,7 @@ mod tests {
 
     #[test]
     fn test_every_n_events_with_small_interval() {
-        let strategy = EveryNEvents(5);
+        let strategy = EveryNEvents::try_new(5).unwrap();
 
         assert!(!strategy.should_snapshot(AggregateVersion::new(0)));
         assert!(!strategy.should_snapshot(AggregateVersion::new(1)));
@@ -358,7 +375,7 @@ mod tests {
 
     #[test]
     fn test_every_n_events_with_large_interval() {
-        let strategy = EveryNEvents(10000);
+        let strategy = EveryNEvents::try_new(10000).unwrap();
 
         assert!(!strategy.should_snapshot(AggregateVersion::new(9999)));
         assert!(strategy.should_snapshot(AggregateVersion::new(10000)));
@@ -368,7 +385,7 @@ mod tests {
 
     #[test]
     fn test_every_n_events_new_constructor() {
-        let strategy = EveryNEvents::new(50);
+        let strategy = EveryNEvents::new(NonZeroU32::new(50).unwrap());
         assert_eq!(strategy.interval(), 50);
         assert!(strategy.should_snapshot(AggregateVersion::new(50)));
         assert!(!strategy.should_snapshot(AggregateVersion::new(49)));
@@ -376,15 +393,22 @@ mod tests {
 
     #[test]
     fn test_every_n_events_interval_getter() {
-        assert_eq!(EveryNEvents(100).interval(), 100);
-        assert_eq!(EveryNEvents(1).interval(), 1);
-        assert_eq!(EveryNEvents(u32::MAX).interval(), u32::MAX);
+        assert_eq!(EveryNEvents::try_new(100).unwrap().interval(), 100);
+        assert_eq!(EveryNEvents::try_new(1).unwrap().interval(), 1);
+        assert_eq!(
+            EveryNEvents::try_new(u32::MAX).unwrap().interval(),
+            u32::MAX
+        );
     }
 
     #[test]
-    #[should_panic(expected = "Snapshot interval must be greater than 0")]
-    fn test_every_n_events_panics_on_zero_interval() {
-        let _ = EveryNEvents::new(0);
+    fn test_every_n_events_try_new_rejects_zero() {
+        assert!(EveryNEvents::try_new(0).is_none());
+    }
+
+    #[test]
+    fn test_every_n_events_try_new_accepts_positive() {
+        assert_eq!(EveryNEvents::try_new(1).unwrap().interval(), 1);
     }
 
     #[test]
@@ -403,7 +427,7 @@ mod tests {
 
     #[test]
     fn test_strategy_trait_object_every_n() {
-        let strategy: &dyn SnapshotStrategy = &EveryNEvents(50);
+        let strategy: &dyn SnapshotStrategy = &EveryNEvents::try_new(50).unwrap();
         assert!(!strategy.should_snapshot(AggregateVersion::new(49)));
         assert!(strategy.should_snapshot(AggregateVersion::new(50)));
         assert!(!strategy.should_snapshot(AggregateVersion::new(51)));
@@ -412,7 +436,7 @@ mod tests {
 
     #[test]
     fn test_every_n_events_range_fires_when_commit_crosses_boundary() {
-        let strategy = EveryNEvents(5);
+        let strategy = EveryNEvents::try_new(5).unwrap();
 
         // Multi-event commit jumps over the boundary without landing on it.
         assert!(strategy.should_snapshot_range(AggregateVersion::new(1), AggregateVersion::new(6)));
@@ -424,7 +448,7 @@ mod tests {
 
     #[test]
     fn test_every_n_events_range_does_not_fire_without_crossing() {
-        let strategy = EveryNEvents(5);
+        let strategy = EveryNEvents::try_new(5).unwrap();
 
         // Commit stays within the same interval.
         assert!(!strategy.should_snapshot_range(AggregateVersion::new(6), AggregateVersion::new(9)));

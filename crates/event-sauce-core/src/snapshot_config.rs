@@ -12,12 +12,12 @@
 //!
 //! // Simple configuration with default strategy
 //! let config = SnapshotConfig::builder()
-//!     .default_strategy(EveryNEvents(100))
+//!     .default_strategy(EveryNEvents::try_new(100).unwrap())
 //!     .build();
 //!
 //! // Configuration with per-type overrides
 //! let config = SnapshotConfig::builder()
-//!     .default_strategy(EveryNEvents(100))
+//!     .default_strategy(EveryNEvents::try_new(100).unwrap())
 //!     .per_type_override("User", AlwaysSnapshot)
 //!     .per_type_override("Order", NeverSnapshot)
 //!     .use_snapshots_on_load(true)
@@ -46,7 +46,7 @@ use crate::snapshot_strategy::{AlwaysSnapshot, EveryNEvents, NeverSnapshot, Snap
 /// use event_sauce_core::{SnapshotConfig, EveryNEvents, AlwaysSnapshot, AggregateVersion};
 ///
 /// let config = SnapshotConfig::builder()
-///     .default_strategy(EveryNEvents(100))
+///     .default_strategy(EveryNEvents::try_new(100).unwrap())
 ///     .per_type_override("User", AlwaysSnapshot)
 ///     .build();
 ///
@@ -152,7 +152,7 @@ impl SnapshotConfig {
     /// use event_sauce_core::{SnapshotConfig, EveryNEvents, AlwaysSnapshot, AggregateVersion};
     ///
     /// let config = SnapshotConfig::builder()
-    ///     .default_strategy(EveryNEvents(100))
+    ///     .default_strategy(EveryNEvents::try_new(100).unwrap())
     ///     .per_type_override("User", AlwaysSnapshot)
     ///     .build();
     ///
@@ -181,7 +181,7 @@ impl SnapshotConfig {
     /// use event_sauce_core::{SnapshotConfig, EveryNEvents};
     ///
     /// let config = SnapshotConfig::builder()
-    ///     .default_strategy(EveryNEvents(100))
+    ///     .default_strategy(EveryNEvents::try_new(100).unwrap())
     ///     .use_snapshots_on_load(true)
     ///     .build();
     ///
@@ -200,7 +200,7 @@ impl SnapshotConfig {
     /// use event_sauce_core::{SnapshotConfig, EveryNEvents, AggregateVersion};
     ///
     /// let config = SnapshotConfig::builder()
-    ///     .default_strategy(EveryNEvents(100))
+    ///     .default_strategy(EveryNEvents::try_new(100).unwrap())
     ///     .build();
     ///
     /// let strategy = config.default_strategy();
@@ -232,7 +232,7 @@ impl std::fmt::Debug for SnapshotConfig {
 /// use event_sauce_core::{SnapshotConfig, EveryNEvents, AlwaysSnapshot, NeverSnapshot};
 ///
 /// let config = SnapshotConfig::builder()
-///     .default_strategy(EveryNEvents(100))
+///     .default_strategy(EveryNEvents::try_new(100).unwrap())
 ///     .per_type_override("User", AlwaysSnapshot)
 ///     .per_type_override("Order", NeverSnapshot)
 ///     .use_snapshots_on_load(true)
@@ -248,13 +248,13 @@ impl SnapshotConfigBuilder {
     /// Creates a new builder with default settings.
     ///
     /// Default settings:
-    /// - Default strategy: `EveryNEvents(100)` - snapshots every 100 events
+    /// - Default strategy: `EveryNEvents::new(EveryNEvents::DEFAULT_INTERVAL)` - snapshots every 100 events
     /// - No per-type overrides
     /// - Use snapshots on load: `true`
     #[must_use]
     pub fn new() -> Self {
         Self {
-            default_strategy: Arc::new(EveryNEvents(100)),
+            default_strategy: Arc::new(EveryNEvents::new(EveryNEvents::DEFAULT_INTERVAL)),
             per_type_strategies: HashMap::new(),
             use_snapshots_on_load: true,
         }
@@ -275,7 +275,7 @@ impl SnapshotConfigBuilder {
     /// use event_sauce_core::{SnapshotConfig, EveryNEvents};
     ///
     /// let config = SnapshotConfig::builder()
-    ///     .default_strategy(EveryNEvents(100))
+    ///     .default_strategy(EveryNEvents::try_new(100).unwrap())
     ///     .build();
     /// ```
     #[must_use]
@@ -303,9 +303,9 @@ impl SnapshotConfigBuilder {
     /// use event_sauce_core::{SnapshotConfig, EveryNEvents, AlwaysSnapshot};
     ///
     /// let config = SnapshotConfig::builder()
-    ///     .default_strategy(EveryNEvents(100))
+    ///     .default_strategy(EveryNEvents::try_new(100).unwrap())
     ///     .per_type_override("User", AlwaysSnapshot)
-    ///     .per_type_override("Order", EveryNEvents(50))
+    ///     .per_type_override("Order", EveryNEvents::try_new(50).unwrap())
     ///     .build();
     /// ```
     #[must_use]
@@ -333,7 +333,7 @@ impl SnapshotConfigBuilder {
     /// use event_sauce_core::{SnapshotConfig, EveryNEvents};
     ///
     /// let config = SnapshotConfig::builder()
-    ///     .default_strategy(EveryNEvents(100))
+    ///     .default_strategy(EveryNEvents::try_new(100).unwrap())
     ///     .use_snapshots_on_load(false)
     ///     .build();
     ///
@@ -353,7 +353,7 @@ impl SnapshotConfigBuilder {
     /// use event_sauce_core::{SnapshotConfig, EveryNEvents};
     ///
     /// let config = SnapshotConfig::builder()
-    ///     .default_strategy(EveryNEvents(100))
+    ///     .default_strategy(EveryNEvents::try_new(100).unwrap())
     ///     .build();
     /// ```
     #[must_use]
@@ -383,7 +383,6 @@ mod tests {
 
         assert!(config.use_snapshots_on_load());
         let strategy = config.default_strategy();
-        // Default is EveryNEvents(100)
         assert!(!strategy.should_snapshot(AggregateVersion::new(1)));
         assert!(strategy.should_snapshot(AggregateVersion::new(100)));
         assert!(!strategy.should_snapshot(AggregateVersion::new(101)));
@@ -393,7 +392,7 @@ mod tests {
     #[test]
     fn test_builder_with_default_strategy() {
         let config = SnapshotConfig::builder()
-            .default_strategy(EveryNEvents(100))
+            .default_strategy(EveryNEvents::try_new(100).unwrap())
             .build();
 
         let strategy = config.strategy_for_type("User");
@@ -404,7 +403,7 @@ mod tests {
     #[test]
     fn test_builder_with_per_type_override() {
         let config = SnapshotConfig::builder()
-            .default_strategy(EveryNEvents(100))
+            .default_strategy(EveryNEvents::try_new(100).unwrap())
             .per_type_override("User", AlwaysSnapshot)
             .build();
 
@@ -421,10 +420,10 @@ mod tests {
     #[test]
     fn test_builder_with_multiple_overrides() {
         let config = SnapshotConfig::builder()
-            .default_strategy(EveryNEvents(100))
+            .default_strategy(EveryNEvents::try_new(100).unwrap())
             .per_type_override("User", AlwaysSnapshot)
             .per_type_override("Order", NeverSnapshot)
-            .per_type_override("Product", EveryNEvents(50))
+            .per_type_override("Product", EveryNEvents::try_new(50).unwrap())
             .build();
 
         let user_strategy = config.strategy_for_type("User");
@@ -496,7 +495,7 @@ mod tests {
     #[test]
     fn test_strategy_for_type_without_override() {
         let config = SnapshotConfig::builder()
-            .default_strategy(EveryNEvents(100))
+            .default_strategy(EveryNEvents::try_new(100).unwrap())
             .build();
 
         let strategy = config.strategy_for_type("User");
@@ -507,7 +506,7 @@ mod tests {
     #[test]
     fn test_config_is_cloneable() {
         let config = SnapshotConfig::builder()
-            .default_strategy(EveryNEvents(100))
+            .default_strategy(EveryNEvents::try_new(100).unwrap())
             .per_type_override("User", AlwaysSnapshot)
             .build();
 
@@ -531,7 +530,7 @@ mod tests {
         let config = SnapshotConfig::builder()
             .default_strategy(NeverSnapshot)
             .per_type_override("User", AlwaysSnapshot)
-            .per_type_override("User", EveryNEvents(100))
+            .per_type_override("User", EveryNEvents::try_new(100).unwrap())
             .build();
 
         let strategy = config.strategy_for_type("User");
@@ -542,7 +541,7 @@ mod tests {
     #[test]
     fn test_default_strategy_getter() {
         let config = SnapshotConfig::builder()
-            .default_strategy(EveryNEvents(100))
+            .default_strategy(EveryNEvents::try_new(100).unwrap())
             .build();
 
         let strategy = config.default_strategy();
@@ -556,7 +555,6 @@ mod tests {
         let config = builder.build();
 
         assert!(config.use_snapshots_on_load());
-        // Default is EveryNEvents(100)
         assert!(config
             .default_strategy()
             .should_snapshot(AggregateVersion::new(100)));

@@ -173,7 +173,7 @@ impl PostgresEventStore {
     ///
     /// let pool = PgPool::connect("postgresql://localhost/events").await?;
     /// let config = SnapshotConfig::builder()
-    ///     .default_strategy(EveryNEvents(50))
+    ///     .default_strategy(EveryNEvents::try_new(50).unwrap())
     ///     .build();
     ///
     /// let store = PostgresEventStore::with_config(pool, config);
@@ -2564,7 +2564,7 @@ mod tests {
     async fn test_builder_full_configuration() {
         let db = TestDatabase::new().await.unwrap();
         let config = SnapshotConfig::builder()
-            .default_strategy(event_sauce_core::EveryNEvents(50))
+            .default_strategy(event_sauce_core::EveryNEvents::try_new(50).unwrap())
             .build();
 
         let store = PostgresEventStore::builder()

@@ -127,7 +127,7 @@ impl InMemoryEventStore {
     /// use event_sauce_core::{SnapshotConfig, EveryNEvents};
     ///
     /// let config = SnapshotConfig::builder()
-    ///     .default_strategy(EveryNEvents(100))
+    ///     .default_strategy(EveryNEvents::try_new(100).unwrap())
     ///     .build();
     ///
     /// let store = InMemoryEventStore::with_config(config);
@@ -1088,7 +1088,7 @@ mod tests {
     #[tokio::test]
     async fn test_builder_full_configuration() {
         let config = SnapshotConfig::builder()
-            .default_strategy(event_sauce_core::EveryNEvents(50))
+            .default_strategy(event_sauce_core::EveryNEvents::try_new(50).unwrap())
             .build();
         let checkpoint_store = Arc::new(InMemoryCheckpointStore::new());
 

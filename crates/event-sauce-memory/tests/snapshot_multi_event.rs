@@ -73,7 +73,7 @@ fn store_with_every_n(n: u32) -> Arc<InMemoryEventStore> {
         InMemoryEventStore::builder()
             .snapshot_config(
                 SnapshotConfig::builder()
-                    .default_strategy(EveryNEvents(n))
+                    .default_strategy(EveryNEvents::try_new(n).unwrap())
                     .build(),
             )
             .build(),
