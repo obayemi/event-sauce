@@ -1032,7 +1032,11 @@ macro_rules! __check_spec_init_actor {
 // Internal architecture of `define_events!`:
 //
 // The macro runs in two phases — *parse* (TT muncher) and *emit* (per-kind
-// trait emitter):
+// trait emitter). Both treat "kind" and "has an actor" as independent axes:
+// a variant's kind is exactly one of `regular` / `init` / `delete`, and
+// `@actor(T)` only ever adds an extra trait impl on top of that kind's
+// ordinary one — it never changes which kind the variant is, or how it
+// replays.
 //
 // 1. **Parse phase**, itself split in two steps so the hook grammar is
 //    written once instead of once per kind:
@@ -1043,14 +1047,14 @@ macro_rules! __check_spec_init_actor {
 //      tried before the marker-less catch-all — and forward to `@hooks`
 //      with the kind tag and actor type resolved.
 //
-//      | Annotations          | Kind tag        |
-//      |----------------------|-----------------|
-//      | `@actor(T)`          | `actor`         |
-//      | `@init @actor(T)`    | `actor_init`    |
-//      | `@delete @actor(T)`  | `actor_delete`  |
-//      | `@delete`            | `delete`        |
-//      | `@init`              | `init`          |
-//      | (none)               | `regular`       |
+//      | Annotations          | Kind tag  | Actor type |
+//      |----------------------|-----------|------------|
+//      | `@actor(T)`          | `regular` | `T`        |
+//      | `@init @actor(T)`    | `init`    | `T`        |
+//      | `@delete @actor(T)`  | `delete`  | `T`        |
+//      | `@delete`            | `delete`  | (none)     |
+//      | `@init`              | `init`    | (none)     |
+//      | (none)               | `regular` | (none)     |
 //
 //    - **Parse hooks** (the `@hooks` arms): the eight optional clauses
 //      (`@version`, `@occurred_at`, `@validate`, `@validate_spec`,
@@ -1062,14 +1066,15 @@ macro_rules! __check_spec_init_actor {
 //      one, only because macro_rules can't default the `@occurred_at` field
 //      name to `timestamp` when the clause is absent.
 //
-// 2. **Emit phase** (`@emit_trait` arms): once all variants are parsed,
-//    each variant in the accumulator is dispatched to one of six emit arms
-//    (one per kind) which produces the appropriate trait impls
-//    (`ApplyEvent`/`InitEvent`/`DeleteEvent`/`ActorEvent`/`ActorInitEvent`/
-//    `ActorDeleteEvent`) plus the per-variant struct. Unlike the parse
-//    phase, this duplication is inherent to macro_rules! today — converting
-//    to a proc-macro would let the kind-tag drive emission via runtime
-//    data, but that's a larger change than this commit.
+// 2. **Emit phase** (`@emit_trait` arms): once all variants are parsed, each
+//    variant in the accumulator is dispatched to one of three emit arms (one
+//    per kind), which emits that kind's base trait impl
+//    (`ApplyEvent`/`InitEvent`/`DeleteEvent`) and then forwards to a small
+//    `@emit_actor_*_event` helper with the (possibly empty) actor type. That
+//    helper expands to nothing when the variant has no actor, or to the
+//    matching `ActorEvent`/`ActorInitEvent`/`ActorDeleteEvent` impl when it
+//    does — the same validate closure feeding both the base impl's 2-arg (or
+//    1-arg, for init) dispatch and the actor impl's 3-arg (or 2-arg) one.
 ///
 /// # `@occurred_at`, and the fact that carries two clocks
 ///
@@ -1147,14 +1152,14 @@ macro_rules! define_events {
     // matches any tail), so it must come after every arm that requires a
     // literal `@init`/`@delete`/`@actor(..)` token, or it would shadow them.
     //
-    // | Annotations          | Kind tag        |
-    // |----------------------|-----------------|
-    // | `@actor(T)`          | `actor`         |
-    // | `@init @actor(T)`    | `actor_init`    |
-    // | `@delete @actor(T)`  | `actor_delete`  |
-    // | `@delete`            | `delete`        |
-    // | `@init`              | `init`          |
-    // | (none)               | `regular`       |
+    // | Annotations          | Kind tag  | Actor type |
+    // |----------------------|-----------|------------|
+    // | `@actor(T)`          | `regular` | `T`        |
+    // | `@init @actor(T)`    | `init`    | `T`        |
+    // | `@delete @actor(T)`  | `delete`  | `T`        |
+    // | `@delete`            | `delete`  | (none)     |
+    // | `@init`              | `init`    | (none)     |
+    // | (none)               | `regular` | (none)     |
     // =========================================================================
     (
         @munch
@@ -1174,7 +1179,7 @@ macro_rules! define_events {
             [$vis] [$event_enum] [$aggregate]
             upcast: [$($upcast)*]
             accumulated: [$($acc)*]
-            kind: [actor]
+            kind: [regular]
             actor_type: [$actor_type]
             variant: $variant
             fields: { $($(#[$field_attr])* $field: $field_ty),* }
@@ -1200,7 +1205,7 @@ macro_rules! define_events {
             [$vis] [$event_enum] [$aggregate]
             upcast: [$($upcast)*]
             accumulated: [$($acc)*]
-            kind: [actor_init]
+            kind: [init]
             actor_type: [$actor_type]
             variant: $variant
             fields: { $($(#[$field_attr])* $field: $field_ty),* }
@@ -1226,7 +1231,7 @@ macro_rules! define_events {
             [$vis] [$event_enum] [$aggregate]
             upcast: [$($upcast)*]
             accumulated: [$($acc)*]
-            kind: [actor_delete]
+            kind: [delete]
             actor_type: [$actor_type]
             variant: $variant
             fields: { $($(#[$field_attr])* $field: $field_ty),* }
@@ -1712,14 +1717,17 @@ macro_rules! define_events {
     };
 
     // =========================================================================
-    // Helper: Emit ApplyEvent impl for REGULAR events
+    // Helper: Emit ApplyEvent impl (kind: regular), plus ActorEvent when the
+    // variant carries an actor type. An `@actor(T)` variant gets the exact
+    // same ApplyEvent impl as a plain one — actor-ness only adds the extra
+    // trait below, it never changes replay.
     // =========================================================================
     (
         @emit_trait
         [$vis:vis] [$aggregate:ty] [$event_enum:ident] [$variant:ident]
         [{ $($(#[$field_attr:meta])* $field:ident: $field_ty:ty,)* }]
         kind: regular,
-        actor_type: [],
+        actor_type: [$($actor_type:ty)?],
         validate: [$([|$($val_args:ident),+| $val_body:block])?],
         validate_spec: [$([$($val_spec:tt)*])?],
         post_validate: [$([$post_val_agg:ident, $post_val_evt:ident, $post_val_body:block])?],
@@ -1760,87 +1768,24 @@ macro_rules! define_events {
                 }
             }
         }
-    };
-
-    // =========================================================================
-    // Helper: Emit ApplyEvent + ActorEvent impl for ACTOR events (regular + @actor)
-    // =========================================================================
-    (
-        @emit_trait
-        [$vis:vis] [$aggregate:ty] [$event_enum:ident] [$variant:ident]
-        [{ $($(#[$field_attr:meta])* $field:ident: $field_ty:ty,)* }]
-        kind: actor,
-        actor_type: [$actor_type:ty],
-        validate: [$([|$($val_args:ident),+| $val_body:block])?],
-        validate_spec: [$([$($val_spec:tt)*])?],
-        post_validate: [$([$post_val_agg:ident, $post_val_evt:ident, $post_val_body:block])?],
-        post_validate_spec: [$([$($post_val_spec:tt)*])?],
-        apply: $apply:expr,
-    ) => {
-        $crate::__private::paste! {
-            // ApplyEvent impl (for replay — dispatches 2-arg @validate, skips 3-arg)
-            impl $crate::ApplyEvent<$aggregate> for [<$variant Event>] {
-                #[allow(unused_variables, unreachable_code, clippy::redundant_closure_call)]
-                fn validate(&self, aggregate: &$aggregate)
-                    -> ::std::result::Result<(), <$aggregate as $crate::Aggregate>::Error>
-                {
-                    $(
-                        $crate::__validate!(|$($val_args),+| $val_body, $aggregate, Self, aggregate, self);
-                    )?
-                    $(
-                        $crate::__check_spec!($($val_spec)*, $aggregate, Self, aggregate, self);
-                    )?
-                    ::std::result::Result::Ok(())
-                }
-
-                fn apply(&self, aggregate: &mut $aggregate) {
-                    let apply_fn: fn(&mut $aggregate, &Self) = $apply;
-                    apply_fn(aggregate, self);
-                }
-
-                #[allow(unused_variables, unreachable_code, clippy::redundant_closure_call)]
-                fn post_validate(&self, aggregate: &$aggregate)
-                    -> ::std::result::Result<(), <$aggregate as $crate::Aggregate>::Error>
-                {
-                    $(
-                        return (|$post_val_agg: &$aggregate, $post_val_evt: &Self| $post_val_body)(aggregate, self);
-                    )?
-                    $(
-                        $crate::__check_spec!($($post_val_spec)*, $aggregate, Self, aggregate, self);
-                    )?
-                    ::std::result::Result::Ok(())
-                }
-            }
-
-            // ActorEvent impl (for command-time — dispatches 3-arg @validate, skips 2-arg)
-            impl $crate::ActorEvent<$aggregate> for [<$variant Event>] {
-                type Actor = $actor_type;
-
-                #[allow(unused_variables, unreachable_code, clippy::redundant_closure_call)]
-                fn validate_actor(&self, aggregate: &$aggregate, actor: &$actor_type)
-                    -> ::std::result::Result<(), <$aggregate as $crate::Aggregate>::Error>
-                {
-                    $(
-                        $crate::__validate_actor!(|$($val_args),+| $val_body, $aggregate, $actor_type, Self, aggregate, actor, self);
-                    )?
-                    $(
-                        $crate::__check_spec_actor!($($val_spec)*, $aggregate, $actor_type, Self, aggregate, actor, self);
-                    )?
-                    ::std::result::Result::Ok(())
-                }
-            }
+        $crate::define_events! {
+            @emit_actor_event [$($actor_type)?]
+            [$aggregate] [$variant]
+            validate: [$([|$($val_args),+| $val_body])?],
+            validate_spec: [$([$($val_spec)*])?],
         }
     };
 
     // =========================================================================
-    // Helper: Emit InitEvent impl for @init events
+    // Helper: Emit InitEvent impl (kind: init), plus ActorInitEvent when the
+    // variant carries an actor type.
     // =========================================================================
     (
         @emit_trait
         [$vis:vis] [$aggregate:ty] [$event_enum:ident] [$variant:ident]
         [{ $($(#[$field_attr:meta])* $field:ident: $field_ty:ty,)* }]
         kind: init,
-        actor_type: [],
+        actor_type: [$($actor_type:ty)?],
         validate: [$([|$($val_args:ident),+| $val_body:block])?],
         validate_spec: [$([$($val_spec:tt)*])?],
         post_validate: [$([$post_val_agg:ident, $post_val_evt:ident, $post_val_body:block])?],
@@ -1877,83 +1822,24 @@ macro_rules! define_events {
                 }
             }
         }
-    };
-
-    // =========================================================================
-    // Helper: Emit InitEvent + ActorInitEvent impl for @init @actor events
-    // =========================================================================
-    (
-        @emit_trait
-        [$vis:vis] [$aggregate:ty] [$event_enum:ident] [$variant:ident]
-        [{ $($(#[$field_attr:meta])* $field:ident: $field_ty:ty,)* }]
-        kind: actor_init,
-        actor_type: [$actor_type:ty],
-        validate: [$([|$($val_args:ident),+| $val_body:block])?],
-        validate_spec: [$([$($val_spec:tt)*])?],
-        post_validate: [$([$post_val_agg:ident, $post_val_evt:ident, $post_val_body:block])?],
-        post_validate_spec: [$([$($post_val_spec:tt)*])?],
-        apply: $apply:expr,
-    ) => {
-        $crate::__private::paste! {
-            // InitEvent impl (for replay — dispatches 1-arg @validate, skips 2-arg)
-            impl $crate::InitEvent<$aggregate> for [<$variant Event>] {
-                #[allow(unused_variables, unreachable_code, clippy::redundant_closure_call)]
-                fn validate_init(&self) -> ::std::result::Result<(), <$aggregate as $crate::Aggregate>::Error> {
-                    $(
-                        $crate::__validate_init!(|$($val_args),+| $val_body, Self, self);
-                    )?
-                    $(
-                        $crate::__check_spec_init!($($val_spec)*, Self, self);
-                    )?
-                    ::std::result::Result::Ok(())
-                }
-
-                fn init(&self, id: $crate::EntityId) -> $aggregate {
-                    let init_fn: fn($crate::EntityId, &Self) -> $aggregate = $apply;
-                    init_fn(id, self)
-                }
-
-                #[allow(unused_variables, unreachable_code, clippy::redundant_closure_call)]
-                fn post_validate_init(&self, aggregate: &$aggregate) -> ::std::result::Result<(), <$aggregate as $crate::Aggregate>::Error> {
-                    $(
-                        return (|$post_val_agg: &$aggregate, $post_val_evt: &Self| $post_val_body)(aggregate, self);
-                    )?
-                    $(
-                        $crate::__check_spec!($($post_val_spec)*, $aggregate, Self, aggregate, self);
-                    )?
-                    ::std::result::Result::Ok(())
-                }
-            }
-
-            // ActorInitEvent impl (for command-time — dispatches 2-arg @validate, skips 1-arg)
-            impl $crate::ActorInitEvent<$aggregate> for [<$variant Event>] {
-                type Actor = $actor_type;
-
-                #[allow(unused_variables, unreachable_code, clippy::redundant_closure_call)]
-                fn validate_init_actor(&self, actor: &$actor_type)
-                    -> ::std::result::Result<(), <$aggregate as $crate::Aggregate>::Error>
-                {
-                    $(
-                        $crate::__validate_init_actor!(|$($val_args),+| $val_body, $actor_type, Self, actor, self);
-                    )?
-                    $(
-                        $crate::__check_spec_init_actor!($($val_spec)*, $actor_type, Self, actor, self);
-                    )?
-                    ::std::result::Result::Ok(())
-                }
-            }
+        $crate::define_events! {
+            @emit_actor_init_event [$($actor_type)?]
+            [$aggregate] [$variant]
+            validate: [$([|$($val_args),+| $val_body])?],
+            validate_spec: [$([$($val_spec)*])?],
         }
     };
 
     // =========================================================================
-    // Helper: Emit DeleteEvent impl for @delete events
+    // Helper: Emit DeleteEvent impl (kind: delete), plus ActorDeleteEvent when
+    // the variant carries an actor type.
     // =========================================================================
     (
         @emit_trait
         [$vis:vis] [$aggregate:ty] [$event_enum:ident] [$variant:ident]
         [{ $($(#[$field_attr:meta])* $field:ident: $field_ty:ty,)* }]
         kind: delete,
-        actor_type: [],
+        actor_type: [$($actor_type:ty)?],
         validate: [$([|$($val_args:ident),+| $val_body:block])?],
         validate_spec: [$([$($val_spec:tt)*])?],
         post_validate: [$([$post_val_agg:ident, $post_val_evt:ident, $post_val_body:block])?],
@@ -1995,59 +1881,77 @@ macro_rules! define_events {
                 }
             }
         }
+        $crate::define_events! {
+            @emit_actor_delete_event [$($actor_type)?]
+            [$aggregate] [$variant]
+            validate: [$([|$($val_args),+| $val_body])?],
+            validate_spec: [$([$($val_spec)*])?],
+        }
     };
 
     // =========================================================================
-    // Helper: Emit DeleteEvent + ActorDeleteEvent impl for @delete @actor events
+    // Helper: the extra trait an `@actor(T)` variant adds on top of its base
+    // kind's impl above — nothing when the variant has no actor.
     // =========================================================================
+    (@emit_actor_event [] [$aggregate:ty] [$variant:ident] validate: [$($_v:tt)*], validate_spec: [$($_vs:tt)*],) => {};
     (
-        @emit_trait
-        [$vis:vis] [$aggregate:ty] [$event_enum:ident] [$variant:ident]
-        [{ $($(#[$field_attr:meta])* $field:ident: $field_ty:ty,)* }]
-        kind: actor_delete,
-        actor_type: [$actor_type:ty],
+        @emit_actor_event [$actor_type:ty] [$aggregate:ty] [$variant:ident]
         validate: [$([|$($val_args:ident),+| $val_body:block])?],
         validate_spec: [$([$($val_spec:tt)*])?],
-        post_validate: [$([$post_val_agg:ident, $post_val_evt:ident, $post_val_body:block])?],
-        post_validate_spec: [$([$($post_val_spec:tt)*])?],
-        apply: $apply:expr,
     ) => {
         $crate::__private::paste! {
-            // DeleteEvent impl (for replay — dispatches 2-arg @validate, skips 3-arg)
-            impl $crate::DeleteEvent<$aggregate> for [<$variant Event>] {
+            impl $crate::ActorEvent<$aggregate> for [<$variant Event>] {
+                type Actor = $actor_type;
+
                 #[allow(unused_variables, unreachable_code, clippy::redundant_closure_call)]
-                fn validate_delete(&self, aggregate: &$aggregate)
+                fn validate_actor(&self, aggregate: &$aggregate, actor: &$actor_type)
                     -> ::std::result::Result<(), <$aggregate as $crate::Aggregate>::Error>
                 {
                     $(
-                        $crate::__validate!(|$($val_args),+| $val_body, $aggregate, Self, aggregate, self);
+                        $crate::__validate_actor!(|$($val_args),+| $val_body, $aggregate, $actor_type, Self, aggregate, actor, self);
                     )?
                     $(
-                        $crate::__check_spec!($($val_spec)*, $aggregate, Self, aggregate, self);
-                    )?
-                    ::std::result::Result::Ok(())
-                }
-
-                fn delete(&self, aggregate: $aggregate) -> <$aggregate as $crate::Aggregate>::DeletedState {
-                    let delete_fn: fn($aggregate, &Self) -> <$aggregate as $crate::Aggregate>::DeletedState = $apply;
-                    delete_fn(aggregate, self)
-                }
-
-                #[allow(unused_variables, unreachable_code, clippy::redundant_closure_call)]
-                fn post_validate_delete(&self, state: &<$aggregate as $crate::Aggregate>::DeletedState)
-                    -> ::std::result::Result<(), <$aggregate as $crate::Aggregate>::Error>
-                {
-                    $(
-                        return (|$post_val_agg: &<$aggregate as $crate::Aggregate>::DeletedState, $post_val_evt: &Self| $post_val_body)(state, self);
-                    )?
-                    $(
-                        let _ = ($($post_val_spec)*,);
+                        $crate::__check_spec_actor!($($val_spec)*, $aggregate, $actor_type, Self, aggregate, actor, self);
                     )?
                     ::std::result::Result::Ok(())
                 }
             }
+        }
+    };
 
-            // ActorDeleteEvent impl (for command-time — dispatches 3-arg @validate, skips 2-arg)
+    (@emit_actor_init_event [] [$aggregate:ty] [$variant:ident] validate: [$($_v:tt)*], validate_spec: [$($_vs:tt)*],) => {};
+    (
+        @emit_actor_init_event [$actor_type:ty] [$aggregate:ty] [$variant:ident]
+        validate: [$([|$($val_args:ident),+| $val_body:block])?],
+        validate_spec: [$([$($val_spec:tt)*])?],
+    ) => {
+        $crate::__private::paste! {
+            impl $crate::ActorInitEvent<$aggregate> for [<$variant Event>] {
+                type Actor = $actor_type;
+
+                #[allow(unused_variables, unreachable_code, clippy::redundant_closure_call)]
+                fn validate_init_actor(&self, actor: &$actor_type)
+                    -> ::std::result::Result<(), <$aggregate as $crate::Aggregate>::Error>
+                {
+                    $(
+                        $crate::__validate_init_actor!(|$($val_args),+| $val_body, $actor_type, Self, actor, self);
+                    )?
+                    $(
+                        $crate::__check_spec_init_actor!($($val_spec)*, $actor_type, Self, actor, self);
+                    )?
+                    ::std::result::Result::Ok(())
+                }
+            }
+        }
+    };
+
+    (@emit_actor_delete_event [] [$aggregate:ty] [$variant:ident] validate: [$($_v:tt)*], validate_spec: [$($_vs:tt)*],) => {};
+    (
+        @emit_actor_delete_event [$actor_type:ty] [$aggregate:ty] [$variant:ident]
+        validate: [$([|$($val_args:ident),+| $val_body:block])?],
+        validate_spec: [$([$($val_spec:tt)*])?],
+    ) => {
+        $crate::__private::paste! {
             impl $crate::ActorDeleteEvent<$aggregate> for [<$variant Event>] {
                 type Actor = $actor_type;
 
@@ -2070,6 +1974,10 @@ macro_rules! define_events {
     // =========================================================================
     // Helper: dispatch arm — called from within paste::paste! so $evt_type
     // is already resolved (e.g. CreatedEvent). No inner paste needed.
+    //
+    // Every dispatch family below matches its one real kind, then falls back
+    // to a single catch-all that covers both other kinds: actor-ness never
+    // changes which family handles a variant, only the base kind does.
     // =========================================================================
     (@validate_only_arm regular [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
         {
@@ -2081,32 +1989,12 @@ macro_rules! define_events {
             evt.validate($aggregate_var)?;
         }
     };
-    (@validate_only_arm actor [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
-        {
-            use $crate::ApplyEvent;
-            let evt = $evt_type {
-                $($field: $field.clone(),)*
-                $timestamp: *$timestamp,
-            };
-            evt.validate($aggregate_var)?;
-        }
-    };
-    (@validate_only_arm init [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
-        // An init fact has no aggregate to validate against yet; the post-validate
-        // that guards it runs inside `dispatch_init`.
+    (@validate_only_arm $other:ident [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
+        // An init fact has no aggregate to validate against yet, and a delete
+        // fact never reaches `dispatch`; each runs its own guard instead.
         {}
     };
-    (@validate_only_arm delete [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
-        // A delete fact never reaches `dispatch`; `dispatch_delete` runs its guard.
-        {}
-    };
-    (@validate_only_arm actor_delete [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
-        // A delete fact never reaches `dispatch`; `dispatch_delete` runs its guard.
-        {}
-    };
-    (@validate_only_arm actor_init [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
-        {}
-    };
+
     (@dispatch_arm regular [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
         {
             use $crate::ApplyEvent;
@@ -2119,34 +2007,10 @@ macro_rules! define_events {
             evt.post_validate($aggregate_var)?;
         }
     };
-    (@dispatch_arm actor [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
-        {
-            use $crate::ApplyEvent;
-            let evt = $evt_type {
-                $($field: $field.clone(),)*
-                $timestamp: *$timestamp,
-            };
-            evt.validate($aggregate_var)?;
-            evt.apply($aggregate_var);
-            evt.post_validate($aggregate_var)?;
-        }
-    };
-    (@dispatch_arm init [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
-        unreachable!("dispatch() called on init event; use dispatch_init()")
-    };
-    (@dispatch_arm actor_init [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
-        unreachable!("dispatch() called on init event; use dispatch_init()")
-    };
-    (@dispatch_arm delete [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
-        unreachable!("dispatch() called on delete event; use dispatch_delete()")
-    };
-    (@dispatch_arm actor_delete [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
-        unreachable!("dispatch() called on delete event; use dispatch_delete()")
+    (@dispatch_arm $other:ident [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
+        unreachable!("dispatch() called on a {} event; use dispatch_init()/dispatch_delete()", stringify!($other))
     };
 
-    // =========================================================================
-    // Helper: dispatch_unchecked arm
-    // =========================================================================
     (@dispatch_unchecked_arm regular [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
         {
             use $crate::ApplyEvent;
@@ -2157,32 +2021,10 @@ macro_rules! define_events {
             evt.apply($aggregate_var);
         }
     };
-    (@dispatch_unchecked_arm actor [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
-        {
-            use $crate::ApplyEvent;
-            let evt = $evt_type {
-                $($field: $field.clone(),)*
-                $timestamp: *$timestamp,
-            };
-            evt.apply($aggregate_var);
-        }
-    };
-    (@dispatch_unchecked_arm init [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
-        unreachable!("dispatch_unchecked() called on init event; use dispatch_init_unchecked()")
-    };
-    (@dispatch_unchecked_arm actor_init [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
-        unreachable!("dispatch_unchecked() called on init event; use dispatch_init_unchecked()")
-    };
-    (@dispatch_unchecked_arm delete [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
-        unreachable!("dispatch_unchecked() called on delete event; use dispatch_delete_unchecked()")
-    };
-    (@dispatch_unchecked_arm actor_delete [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
-        unreachable!("dispatch_unchecked() called on delete event; use dispatch_delete_unchecked()")
+    (@dispatch_unchecked_arm $other:ident [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
+        unreachable!("dispatch_unchecked() called on a {} event; use dispatch_init_unchecked()/dispatch_delete_unchecked()", stringify!($other))
     };
 
-    // =========================================================================
-    // Helper: dispatch_init arm
-    // =========================================================================
     (@dispatch_init_arm init [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$id_var:ident]) => {
         {
             use $crate::InitEvent;
@@ -2196,35 +2038,10 @@ macro_rules! define_events {
             ::std::result::Result::Ok(entity)
         }
     };
-    (@dispatch_init_arm regular [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$id_var:ident]) => {
-        unreachable!("dispatch_init() called on non-init event")
-    };
-    (@dispatch_init_arm actor [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$id_var:ident]) => {
-        unreachable!("dispatch_init() called on non-init event")
-    };
-    (@dispatch_init_arm actor_init [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$id_var:ident]) => {
-        {
-            use $crate::InitEvent;
-            let evt = $evt_type {
-                $($field: $field.clone(),)*
-                $timestamp: *$timestamp,
-            };
-            evt.validate_init()?;
-            let entity = evt.init($id_var);
-            evt.post_validate_init(&entity)?;
-            ::std::result::Result::Ok(entity)
-        }
-    };
-    (@dispatch_init_arm delete [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$id_var:ident]) => {
-        unreachable!("dispatch_init() called on delete event; use dispatch_delete()")
-    };
-    (@dispatch_init_arm actor_delete [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$id_var:ident]) => {
-        unreachable!("dispatch_init() called on delete event; use dispatch_delete()")
+    (@dispatch_init_arm $other:ident [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$id_var:ident]) => {
+        unreachable!("dispatch_init() called on a {} event", stringify!($other))
     };
 
-    // =========================================================================
-    // Helper: dispatch_init_unchecked arm
-    // =========================================================================
     (@dispatch_init_unchecked_arm init [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$id_var:ident]) => {
         {
             use $crate::InitEvent;
@@ -2235,52 +2052,16 @@ macro_rules! define_events {
             evt.init($id_var)
         }
     };
-    (@dispatch_init_unchecked_arm regular [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$id_var:ident]) => {
-        unreachable!("dispatch_init_unchecked() called on non-init event")
-    };
-    (@dispatch_init_unchecked_arm actor [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$id_var:ident]) => {
-        unreachable!("dispatch_init_unchecked() called on non-init event")
-    };
-    (@dispatch_init_unchecked_arm actor_init [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$id_var:ident]) => {
-        {
-            use $crate::InitEvent;
-            let evt = $evt_type {
-                $($field: $field.clone(),)*
-                $timestamp: *$timestamp,
-            };
-            evt.init($id_var)
-        }
-    };
-    (@dispatch_init_unchecked_arm delete [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$id_var:ident]) => {
-        unreachable!("dispatch_init_unchecked() called on delete event; use dispatch_delete_unchecked()")
-    };
-    (@dispatch_init_unchecked_arm actor_delete [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$id_var:ident]) => {
-        unreachable!("dispatch_init_unchecked() called on delete event; use dispatch_delete_unchecked()")
+    (@dispatch_init_unchecked_arm $other:ident [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$id_var:ident]) => {
+        unreachable!("dispatch_init_unchecked() called on a {} event", stringify!($other))
     };
 
-    // =========================================================================
-    // Helper: is_init
-    // =========================================================================
     (@is_init init) => { true };
-    (@is_init actor_init) => { true };
-    (@is_init regular) => { false };
-    (@is_init actor) => { false };
-    (@is_init delete) => { false };
-    (@is_init actor_delete) => { false };
+    (@is_init $other:ident) => { false };
 
-    // =========================================================================
-    // Helper: is_delete
-    // =========================================================================
     (@is_delete delete) => { true };
-    (@is_delete actor_delete) => { true };
-    (@is_delete regular) => { false };
-    (@is_delete actor) => { false };
-    (@is_delete init) => { false };
-    (@is_delete actor_init) => { false };
+    (@is_delete $other:ident) => { false };
 
-    // =========================================================================
-    // Helper: dispatch_delete arm
-    // =========================================================================
     (@dispatch_delete_arm delete [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
         {
             use $crate::DeleteEvent;
@@ -2294,35 +2075,10 @@ macro_rules! define_events {
             ::std::result::Result::Ok(state)
         }
     };
-    (@dispatch_delete_arm actor_delete [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
-        {
-            use $crate::DeleteEvent;
-            let evt = $evt_type {
-                $($field: $field.clone(),)*
-                $timestamp: *$timestamp,
-            };
-            evt.validate_delete(&$aggregate_var)?;
-            let state = evt.delete($aggregate_var);
-            evt.post_validate_delete(&state)?;
-            ::std::result::Result::Ok(state)
-        }
-    };
-    (@dispatch_delete_arm regular [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
-        unreachable!("dispatch_delete() called on non-delete event")
-    };
-    (@dispatch_delete_arm actor [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
-        unreachable!("dispatch_delete() called on non-delete event")
-    };
-    (@dispatch_delete_arm init [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
-        unreachable!("dispatch_delete() called on non-delete event")
-    };
-    (@dispatch_delete_arm actor_init [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
-        unreachable!("dispatch_delete() called on non-delete event")
+    (@dispatch_delete_arm $other:ident [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
+        unreachable!("dispatch_delete() called on a {} event", stringify!($other))
     };
 
-    // =========================================================================
-    // Helper: dispatch_delete_unchecked arm
-    // =========================================================================
     (@dispatch_delete_unchecked_arm delete [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
         {
             use $crate::DeleteEvent;
@@ -2333,27 +2089,8 @@ macro_rules! define_events {
             evt.delete($aggregate_var)
         }
     };
-    (@dispatch_delete_unchecked_arm actor_delete [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
-        {
-            use $crate::DeleteEvent;
-            let evt = $evt_type {
-                $($field: $field.clone(),)*
-                $timestamp: *$timestamp,
-            };
-            evt.delete($aggregate_var)
-        }
-    };
-    (@dispatch_delete_unchecked_arm regular [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
-        unreachable!("dispatch_delete_unchecked() called on non-delete event")
-    };
-    (@dispatch_delete_unchecked_arm actor [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
-        unreachable!("dispatch_delete_unchecked() called on non-delete event")
-    };
-    (@dispatch_delete_unchecked_arm init [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
-        unreachable!("dispatch_delete_unchecked() called on non-delete event")
-    };
-    (@dispatch_delete_unchecked_arm actor_init [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
-        unreachable!("dispatch_delete_unchecked() called on non-delete event")
+    (@dispatch_delete_unchecked_arm $other:ident [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
+        unreachable!("dispatch_delete_unchecked() called on a {} event", stringify!($other))
     };
 
     // =========================================================================
@@ -2362,9 +2099,6 @@ macro_rules! define_events {
     (@version_from [[$version:literal]]) => { $version };
     (@version_from []) => { 1 };
 
-    // Legacy version helper
-    (@version $version:literal) => { $version };
-    (@version) => { 1 };
 
     // =========================================================================
     // Helper: extract encrypted field names for a variant (default to empty)
