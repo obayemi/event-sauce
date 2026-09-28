@@ -70,6 +70,81 @@ use sqlx::PgPool;
 use std::time::Duration;
 use uuid::Uuid;
 
+/// Backoff applied to an outbox row returned to `pending` after a handler
+/// failure, so N polling workers don't all retry the same failed row on the
+/// very next sweep.
+///
+/// The delay before a failed row becomes reclaimable again grows
+/// exponentially with the row's `failures` count (`base * 2^failures`,
+/// exponent clamped so it never overflows regardless of how large
+/// `failures` gets — in particular under `max_attempts: None`, which
+/// retries forever), capped at `cap`. `jitter` is then added on top of that
+/// *capped* delay, so the actual delay can reach `cap * (1 + jitter)`; it
+/// exists so many rows backing off together don't all become reclaimable in
+/// the same instant.
+///
+/// Fields are private so [`new`](Self::new) is the only way to build one —
+/// `jitter` is clamped to `0.0..=1.0` there, an invariant a public field
+/// could not enforce:
+///
+/// ```compile_fail
+/// # use event_sauce_postgres::BackoffPolicy;
+/// # use std::time::Duration;
+/// let policy = BackoffPolicy {
+///     base: Duration::ZERO,
+///     cap: Duration::ZERO,
+///     jitter: 5.0,
+/// };
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BackoffPolicy {
+    base: Duration,
+    cap: Duration,
+    jitter: f64,
+}
+
+impl BackoffPolicy {
+    /// Creates a policy from its base delay, cap, and jitter fraction.
+    ///
+    /// `jitter` is clamped to `0.0..=1.0`.
+    #[must_use]
+    pub fn new(base: Duration, cap: Duration, jitter: f64) -> Self {
+        Self {
+            base,
+            cap,
+            jitter: jitter.clamp(0.0, 1.0),
+        }
+    }
+
+    /// Delay applied after the first failure (`failures` goes from 0 to 1).
+    #[must_use]
+    pub fn base(&self) -> Duration {
+        self.base
+    }
+
+    /// Upper bound on the jitter-free delay, however many failures
+    /// accumulate. The actual delay can exceed this by up to `jitter` times
+    /// this value.
+    #[must_use]
+    pub fn cap(&self) -> Duration {
+        self.cap
+    }
+
+    /// Extra random delay added on top of the capped delay, as a fraction
+    /// of it (e.g. `0.5` adds up to 50% more). Always in `0.0..=1.0`.
+    #[must_use]
+    pub fn jitter(&self) -> f64 {
+        self.jitter
+    }
+}
+
+impl Default for BackoffPolicy {
+    /// 1 second base, capped at 5 minutes, up to +50% jitter.
+    fn default() -> Self {
+        Self::new(Duration::from_secs(1), Duration::from_secs(300), 0.5)
+    }
+}
+
 /// Postgres-backed policy outbox.
 ///
 /// Owns its own table (`policy_outbox`, schema-qualified). Multiple workers
@@ -369,9 +444,10 @@ impl PostgresPolicyOutbox {
     ///
     /// Increments the row's `failures` counter, then decides where it lands:
     /// if `max_attempts` is `None`, or the row's `failures` is still below
-    /// `max_attempts`, the row returns to `pending` so the next claim sweep
-    /// will retry it. Once `failures` reaches `max_attempts` it's parked in
-    /// `failed` permanently.
+    /// `max_attempts`, the row returns to `pending` — but not immediately
+    /// reclaimable: `backoff` sets its `locked_until` into the future so N
+    /// polling workers don't all retry it on the very next sweep. Once
+    /// `failures` reaches `max_attempts` it's parked in `failed` permanently.
     ///
     /// The DLQ decision keys off `failures` (handler errors), **not**
     /// `attempts` (claims). A worker that crashes mid-side-effect bumps
@@ -387,6 +463,7 @@ impl PostgresPolicyOutbox {
         worker_id: &str,
         error_message: &str,
         max_attempts: Option<i32>,
+        backoff: BackoffPolicy,
     ) -> Result<bool> {
         let outbox_table = self.outbox_table();
         let query = format!(
@@ -397,8 +474,10 @@ impl PostgresPolicyOutbox {
                     ELSE 'pending'
                  END,
                  locked_by = NULL,
-                 locked_until = NULL,
-                 last_error = $4,
+                 locked_until = NOW() + make_interval(secs =>
+                    LEAST($5::float8, $4::float8 * POWER(2, LEAST(failures, 30)))
+                    * (1 + random() * $6::float8)),
+                 last_error = $7,
                  updated_at = NOW()
              WHERE id = $1 AND locked_by = $2
              RETURNING id"
@@ -407,6 +486,9 @@ impl PostgresPolicyOutbox {
             .bind(id)
             .bind(worker_id)
             .bind(max_attempts)
+            .bind(backoff.base().as_secs_f64())
+            .bind(backoff.cap().as_secs_f64())
+            .bind(backoff.jitter())
             .bind(error_message)
             .fetch_optional(&self.pool)
             .await
@@ -416,6 +498,11 @@ impl PostgresPolicyOutbox {
 
     /// Returns the number of pending rows for `policy_name` (rows in
     /// `pending` status with no active lock). Useful for monitoring lag.
+    ///
+    /// A row currently backing off after a failure (see
+    /// [`mark_failed`](Self::mark_failed)) has a future `locked_until` and so
+    /// is **not** counted here, the same as a row still held by an in-flight
+    /// claim.
     ///
     /// # Errors
     ///
@@ -442,6 +529,28 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
     use testcontainers_modules::postgres::Postgres;
+
+    /// A zero backoff, for tests exercising claim/retry semantics that
+    /// predate backoff and expect a failed row to be immediately reclaimable.
+    fn no_backoff() -> BackoffPolicy {
+        BackoffPolicy::new(Duration::ZERO, Duration::ZERO, 0.0)
+    }
+
+    #[test]
+    fn backoff_policy_default_is_one_second_capped_at_five_minutes() {
+        let policy = BackoffPolicy::default();
+        assert_eq!(policy.base(), Duration::from_secs(1));
+        assert_eq!(policy.cap(), Duration::from_secs(300));
+        assert!((policy.jitter() - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn backoff_policy_clamps_jitter_to_unit_range() {
+        let over = BackoffPolicy::new(Duration::ZERO, Duration::ZERO, 2.0);
+        assert!((over.jitter() - 1.0).abs() < f64::EPSILON);
+        let under = BackoffPolicy::new(Duration::ZERO, Duration::ZERO, -1.0);
+        assert!((under.jitter() - 0.0).abs() < f64::EPSILON);
+    }
 
     struct TestDb {
         pool: PgPool,
@@ -599,7 +708,7 @@ mod tests {
             .await
             .unwrap();
         assert!(outbox
-            .mark_failed(claims[0].id, "w-1", "transient", Some(3))
+            .mark_failed(claims[0].id, "w-1", "transient", Some(3), no_backoff())
             .await
             .unwrap());
 
@@ -610,6 +719,149 @@ mod tests {
             .unwrap();
         assert_eq!(next.len(), 1);
         assert_eq!(next[0].attempts, 2);
+    }
+
+    /// Immediately after the failure, the row must not be reclaimable — it
+    /// is backing off, not free for the next poll to hot-loop on. Uses a
+    /// long backoff and backdates `locked_until` by SQL instead of
+    /// sleeping past a short one, so the assertion never races the clock.
+    #[tokio::test]
+    async fn test_mark_failed_backoff_delays_reclaim() {
+        let db = TestDb::new().await;
+        let outbox = PostgresPolicyOutbox::new(db.pool.clone(), "event_sauce");
+        outbox.migrate().await.unwrap();
+        enqueue_one(&outbox, "policy-a", 1).await;
+
+        let claims = outbox
+            .claim_batch("policy-a", "w-1", 10, Duration::from_secs(60))
+            .await
+            .unwrap();
+        let id = claims[0].id;
+        let backoff = BackoffPolicy::new(Duration::from_secs(60), Duration::from_secs(300), 0.0);
+        assert!(outbox
+            .mark_failed(id, "w-1", "transient", None, backoff)
+            .await
+            .unwrap());
+
+        let offset = locked_until_offset_secs(&outbox, id).await;
+        assert!(
+            (59.0..=61.0).contains(&offset),
+            "expected ~60s backoff after the failure, got {offset}"
+        );
+
+        let immediate = outbox
+            .claim_batch("policy-a", "w-2", 10, Duration::from_secs(60))
+            .await
+            .unwrap();
+        assert!(
+            immediate.is_empty(),
+            "a just-failed row must not be immediately reclaimable"
+        );
+        assert_eq!(
+            outbox.pending_count("policy-a").await.unwrap(),
+            0,
+            "pending_count must exclude rows still backing off"
+        );
+
+        sqlx::query(
+            "UPDATE event_sauce.policy_outbox
+             SET locked_until = NOW() - INTERVAL '1 second' WHERE id = $1",
+        )
+        .bind(id)
+        .execute(outbox.pool())
+        .await
+        .unwrap();
+        let after_backoff = outbox
+            .claim_batch("policy-a", "w-2", 10, Duration::from_secs(60))
+            .await
+            .unwrap();
+        assert_eq!(
+            after_backoff.len(),
+            1,
+            "the row must become reclaimable once its backoff elapses"
+        );
+    }
+
+    /// 1st failure: failures 0 -> 1, delay = base * 2^0 = 10s.
+    /// 2nd failure: failures 1 -> 2, delay = base * 2^1 = 20s, capped at 15s.
+    #[tokio::test]
+    async fn test_mark_failed_backoff_grows_and_caps() {
+        let db = TestDb::new().await;
+        let outbox = PostgresPolicyOutbox::new(db.pool.clone(), "event_sauce");
+        outbox.migrate().await.unwrap();
+        enqueue_one(&outbox, "policy-a", 1).await;
+
+        let backoff = BackoffPolicy::new(Duration::from_secs(10), Duration::from_secs(15), 0.0);
+
+        let claims = outbox
+            .claim_batch("policy-a", "w-1", 10, Duration::from_secs(60))
+            .await
+            .unwrap();
+        let id = claims[0].id;
+        outbox
+            .mark_failed(id, "w-1", "e1", None, backoff)
+            .await
+            .unwrap();
+        let after_first = locked_until_offset_secs(&outbox, id).await;
+        assert!(
+            (9.0..=10.5).contains(&after_first),
+            "expected ~10s backoff after 1st failure, got {after_first}"
+        );
+
+        sqlx::query("UPDATE event_sauce.policy_outbox SET locked_until = NOW() WHERE id = $1")
+            .bind(id)
+            .execute(outbox.pool())
+            .await
+            .unwrap();
+        let claims = outbox
+            .claim_batch("policy-a", "w-1", 10, Duration::from_secs(60))
+            .await
+            .unwrap();
+        outbox
+            .mark_failed(claims[0].id, "w-1", "e2", None, backoff)
+            .await
+            .unwrap();
+        let after_second = locked_until_offset_secs(&outbox, id).await;
+        assert!(
+            (14.0..=15.5).contains(&after_second),
+            "expected the cap (~15s) once the doubled delay exceeds it, got {after_second}"
+        );
+    }
+
+    /// Retry-forever mode (`max_attempts=None`) can drive `failures` far past
+    /// the point where `base * 2^failures` overflows float8, well before any
+    /// sane cap would ever be reached.
+    #[tokio::test]
+    async fn test_mark_failed_does_not_overflow_with_many_failures() {
+        let db = TestDb::new().await;
+        let outbox = PostgresPolicyOutbox::new(db.pool.clone(), "event_sauce");
+        outbox.migrate().await.unwrap();
+        enqueue_one(&outbox, "policy-a", 1).await;
+
+        let claims = outbox
+            .claim_batch("policy-a", "w-1", 10, Duration::from_secs(60))
+            .await
+            .unwrap();
+        let id = claims[0].id;
+
+        sqlx::query("UPDATE event_sauce.policy_outbox SET failures = 5000 WHERE id = $1")
+            .bind(id)
+            .execute(outbox.pool())
+            .await
+            .unwrap();
+
+        let backoff = BackoffPolicy::new(Duration::from_secs(1), Duration::from_secs(300), 0.0);
+        let landed = outbox
+            .mark_failed(id, "w-1", "still failing", None, backoff)
+            .await
+            .unwrap();
+        assert!(landed, "the exponent must be clamped, never overflow");
+
+        let locked_until_offset = locked_until_offset_secs(&outbox, id).await;
+        assert!(
+            (299.0..=300.5).contains(&locked_until_offset),
+            "expected the cap (~300s) once failures is this large, got {locked_until_offset}"
+        );
     }
 
     #[tokio::test]
@@ -625,7 +877,7 @@ mod tests {
             .unwrap();
         // attempts is now 1; with max_attempts=1, this counts as failed.
         assert!(outbox
-            .mark_failed(claims[0].id, "w-1", "permanent", Some(1))
+            .mark_failed(claims[0].id, "w-1", "permanent", Some(1), no_backoff())
             .await
             .unwrap());
 
@@ -688,6 +940,18 @@ mod tests {
             .unwrap()
     }
 
+    /// Seconds between `NOW()` and the row's `locked_until` (negative if past).
+    async fn locked_until_offset_secs(outbox: &PostgresPolicyOutbox, id: i64) -> f64 {
+        sqlx::query_scalar(
+            "SELECT EXTRACT(EPOCH FROM (locked_until - NOW()))::float8
+             FROM event_sauce.policy_outbox WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_one(outbox.pool())
+        .await
+        .unwrap()
+    }
+
     #[tokio::test]
     async fn test_outbox_dlq_keys_off_failures_not_claims() {
         let db = TestDb::new().await;
@@ -723,7 +987,7 @@ mod tests {
         // second failure -> failed (2 >= 2). It must NOT flip to failed on the
         // first failure just because `attempts` (claims) already reached 3.
         outbox
-            .mark_failed(id, "crasher", "transient", Some(2))
+            .mark_failed(id, "crasher", "transient", Some(2), no_backoff())
             .await
             .unwrap();
         let status = status_of(&outbox, id).await;
@@ -743,7 +1007,7 @@ mod tests {
             "row must still be claimable after 1st failure"
         );
         outbox
-            .mark_failed(claims[0].id, "retrier", "permanent", Some(2))
+            .mark_failed(claims[0].id, "retrier", "permanent", Some(2), no_backoff())
             .await
             .unwrap();
         let status = status_of(&outbox, id).await;
@@ -783,7 +1047,6 @@ mod tests {
         );
         assert_eq!(status_of(&outbox, id).await, "pending");
 
-        // Worker B, the legitimate owner, can ack.
         let landed = outbox.mark_done(id, "worker-b").await.unwrap();
         assert!(landed, "the current owner must be able to mark it done");
         assert_eq!(status_of(&outbox, id).await, "done");
@@ -811,7 +1074,7 @@ mod tests {
             .unwrap();
 
         let landed = outbox
-            .mark_failed(id, "worker-a", "stale", Some(3))
+            .mark_failed(id, "worker-a", "stale", Some(3), no_backoff())
             .await
             .unwrap();
         assert!(
@@ -840,7 +1103,7 @@ mod tests {
         assert_eq!(status_of(&outbox, id).await, "done");
 
         let landed = outbox
-            .mark_failed(id, "worker-a", "late failure report", Some(3))
+            .mark_failed(id, "worker-a", "late failure report", Some(3), no_backoff())
             .await
             .unwrap();
         assert!(!landed, "a done row must never be resurrected");

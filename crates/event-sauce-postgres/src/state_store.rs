@@ -581,7 +581,7 @@ impl StateStore for PostgresStateStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::StateOutboxHandler;
+    use crate::{BackoffPolicy, StateOutboxHandler};
     use event_sauce_core::{
         command_handler, define_events, Aggregate, AggregateClaim, AggregateError, AggregateType,
         Entity, EntityId, EventFilter, Repository,
@@ -593,6 +593,12 @@ mod tests {
     use std::time::Duration;
     use testcontainers_modules::postgres::Postgres;
     use uuid::Uuid;
+
+    /// A zero backoff, for tests exercising claim/retry semantics that
+    /// predate backoff and expect a failed row to be immediately reclaimable.
+    fn no_backoff() -> BackoffPolicy {
+        BackoffPolicy::new(Duration::ZERO, Duration::ZERO, 0.0)
+    }
 
     struct TestDb {
         pool: PgPool,
@@ -1221,7 +1227,8 @@ mod tests {
         let dispatcher = store
             .outbox()
             .dispatcher(Arc::new(AlwaysFailingHandler))
-            .with_max_failures(Some(2));
+            .with_max_failures(Some(2))
+            .with_backoff(no_backoff());
 
         assert_eq!(dispatcher.run_once().await.unwrap(), 0);
         let (status, failures): (String, i32) =
@@ -1250,6 +1257,110 @@ mod tests {
         assert_eq!(outbox_row_count(&db.pool).await, 1, "DLQ rows are kept");
     }
 
+    /// Retrying immediately must not reclaim the row: it is backing off.
+    /// Once the backoff elapses, the row is claimable (and fails) again.
+    /// Uses a long backoff and backdates `locked_until` by SQL instead of
+    /// sleeping past a short one, so the assertion never races the clock.
+    #[tokio::test]
+    async fn test_dispatcher_backoff_delays_retry_claim() {
+        let db = TestDb::new().await;
+        let store = db.migrated(db.store_builder().with_outbox()).await;
+        let repo = store.repository::<Ticket>();
+
+        let mut ticket = Ticket::open("Backoff".to_string()).unwrap();
+        repo.save(&mut ticket).await.unwrap();
+
+        let dispatcher = store
+            .outbox()
+            .dispatcher(Arc::new(AlwaysFailingHandler))
+            .with_max_failures(None)
+            .with_backoff(BackoffPolicy::new(
+                Duration::from_secs(60),
+                Duration::from_secs(300),
+                0.0,
+            ));
+
+        dispatcher.run_once().await.unwrap();
+        let (failures,): (i32,) = sqlx::query_as("SELECT failures FROM event_sauce.state_outbox")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        assert_eq!(failures, 1);
+
+        dispatcher.run_once().await.unwrap();
+        let (still_one,): (i32,) = sqlx::query_as("SELECT failures FROM event_sauce.state_outbox")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            still_one, 1,
+            "an immediate retry must not reclaim a row that is backing off"
+        );
+
+        sqlx::query(
+            "UPDATE event_sauce.state_outbox SET locked_until = NOW() - INTERVAL '1 second'",
+        )
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        dispatcher.run_once().await.unwrap();
+        let (after_backoff,): (i32,) =
+            sqlx::query_as("SELECT failures FROM event_sauce.state_outbox")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            after_backoff, 2,
+            "the row must become reclaimable once its backoff elapses"
+        );
+    }
+
+    /// Retry-forever mode (`max_failures=None`) can drive `failures` far past
+    /// the point where `base * 2^failures` overflows float8, well before any
+    /// sane cap would ever be reached.
+    #[tokio::test]
+    async fn test_mark_failed_does_not_overflow_with_many_failures() {
+        let db = TestDb::new().await;
+        let store = db.migrated(db.store_builder().with_outbox()).await;
+        let repo = store.repository::<Ticket>();
+        let outbox = store.outbox();
+
+        let mut ticket = Ticket::open("ManyFailures".to_string()).unwrap();
+        repo.save(&mut ticket).await.unwrap();
+
+        let claims = outbox
+            .claim_batch("w-1", 10, Duration::from_secs(60))
+            .await
+            .unwrap();
+        let id = claims[0].id;
+
+        sqlx::query("UPDATE event_sauce.state_outbox SET failures = 5000 WHERE id = $1")
+            .bind(id)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+
+        let backoff = BackoffPolicy::new(Duration::from_secs(1), Duration::from_secs(300), 0.0);
+        let landed = outbox
+            .mark_failed(id, "w-1", "still failing", None, backoff)
+            .await
+            .unwrap();
+        assert!(landed, "the exponent must be clamped, never overflow");
+
+        let (offset_secs,): (f64,) = sqlx::query_as(
+            "SELECT EXTRACT(EPOCH FROM (locked_until - NOW()))::float8
+             FROM event_sauce.state_outbox WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert!(
+            (299.0..=300.5).contains(&offset_secs),
+            "expected the cap (~300s) once failures is this large, got {offset_secs}"
+        );
+    }
+
     #[tokio::test]
     async fn test_transient_handler_failure_retries_to_success() {
         let db = TestDb::new().await;
@@ -1264,7 +1375,8 @@ mod tests {
             .dispatcher(Arc::new(FailOnceHandler {
                 failed: AtomicBool::new(false),
             }))
-            .with_max_failures(Some(3));
+            .with_max_failures(Some(3))
+            .with_backoff(no_backoff());
 
         assert_eq!(dispatcher.run_once().await.unwrap(), 0);
         assert_eq!(dispatcher.run_once().await.unwrap(), 1);
@@ -1343,7 +1455,7 @@ mod tests {
             .unwrap();
 
         let landed = outbox
-            .mark_failed(id, "worker-a", "stale", Some(3))
+            .mark_failed(id, "worker-a", "stale", Some(3), no_backoff())
             .await
             .unwrap();
         assert!(

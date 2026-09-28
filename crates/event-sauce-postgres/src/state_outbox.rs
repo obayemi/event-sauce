@@ -223,11 +223,15 @@ impl PostgresStateOutbox {
     /// claimant's lock or resurrecting an already-pruned row.
     ///
     /// Increments the row's `failures` counter and releases its lock. While
-    /// `failures` stays below `max_failures` the row returns to `pending` for
-    /// the next claim sweep; once it reaches `max_failures` it is parked in
-    /// `failed` status permanently (DLQ) for operational inspection — reset it
-    /// to `pending` manually to retry after an external fix. With
-    /// `max_failures` of `None` the row retries forever.
+    /// `failures` stays below `max_failures` the row returns to `pending` —
+    /// but not immediately reclaimable: `backoff` sets its `locked_until`
+    /// into the future so N polling workers don't all retry it on the very
+    /// next sweep. Once it reaches `max_failures` it is parked in `failed`
+    /// status permanently (DLQ) for operational inspection — reset it to
+    /// `pending` manually to retry after an external fix. With
+    /// `max_failures` of `None` the row retries forever — `backoff`'s
+    /// exponent is clamped so its delay never overflows however large
+    /// `failures` gets in that mode.
     ///
     /// # Errors
     ///
@@ -238,6 +242,7 @@ impl PostgresStateOutbox {
         worker_id: &str,
         error_message: &str,
         max_failures: Option<i32>,
+        backoff: crate::BackoffPolicy,
     ) -> Result<bool> {
         let outbox_table = self.outbox_table();
         let query = format!(
@@ -248,8 +253,10 @@ impl PostgresStateOutbox {
                     ELSE 'pending'
                  END,
                  locked_by = NULL,
-                 locked_until = NULL,
-                 last_error = $4,
+                 locked_until = NOW() + make_interval(secs =>
+                    LEAST($5::float8, $4::float8 * POWER(2, LEAST(failures, 30)))
+                    * (1 + random() * $6::float8)),
+                 last_error = $7,
                  updated_at = NOW()
              WHERE id = $1 AND locked_by = $2
              RETURNING id"
@@ -258,6 +265,9 @@ impl PostgresStateOutbox {
             .bind(id)
             .bind(worker_id)
             .bind(max_failures)
+            .bind(backoff.base().as_secs_f64())
+            .bind(backoff.cap().as_secs_f64())
+            .bind(backoff.jitter())
             .bind(error_message)
             .fetch_optional(&self.pool)
             .await
@@ -295,6 +305,7 @@ impl PostgresStateOutbox {
             batch_size: DEFAULT_BATCH_SIZE,
             lock_duration: DEFAULT_LOCK_DURATION,
             max_failures: Some(DEFAULT_MAX_FAILURES),
+            backoff: crate::BackoffPolicy::default(),
         }
     }
 }
@@ -318,6 +329,7 @@ pub struct StateOutboxDispatcher {
     batch_size: u32,
     lock_duration: Duration,
     max_failures: Option<i32>,
+    backoff: crate::BackoffPolicy,
 }
 
 impl StateOutboxDispatcher {
@@ -349,6 +361,14 @@ impl StateOutboxDispatcher {
     #[must_use]
     pub fn with_max_failures(mut self, max_failures: Option<i32>) -> Self {
         self.max_failures = max_failures;
+        self
+    }
+
+    /// Sets the backoff applied to a row returned to `pending` after a
+    /// handler failure (default: [`BackoffPolicy::default`](crate::BackoffPolicy::default)).
+    #[must_use]
+    pub fn with_backoff(mut self, backoff: crate::BackoffPolicy) -> Self {
+        self.backoff = backoff;
         self
     }
 
@@ -391,7 +411,13 @@ impl StateOutboxDispatcher {
                 }
                 Err(e) => {
                     self.outbox
-                        .mark_failed(claim.id, &self.worker_id, &e.to_string(), self.max_failures)
+                        .mark_failed(
+                            claim.id,
+                            &self.worker_id,
+                            &e.to_string(),
+                            self.max_failures,
+                            self.backoff,
+                        )
                         .await?;
                 }
             }
