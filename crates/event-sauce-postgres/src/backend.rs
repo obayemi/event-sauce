@@ -172,6 +172,7 @@ impl PostgresBackend {
                 break;
             }
 
+            let mut checkpointed_position = current_position;
             for entry in batch {
                 current_position = entry.position;
 
@@ -191,6 +192,17 @@ impl PostgresBackend {
                 tx.commit().await.map_err(|e| {
                     event_sauce_core::Error::backend("Failed to commit projection transaction", e)
                 })?;
+                checkpointed_position = current_position;
+            }
+
+            if checkpointed_position != current_position {
+                // The batch's tail was unmatched, so no per-event save above
+                // reached the true high-water mark. Advance the checkpoint
+                // over it now — cheaply, with no transaction — so the next
+                // tick's fetch starts past it instead of re-scanning it.
+                self.checkpoint_store
+                    .save_checkpoint(P::NAME, current_position)
+                    .await?;
             }
         }
 
@@ -567,6 +579,7 @@ impl PostgresBackend {
                 break;
             }
 
+            let mut checkpointed_position = current_position;
             for entry in batch {
                 current_position = entry.position;
 
@@ -604,6 +617,35 @@ impl PostgresBackend {
                     return Err(event_sauce_core::Error::lease_lost(P::NAME, worker_id));
                 }
 
+                tx.commit().await.map_err(|e| {
+                    event_sauce_core::Error::backend("Failed to commit projection transaction", e)
+                })?;
+                checkpointed_position = current_position;
+            }
+
+            if checkpointed_position != current_position {
+                // The batch's tail was unmatched: advance the fenced
+                // checkpoint over it too, in its own small transaction, so a
+                // restart (or the next `wait_for_checkpoint` poll) does not
+                // re-fetch it. Still fenced — an unfenced advance here would
+                // let a stalled worker move the checkpoint after losing the
+                // lease, same risk the per-event fenced save guards against.
+                let mut tx = self.pool.begin().await.map_err(|e| {
+                    event_sauce_core::Error::backend("Failed to start projection transaction", e)
+                })?;
+                let landed = self
+                    .checkpoint_store
+                    .save_checkpoint_fenced_tx(&mut tx, P::NAME, worker_id, current_position)
+                    .await?;
+                if !landed {
+                    tx.rollback().await.map_err(|e| {
+                        event_sauce_core::Error::backend(
+                            "Failed to roll back projection transaction",
+                            e,
+                        )
+                    })?;
+                    return Err(event_sauce_core::Error::lease_lost(P::NAME, worker_id));
+                }
                 tx.commit().await.map_err(|e| {
                     event_sauce_core::Error::backend("Failed to commit projection transaction", e)
                 })?;
@@ -1281,6 +1323,52 @@ mod tests {
         );
     }
 
+    /// Two matched `TestEvent`s, then an unmatched event type as the LAST
+    /// event of the (single-fetch) batch.
+    #[tokio::test]
+    async fn test_run_postgres_projection_checkpoint_advances_past_unmatched_tail() {
+        let (url, _container) = start_test_db().await;
+        let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
+        CountingProjection::migrate(backend.pool(), "event_sauce").await;
+
+        let store = backend.event_store();
+        append_test_event(&store, AggregateVersion::initial()).await;
+        append_test_event(&store, AggregateVersion::initial()).await;
+        append_typed(
+            &store,
+            "TestAggregate".to_string(),
+            "OtherEvent".to_string(),
+        )
+        .await;
+
+        let mut projection = CountingProjection {
+            fail_after: None,
+            seen: 0,
+        };
+        backend
+            .run_postgres_projection(&mut projection)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            CountingProjection::read(backend.pool(), "event_sauce").await,
+            2,
+            "only the matched events are applied"
+        );
+        let checkpoint = backend
+            .checkpoint_store()
+            .load_checkpoint(<CountingProjection as crate::PostgresProjection>::NAME)
+            .await
+            .unwrap();
+        assert_eq!(
+            checkpoint,
+            Some(Position::new(3)),
+            "the checkpoint must advance past the unmatched tail event, not \
+             stall at the last matched one — otherwise every tick re-fetches \
+             the whole unmatched tail again"
+        );
+    }
+
     /// Records the event UUID of every envelope it handles into a postgres
     /// table — one row per `handle` call. A duplicate UUID row therefore means
     /// the same event was handled more than once within a run.
@@ -1510,6 +1598,52 @@ mod tests {
         assert_eq!(
             CountingProjection::read(backend.pool(), "event_sauce").await,
             3
+        );
+    }
+
+    #[tokio::test]
+    async fn test_run_leased_projection_checkpoint_advances_past_unmatched_tail() {
+        let (url, _container) = start_test_db().await;
+        let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
+        CountingProjection::migrate(backend.pool(), "event_sauce").await;
+
+        let store = backend.event_store();
+        append_test_event(&store, AggregateVersion::initial()).await;
+        append_test_event(&store, AggregateVersion::initial()).await;
+        append_typed(
+            &store,
+            "TestAggregate".to_string(),
+            "OtherEvent".to_string(),
+        )
+        .await;
+
+        let mut projection = CountingProjection {
+            fail_after: None,
+            seen: 0,
+        };
+        let outcome = backend
+            .run_leased_projection(
+                &mut projection,
+                "worker-1",
+                std::time::Duration::from_secs(30),
+            )
+            .await
+            .unwrap();
+        assert_eq!(outcome, crate::LeaseOutcome::Completed);
+        assert_eq!(
+            CountingProjection::read(backend.pool(), "event_sauce").await,
+            2
+        );
+
+        let checkpoint = backend
+            .checkpoint_store()
+            .load_checkpoint(<CountingProjection as crate::PostgresProjection>::NAME)
+            .await
+            .unwrap();
+        assert_eq!(
+            checkpoint,
+            Some(Position::new(3)),
+            "the fenced checkpoint must advance past the unmatched tail too"
         );
     }
 
