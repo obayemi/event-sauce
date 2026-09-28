@@ -431,6 +431,8 @@ impl PostgresEventStore {
         self.migrate_aggregate_claims(&migrations_table).await?;
         self.migrate_snapshot_schema_version(&migrations_table)
             .await?;
+        self.migrate_crypto_keys_shredded_at(&migrations_table)
+            .await?;
         Ok(())
     }
 
@@ -579,6 +581,27 @@ impl PostgresEventStore {
                         Error::backend("Failed to add snapshot_schema_version column", e)
                     })?;
                 Ok(())
+            },
+        )
+        .await
+    }
+
+    /// Migration 5: adds the `shredded_at` marker column to `crypto_keys`.
+    ///
+    /// Callers who never construct their own [`PostgresCryptoKeyStore`] and
+    /// call its `migrate()` still get the default key store installed by
+    /// [`PostgresEventStoreBuilder::build`](crate::PostgresEventStoreBuilder::build),
+    /// so this store's `migrate()` must bring that same table up to date
+    /// rather than assume the key store's own migration ran.
+    async fn migrate_crypto_keys_shredded_at(&self, migrations_table: &str) -> Result<()> {
+        let crypto_keys_table = self.qualify_table("crypto_keys");
+        crate::migrations::apply_once(
+            &self.pool,
+            migrations_table,
+            20_260_930_000_000_i64,
+            "add_crypto_keys_shredded_at",
+            move |pool| async move {
+                crate::crypto_key_store::add_shredded_at_column(pool, &crypto_keys_table).await
             },
         )
         .await

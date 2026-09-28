@@ -38,6 +38,12 @@ pub trait CryptoKeyStore: Send + Sync {
 
     /// Inserts or updates the encryption key for an aggregate.
     ///
+    /// This is an explicit key rotation and always wins: it un-shreds a
+    /// previously shredded aggregate, clearing whatever tombstone
+    /// [`delete_key`](Self::delete_key) left. Only the automatic
+    /// [`get_or_insert_key`](Self::get_or_insert_key) path must respect a
+    /// previous shred; every implementation follows this same contract.
+    ///
     /// # Errors
     ///
     /// Returns an error if the underlying storage fails.
@@ -45,8 +51,12 @@ pub trait CryptoKeyStore: Send + Sync {
 
     /// Deletes the encryption key for an aggregate (crypto-shredding).
     ///
-    /// After deletion, the aggregate's encrypted data is permanently unreadable.
+    /// After deletion, the aggregate's encrypted data is permanently
+    /// unreadable, and [`is_shredded`](Self::is_shredded) reports `true` for
+    /// it until a later [`upsert_key`](Self::upsert_key) clears the marker.
     /// This operation is idempotent — deleting a non-existent key succeeds.
+    /// "Has a key" and "is shredded" are mutually exclusive states;
+    /// implementations must not let a reader observe both at once.
     ///
     /// # Errors
     ///
@@ -67,10 +77,44 @@ pub trait CryptoKeyStore: Send + Sync {
     /// and the last upsert win, silently orphaning the other caller's
     /// already-encrypted data.
     ///
+    /// If `aggregate_id` was shredded, this call MUST refuse instead of
+    /// reviving it: it returns [`Error::key_not_found`](crate::Error::key_not_found)
+    /// and inserts nothing, in the same atomic step as the insert-if-absent
+    /// check. This is what makes shredding permanent under concurrency — a
+    /// separate [`is_shredded`](Self::is_shredded) pre-check is a racy round
+    /// trip on its own and cannot provide this guarantee.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::key_not_found`](crate::Error::key_not_found) if
+    /// `aggregate_id` was shredded, or an error if the underlying storage
+    /// fails.
+    async fn get_or_insert_key(&self, aggregate_id: Uuid, candidate: Vec<u8>) -> Result<Vec<u8>>;
+
+    /// Returns `true` if `aggregate_id`'s key was deliberately shredded
+    /// (crypto-shredded via [`delete_key`](Self::delete_key)), as opposed to
+    /// simply never having had a key.
+    ///
+    /// This is a fast-path hint only, for a caller that wants to reject a
+    /// shredded aggregate before doing any encryption work. It is not what
+    /// makes shredding permanent: checking it and then calling
+    /// [`get_or_insert_key`](Self::get_or_insert_key) is two round trips, and
+    /// a concurrent writer can insert a key in between. Permanence comes
+    /// from [`get_or_insert_key`](Self::get_or_insert_key) itself refusing a
+    /// shredded aggregate atomically; this method exists only to answer the
+    /// question cheaply elsewhere.
+    ///
+    /// The default implementation always answers `false`. A store that does
+    /// not track shredding at all still answers `false` here, but SHOULD
+    /// still refuse in [`get_or_insert_key`](Self::get_or_insert_key) if it
+    /// persists a shredded marker there.
+    ///
     /// # Errors
     ///
     /// Returns an error if the underlying storage fails.
-    async fn get_or_insert_key(&self, aggregate_id: Uuid, candidate: Vec<u8>) -> Result<Vec<u8>>;
+    async fn is_shredded(&self, _aggregate_id: Uuid) -> Result<bool> {
+        Ok(false)
+    }
 }
 
 /// Pluggable encryption/decryption provider.

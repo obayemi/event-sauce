@@ -484,6 +484,39 @@ async fn multiple_encrypted_aggregates_use_different_keys() {
     assert_eq!(loaded2.entity().name, "User2");
 }
 
+#[tokio::test]
+async fn shredded_aggregate_cannot_be_saved_again() {
+    let (store, key_store) = create_store_with_crypto();
+    let id = EntityId::new();
+
+    let mut agg = AggregateRoot::<SecretUser>::new(id);
+    agg.apply(SecretUserEvent::Created {
+        name: "Ivy".into(),
+        email: "ivy@example.com".into(),
+    })
+    .unwrap();
+    store.commit(&mut agg).await.unwrap();
+
+    key_store.delete_key(id.as_uuid()).await.unwrap();
+
+    let mut agg = AggregateRoot::<SecretUser>::new(id);
+    agg.apply(SecretUserEvent::EmailChanged {
+        email: "ivy.new@example.com".into(),
+    })
+    .unwrap();
+    let result = store.commit(&mut agg).await;
+
+    assert!(result.is_err());
+    assert!(
+        result.unwrap_err().is_key_not_found(),
+        "saving a shredded aggregate must fail instead of re-keying it"
+    );
+    assert!(
+        key_store.get_key(id.as_uuid()).await.unwrap().is_none(),
+        "no key must have been created for the shredded aggregate"
+    );
+}
+
 /// Wraps [`InMemoryCryptoKeyStore`], rendezvousing the first two `get_key`
 /// callers at a barrier before either sees a result.
 ///

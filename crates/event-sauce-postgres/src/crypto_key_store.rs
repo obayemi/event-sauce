@@ -127,8 +127,47 @@ impl PostgresCryptoKeyStore {
                 Ok(())
             },
         )
+        .await?;
+
+        let crypto_keys_table = self.qualify_table("crypto_keys");
+        crate::migrations::apply_once(
+            &self.pool,
+            &migrations_table,
+            20_250_301_000_001_i64,
+            "add_crypto_keys_shredded_at",
+            |pool| async move { add_shredded_at_column(pool, &crypto_keys_table).await },
+        )
         .await
     }
+}
+
+/// Relaxes `key_data` to nullable and adds the `shredded_at` marker column.
+///
+/// A shredded key row keeps its `aggregate_id` with `key_data` cleared and
+/// `shredded_at` stamped, so a shred is remembered even after the key
+/// itself is gone, instead of looking like a row that was never created.
+///
+/// Both [`PostgresCryptoKeyStore::migrate`] and `PostgresEventStore::migrate`
+/// run this step against the same `crypto_keys` table, since a caller who
+/// only ever runs the event store's `migrate()` — the default key store's
+/// own `migrate()` is never called for them — still needs this column to
+/// exist before the first encrypted commit.
+pub(crate) async fn add_shredded_at_column(pool: &PgPool, crypto_keys_table: &str) -> Result<()> {
+    let alter = format!("ALTER TABLE {crypto_keys_table} ALTER COLUMN key_data DROP NOT NULL");
+    sqlx::query(&alter)
+        .execute(pool)
+        .await
+        .map_err(|e| Error::backend("Failed to relax crypto_keys.key_data", e))?;
+
+    let add_column = format!(
+        "ALTER TABLE {crypto_keys_table} \
+         ADD COLUMN IF NOT EXISTS shredded_at TIMESTAMP WITH TIME ZONE"
+    );
+    sqlx::query(&add_column)
+        .execute(pool)
+        .await
+        .map_err(|e| Error::backend("Failed to add crypto_keys.shredded_at", e))?;
+    Ok(())
 }
 
 impl PostgresCryptoKeyStoreBuilder {
@@ -182,7 +221,10 @@ impl Default for PostgresCryptoKeyStoreBuilder {
 impl CryptoKeyStore for PostgresCryptoKeyStore {
     async fn get_key(&self, aggregate_id: Uuid) -> Result<Option<Vec<u8>>> {
         let crypto_keys_table = self.qualify_table("crypto_keys");
-        let query = format!("SELECT key_data FROM {crypto_keys_table} WHERE aggregate_id = $1");
+        let query = format!(
+            "SELECT key_data FROM {crypto_keys_table}
+             WHERE aggregate_id = $1 AND shredded_at IS NULL"
+        );
 
         let key_data: Option<Vec<u8>> = sqlx::query_scalar(&query)
             .bind(aggregate_id)
@@ -193,13 +235,17 @@ impl CryptoKeyStore for PostgresCryptoKeyStore {
         Ok(key_data)
     }
 
+    /// An explicit upsert (key rotation) always wins and un-shreds the
+    /// aggregate — only the automatic
+    /// [`get_or_insert_key`](CryptoKeyStore::get_or_insert_key) path must
+    /// respect a previous shred.
     async fn upsert_key(&self, aggregate_id: Uuid, key: Vec<u8>) -> Result<()> {
         let crypto_keys_table = self.qualify_table("crypto_keys");
         let query = format!(
             "INSERT INTO {crypto_keys_table} (aggregate_id, key_data)
              VALUES ($1, $2)
              ON CONFLICT (aggregate_id)
-             DO UPDATE SET key_data = $2"
+             DO UPDATE SET key_data = $2, shredded_at = NULL"
         );
 
         sqlx::query(&query)
@@ -212,9 +258,17 @@ impl CryptoKeyStore for PostgresCryptoKeyStore {
         Ok(())
     }
 
+    /// Leaves a tombstone rather than deleting the row, so a later
+    /// [`get_or_insert_key`](CryptoKeyStore::get_or_insert_key) can see the
+    /// aggregate was deliberately shredded instead of never having had a key.
     async fn delete_key(&self, aggregate_id: Uuid) -> Result<()> {
         let crypto_keys_table = self.qualify_table("crypto_keys");
-        let query = format!("DELETE FROM {crypto_keys_table} WHERE aggregate_id = $1");
+        let query = format!(
+            "INSERT INTO {crypto_keys_table} (aggregate_id, key_data, shredded_at)
+             VALUES ($1, NULL, NOW())
+             ON CONFLICT (aggregate_id)
+             DO UPDATE SET key_data = NULL, shredded_at = NOW()"
+        );
 
         sqlx::query(&query)
             .bind(aggregate_id)
@@ -228,6 +282,9 @@ impl CryptoKeyStore for PostgresCryptoKeyStore {
     /// `DO UPDATE SET key_data = <table>.key_data` is a no-op write that lets
     /// the conflicting row be returned by the same statement, so the insert
     /// and the "someone already won" read happen as one atomic operation.
+    /// The conflicting row's `key_data` comes back `NULL` when the aggregate
+    /// was shredded, which is reported as `KeyNotFound` rather than handed
+    /// back as a bogus empty key.
     async fn get_or_insert_key(&self, aggregate_id: Uuid, candidate: Vec<u8>) -> Result<Vec<u8>> {
         let crypto_keys_table = self.qualify_table("crypto_keys");
         let query = format!(
@@ -238,14 +295,30 @@ impl CryptoKeyStore for PostgresCryptoKeyStore {
              RETURNING key_data"
         );
 
-        let key_data: Vec<u8> = sqlx::query_scalar(&query)
+        let key_data: Option<Vec<u8>> = sqlx::query_scalar(&query)
             .bind(aggregate_id)
             .bind(&candidate)
             .fetch_one(&self.pool)
             .await
             .map_err(|e| Error::backend("Failed to get or insert crypto key", e))?;
 
-        Ok(key_data)
+        key_data.ok_or_else(|| Error::key_not_found(aggregate_id))
+    }
+
+    async fn is_shredded(&self, aggregate_id: Uuid) -> Result<bool> {
+        let crypto_keys_table = self.qualify_table("crypto_keys");
+        let query = format!(
+            "SELECT EXISTS(
+                SELECT 1 FROM {crypto_keys_table}
+                WHERE aggregate_id = $1 AND shredded_at IS NOT NULL
+             )"
+        );
+
+        sqlx::query_scalar(&query)
+            .bind(aggregate_id)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| Error::backend("Failed to check shredded status", e))
     }
 }
 
@@ -531,6 +604,72 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_is_shredded_is_false_before_any_delete() {
+        let db = TestDatabase::new().await.unwrap();
+        let store = db.store();
+        store.migrate().await.unwrap();
+
+        assert!(!store.is_shredded(Uuid::new_v4()).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_delete_key_marks_the_aggregate_shredded() {
+        let db = TestDatabase::new().await.unwrap();
+        let store = db.store();
+        store.migrate().await.unwrap();
+        let id = Uuid::new_v4();
+        store.upsert_key(id, vec![1, 2, 3]).await.unwrap();
+
+        store.delete_key(id).await.unwrap();
+
+        assert!(store.is_shredded(id).await.unwrap());
+        assert!(store.get_key(id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_delete_key_shreds_an_aggregate_with_no_prior_key() {
+        let db = TestDatabase::new().await.unwrap();
+        let store = db.store();
+        store.migrate().await.unwrap();
+        let id = Uuid::new_v4();
+
+        store.delete_key(id).await.unwrap();
+
+        assert!(store.is_shredded(id).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_get_or_insert_key_fails_for_a_shredded_aggregate() {
+        let db = TestDatabase::new().await.unwrap();
+        let store = db.store();
+        store.migrate().await.unwrap();
+        let id = Uuid::new_v4();
+        store.upsert_key(id, vec![1, 2, 3]).await.unwrap();
+        store.delete_key(id).await.unwrap();
+
+        let result = store.get_or_insert_key(id, vec![9, 9, 9]).await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().is_key_not_found());
+        assert!(store.get_key(id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_upsert_key_clears_a_shredded_marker() {
+        let db = TestDatabase::new().await.unwrap();
+        let store = db.store();
+        store.migrate().await.unwrap();
+        let id = Uuid::new_v4();
+        store.upsert_key(id, vec![1, 2, 3]).await.unwrap();
+        store.delete_key(id).await.unwrap();
+
+        store.upsert_key(id, vec![4, 5, 6]).await.unwrap();
+
+        assert!(!store.is_shredded(id).await.unwrap());
+        assert_eq!(store.get_key(id).await.unwrap(), Some(vec![4, 5, 6]));
+    }
+
+    #[tokio::test]
     async fn test_store_is_cloneable() {
         let db = TestDatabase::new().await.unwrap();
         let store = db.store();
@@ -544,5 +683,129 @@ mod tests {
         let loaded = store_clone.get_key(id).await.unwrap();
 
         assert_eq!(loaded, Some(key_data));
+    }
+
+    mod encrypted_aggregate_through_event_store {
+        use super::*;
+        use event_sauce_core::{
+            Aggregate, AggregateError, AggregateRoot, ApplyEvent, DomainEvent, Entity, EntityId,
+            EventApplicator, EventStore, EventVersion, Repository,
+        };
+        use serde::{Deserialize, Serialize};
+        use std::sync::Arc;
+
+        #[derive(Debug, Clone, Serialize, Deserialize)]
+        struct SecretUser {
+            id: EntityId,
+            email: String,
+        }
+
+        impl Entity for SecretUser {
+            fn new(id: EntityId) -> Self {
+                Self {
+                    id,
+                    email: String::new(),
+                }
+            }
+            fn entity_id(&self) -> EntityId {
+                self.id
+            }
+        }
+
+        impl event_sauce_core::DefaultEntity for SecretUser {}
+
+        impl Aggregate for SecretUser {
+            type Event = SecretUserEvent;
+            type Error = SecretUserError;
+            type DeletedState = Self;
+
+            fn is_encrypted() -> bool {
+                true
+            }
+        }
+
+        #[derive(Debug, Clone, Serialize, Deserialize)]
+        enum SecretUserEvent {
+            Created { email: String },
+        }
+
+        impl DomainEvent for SecretUserEvent {
+            type Aggregate = SecretUser;
+            fn event_type(&self) -> &'static str {
+                "SecretUser.Created"
+            }
+            fn event_version(&self) -> EventVersion {
+                EventVersion::new(1)
+            }
+            fn occurred_at(&self) -> chrono::DateTime<chrono::Utc> {
+                chrono::Utc::now()
+            }
+        }
+
+        impl ApplyEvent<SecretUser> for SecretUserEvent {
+            fn apply(&self, entity: &mut SecretUser) {
+                let Self::Created { email } = self;
+                entity.email = email.clone();
+            }
+        }
+
+        impl EventApplicator<SecretUser> for SecretUserEvent {
+            fn dispatch(
+                &self,
+                entity: &mut SecretUser,
+            ) -> std::result::Result<(), SecretUserError> {
+                ApplyEvent::apply(self, entity);
+                Ok(())
+            }
+            fn dispatch_unchecked(&self, entity: &mut SecretUser) {
+                ApplyEvent::apply(self, entity);
+            }
+        }
+
+        #[derive(Debug, thiserror::Error)]
+        #[error("secret user error")]
+        struct SecretUserError;
+        impl AggregateError for SecretUserError {}
+
+        /// The default key store `PostgresEventStore::builder().build()` installs
+        /// must share the same `crypto_keys` table shape that
+        /// `PostgresEventStore::migrate()` creates, since callers only ever run
+        /// the event store's own `migrate()`.
+        #[tokio::test]
+        async fn shredding_through_the_default_key_store_round_trips() {
+            let db = TestDatabase::new().await.unwrap();
+            let store = crate::PostgresEventStore::builder()
+                .pool(db.pool().clone())
+                .build()
+                .unwrap();
+            store.migrate().await.unwrap();
+
+            let id = EntityId::new();
+            let mut agg = AggregateRoot::<SecretUser>::new(id);
+            agg.apply(SecretUserEvent::Created {
+                email: "shred-me@example.com".into(),
+            })
+            .unwrap();
+            store.commit(&mut agg).await.unwrap();
+
+            let store = Arc::new(store);
+            let loaded = store.repository::<SecretUser>().load(id).await.unwrap();
+            assert_eq!(loaded.entity().email, "shred-me@example.com");
+
+            let key_store = crate::PostgresCryptoKeyStore::new(db.pool().clone());
+            key_store.delete_key(id.as_uuid()).await.unwrap();
+
+            let mut agg = AggregateRoot::<SecretUser>::new(id);
+            agg.apply(SecretUserEvent::Created {
+                email: "still-shredded@example.com".into(),
+            })
+            .unwrap();
+            let result = store.commit(&mut agg).await;
+
+            assert!(
+                result.unwrap_err().is_key_not_found(),
+                "committing after the key is gone must fail instead of re-keying"
+            );
+        }
     }
 }
