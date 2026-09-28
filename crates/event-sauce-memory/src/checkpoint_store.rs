@@ -145,9 +145,7 @@ impl CheckpointStore for InMemoryCheckpointStore {
         let mut guard = self.inner.write().await;
         let now = Instant::now();
         let Some(entry) = guard.get_mut(subscription_name) else {
-            return Err(Error::custom(format!(
-                "lease lost: no entry for {subscription_name}"
-            )));
+            return Err(Error::lease_lost(subscription_name, worker_id));
         };
         match &entry.lease {
             Some(lease) if lease.worker_id == worker_id && lease.expires_at > now => {
@@ -157,9 +155,7 @@ impl CheckpointStore for InMemoryCheckpointStore {
                 });
                 Ok(())
             }
-            _ => Err(Error::custom(format!(
-                "lease lost: not held by {worker_id}"
-            ))),
+            _ => Err(Error::lease_lost(subscription_name, worker_id)),
         }
     }
 
@@ -407,6 +403,29 @@ mod tests {
             .renew_lease("sub", "worker-a", Duration::from_secs(60))
             .await;
         assert!(result.is_err());
+        assert!(
+            result.unwrap_err().is_lease_lost(),
+            "a lease held by no one must report Error::LeaseLost, not a stringly custom error"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_renew_errors_when_held_by_another_worker() {
+        let store = InMemoryCheckpointStore::new();
+        store
+            .try_acquire_lease("sub", "worker-a", Duration::from_secs(60))
+            .await
+            .unwrap();
+
+        let result = store
+            .renew_lease("sub", "worker-b", Duration::from_secs(60))
+            .await;
+
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().is_lease_lost(),
+            "renewing a lease held by another worker must report Error::LeaseLost"
+        );
     }
 
     #[tokio::test]
