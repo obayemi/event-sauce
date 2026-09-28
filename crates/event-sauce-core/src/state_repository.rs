@@ -96,68 +96,44 @@ where
         Ok(())
     }
 
-    fn prepare_save(aggregate: &AggregateRoot<A>) -> Result<Option<StateCommit>> {
+    /// Shared implementation of `prepare_save`/`prepare_save_deleted`: the two
+    /// differ only in which state a [`CommitSource`](crate::commit_source::CommitSource)
+    /// serializes, whether it carries claims, and whether it is a deletion.
+    fn prepare<R: crate::commit_source::CommitSource<A>>(root: &R) -> Result<Option<StateCommit>> {
         Self::reject_encrypted()?;
-        Self::check_not_poisoned(aggregate.is_poisoned())?;
+        Self::check_not_poisoned(root.is_poisoned())?;
 
-        let pending = aggregate.pending_events_with_actors();
+        let pending = root.pending_events_with_actors();
         if pending.is_empty() {
             return Ok(None);
         }
 
-        let aggregate_id = aggregate.entity_id().as_uuid();
-        #[allow(clippy::cast_possible_wrap)]
-        let pending_count = pending.len() as i64;
-        let expected_version =
-            AggregateVersion::new(aggregate.version().as_i64().saturating_sub(pending_count));
+        let aggregate_id = root.entity_id().as_uuid();
+        let expected_version = root.committed_version();
         let events = envelopes_from_pending::<A::Event>(pending, aggregate_id)?;
 
         Ok(Some(StateCommit {
             state: StoredState {
                 aggregate_id,
-                aggregate_type: A::aggregate_type(),
-                state_data: serde_json::to_value(aggregate.entity())?,
-                version: aggregate.version(),
-                is_deleted: false,
+                aggregate_type: R::aggregate_type(),
+                state_data: root.serialize_state()?,
+                version: root.version(),
+                is_deleted: R::IS_DELETED,
                 schema_version: A::snapshot_version(),
             },
             expected_version,
             events,
-            claims: aggregate.entity().claims(),
-            clear_claims: false,
+            claims: root.claims(),
+            clear_claims: R::IS_DELETED,
         }))
     }
 
+    fn prepare_save(aggregate: &AggregateRoot<A>) -> Result<Option<StateCommit>> {
+        Self::prepare(aggregate)
+    }
+
     fn prepare_save_deleted(aggregate: &DeletedAggregateRoot<A>) -> Result<Option<StateCommit>> {
-        Self::reject_encrypted()?;
-        Self::check_not_poisoned(aggregate.is_poisoned())?;
-
-        let pending = aggregate.pending_events_with_actors();
-        if pending.is_empty() {
-            return Ok(None);
-        }
-
-        let aggregate_id = aggregate.entity_id().as_uuid();
-        #[allow(clippy::cast_possible_wrap)]
-        let pending_count = pending.len() as i64;
-        let expected_version =
-            AggregateVersion::new(aggregate.version().as_i64().saturating_sub(pending_count));
-        let events = envelopes_from_pending::<A::Event>(pending, aggregate_id)?;
-
-        Ok(Some(StateCommit {
-            state: StoredState {
-                aggregate_id,
-                aggregate_type: A::aggregate_type(),
-                state_data: serde_json::to_value(aggregate.state())?,
-                version: aggregate.version(),
-                is_deleted: true,
-                schema_version: A::snapshot_version(),
-            },
-            expected_version,
-            events,
-            claims: vec![],
-            clear_claims: true,
-        }))
+        Self::prepare(aggregate)
     }
 
     fn stream_id_for(id: EntityId) -> StreamId {

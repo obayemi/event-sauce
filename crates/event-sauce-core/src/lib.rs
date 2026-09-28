@@ -46,6 +46,8 @@ mod apply_event;
 mod checkpoint;
 /// Aggregate claims for cross-aggregate uniqueness constraints.
 pub mod claims;
+#[cfg(any(feature = "event-sourcing", feature = "state-store"))]
+mod commit_source;
 /// Cryptographic traits and helpers for encrypted aggregate encryption (crypto-shredding).
 #[cfg(feature = "event-sourcing")]
 pub mod crypto;
