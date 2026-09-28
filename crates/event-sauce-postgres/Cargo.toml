@@ -21,11 +21,9 @@ sqlx = { workspace = true, features = ["postgres"] }
 async-trait.workspace = true
 async-stream.workspace = true
 futures.workspace = true
-serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 chrono.workspace = true
-thiserror.workspace = true
 tokio.workspace = true
 sha2.workspace = true
 
@@ -34,5 +32,7 @@ tokio = { workspace = true, features = ["test-util", "macros", "rt", "rt-multi-t
 serial_test.workspace = true
 anyhow.workspace = true
 paste.workspace = true
+serde.workspace = true
+thiserror.workspace = true
 testcontainers = "0.27"
 testcontainers-modules = { version = "0.15", features = ["postgres"] }
