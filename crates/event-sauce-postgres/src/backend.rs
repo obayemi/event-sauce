@@ -241,26 +241,50 @@ impl PostgresBackend {
         worker_id: &str,
         lease_duration: std::time::Duration,
     ) -> event_sauce_core::Result<crate::LeaseOutcome> {
+        self.with_lease(P::NAME, worker_id, lease_duration, |start_position| {
+            self.run_under_lease(projection, worker_id, lease_duration, start_position)
+        })
+        .await
+    }
+
+    /// Acquires the lease for `name` on behalf of `worker_id`, runs `body`
+    /// with the position the lease started from, and always releases the
+    /// lease on the way out (including on error — releasing a lease we no
+    /// longer hold is a no-op).
+    ///
+    /// Shared by every leased entry point
+    /// ([`run_leased_projection`](Self::run_leased_projection),
+    /// [`rebuild`](Self::rebuild),
+    /// [`dispatch_policies_to_outbox`](Self::dispatch_policies_to_outbox)) so
+    /// the acquire/Busy/release/[`LeaseOutcome`](crate::LeaseOutcome) mapping
+    /// is written once. What runs *under* the lease still differs enough
+    /// between callers (see [`run_under_lease`](Self::run_under_lease) vs.
+    /// [`dispatch_under_lease`](Self::dispatch_under_lease)) that it stays a
+    /// caller-supplied closure rather than being folded in here too.
+    async fn with_lease<F, Fut>(
+        &self,
+        name: &str,
+        worker_id: &str,
+        lease_duration: std::time::Duration,
+        body: F,
+    ) -> event_sauce_core::Result<crate::LeaseOutcome>
+    where
+        F: FnOnce(event_sauce_core::Position) -> Fut,
+        Fut: std::future::Future<Output = event_sauce_core::Result<()>>,
+    {
         use event_sauce_core::CheckpointStore;
 
         let Some(start_position) = self
             .checkpoint_store
-            .try_acquire_lease(P::NAME, worker_id, lease_duration)
+            .try_acquire_lease(name, worker_id, lease_duration)
             .await?
         else {
             return Ok(crate::LeaseOutcome::Busy);
         };
 
-        let result = self
-            .run_under_lease(projection, worker_id, lease_duration, start_position)
-            .await;
+        let result = body(start_position).await;
 
-        // Always try to release on exit, including on error. Releasing a
-        // lease we no longer hold is a no-op.
-        let _ = self
-            .checkpoint_store
-            .release_lease(P::NAME, worker_id)
-            .await;
+        let _ = self.checkpoint_store.release_lease(name, worker_id).await;
 
         result.map(|()| crate::LeaseOutcome::Completed)
     }
@@ -328,30 +352,12 @@ impl PostgresBackend {
         worker_id: &str,
         lease_duration: std::time::Duration,
     ) -> event_sauce_core::Result<crate::LeaseOutcome> {
-        use event_sauce_core::CheckpointStore;
-
-        let Some(_held_position) = self
-            .checkpoint_store
-            .try_acquire_lease(P::NAME, worker_id, lease_duration)
-            .await?
-        else {
-            // Another worker owns the lease: leave the read-model and
-            // checkpoint untouched and let the caller retry later.
-            return Ok(crate::LeaseOutcome::Busy);
-        };
-
-        let result = self
-            .rebuild_under_lease(projection, worker_id, lease_duration)
-            .await;
-
-        // Always try to release on exit, including on error. Releasing a lease
-        // we no longer hold is a no-op.
-        let _ = self
-            .checkpoint_store
-            .release_lease(P::NAME, worker_id)
-            .await;
-
-        result.map(|()| crate::LeaseOutcome::Completed)
+        // A rebuild always rewinds to genesis, so the position the lease
+        // started from is irrelevant here (unlike an ordinary leased run).
+        self.with_lease(P::NAME, worker_id, lease_duration, |_start_position| {
+            self.rebuild_under_lease(projection, worker_id, lease_duration)
+        })
+        .await
     }
 
     /// Performs the atomic reset (read-model wipe + checkpoint rewind) and the
@@ -423,20 +429,9 @@ impl PostgresBackend {
         policies: &[PolicyDispatch],
         lease_duration: std::time::Duration,
     ) -> event_sauce_core::Result<crate::LeaseOutcome> {
-        use event_sauce_core::CheckpointStore;
-
         let name = dispatcher_checkpoint_name(policies);
-
-        let Some(start_position) = self
-            .checkpoint_store
-            .try_acquire_lease(&name, worker_id, lease_duration)
-            .await?
-        else {
-            return Ok(crate::LeaseOutcome::Busy);
-        };
-
-        let result = self
-            .dispatch_under_lease(
+        self.with_lease(&name, worker_id, lease_duration, |start_position| {
+            self.dispatch_under_lease(
                 outbox,
                 &name,
                 worker_id,
@@ -444,11 +439,8 @@ impl PostgresBackend {
                 lease_duration,
                 start_position,
             )
-            .await;
-
-        let _ = self.checkpoint_store.release_lease(&name, worker_id).await;
-
-        result.map(|()| crate::LeaseOutcome::Completed)
+        })
+        .await
     }
 
     async fn dispatch_under_lease(
