@@ -437,9 +437,7 @@ impl CheckpointStore for MockCheckpointStore {
         let mut guard = self.checkpoints.write().unwrap();
         let now = std::time::Instant::now();
         let Some(entry) = guard.get_mut(subscription_name) else {
-            return Err(crate::Error::custom(format!(
-                "lease lost: no entry for {subscription_name}"
-            )));
+            return Err(crate::Error::lease_lost(subscription_name, worker_id));
         };
         match &entry.lease {
             Some(lease) if lease.worker_id == worker_id && lease.expires_at > now => {
@@ -449,9 +447,7 @@ impl CheckpointStore for MockCheckpointStore {
                 });
                 Ok(())
             }
-            _ => Err(crate::Error::custom(format!(
-                "lease lost: not held by {worker_id}"
-            ))),
+            _ => Err(crate::Error::lease_lost(subscription_name, worker_id)),
         }
     }
 
@@ -854,6 +850,16 @@ mod tests {
     }
 
     // --- TestCounter as Aggregate ---
+
+    #[tokio::test]
+    async fn test_mock_checkpoint_store_renew_reports_lease_lost() {
+        let store = MockCheckpointStore::new();
+        let err = store
+            .renew_lease("sub", "worker-a", std::time::Duration::from_secs(60))
+            .await
+            .unwrap_err();
+        assert!(err.is_lease_lost());
+    }
 
     #[test]
     fn test_counter_aggregate_apply() {

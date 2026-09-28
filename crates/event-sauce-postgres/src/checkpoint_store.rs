@@ -554,9 +554,7 @@ impl CheckpointStore for PostgresCheckpointStore {
             .map_err(|e| Error::backend("Failed to renew lease", e))?;
 
         if renewed.is_none() {
-            return Err(Error::custom(format!(
-                "lease lost for {subscription_name} (worker {worker_id})"
-            )));
+            return Err(Error::lease_lost(subscription_name, worker_id));
         }
         Ok(())
     }
@@ -1125,10 +1123,15 @@ mod tests {
         let store = PostgresCheckpointStore::new(db.pool().clone());
         store.migrate().await.unwrap();
 
-        let result = store
+        let err = store
             .renew_lease("sub-f", "worker-1", std::time::Duration::from_secs(60))
-            .await;
-        assert!(result.is_err());
+            .await
+            .unwrap_err();
+        assert!(
+            err.is_lease_lost(),
+            "callers must be able to match this consistently with the fenced \
+             save path, not just know it failed: {err:?}"
+        );
     }
 
     #[tokio::test]

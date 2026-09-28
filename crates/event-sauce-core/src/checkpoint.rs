@@ -56,9 +56,11 @@ pub trait CheckpointStore: Send + Sync {
 
     /// Extends the lease for `subscription_name` if held by `worker_id`.
     ///
-    /// Returns an error if the lease is not currently held by this worker
-    /// (`Error::lease_lost`). Callers should treat this as a signal to stop
-    /// processing and let another worker take over.
+    /// Returns [`Error::LeaseLost`](crate::Error::LeaseLost) if the lease is
+    /// not currently held by this worker — the same variant the fenced
+    /// checkpoint save path reports, so callers can match lease loss
+    /// consistently regardless of which one detected it. Callers should treat
+    /// this as a signal to stop processing and let another worker take over.
     async fn renew_lease(
         &self,
         subscription_name: &str,

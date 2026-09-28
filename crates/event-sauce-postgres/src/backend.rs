@@ -259,6 +259,103 @@ impl PostgresBackend {
         .await
     }
 
+    /// Runs a [`PostgresProjection`](crate::PostgresProjection) under a lease
+    /// that is held across idle ticks, instead of being released and
+    /// re-acquired on every call like [`run_leased_projection`].
+    ///
+    /// [`run_leased_projection`] acquires the lease, drains whatever is
+    /// currently available, and releases it — every single call. Driven from
+    /// a `NOTIFY`-woken loop, every commit then wakes every worker on every
+    /// node to race for that lease via a contended `INSERT ... ON CONFLICT DO
+    /// UPDATE`, even though only one of them can ever win it, and only the
+    /// winner had any work to do.
+    ///
+    /// This entry point instead acquires the lease once and holds it,
+    /// sharing the same acquire/release wrapper every other leased entry
+    /// point uses internally: after each drain it sleeps `idle_interval`,
+    /// checks `should_continue`, and — only if told to keep going — renews
+    /// the lease and drains again, without releasing in between. Checking
+    /// right after the sleep and before the renewal means a shutdown
+    /// signaled during that sleep is noticed immediately, with no extra
+    /// renewal or drain first. Once `should_continue` returns `false` the
+    /// lease is released and the run returns
+    /// [`LeaseOutcome::Completed`](crate::LeaseOutcome::Completed). The lease
+    /// is also released if it is ever lost (an unexpected renewal failure, or
+    /// a fenced checkpoint save rejected mid-drain), in which case the error
+    /// propagates.
+    ///
+    /// `idle_interval` must stay below `lease_duration / 3` — the same
+    /// margin a drain's own per-batch renewal uses — or the lease could
+    /// lapse during the idle sleep itself, before there is a chance to renew
+    /// it; this is rejected with
+    /// [`Error::InvalidState`](event_sauce_core::Error::InvalidState) rather
+    /// than left to fail with [`Error::LeaseLost`](event_sauce_core::Error::LeaseLost)
+    /// on the first idle tick.
+    ///
+    /// This does not change how a **non-holder** waits — the checkpoint store
+    /// does not currently expose a lease's expiry for a non-holder to sleep
+    /// until, so every node still wakes on every `NOTIFY` and probes the
+    /// lease. That remains a smaller cost than before (a probe that loses is
+    /// one contended write the *previous* holder no longer also performs on
+    /// every tick).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `idle_interval` is not below `lease_duration / 3`,
+    /// or under the same conditions as
+    /// [`run_leased_projection`], plus if renewing the held lease between
+    /// idle ticks fails.
+    ///
+    /// [`run_leased_projection`]: Self::run_leased_projection
+    pub async fn run_sticky_projection<P: crate::PostgresProjection>(
+        &self,
+        projection: &mut P,
+        worker_id: &str,
+        lease_duration: std::time::Duration,
+        idle_interval: std::time::Duration,
+        mut should_continue: impl FnMut() -> bool + Send,
+    ) -> event_sauce_core::Result<crate::LeaseOutcome> {
+        use event_sauce_core::CheckpointStore;
+
+        if idle_interval >= lease_duration / 3 {
+            return Err(event_sauce_core::Error::invalid_state(format!(
+                "idle_interval ({idle_interval:?}) must be below lease_duration / 3 \
+                 ({:?}), or the lease could lapse before the next renewal",
+                lease_duration / 3,
+            )));
+        }
+
+        self.with_lease(
+            P::NAME,
+            worker_id,
+            lease_duration,
+            |start_position| async move {
+                let mut position = start_position;
+                loop {
+                    self.run_under_lease(projection, worker_id, lease_duration, position)
+                        .await?;
+
+                    tokio::time::sleep(idle_interval).await;
+
+                    if !should_continue() {
+                        return Ok(());
+                    }
+
+                    self.checkpoint_store
+                        .renew_lease(P::NAME, worker_id, lease_duration)
+                        .await?;
+
+                    position = self
+                        .checkpoint_store
+                        .load_checkpoint(P::NAME)
+                        .await?
+                        .unwrap_or(position);
+                }
+            },
+        )
+        .await
+    }
+
     /// Acquires the lease for `name` on behalf of `worker_id`, runs `body`
     /// with the position the lease started from, and always releases the
     /// lease on the way out (including on error — releasing a lease we no
@@ -879,6 +976,7 @@ mod tests {
     };
     use futures::StreamExt;
     use serde_json::json;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use testcontainers_modules::postgres::Postgres;
     use uuid::Uuid;
 
@@ -1753,6 +1851,107 @@ mod tests {
             .await
             .unwrap();
         assert!(acquired.is_some(), "lease should be released after failure");
+    }
+
+    /// The probe below waits long enough for the runner to acquire the
+    /// lease and enter its first idle sleep before checking it.
+    #[tokio::test]
+    async fn test_run_sticky_projection_holds_lease_across_idle_ticks() {
+        let (url, _container) = start_test_db().await;
+        let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
+        CountingProjection::migrate(backend.pool(), "event_sauce").await;
+
+        let mut projection = CountingProjection {
+            fail_after: None,
+            seen: 0,
+        };
+        let keep_going = Arc::new(AtomicBool::new(true));
+        let keep_going_for_runner = Arc::clone(&keep_going);
+
+        let sticky = backend.run_sticky_projection(
+            &mut projection,
+            "worker-a",
+            std::time::Duration::from_secs(30),
+            std::time::Duration::from_millis(30),
+            move || keep_going_for_runner.load(Ordering::SeqCst),
+        );
+
+        let probe = async {
+            tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+            let still_busy = backend
+                .checkpoint_store()
+                .try_acquire_lease(
+                    <CountingProjection as crate::PostgresProjection>::NAME,
+                    "worker-b",
+                    std::time::Duration::from_secs(30),
+                )
+                .await
+                .unwrap();
+            assert!(
+                still_busy.is_none(),
+                "the lease must still be held across an idle tick, not \
+                 released and re-acquired every drain"
+            );
+            keep_going.store(false, Ordering::SeqCst);
+        };
+
+        let (outcome, ()) = tokio::join!(sticky, probe);
+        assert_eq!(outcome.unwrap(), crate::LeaseOutcome::Completed);
+
+        let now_free = backend
+            .checkpoint_store()
+            .try_acquire_lease(
+                <CountingProjection as crate::PostgresProjection>::NAME,
+                "worker-b",
+                std::time::Duration::from_secs(30),
+            )
+            .await
+            .unwrap();
+        assert!(
+            now_free.is_some(),
+            "the lease must be released once should_continue reports shutdown"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_run_sticky_projection_rejects_idle_interval_too_close_to_lease_duration() {
+        let (url, _container) = start_test_db().await;
+        let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
+        CountingProjection::migrate(backend.pool(), "event_sauce").await;
+
+        let mut projection = CountingProjection {
+            fail_after: None,
+            seen: 0,
+        };
+
+        let err = backend
+            .run_sticky_projection(
+                &mut projection,
+                "worker-a",
+                std::time::Duration::from_secs(30),
+                std::time::Duration::from_secs(11),
+                || true,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, event_sauce_core::Error::InvalidState(_)),
+            "idle_interval >= lease_duration / 3 must be rejected up front: {err:?}"
+        );
+
+        let still_free = backend
+            .checkpoint_store()
+            .try_acquire_lease(
+                <CountingProjection as crate::PostgresProjection>::NAME,
+                "worker-b",
+                std::time::Duration::from_secs(30),
+            )
+            .await
+            .unwrap();
+        assert!(
+            still_free.is_some(),
+            "a rejected idle_interval must never acquire the lease"
+        );
     }
 
     #[tokio::test]
