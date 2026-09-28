@@ -2044,3 +2044,166 @@ async fn test_skip_with_commit_before_fail_does_not_leak_events() {
         "Skipped handler should not leak committed events"
     );
 }
+
+/// Wraps a real `EventStore` so its first `append_batch` calls fail with a
+/// `ConcurrencyConflict`, simulating a flush that races another writer.
+struct FlakyBatchStore<S> {
+    inner: Arc<S>,
+    fail_times: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl<S: EventStore + 'static> EventStore for FlakyBatchStore<S> {
+    async fn append(
+        &self,
+        stream_id: event_sauce_core::StreamId,
+        events: Vec<EventEnvelope>,
+        expected_version: event_sauce_core::AggregateVersion,
+        claims: Vec<event_sauce_core::AggregateClaim>,
+        clear_claims: bool,
+    ) -> event_sauce_core::Result<()> {
+        self.inner
+            .append(stream_id, events, expected_version, claims, clear_claims)
+            .await
+    }
+
+    async fn append_batch(
+        &self,
+        commits: Vec<event_sauce_core::StreamCommit>,
+    ) -> event_sauce_core::Result<()> {
+        if self
+            .fail_times
+            .fetch_update(
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+                |n| (n > 0).then(|| n - 1),
+            )
+            .is_ok()
+        {
+            let version = event_sauce_core::AggregateVersion::initial();
+            return Err(event_sauce_core::Error::concurrency_conflict(
+                version, version,
+            ));
+        }
+        self.inner.append_batch(commits).await
+    }
+
+    async fn load_stream(
+        &self,
+        stream_id: event_sauce_core::StreamId,
+        from_version: event_sauce_core::AggregateVersion,
+    ) -> event_sauce_core::Result<
+        impl futures::Stream<Item = event_sauce_core::Result<EventEnvelope>> + Send,
+    > {
+        self.inner.load_stream(stream_id, from_version).await
+    }
+
+    async fn stream_all(
+        &self,
+        from_position: event_sauce_core::Position,
+    ) -> event_sauce_core::Result<
+        impl futures::Stream<Item = event_sauce_core::Result<event_sauce_core::EventLogEntry>> + Send,
+    > {
+        self.inner.stream_all(from_position).await
+    }
+
+    async fn get_version(
+        &self,
+        stream_id: event_sauce_core::StreamId,
+    ) -> event_sauce_core::Result<event_sauce_core::AggregateVersion> {
+        self.inner.get_version(stream_id).await
+    }
+}
+
+/// CONC-5: a `ConcurrencyConflict` from `ctx.flush()` must go through the same
+/// `OnError` handling as a `policy.handle()` error — `OnError::Retry` retries
+/// the whole handle-then-flush unit, not just `handle()`.
+#[tokio::test]
+async fn test_on_error_retry_retries_a_conflicting_flush() {
+    let inner = create_store();
+    let cp = checkpoint_store(&inner);
+    seed_checkpoint(&cp, "FlushConflictPolicy").await;
+
+    let mut user = AggregateRoot::<User>::new(EntityId::new());
+    user.register("FlushConflict".to_string()).unwrap();
+    inner.commit(&mut user).await.unwrap();
+
+    let flaky = Arc::new(FlakyBatchStore {
+        inner: Arc::clone(&inner),
+        fail_times: std::sync::atomic::AtomicUsize::new(1),
+    });
+
+    struct FlushConflictPolicy(Arc<std::sync::Mutex<usize>>);
+
+    #[async_trait::async_trait]
+    impl<S: EventStore + 'static> event_sauce_core::Policy<S> for FlushConflictPolicy {
+        fn name(&self) -> &'static str {
+            "FlushConflictPolicy"
+        }
+        fn event_filter(&self) -> EventFilter {
+            EventFilter::by_event_type("User.Registered")
+        }
+        async fn handle(
+            &self,
+            _event: &EventEnvelope,
+            ctx: &PolicyContext<S>,
+        ) -> event_sauce_core::Result<()> {
+            let current = {
+                let mut count = self.0.lock().unwrap();
+                *count += 1;
+                *count
+            };
+
+            let id = EntityId::new();
+            let mut notification = AggregateRoot::<Notification>::new(id);
+            notification
+                .send_notification(format!("attempt {current}"))
+                .map_err(|e| event_sauce_core::Error::invalid_state(format!("{e}")))?;
+            ctx.commit(&mut notification).await?;
+
+            Ok(())
+        }
+    }
+
+    let attempt = Arc::new(std::sync::Mutex::new(0));
+    let retry_config = RetryConfig {
+        base_delay: std::time::Duration::from_millis(1),
+        max_delay: std::time::Duration::from_millis(10),
+        limit: RetryLimit::MaxRetries(3),
+        on_exhausted: OnRetryExhausted::Fail,
+    };
+
+    let runner = PolicyRunner::new(Arc::clone(&flaky), cp)
+        .on_error(OnError::Retry(retry_config))
+        .register(Arc::new(FlushConflictPolicy(Arc::clone(&attempt))));
+
+    let result = runner.process_pending().await;
+    assert!(
+        result.is_ok(),
+        "a flush conflict must be retried, not returned straight to the caller: {result:?}"
+    );
+    assert!(
+        *attempt.lock().unwrap() >= 2,
+        "the conflicting flush must have triggered a retry"
+    );
+
+    use futures::StreamExt;
+    let stream = inner
+        .stream_all(event_sauce_core::Position::start())
+        .await
+        .unwrap();
+    futures::pin_mut!(stream);
+
+    let mut notification_count = 0;
+    while let Some(Ok(entry)) = stream.next().await {
+        if entry.envelope.event_type == "Notification.Sent" {
+            notification_count += 1;
+        }
+    }
+    assert_eq!(
+        notification_count, 1,
+        "the reaction from the attempt whose flush succeeded must be \
+         persisted exactly once — the conflicting attempt's buffered \
+         commit must not be persisted twice, nor lost"
+    );
+}

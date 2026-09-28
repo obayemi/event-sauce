@@ -419,8 +419,16 @@ pub enum OnError {
     Fail,
     /// Log a warning and permanently skip the event: advance the checkpoint past
     /// it and continue. The source event is not retried on subsequent runs.
+    ///
+    /// Applies equally to a `handle()` error and to a `ConcurrencyConflict`
+    /// from the subsequent `ctx.flush()` — a reaction whose flush conflicted
+    /// is skipped exactly like one whose handler failed.
     Skip,
     /// Retry with exponential backoff before giving up.
+    ///
+    /// Retries the whole handle-then-flush unit: a `ConcurrencyConflict` from
+    /// `ctx.flush()` is retried the same way a `handle()` error is, since each
+    /// attempt reloads its aggregates and buffers a fresh commit.
     Retry(RetryConfig),
 }
 
@@ -559,6 +567,10 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
     ///
     /// Returns the total number of events processed.
     ///
+    /// A flush conflict is treated exactly like a handler error: both go
+    /// through the same [`OnError`] policy, so `Retry` retries the flush and
+    /// `Skip` skips a reaction whose flush conflicted.
+    ///
     /// # Errors
     ///
     /// Returns an error if event loading, policy handling, or committing fails
@@ -616,9 +628,12 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
                             self.max_cascade_depth,
                         );
 
-                        match policy.handle(&envelope, &ctx).await {
+                        let outcome = match policy.handle(&envelope, &ctx).await {
+                            Ok(()) => ctx.flush().await,
+                            Err(e) => Err(e),
+                        };
+                        match outcome {
                             Ok(()) => {
-                                ctx.flush().await?;
                                 round_processed += 1;
                             }
                             Err(e) => match &self.on_error {
@@ -709,6 +724,8 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
     /// Returns `Ok(false)` if the retry succeeded (event was processed),
     /// `Ok(true)` if the retries were exhausted and the event was skipped,
     /// or `Err` if the retries were exhausted and the policy is `OnRetryExhausted::Fail`.
+    /// A flush conflict on this attempt is retried exactly like a handler
+    /// error, on the next loop iteration.
     async fn retry_handler(
         &self,
         policy: &Arc<dyn Policy<S>>,
@@ -762,9 +779,12 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
                 self.max_cascade_depth,
             );
 
-            match policy.handle(envelope, &ctx).await {
+            let outcome = match policy.handle(envelope, &ctx).await {
+                Ok(()) => ctx.flush().await,
+                Err(e) => Err(e),
+            };
+            match outcome {
                 Ok(()) => {
-                    ctx.flush().await?;
                     return Ok(false); // success
                 }
                 Err(e) => {
@@ -801,9 +821,12 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
                     self.max_cascade_depth,
                 );
 
-                match policy.handle(envelope, &ctx).await {
+                let outcome = match policy.handle(envelope, &ctx).await {
+                    Ok(()) => ctx.flush().await,
+                    Err(e) => Err(e),
+                };
+                match outcome {
                     Ok(()) => {
-                        ctx.flush().await?;
                         handled += 1;
                     }
                     Err(e) => match &self.on_error {
