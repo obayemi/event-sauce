@@ -393,11 +393,20 @@ impl PostgresBackend {
     /// Reads new events from the log and fans them out into the policy
     /// outbox for each registered policy whose filter matches.
     ///
-    /// The dispatcher uses its own subscription checkpoint
-    /// (`__policy_outbox_dispatcher`) under a lease, so running it from
-    /// multiple instances is safe — only one is active at a time. The
-    /// fan-out itself runs inside a per-event transaction together with the
-    /// checkpoint advance, so an event is enqueued for every matching
+    /// The dispatcher's subscription checkpoint (and lease) is named after
+    /// the exact set of `policies` passed in (see `dispatcher_checkpoint_name`)
+    /// — not one hard-coded name shared by
+    /// every caller. Two calls with different policy sets track their
+    /// progress, and contend for their lease, independently: a caller adding
+    /// a policy (e.g. a rolling deploy, or a second service with its own
+    /// policy list) gets its own checkpoint rather than inheriting one a
+    /// different policy set already advanced past events it never enqueued.
+    /// A policy set seen for the first time starts from genesis; replaying
+    /// already-processed events is harmless since
+    /// [`enqueue_tx`](crate::PostgresPolicyOutbox::enqueue_tx) is idempotent.
+    ///
+    /// The fan-out itself runs inside a per-event transaction together with
+    /// the checkpoint advance, so an event is enqueued for every matching
     /// policy or for none — never partial.
     ///
     /// Workers (typically separate processes) then drain the outbox via
@@ -416,24 +425,28 @@ impl PostgresBackend {
     ) -> event_sauce_core::Result<crate::LeaseOutcome> {
         use event_sauce_core::CheckpointStore;
 
-        const DISPATCHER_NAME: &str = "__policy_outbox_dispatcher";
+        let name = dispatcher_checkpoint_name(policies);
 
         let Some(start_position) = self
             .checkpoint_store
-            .try_acquire_lease(DISPATCHER_NAME, worker_id, lease_duration)
+            .try_acquire_lease(&name, worker_id, lease_duration)
             .await?
         else {
             return Ok(crate::LeaseOutcome::Busy);
         };
 
         let result = self
-            .dispatch_under_lease(outbox, worker_id, policies, lease_duration, start_position)
+            .dispatch_under_lease(
+                outbox,
+                &name,
+                worker_id,
+                policies,
+                lease_duration,
+                start_position,
+            )
             .await;
 
-        let _ = self
-            .checkpoint_store
-            .release_lease(DISPATCHER_NAME, worker_id)
-            .await;
+        let _ = self.checkpoint_store.release_lease(&name, worker_id).await;
 
         result.map(|()| crate::LeaseOutcome::Completed)
     }
@@ -441,14 +454,13 @@ impl PostgresBackend {
     async fn dispatch_under_lease(
         &self,
         outbox: &crate::PostgresPolicyOutbox,
+        name: &str,
         worker_id: &str,
         policies: &[PolicyDispatch],
         lease_duration: std::time::Duration,
         start_position: event_sauce_core::Position,
     ) -> event_sauce_core::Result<()> {
         use event_sauce_core::CheckpointStore;
-
-        const DISPATCHER_NAME: &str = "__policy_outbox_dispatcher";
 
         let mut current_position = start_position;
         let renew_interval = lease_duration / 3;
@@ -469,7 +481,7 @@ impl PostgresBackend {
 
                 if last_renew.elapsed() >= renew_interval {
                     self.checkpoint_store
-                        .renew_lease(DISPATCHER_NAME, worker_id, lease_duration)
+                        .renew_lease(name, worker_id, lease_duration)
                         .await?;
                     last_renew = std::time::Instant::now();
                 }
@@ -492,12 +504,7 @@ impl PostgresBackend {
                 }
                 let landed = self
                     .checkpoint_store
-                    .save_checkpoint_fenced_tx(
-                        &mut tx,
-                        DISPATCHER_NAME,
-                        worker_id,
-                        current_position,
-                    )
+                    .save_checkpoint_fenced_tx(&mut tx, name, worker_id, current_position)
                     .await?;
 
                 if !landed {
@@ -510,10 +517,7 @@ impl PostgresBackend {
                             e,
                         )
                     })?;
-                    return Err(event_sauce_core::Error::lease_lost(
-                        DISPATCHER_NAME,
-                        worker_id,
-                    ));
+                    return Err(event_sauce_core::Error::lease_lost(name, worker_id));
                 }
 
                 tx.commit().await.map_err(|e| {
@@ -602,6 +606,27 @@ impl PostgresBackend {
 /// catches up. The lease is renewed inside the batch loop, so this only
 /// affects how often the projection runner re-acquires a pool connection.
 const PROJECTION_BATCH_SIZE: i64 = 500;
+
+/// Base name shared by every outbox dispatcher checkpoint/lease.
+const DISPATCHER_CHECKPOINT_PREFIX: &str = "__policy_outbox_dispatcher";
+
+/// Derives the checkpoint (and lease) name for a
+/// [`PostgresBackend::dispatch_policies_to_outbox`] call, from the exact set
+/// of policy names passed in.
+///
+/// Two calls with the same set of policy names (in any order) always derive
+/// the same name and so share progress; two calls whose sets differ derive
+/// different names and track (and contend for) their progress completely
+/// independently. This is what stops a caller that dispatches a narrower
+/// policy set from silently advancing a *shared* checkpoint past events a
+/// wider set was never given the chance to enqueue — see the module-level
+/// docs on [`PostgresBackend::dispatch_policies_to_outbox`].
+fn dispatcher_checkpoint_name(policies: &[PolicyDispatch]) -> String {
+    let mut names: Vec<&str> = policies.iter().map(|p| p.name.as_str()).collect();
+    names.sort_unstable();
+    names.dedup();
+    format!("{DISPATCHER_CHECKPOINT_PREFIX}:{}", names.join(","))
+}
 
 /// One entry in the policy registry passed to
 /// [`PostgresBackend::dispatch_policies_to_outbox`].
@@ -799,6 +824,26 @@ mod tests {
     use serde_json::json;
     use testcontainers_modules::postgres::Postgres;
     use uuid::Uuid;
+
+    #[test]
+    fn dispatcher_checkpoint_name_is_order_independent() {
+        let a = PolicyDispatch::new("a", event_sauce_core::EventFilter::All);
+        let b = PolicyDispatch::new("b", event_sauce_core::EventFilter::All);
+        assert_eq!(
+            dispatcher_checkpoint_name(&[a.clone(), b.clone()]),
+            dispatcher_checkpoint_name(&[b, a]),
+        );
+    }
+
+    #[test]
+    fn dispatcher_checkpoint_name_differs_across_policy_sets() {
+        let a = PolicyDispatch::new("a", event_sauce_core::EventFilter::All);
+        let b = PolicyDispatch::new("b", event_sauce_core::EventFilter::All);
+        assert_ne!(
+            dispatcher_checkpoint_name(std::slice::from_ref(&a)),
+            dispatcher_checkpoint_name(&[a, b]),
+        );
+    }
 
     /// Starts a `PostgreSQL` testcontainer and returns a connection URL.
     async fn start_test_db() -> (
@@ -1732,6 +1777,124 @@ mod tests {
                 .await
                 .unwrap(),
             0
+        );
+    }
+
+    /// Appends one event of `event_type` on a fresh aggregate of
+    /// `aggregate_type` to its own stream.
+    async fn append_typed(store: &PostgresEventStore, aggregate_type: String, event_type: String) {
+        let aggregate_id = Uuid::new_v4();
+        let stream_id = StreamId::new(aggregate_type.clone(), aggregate_id);
+        let envelope = EventEnvelope::new(
+            Uuid::new_v4(),
+            aggregate_id,
+            aggregate_type,
+            event_type,
+            EventVersion::new(1),
+            json!({}),
+        );
+        store
+            .append(
+                stream_id,
+                vec![envelope],
+                AggregateVersion::initial(),
+                vec![],
+                false,
+            )
+            .await
+            .unwrap();
+    }
+
+    /// Order and User events interleave in the log, but an "old" deployment
+    /// only knows the Order policy. A rolling deploy then adds a User policy:
+    /// the caller now dispatches a WIDER set. The old deployment's dispatch
+    /// already scanned (and advanced past) the User events while it only
+    /// knew about Order. If the new set shared that checkpoint, it would
+    /// resume past them and never enqueue them for the new policy —
+    /// permanently. It must instead track its own progress from genesis.
+    #[tokio::test]
+    async fn test_dispatchers_with_different_policy_sets_track_progress_independently() {
+        let (url, _container) = start_test_db().await;
+        let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
+        let outbox = crate::PostgresPolicyOutbox::new(backend.pool().clone(), "event_sauce");
+        outbox.migrate().await.unwrap();
+
+        let store = backend.event_store();
+
+        append_typed(&store, "Order".to_string(), "Order.Created".to_string()).await;
+        append_typed(&store, "User".to_string(), "User.Created".to_string()).await;
+        append_typed(&store, "Order".to_string(), "Order.Created".to_string()).await;
+        append_typed(&store, "User".to_string(), "User.Created".to_string()).await;
+        append_typed(&store, "Order".to_string(), "Order.Created".to_string()).await;
+
+        let order_only = vec![PolicyDispatch::new(
+            "send-order-confirmation",
+            event_sauce_core::EventFilter::by_aggregate_type("Order"),
+        )];
+        backend
+            .dispatch_policies_to_outbox(
+                &outbox,
+                "old-deploy",
+                &order_only,
+                std::time::Duration::from_secs(30),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            outbox
+                .pending_count("send-order-confirmation")
+                .await
+                .unwrap(),
+            3
+        );
+
+        let order_and_user = vec![
+            PolicyDispatch::new(
+                "send-order-confirmation",
+                event_sauce_core::EventFilter::by_aggregate_type("Order"),
+            ),
+            PolicyDispatch::new(
+                "send-welcome-email",
+                event_sauce_core::EventFilter::by_aggregate_type("User"),
+            ),
+        ];
+        backend
+            .dispatch_policies_to_outbox(
+                &outbox,
+                "new-deploy",
+                &order_and_user,
+                std::time::Duration::from_secs(30),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            outbox.pending_count("send-welcome-email").await.unwrap(),
+            2,
+            "the new policy must see every matching event, including ones \
+             predating its first dispatch"
+        );
+        assert_eq!(
+            outbox
+                .pending_count("send-order-confirmation")
+                .await
+                .unwrap(),
+            3,
+            "re-scanning under the new checkpoint must not double-enqueue \
+             the old policy (enqueue is idempotent)"
+        );
+
+        // The two calls tracked progress under distinct checkpoint names.
+        let checkpoint_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM event_sauce.checkpoints
+             WHERE subscription_name LIKE '__policy_outbox_dispatcher:%'",
+        )
+        .fetch_one(backend.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            checkpoint_count, 2,
+            "each distinct policy set gets its own checkpoint row"
         );
     }
 
