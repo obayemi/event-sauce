@@ -261,9 +261,7 @@ impl PostgresStateStore {
             migrations_table,
             20_260_825_000_003_i64,
             "create_aggregate_claims_table",
-            move |pool| async move {
-                crate::migrations::create_aggregate_claims_table(pool, &claims_table).await
-            },
+            move |pool| async move { crate::claims::create_table(pool, &claims_table).await },
         )
         .await
     }
@@ -380,7 +378,7 @@ impl PostgresStateStore {
 
         Self::upsert_state(tx, &states_table, &state, expected_version).await?;
 
-        crate::PostgresEventStore::handle_claims(
+        crate::claims::enforce(
             tx,
             &self.qualify_table("aggregate_claims"),
             &stream_id,

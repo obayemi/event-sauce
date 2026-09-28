@@ -171,37 +171,6 @@ pub(crate) async fn record_migration(
     Ok(())
 }
 
-/// Creates the shared `aggregate_claims` table and its index at `claims_table`.
-///
-/// The claims table is persistence-style-agnostic — it keys uniqueness claims
-/// by `(claim_type, claim_hash)` per aggregate, with no coupling to event
-/// streams — so both the event store and the state store create the same
-/// table (idempotently) and enforce claims against it with the same code.
-pub(crate) async fn create_aggregate_claims_table(pool: &PgPool, claims_table: &str) -> Result<()> {
-    let create_claims = format!(
-        "CREATE TABLE IF NOT EXISTS {claims_table} (
-            aggregate_id UUID NOT NULL,
-            claim_type VARCHAR(255) NOT NULL,
-            claim_hash BYTEA NOT NULL,
-            created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-            UNIQUE (aggregate_id, claim_type),
-            UNIQUE (claim_type, claim_hash)
-        )"
-    );
-    sqlx::query(&create_claims)
-        .execute(pool)
-        .await
-        .map_err(|e| Error::backend("Failed to create aggregate_claims table", e))?;
-
-    let idx_query =
-        format!("CREATE INDEX IF NOT EXISTS idx_claims_aggregate ON {claims_table} (aggregate_id)");
-    sqlx::query(&idx_query)
-        .execute(pool)
-        .await
-        .map_err(|e| Error::backend("Failed to create claims index", e))?;
-    Ok(())
-}
-
 /// Runs `body` if migration `version` has not been applied yet, then records it.
 ///
 /// Provides the canonical "check version, run migration, record version" flow.

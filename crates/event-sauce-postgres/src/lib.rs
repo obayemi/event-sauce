@@ -88,6 +88,7 @@
 
 mod backend;
 mod checkpoint_store;
+mod claims;
 mod crypto_key_store;
 mod event_log;
 mod event_store;
