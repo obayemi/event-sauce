@@ -443,6 +443,27 @@ impl PostgresBackend {
         .await
     }
 
+    /// Drains events under the lease, one transaction per **fetched batch**
+    /// (up to [`PROJECTION_BATCH_SIZE`] events) instead of one per event.
+    ///
+    /// Every event in a fetched batch is checked against every policy inside
+    /// that single transaction; matches are enqueued, and one fenced
+    /// checkpoint write advances to the batch's last position when the batch
+    /// ends — whether or not anything in it matched. A batch consisting
+    /// entirely of unmatched events still costs exactly one transaction (one
+    /// `BEGIN`, one checkpoint `UPDATE`, one `COMMIT`) instead of one per
+    /// event, which is what turns dispatch lag from growing with the total
+    /// log volume into growing with the matched volume for a mixed log. The
+    /// lease is renewed once per batch rather than once per event — safe as
+    /// long as one batch never takes anywhere near `lease_duration` to
+    /// process, true for any reasonable [`PROJECTION_BATCH_SIZE`] and handler
+    /// cost (enqueuing is a single indexed insert).
+    ///
+    /// If the fenced checkpoint write is rejected (lease lost mid-batch), the
+    /// whole batch's enqueues roll back together rather than partially
+    /// landing — re-fetching from the last successfully committed batch's
+    /// position is always idempotent (`enqueue_tx` is `ON CONFLICT DO
+    /// NOTHING`).
     async fn dispatch_under_lease(
         &self,
         outbox: &crate::PostgresPolicyOutbox,
@@ -467,55 +488,57 @@ impl PostgresBackend {
                 break;
             }
 
-            for entry in batch {
-                current_position = entry.position;
-                let event = entry.envelope;
-
-                if last_renew.elapsed() >= renew_interval {
-                    self.checkpoint_store
-                        .renew_lease(name, worker_id, lease_duration)
-                        .await?;
-                    last_renew = std::time::Instant::now();
-                }
-
-                // Find which policies care about this event before opening a
-                // transaction — keep the tx narrow.
-                let matched: Vec<&PolicyDispatch> = policies
-                    .iter()
-                    .filter(|p| p.filter.matches(&event))
-                    .collect();
-
-                let mut tx = self.pool.begin().await.map_err(|e| {
-                    event_sauce_core::Error::backend("Failed to start dispatcher transaction", e)
-                })?;
-
-                for dispatch in matched {
-                    outbox
-                        .enqueue_tx(&mut tx, &dispatch.name, event.id, current_position.as_i64())
-                        .await?;
-                }
-                let landed = self
-                    .checkpoint_store
-                    .save_checkpoint_fenced_tx(&mut tx, name, worker_id, current_position)
+            if last_renew.elapsed() >= renew_interval {
+                self.checkpoint_store
+                    .renew_lease(name, worker_id, lease_duration)
                     .await?;
-
-                if !landed {
-                    // Lease lost mid-run: roll back the fan-out + checkpoint
-                    // advance instead of risking duplicate enqueues / a
-                    // regressed dispatcher checkpoint.
-                    tx.rollback().await.map_err(|e| {
-                        event_sauce_core::Error::backend(
-                            "Failed to roll back dispatcher transaction",
-                            e,
-                        )
-                    })?;
-                    return Err(event_sauce_core::Error::lease_lost(name, worker_id));
-                }
-
-                tx.commit().await.map_err(|e| {
-                    event_sauce_core::Error::backend("Failed to commit dispatcher transaction", e)
-                })?;
+                last_renew = std::time::Instant::now();
             }
+
+            let mut tx = self.pool.begin().await.map_err(|e| {
+                event_sauce_core::Error::backend("Failed to start dispatcher transaction", e)
+            })?;
+
+            let mut batch_position = current_position;
+            for entry in &batch {
+                batch_position = entry.position;
+                for dispatch in policies
+                    .iter()
+                    .filter(|p| p.filter.matches(&entry.envelope))
+                {
+                    outbox
+                        .enqueue_tx(
+                            &mut tx,
+                            &dispatch.name,
+                            entry.envelope.id,
+                            batch_position.as_i64(),
+                        )
+                        .await?;
+                }
+            }
+
+            let landed = self
+                .checkpoint_store
+                .save_checkpoint_fenced_tx(&mut tx, name, worker_id, batch_position)
+                .await?;
+
+            if !landed {
+                // Lease lost mid-run: roll back the whole batch's fan-out +
+                // checkpoint advance instead of risking duplicate enqueues /
+                // a regressed dispatcher checkpoint.
+                tx.rollback().await.map_err(|e| {
+                    event_sauce_core::Error::backend(
+                        "Failed to roll back dispatcher transaction",
+                        e,
+                    )
+                })?;
+                return Err(event_sauce_core::Error::lease_lost(name, worker_id));
+            }
+
+            tx.commit().await.map_err(|e| {
+                event_sauce_core::Error::backend("Failed to commit dispatcher transaction", e)
+            })?;
+            current_position = batch_position;
         }
 
         Ok(())
@@ -1675,6 +1698,55 @@ mod tests {
                 .await
                 .unwrap(),
             3
+        );
+    }
+
+    /// Every event in the log is a User event; the policy only cares about
+    /// Order events, so this whole (single-fetch) batch is a miss.
+    #[tokio::test]
+    async fn test_dispatch_checkpoint_advances_over_wholly_unmatched_batch() {
+        let (url, _container) = start_test_db().await;
+        let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
+        let outbox = crate::PostgresPolicyOutbox::new(backend.pool().clone(), "event_sauce");
+        outbox.migrate().await.unwrap();
+
+        let store = backend.event_store();
+        for _ in 0..5 {
+            append_typed(&store, "User".to_string(), "User.Created".to_string()).await;
+        }
+
+        let policies = vec![PolicyDispatch::new(
+            "send-order-confirmation",
+            event_sauce_core::EventFilter::by_aggregate_type("Order"),
+        )];
+        backend
+            .dispatch_policies_to_outbox(
+                &outbox,
+                "dispatcher-1",
+                &policies,
+                std::time::Duration::from_secs(30),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            outbox
+                .pending_count("send-order-confirmation")
+                .await
+                .unwrap(),
+            0,
+            "nothing in this batch matches the policy"
+        );
+        let checkpoint = backend
+            .checkpoint_store()
+            .load_checkpoint(&dispatcher_checkpoint_name(&policies))
+            .await
+            .unwrap();
+        assert_eq!(
+            checkpoint,
+            Some(Position::new(5)),
+            "the batch checkpoint must still advance to the last scanned \
+             position even though nothing in it was enqueued"
         );
     }
 
