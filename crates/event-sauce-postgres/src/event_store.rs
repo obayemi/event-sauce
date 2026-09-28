@@ -939,104 +939,192 @@ impl PostgresEventStore {
         Ok(())
     }
 
-    /// Persists one stream's events and claims inside an already-open
-    /// transaction that already holds the append lock.
+    /// Verifies `expected_version` against `stream_id`'s currently committed
+    /// version. A fast-fail optimization only, run for a stream's first
+    /// commit in a batch (see [`Self::plan_version_chain_checks`]) before
+    /// [`Self::acquire_append_lock`] so a doomed commit never contends for
+    /// the lock. It is not authoritative: a commit that passes here can
+    /// still lose a race for the lock to another writer of the same stream,
+    /// and the `UNIQUE(aggregate_id, aggregate_type, stream_version)` index
+    /// is what catches that at insert time.
     ///
-    /// Runs the version precheck, inserts each event (translating a unique
-    /// violation into a typed `ConcurrencyConflict`), and applies claims. Returns
-    /// the global id of the last inserted event (0 if this commit had no events),
-    /// so the caller can emit a single NOTIFY for the whole transaction.
-    ///
-    /// Does NOT begin/commit the transaction or emit NOTIFY — those are the
-    /// caller's responsibility so that `append` and `append_batch` can share this
-    /// body while controlling transaction and notification scope.
-    async fn write_commit_in_tx(
-        &self,
+    /// Callers only invoke this for a commit with events: an empty commit
+    /// has no version to verify.
+    async fn precheck_version(
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         events_table: &str,
-        commit: event_sauce_core::StreamCommit,
-    ) -> Result<i64> {
-        let event_sauce_core::StreamCommit {
-            stream_id,
-            events,
-            expected_version,
-            claims,
-            clear_claims,
-        } = commit;
-        let mut last_inserted_id: i64 = 0;
+        stream_id: &StreamId,
+        expected_version: AggregateVersion,
+    ) -> Result<()> {
+        let current_version = Self::current_stream_version(tx, events_table, stream_id).await?;
+        if current_version != expected_version {
+            return Err(Error::concurrency_conflict(
+                expected_version,
+                current_version,
+            ));
+        }
+        Ok(())
+    }
 
-        if !events.is_empty() {
-            let current_version =
-                Self::current_stream_version(tx, events_table, &stream_id).await?;
+    /// Validates a whole batch's version chain in memory, with no I/O, so a
+    /// doomed batch is rejected before a transaction is even opened.
+    ///
+    /// `stream_version` is dense and rows are never deleted, so a stream's
+    /// first commit in the batch is the only one whose expected version can
+    /// be checked against the database — that check is left to the caller,
+    /// via [`Self::precheck_version`]. Every later commit to the same stream
+    /// expects the version the earlier commit is about to create, so it is
+    /// checked here instead: its `expected_version` must equal the previous
+    /// commit's `expected_version` plus that commit's event count, or the
+    /// batch is rejected as a [`Error::concurrency_conflict`].
+    ///
+    /// Returns, in batch order, the indices of the commits whose stream is
+    /// seen here for the first time and therefore still need
+    /// [`Self::precheck_version`] against the database.
+    fn plan_version_chain_checks(commits: &[event_sauce_core::StreamCommit]) -> Result<Vec<usize>> {
+        let mut last_committed: std::collections::HashMap<&StreamId, (AggregateVersion, i64)> =
+            std::collections::HashMap::new();
+        let mut needs_db_check = Vec::new();
 
-            if current_version != expected_version {
-                return Err(Error::concurrency_conflict(
-                    expected_version,
-                    current_version,
-                ));
+        for (index, commit) in commits.iter().enumerate() {
+            if commit.events.is_empty() {
+                continue;
+            }
+            let event_count = i64::try_from(commit.events.len()).map_err(|_| {
+                Error::invalid_state("a single commit cannot carry this many events")
+            })?;
+
+            if let Some(&(prev_expected, prev_count)) = last_committed.get(&commit.stream_id) {
+                let required = AggregateVersion::new(prev_expected.as_i64() + prev_count);
+                if commit.expected_version != required {
+                    return Err(Error::concurrency_conflict(
+                        commit.expected_version,
+                        required,
+                    ));
+                }
+            } else {
+                needs_db_check.push(index);
             }
 
-            for (idx, event) in events.iter().enumerate() {
-                #[allow(clippy::cast_possible_wrap)]
-                let stream_version = expected_version.as_i64() + idx as i64;
-                let event_version_i64 = event.event_version.as_i64();
-
-                let insert_query = format!(
-                    "INSERT INTO {events_table} (
-                        event_id, aggregate_id, aggregate_type, event_type, event_version,
-                        event_data, stream_version, created_by, correlation_id, causation_id, metadata
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-                    RETURNING id"
-                );
-
-                let insert_result = sqlx::query_scalar(&insert_query)
-                    .bind(event.id)
-                    .bind(event.aggregate_id)
-                    .bind(event.aggregate_type.as_str())
-                    .bind(&event.event_type)
-                    .bind(event_version_i64)
-                    .bind(&event.event_data)
-                    .bind(stream_version)
-                    .bind(event.created_by)
-                    .bind(event.metadata.as_ref().and_then(|m| m.correlation_id))
-                    .bind(event.metadata.as_ref().and_then(|m| m.causation_id))
-                    .bind(event.metadata.as_ref().and_then(|m| m.additional.clone()))
-                    .fetch_one(&mut **tx)
-                    .await;
-
-                last_inserted_id = match insert_result {
-                    Ok(id) => id,
-                    // Two concurrent appends can both pass the MAX(stream_version)
-                    // precheck under READ COMMITTED (each sees an empty committed
-                    // stream), then the loser violates the
-                    // UNIQUE(aggregate_id, aggregate_type, stream_version) index.
-                    // Surface that as a typed conflict rather than a generic
-                    // backend error, matching the in-memory backend and letting
-                    // callers drive an optimistic-retry loop. The violation aborts
-                    // this transaction (any further query in it would fail with
-                    // 25P02), so we cannot re-read the committed version here. The
-                    // winner committed at `expected_version`, so the true current
-                    // version is at least one beyond it — report that lower bound.
-                    Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => {
-                        let actual = AggregateVersion::new(expected_version.as_i64() + 1);
-                        return Err(Error::concurrency_conflict(expected_version, actual));
-                    }
-                    Err(e) => return Err(Error::backend("Failed to insert event", e)),
-                };
-            }
+            last_committed.insert(&commit.stream_id, (commit.expected_version, event_count));
         }
 
-        // Handle claims
-        crate::claims::enforce(
-            tx,
-            &self.qualify_table("aggregate_claims"),
-            &stream_id,
-            claims,
-            clear_claims,
-        )
-        .await?;
+        Ok(needs_db_check)
+    }
 
-        Ok(last_inserted_id)
+    /// Persists one stream's events inside an already-open transaction that
+    /// already holds the append lock. Claims are enforced separately, by
+    /// [`Self::append_batch`], once that same lock is held.
+    ///
+    /// Trusts the version chain [`Self::plan_version_chain_checks`] and
+    /// [`Self::precheck_version`] already validated before the lock was
+    /// taken, so it does not re-check the version itself: it inserts all
+    /// events in a single statement, translating a unique violation into a
+    /// typed `ConcurrencyConflict`. Returns the global id of the last
+    /// inserted event (0 if this commit had no events), so the caller can
+    /// emit a single NOTIFY for the whole transaction.
+    ///
+    /// Does NOT begin/commit the transaction or emit NOTIFY — [`Self::append_batch`],
+    /// its only caller, owns the transaction and issues a single NOTIFY for
+    /// the whole batch once every commit has been written.
+    async fn write_commit_in_tx(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        events_table: &str,
+        commit: &event_sauce_core::StreamCommit,
+    ) -> Result<i64> {
+        if commit.events.is_empty() {
+            return Ok(0);
+        }
+        Self::insert_events_batch(
+            tx,
+            events_table,
+            &commit.stream_id,
+            commit.expected_version,
+            &commit.events,
+        )
+        .await
+    }
+
+    /// Inserts every event of one commit in a single `INSERT ... SELECT FROM
+    /// UNNEST(...)` statement, one round trip regardless of batch size.
+    ///
+    /// Returns the highest inserted `id`. A unique-index violation (a
+    /// concurrent writer took one of these `stream_version` slots first)
+    /// aborts the whole multi-row insert atomically — nothing from this
+    /// commit is left behind — and is translated to a typed
+    /// `ConcurrencyConflict`. The violation aborts the transaction (any
+    /// further query in it would fail with `25P02`), so the committed
+    /// version cannot be re-read here; the reported `actual` is only the
+    /// lower bound `expected + 1`, since the winner committed at
+    /// `expected_version` and the true current version is at least one
+    /// beyond it.
+    async fn insert_events_batch(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        events_table: &str,
+        stream_id: &StreamId,
+        expected_version: AggregateVersion,
+        events: &[EventEnvelope],
+    ) -> Result<i64> {
+        let aggregate_id = stream_id.aggregate_id();
+        let aggregate_type = stream_id.aggregate_type().as_str().to_string();
+
+        let event_ids: Vec<uuid::Uuid> = events.iter().map(|e| e.id).collect();
+        let aggregate_ids = vec![aggregate_id; events.len()];
+        let aggregate_types = vec![aggregate_type; events.len()];
+        let event_types: Vec<String> = events.iter().map(|e| e.event_type.clone()).collect();
+        let event_versions: Vec<i64> = events.iter().map(|e| e.event_version.as_i64()).collect();
+        let event_datas: Vec<serde_json::Value> =
+            events.iter().map(|e| e.event_data.clone()).collect();
+        let stream_versions: Vec<i64> = (expected_version.as_i64()..).take(events.len()).collect();
+        let created_bys: Vec<Option<uuid::Uuid>> = events.iter().map(|e| e.created_by).collect();
+        let correlation_ids: Vec<Option<uuid::Uuid>> = events
+            .iter()
+            .map(|e| e.metadata.as_ref().and_then(|m| m.correlation_id))
+            .collect();
+        let causation_ids: Vec<Option<uuid::Uuid>> = events
+            .iter()
+            .map(|e| e.metadata.as_ref().and_then(|m| m.causation_id))
+            .collect();
+        let metadatas: Vec<Option<serde_json::Value>> = events
+            .iter()
+            .map(|e| e.metadata.as_ref().and_then(|m| m.additional.clone()))
+            .collect();
+
+        let insert_query = format!(
+            "INSERT INTO {events_table} (
+                event_id, aggregate_id, aggregate_type, event_type, event_version,
+                event_data, stream_version, created_by, correlation_id, causation_id, metadata
+            )
+            SELECT * FROM UNNEST(
+                $1::uuid[], $2::uuid[], $3::text[], $4::text[], $5::bigint[],
+                $6::jsonb[], $7::bigint[], $8::uuid[], $9::uuid[], $10::uuid[], $11::jsonb[]
+            )
+            RETURNING id"
+        );
+
+        let insert_result = sqlx::query_scalar::<_, i64>(&insert_query)
+            .bind(event_ids)
+            .bind(aggregate_ids)
+            .bind(aggregate_types)
+            .bind(event_types)
+            .bind(event_versions)
+            .bind(event_datas)
+            .bind(stream_versions)
+            .bind(created_bys)
+            .bind(correlation_ids)
+            .bind(causation_ids)
+            .bind(metadatas)
+            .fetch_all(&mut **tx)
+            .await;
+
+        match insert_result {
+            Ok(ids) => Ok(ids.into_iter().max().unwrap_or(0)),
+            Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => {
+                let actual = AggregateVersion::new(expected_version.as_i64() + 1);
+                Err(Error::concurrency_conflict(expected_version, actual))
+            }
+            Err(e) => Err(Error::backend("Failed to insert events", e)),
+        }
     }
 
     /// Emits a single NOTIFY carrying the highest inserted id for the
@@ -1082,12 +1170,43 @@ impl EventStore for PostgresEventStore {
         .await
     }
 
+    /// Commits every [`StreamCommit`](event_sauce_core::StreamCommit) in one
+    /// transaction, so a multi-stream reaction is all-or-nothing.
+    ///
+    /// A batch of only empty commits (or the single no-op commit [`Self::append`]
+    /// wraps) is a true no-op: no transaction is opened. Otherwise,
+    /// `plan_version_chain_checks` validates the whole batch's version chain
+    /// in memory before any transaction is opened, rejecting a doomed batch
+    /// for free. It also says which commits still need `precheck_version`
+    /// against the database — a stream's first commit in the batch — and
+    /// that runs next, before the append lock is taken, so a doomed commit
+    /// never contends for it. Neither check is authoritative: a commit that
+    /// passes both can still lose a race for the lock to another writer of
+    /// the same stream, which is why the
+    /// `UNIQUE(aggregate_id, aggregate_type, stream_version)` index, not
+    /// either precheck, is the guard the commit's insert relies on.
+    ///
+    /// Every commit's claims are enforced once the lock (if any) is held,
+    /// inside the same critical section as the id-allocating inserts. A
+    /// batch of several claim-bearing commits re-asserts each aggregate's own
+    /// `aggregate_claims` row via `ON CONFLICT (aggregate_id, claim_type) DO
+    /// UPDATE`, which takes a real row lock; two batches that touch the same
+    /// aggregates in opposite order would form a genuine Postgres lock cycle
+    /// if they ever raced those upserts concurrently. Holding the append lock
+    /// across claim enforcement rules that out: only one batch upserts claims
+    /// at a time, so opposite orderings simply serialize instead of
+    /// deadlocking. A batch with no events takes no lock, so its claims still
+    /// race directly on `aggregate_claims`'s unique index; `claims::enforce`'s
+    /// savepoint-based recovery resolves a same-value race there to a typed
+    /// `ClaimConflict` for the loser.
     async fn append_batch(&self, commits: Vec<event_sauce_core::StreamCommit>) -> Result<()> {
         let commits: Vec<event_sauce_core::StreamCommit> =
             commits.into_iter().filter(|c| !is_noop_commit(c)).collect();
         if commits.is_empty() {
             return Ok(());
         }
+
+        let precheck_indices = Self::plan_version_chain_checks(&commits)?;
 
         let mut tx = self
             .pool
@@ -1097,6 +1216,17 @@ impl EventStore for PostgresEventStore {
 
         let events_table = self.qualify_table("events");
 
+        for &index in &precheck_indices {
+            let commit = &commits[index];
+            Self::precheck_version(
+                &mut tx,
+                &events_table,
+                &commit.stream_id,
+                commit.expected_version,
+            )
+            .await?;
+        }
+
         // Take the append serialization lock ONCE for the whole batch if any
         // commit allocates ids. Holding it across all streams keeps the
         // insert-order = commit-order invariant for the batch.
@@ -1104,14 +1234,21 @@ impl EventStore for PostgresEventStore {
             self.acquire_append_lock(&mut tx, &events_table).await?;
         }
 
-        // Process every commit in the same transaction; the first conflict (or
-        // any error) propagates and rolls the whole batch back. Track the highest
-        // inserted id across the batch for a single NOTIFY.
+        let claims_table = self.qualify_table("aggregate_claims");
+        for commit in &commits {
+            crate::claims::enforce(
+                &mut tx,
+                &claims_table,
+                &commit.stream_id,
+                commit.claims.clone(),
+                commit.clear_claims,
+            )
+            .await?;
+        }
+
         let mut max_inserted_id: i64 = 0;
-        for commit in commits {
-            let last = self
-                .write_commit_in_tx(&mut tx, &events_table, commit)
-                .await?;
+        for commit in &commits {
+            let last = Self::write_commit_in_tx(&mut tx, &events_table, commit).await?;
             max_inserted_id = max_inserted_id.max(last);
         }
 
@@ -1515,6 +1652,89 @@ mod tests {
             EventVersion::new(1),
             json!({"data": "test"}),
         )
+    }
+
+    fn stream_commit(
+        stream_id: StreamId,
+        expected_version: AggregateVersion,
+        event_count: usize,
+    ) -> event_sauce_core::StreamCommit {
+        let aggregate_type = stream_id.aggregate_type().as_str().to_string();
+        let aggregate_id = stream_id.aggregate_id();
+        event_sauce_core::StreamCommit {
+            events: (0..event_count)
+                .map(|_| create_test_envelope_with_type("Written", &aggregate_type, aggregate_id))
+                .collect(),
+            stream_id,
+            expected_version,
+            claims: vec![],
+            clear_claims: false,
+        }
+    }
+
+    /// Unit test (no I/O) for the CONT-1/XN-6 in-memory chain check: two
+    /// consecutive commits to the same stream, where the second's expected
+    /// version equals the first's expected version plus its event count,
+    /// must be accepted with only the first needing a database precheck.
+    #[test]
+    fn test_plan_version_chain_checks_accepts_consecutive_commits() {
+        let stream = StreamId::new("Acct", Uuid::new_v4());
+        let commits = vec![
+            stream_commit(stream.clone(), AggregateVersion::new(0), 1),
+            stream_commit(stream, AggregateVersion::new(1), 1),
+        ];
+
+        let needs_db_check = PostgresEventStore::plan_version_chain_checks(&commits)
+            .expect("a consecutive chain must be accepted");
+
+        assert_eq!(
+            needs_db_check,
+            vec![0],
+            "only the stream's first commit needs a database precheck"
+        );
+    }
+
+    /// A later commit to the same stream that skips a version (rather than
+    /// extending the previous commit by exactly its event count) must be
+    /// rejected in memory, without ever touching the database.
+    #[test]
+    fn test_plan_version_chain_checks_rejects_a_skipped_version() {
+        let stream = StreamId::new("Acct", Uuid::new_v4());
+        let commits = vec![
+            stream_commit(stream.clone(), AggregateVersion::new(0), 1),
+            stream_commit(stream, AggregateVersion::new(5), 1),
+        ];
+
+        let error = PostgresEventStore::plan_version_chain_checks(&commits)
+            .expect_err("a commit that skips a version must be rejected");
+
+        assert!(
+            matches!(error, Error::ConcurrencyConflict { .. }),
+            "a skipped version must surface as a concurrency conflict, got {error:?}"
+        );
+    }
+
+    /// Two streams interleaved in one batch must each be validated against
+    /// their own chain, independently of the other's commits.
+    #[test]
+    fn test_plan_version_chain_checks_tracks_interleaved_streams_independently() {
+        let stream_a = StreamId::new("Acct", Uuid::new_v4());
+        let stream_b = StreamId::new("Acct", Uuid::new_v4());
+        let commits = vec![
+            stream_commit(stream_a.clone(), AggregateVersion::new(0), 1),
+            stream_commit(stream_b.clone(), AggregateVersion::new(0), 2),
+            stream_commit(stream_a, AggregateVersion::new(1), 1),
+            stream_commit(stream_b, AggregateVersion::new(2), 1),
+        ];
+
+        let needs_db_check = PostgresEventStore::plan_version_chain_checks(&commits)
+            .expect("interleaved streams must each be validated against their own chain");
+
+        assert_eq!(
+            needs_db_check,
+            vec![0, 1],
+            "only each stream's first commit in the batch needs a database precheck"
+        );
     }
 
     #[tokio::test]
@@ -2252,6 +2472,277 @@ mod tests {
         let (r1, r2) = tokio::join!(result1, result2);
         assert!(r1.is_ok());
         assert!(r2.is_ok());
+    }
+
+    /// Regression test: two single-event appends that claim the same value
+    /// contend for the same append lock, but must still resolve to exactly
+    /// one winner. Whichever append reaches `claims::enforce` second must
+    /// surface a typed [`Error::ClaimConflict`], never a generic backend
+    /// error or a silently accepted duplicate, regardless of how the two
+    /// appends interleave.
+    #[tokio::test]
+    async fn test_concurrent_appends_claiming_the_same_value_conflict() {
+        use event_sauce_core::AggregateClaim;
+
+        let db = TestDatabase::new().await.unwrap();
+        let store = db.store();
+        let claim_type = "User.email";
+        let claim_key = json!("raced@example.com");
+
+        let spawn_claiming_append = |store: PostgresEventStore| {
+            let aggregate_id = Uuid::new_v4();
+            let claim = AggregateClaim::new(claim_type, claim_key.clone());
+            tokio::spawn(async move {
+                store
+                    .append(
+                        StreamId::new("User", aggregate_id),
+                        vec![create_test_envelope("UserCreated", aggregate_id)],
+                        AggregateVersion::initial(),
+                        vec![claim],
+                        false,
+                    )
+                    .await
+            })
+        };
+
+        let first = spawn_claiming_append(store.clone());
+        let second = spawn_claiming_append(store);
+
+        let (first_result, second_result) = tokio::join!(first, second);
+        let results = [first_result.unwrap(), second_result.unwrap()];
+
+        let successes = results.iter().filter(|r| r.is_ok()).count();
+        assert_eq!(
+            successes, 1,
+            "exactly one racing claim must win, got: {results:?}"
+        );
+        let loser_err = results
+            .iter()
+            .find_map(|r| r.as_ref().err())
+            .expect("one append must lose the race");
+        assert!(
+            loser_err.is_claim_conflict(),
+            "expected ClaimConflict for the losing claim, got: {loser_err:?}"
+        );
+    }
+
+    /// Reads `pg_stat_database.deadlocks` for the test's own database, so a
+    /// deadlock anywhere in the test's connections shows up here regardless
+    /// of which side Postgres chose as the victim.
+    async fn count_deadlocks(pool: &PgPool) -> i64 {
+        sqlx::query_scalar(
+            "SELECT deadlocks FROM pg_stat_database WHERE datname = current_database()",
+        )
+        .fetch_one(pool)
+        .await
+        .expect("pg_stat_database must report the test database")
+    }
+
+    /// Waits out `pg_stat_database`'s flush throttle (>= 1s) so a read of
+    /// its counters right after this reflects transactions that already
+    /// committed, rather than racing their asynchronous flush.
+    async fn wait_for_stats_flush() {
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    }
+
+    fn claim_bearing_commit(
+        aggregate_id: Uuid,
+        claim_type: &'static str,
+        claim_value: &str,
+    ) -> event_sauce_core::StreamCommit {
+        event_sauce_core::StreamCommit {
+            stream_id: StreamId::new("Acct", aggregate_id),
+            events: vec![create_test_envelope_with_type(
+                "Created",
+                "Acct",
+                aggregate_id,
+            )],
+            expected_version: AggregateVersion::initial(),
+            claims: vec![event_sauce_core::AggregateClaim::new(
+                claim_type,
+                json!(claim_value),
+            )],
+            clear_claims: false,
+        }
+    }
+
+    /// Regression test for CONT-1 / XN-6: a batch of several claim-bearing
+    /// commits must not deadlock against another batch that re-asserts the
+    /// same aggregates' claim rows in the opposite order.
+    ///
+    /// Every round uses brand-new aggregate ids, so each pair of opposing
+    /// batches races on a fresh pair of `aggregate_claims` rows with no
+    /// dependency on which side won a previous round: whichever batch reaches
+    /// the append lock first commits both aggregates, and the other loses to
+    /// the events table's unique index with a typed `ConcurrencyConflict`.
+    /// Before claim enforcement moved back inside the append lock, both
+    /// batches instead raced `upsert_or_conflict`'s row locks unlocked and
+    /// unserialized, in opposite order, which is a genuine Postgres deadlock:
+    /// this asserts a zero `pg_stat_database.deadlocks` delta and that every
+    /// batch finishes well under `deadlock_timeout` (Postgres's default is
+    /// 1s), rather than merely checking that a deadlock gets mapped to some
+    /// error.
+    #[tokio::test]
+    async fn test_concurrent_opposite_order_claim_batches_never_deadlock() {
+        const ROUNDS: usize = 30;
+        const PAIRS_PER_ROUND: usize = 8;
+        const STALL_THRESHOLD: std::time::Duration = std::time::Duration::from_millis(900);
+
+        let db = TestDatabase::new().await.unwrap();
+        let store = db.store();
+        let claim_type = "Acct.slot";
+
+        let deadlocks_before = count_deadlocks(db.pool()).await;
+
+        let mut success_count = 0usize;
+        let mut conflict_count = 0usize;
+
+        for _ in 0..ROUNDS {
+            let mut handles = Vec::new();
+            for _ in 0..PAIRS_PER_ROUND {
+                let a = Uuid::new_v4();
+                let b = Uuid::new_v4();
+
+                for commits in [
+                    vec![
+                        claim_bearing_commit(a, claim_type, &a.to_string()),
+                        claim_bearing_commit(b, claim_type, &b.to_string()),
+                    ],
+                    vec![
+                        claim_bearing_commit(b, claim_type, &b.to_string()),
+                        claim_bearing_commit(a, claim_type, &a.to_string()),
+                    ],
+                ] {
+                    let store = store.clone();
+                    handles.push(tokio::spawn(async move {
+                        let start = std::time::Instant::now();
+                        let result = store.append_batch(commits).await;
+                        (start.elapsed(), result)
+                    }));
+                }
+            }
+
+            for handle in handles {
+                let (elapsed, result) = handle.await.unwrap();
+                assert!(
+                    elapsed < STALL_THRESHOLD,
+                    "append_batch took {elapsed:?}, at or beyond deadlock_timeout"
+                );
+                match result {
+                    Ok(()) => success_count += 1,
+                    Err(e) if e.is_concurrency_conflict() => conflict_count += 1,
+                    Err(e) => panic!("unexpected error racing opposite-order batches: {e:?}"),
+                }
+            }
+        }
+
+        assert_eq!(
+            success_count + conflict_count,
+            ROUNDS * PAIRS_PER_ROUND * 2,
+            "every batch must either commit or lose to a typed ConcurrencyConflict"
+        );
+
+        wait_for_stats_flush().await;
+        let deadlocks_after = count_deadlocks(db.pool()).await;
+        assert_eq!(
+            deadlocks_after - deadlocks_before,
+            0,
+            "opposite-order claim-bearing batches must never deadlock"
+        );
+    }
+
+    /// Regression / invariant test for CONT-1 and XN-6: with many streams
+    /// appending concurrently, a reader repeatedly scanning
+    /// `stream_all(from_position)` and advancing its checkpoint to the
+    /// highest position it has seen must eventually observe every committed
+    /// event exactly once. If id allocation and commit order could ever
+    /// diverge, the reader could advance its checkpoint past a higher id
+    /// while a lower id was still uncommitted; once that lower id committed,
+    /// it would sit behind an already-passed checkpoint and be silently lost
+    /// forever. This test must keep passing across any change that touches
+    /// the append lock, so it is added before such a change and kept
+    /// unchanged afterwards.
+    #[tokio::test]
+    async fn test_concurrent_writers_never_skip_a_reader_position() {
+        const WRITERS: usize = 12;
+        const EVENTS_PER_WRITER: i64 = 10;
+
+        let db = TestDatabase::new().await.unwrap();
+        let store = db.store();
+
+        let mut writer_handles = Vec::new();
+        for _ in 0..WRITERS {
+            let store = store.clone();
+            writer_handles.push(tokio::spawn(async move {
+                let aggregate_id = Uuid::new_v4();
+                let stream_id = StreamId::new("Writer", aggregate_id);
+                for version in 0..EVENTS_PER_WRITER {
+                    let event = create_test_envelope_with_type("Written", "Writer", aggregate_id);
+                    store
+                        .append(
+                            stream_id.clone(),
+                            vec![event],
+                            AggregateVersion::new(version),
+                            vec![],
+                            false,
+                        )
+                        .await
+                        .expect("concurrent append must succeed");
+                }
+            }));
+        }
+
+        let seen: std::sync::Arc<tokio::sync::Mutex<std::collections::HashSet<Uuid>>> =
+            std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashSet::new()));
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        let reader_handle = tokio::spawn({
+            let store = store.clone();
+            let seen = seen.clone();
+            let stop = stop.clone();
+            async move {
+                let mut checkpoint = Position::start();
+                loop {
+                    let should_stop = stop.load(std::sync::atomic::Ordering::SeqCst);
+                    let mut stream = store.stream_all(checkpoint).await.unwrap();
+                    while let Some(entry) = stream.next().await {
+                        let entry = entry.unwrap();
+                        checkpoint = entry.position;
+                        seen.lock().await.insert(entry.envelope.id);
+                    }
+                    drop(stream);
+                    if should_stop {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+            }
+        });
+
+        for handle in writer_handles {
+            handle.await.unwrap();
+        }
+        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        reader_handle.await.unwrap();
+
+        let mut total_committed = std::collections::HashSet::new();
+        let mut stream = store.stream_all(Position::start()).await.unwrap();
+        while let Some(entry) = stream.next().await {
+            total_committed.insert(entry.unwrap().envelope.id);
+        }
+        assert_eq!(
+            total_committed.len(),
+            WRITERS * usize::try_from(EVENTS_PER_WRITER).unwrap()
+        );
+
+        let seen = seen.lock().await;
+        assert_eq!(
+            seen.len(),
+            total_committed.len(),
+            "the checkpoint-advancing reader must observe every committed event; \
+             a smaller count means it skipped an id that committed after a higher \
+             one had already been observed"
+        );
     }
 
     #[tokio::test]
@@ -3260,6 +3751,106 @@ mod tests {
             store.count_events_fast(stream_a).await.unwrap(),
             0,
             "no events may survive an atomic batch that failed"
+        );
+    }
+
+    /// Regression test: a batch with two consecutive commits to the SAME
+    /// stream (v0 then v1) must succeed. `PolicyContext::commit` called
+    /// twice on one aggregate in a handler, or `Repository::save_all`,
+    /// reaches `append_batch` this way.
+    ///
+    /// The pre-lock precheck loop must only check each stream's FIRST commit
+    /// against the committed version — checking every commit against the
+    /// committed stream (ignoring earlier commits in the same batch) rejects
+    /// the second commit, which expects the version the first commit is
+    /// about to create, not the one still committed.
+    #[tokio::test]
+    async fn test_append_batch_allows_consecutive_commits_to_same_stream() {
+        let db = TestDatabase::new().await.unwrap();
+        let store = db.store();
+
+        let id = Uuid::new_v4();
+        let stream = StreamId::new("Acct", id);
+
+        let commits = vec![
+            event_sauce_core::StreamCommit {
+                stream_id: stream.clone(),
+                events: vec![create_test_envelope_with_type("Acct.Opened", "Acct", id)],
+                expected_version: AggregateVersion::initial(),
+                claims: vec![],
+                clear_claims: false,
+            },
+            event_sauce_core::StreamCommit {
+                stream_id: stream.clone(),
+                events: vec![create_test_envelope_with_type("Acct.Credited", "Acct", id)],
+                expected_version: AggregateVersion::new(1),
+                claims: vec![],
+                clear_claims: false,
+            },
+        ];
+
+        store
+            .append_batch(commits)
+            .await
+            .expect("consecutive commits to the same stream must succeed");
+
+        assert_eq!(
+            store.get_version(stream.clone()).await.unwrap(),
+            AggregateVersion::new(2),
+            "both commits must be stored, advancing the stream by two versions"
+        );
+        assert_eq!(
+            store.count_events_fast(stream).await.unwrap(),
+            2,
+            "both events must be persisted"
+        );
+    }
+
+    /// Regression test for CONT-1/XN-6: since `write_commit_in_tx` no longer
+    /// re-checks the version itself, the in-memory chain check in
+    /// [`PostgresEventStore::plan_version_chain_checks`] is now the only
+    /// thing standing between a batch whose second same-stream commit skips
+    /// a version and a gap in the stream. It must still be rejected, and
+    /// leave no trace: no transaction is even opened for a batch this check
+    /// condemns.
+    #[tokio::test]
+    async fn test_append_batch_rejects_a_skipped_version_in_the_same_stream() {
+        let db = TestDatabase::new().await.unwrap();
+        let store = db.store();
+
+        let id = Uuid::new_v4();
+        let stream = StreamId::new("Acct", id);
+
+        let commits = vec![
+            event_sauce_core::StreamCommit {
+                stream_id: stream.clone(),
+                events: vec![create_test_envelope_with_type("Acct.Opened", "Acct", id)],
+                expected_version: AggregateVersion::initial(),
+                claims: vec![],
+                clear_claims: false,
+            },
+            event_sauce_core::StreamCommit {
+                stream_id: stream.clone(),
+                events: vec![create_test_envelope_with_type("Acct.Credited", "Acct", id)],
+                expected_version: AggregateVersion::new(5),
+                claims: vec![],
+                clear_claims: false,
+            },
+        ];
+
+        let error = store
+            .append_batch(commits)
+            .await
+            .expect_err("a batch whose second commit skips a version must be rejected");
+        assert!(
+            matches!(error, Error::ConcurrencyConflict { .. }),
+            "expected a concurrency conflict, got {error:?}"
+        );
+
+        assert_eq!(
+            store.count_events_fast(stream).await.unwrap(),
+            0,
+            "a rejected batch must leave no events behind, not even the first commit's"
         );
     }
 }
