@@ -833,6 +833,113 @@ impl<S: EventStore + 'static> std::fmt::Debug for PolicyRunner<S> {
     }
 }
 
+/// Define a policy that handles events by issuing commands on other aggregates.
+///
+/// This macro generates a struct implementing [`Policy<S>`](crate::policy::Policy)
+/// that routes events to handler closures based on event type. Each handler receives
+/// a deserialized event struct and a [`PolicyContext`](crate::policy::PolicyContext)
+/// for loading and committing aggregates with automatic causation tracking.
+///
+/// # Syntax
+///
+/// ```ignore
+/// policy! {
+///     /// Optional doc comment
+///     PolicyName {
+///         on EventStruct |event, ctx| {
+///             // Handle the event
+///         },
+///         on AnotherEventStruct |event, ctx| {
+///             // Handle another event
+///         },
+///     }
+/// }
+/// ```
+///
+/// Each `EventStruct` must implement [`EventType`](crate::EventType) (which provides
+/// the event type string for filtering) and [`serde::de::DeserializeOwned`] (for
+/// deserialization from the event envelope).
+///
+/// When using [`define_events!`](crate::define_events), each variant `Foo` generates
+/// a `FooEvent` struct that implements both traits automatically.
+///
+/// # Generated Code
+///
+/// For `policy! { MyPolicy { on FooEvent |e, ctx| { ... }, on BarEvent |e, ctx| { ... } } }`:
+///
+/// 1. `struct MyPolicy;`
+/// 2. `impl<S: EventStore + 'static> Policy<S> for MyPolicy` with:
+///    - `name()` → `"MyPolicy"`
+///    - `event_filter()` → `EventFilter::any_of_event_types([FooEvent::EVENT_TYPE, BarEvent::EVENT_TYPE])`
+///    - `handle()` → match on `event_type`, deserialize `event_data` to the struct, call handler
+///
+/// # Examples
+///
+/// ```ignore
+/// use event_sauce::policy;
+///
+/// policy! {
+///     /// Reacts to user kicks by removing them from groups.
+///     KickUserPolicy {
+///         on KickedUserEvent |event, ctx| {
+///             let mut group = ctx.load(event.group_id).await?;
+///             group.remove_user(event.user_id, "kicked")?;
+///             ctx.commit(&mut group).await?;
+///         },
+///     }
+/// }
+///
+/// // Register with a runner:
+/// let runner = PolicyRunner::new(store, checkpoint_store)
+///     .register(Arc::new(KickUserPolicy));
+/// ```
+#[cfg(feature = "event-sourcing")]
+#[macro_export]
+macro_rules! policy {
+    // Entry point: with doc comments
+    (
+        $(#[$meta:meta])*
+        $vis:vis $name:ident {
+            $(
+                on $event_struct:ty |$event:ident, $ctx:ident| $handler:block
+            ),+ $(,)?
+        }
+    ) => {
+        $(#[$meta])*
+        $vis struct $name;
+
+        #[$crate::__private::async_trait]
+        impl<S: $crate::EventStore + 'static> $crate::policy::Policy<S> for $name {
+            fn name(&self) -> &str {
+                stringify!($name)
+            }
+
+            fn event_filter(&self) -> $crate::EventFilter {
+                $crate::EventFilter::any_of_event_types([
+                    $(<$event_struct as $crate::EventType>::EVENT_TYPE),+
+                ])
+            }
+
+            async fn handle(
+                &self,
+                event: &$crate::EventEnvelope,
+                ctx: &$crate::policy::PolicyContext<S>,
+            ) -> $crate::Result<()> {
+                $(
+                    if event.event_type == <$event_struct as $crate::EventType>::EVENT_TYPE {
+                        let $event: $event_struct = $crate::__private::serde_json::from_value(event.event_data.clone())?;
+                        let $ctx = ctx;
+                        return $handler;
+                    }
+                )+
+
+                // No matching handler — should not happen due to event_filter
+                Ok(())
+            }
+        }
+    };
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
