@@ -1662,7 +1662,10 @@ mod tests {
     }
 
     impl TestDatabase {
-        /// Creates a new test database with testcontainers.
+        /// Creates a new test database with testcontainers, migrated with the
+        /// store's real [`PostgresEventStore::migrate`] rather than a
+        /// hand-synced copy of its schema, so tests exercise the exact
+        /// schema production gets.
         async fn new() -> Result<Self> {
             // Start PostgreSQL container
             let container = crate::test_support::start_postgres()
@@ -1687,11 +1690,13 @@ mod tests {
                 .await
                 .map_err(|e| Error::backend("Failed to connect to test database", e))?;
 
-            // Run migrations
-            sqlx::migrate!("./migrations")
-                .run(&pool)
-                .await
-                .map_err(|e| Error::backend("Failed to run migrations", e))?;
+            PostgresEventStore::builder()
+                .pool(pool.clone())
+                .schema("public")
+                .build()
+                .expect("pool was set")
+                .migrate()
+                .await?;
 
             Ok(Self { pool, container })
         }
