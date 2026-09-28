@@ -46,7 +46,7 @@ full = [
 ]
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "test-util", "time"] }
 anyhow.workspace = true
 chrono.workspace = true
 uuid.workspace = true
