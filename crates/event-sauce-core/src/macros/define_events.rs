@@ -7,6 +7,16 @@
 /// implementations (`DomainEvent`, `EventApplicator`, `ApplyEvent`/`InitEvent`,
 /// `ActorEvent`/`ActorInitEvent`) from a concise, readable declaration.
 ///
+/// Every crate path the expansion needs beyond `$crate` itself (`paste`,
+/// `uuid`, `serde_json`) is resolved through `$crate::__private`; `chrono`
+/// resolves through the public `$crate::chrono` instead, since instants are
+/// part of the public API rather than a macro-only detail. Either way a
+/// caller depending only on `event-sauce` or `event-sauce-core` needs no
+/// direct dependency of its own on any of them. The generated event structs
+/// still derive `serde::Serialize` and `serde::Deserialize`, so `serde`
+/// with the `derive` feature is the one companion dependency every caller
+/// of this macro needs.
+///
 /// # Features
 ///
 /// - `@init` marks a variant as an initialisation event (type-state pattern)
