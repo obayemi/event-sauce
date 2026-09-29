@@ -3079,8 +3079,8 @@ mod tests {
     };
 
     /// Minimal `DefaultEntity` aggregate used by the multi-aggregate flush test.
-    /// One balance, one event kind ("credit"); no macros so the test is
-    /// self-contained in the postgres crate (which has no `paste`/macro deps).
+    /// One balance, one event kind ("credit"), with its trait impls written
+    /// by hand.
     #[derive(Debug, serde::Serialize, serde::Deserialize)]
     struct Acct {
         id: EntityId,
