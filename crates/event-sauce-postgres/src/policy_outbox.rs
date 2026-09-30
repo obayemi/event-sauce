@@ -253,7 +253,7 @@ pub struct PostgresPolicyOutbox {
 }
 
 /// One claimed outbox row, returned by [`PostgresPolicyOutbox::claim_batch`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, sqlx::FromRow)]
 pub struct OutboxClaim {
     /// Outbox row id (used to mark done/failed).
     pub id: i64,
@@ -478,27 +478,14 @@ impl PostgresPolicyOutbox {
             RETURNING o.id, o.event_id, o.event_position, o.attempts, o.failures"
         );
 
-        let rows: Vec<(i64, Uuid, i64, i32, i32)> = sqlx::query_as(&query)
+        sqlx::query_as(&query)
             .bind(policy_name)
             .bind(i64::from(batch_size))
             .bind(worker_id)
             .bind(lock_duration.as_secs_f64())
             .fetch_all(&self.pool)
             .await
-            .map_err(|e| Error::backend("Failed to claim outbox batch", e))?;
-
-        Ok(rows
-            .into_iter()
-            .map(
-                |(id, event_id, event_position, attempts, failures)| OutboxClaim {
-                    id,
-                    event_id,
-                    event_position,
-                    attempts,
-                    failures,
-                },
-            )
-            .collect())
+            .map_err(|e| Error::backend("Failed to claim outbox batch", e))
     }
 
     /// Marks an outbox row as successfully processed by `worker_id`. Releases
