@@ -90,19 +90,19 @@ We recommend following this path:
 
 ```rust
 // Command: Request to do something
-pub async fn handle_add_item_command(
-    store: &impl EventStore,
+pub async fn handle_add_item_command<R: Repository<ShoppingCart>>(
+    repo: &R,
     cart_id: EntityId,
     product: Product,
 ) -> Result<(), CartError> {
     // 1. Load aggregate
-    let mut cart: AggregateRoot<ShoppingCart> = load(store, cart_id).await?;
+    let mut cart: AggregateRoot<ShoppingCart> = repo.load(cart_id).await?;
 
     // 2. Execute command
     cart.add_item(product)?;
 
     // 3. Save events
-    store.commit(&mut cart).await?;
+    repo.save(&mut cart).await?;
 
     Ok(())
 }

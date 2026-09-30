@@ -10,8 +10,7 @@ The Event Store is the persistence layer in event-sauce that stores and retrieve
 4. [Available Backends](#available-backends)
 5. [Usage Patterns](#usage-patterns)
 6. [Best Practices](#best-practices)
-7. [Migration Guide](#migration-guide)
-8. [Advanced Topics](#advanced-topics)
+7. [Advanced Topics](#advanced-topics)
 
 ## Overview
 
@@ -48,75 +47,91 @@ pub enum CounterEvent {
 
 ```rust
 pub struct EventEnvelope {
-    pub id: Uuid,              // Unique event ID
-    pub aggregate_id: Uuid,    // Which aggregate
-    pub aggregate_type: String,// Type of aggregate
-    pub event_type: String,    // Type of event
-    pub event_version: Version,// Aggregate version
-    pub event_data: Value,     // JSON-serialized event
-    pub occurred_at: DateTime<Utc>,  // Timestamp
+    pub id: Uuid,                        // Unique event ID
+    pub aggregate_id: Uuid,              // Which aggregate
+    pub aggregate_type: AggregateType,   // Type of aggregate
+    pub event_type: String,              // Type of event
+    pub event_version: EventVersion,     // Event SCHEMA version (not the
+                                          // aggregate's stream version)
+    pub event_data: serde_json::Value,   // JSON-serialized event
+    pub created_by: Option<Uuid>,        // Actor, if any (from an @actor event)
+    pub metadata: Option<EventMetadata>, // Causation/correlation, additional data
+    pub created_at: DateTime<Utc>,       // Timestamp
 }
 ```
 
 ### Stream IDs
 
-Internally, the event store uses `StreamId` to identify event streams:
+Internally, the event store uses `StreamId` (an opaque `aggregate_type` +
+`aggregate_id` pair, built with `StreamId::new(aggregate_type, aggregate_id)`)
+to identify event streams.
 
-```rust
-pub struct StreamId {
-    aggregate_type: String,
-    aggregate_id: Uuid,
-}
-```
-
-However, you typically don't interact with `StreamId` directly. The `commit()` and `load()` methods handle this for you.
+However, you typically don't interact with `StreamId` directly — the
+`Repository` trait and `EventStore::commit`/`commit_deleted` build it for you.
 
 ### Versioning
 
-Each event has a version number that increments with each event:
+Two distinct version types exist, easy to confuse because both are called
+"version":
 
-- Version 0: Initial (no events)
-- Version 1: After first event
-- Version 2: After second event
-- And so on...
-
-Versions enable **optimistic concurrency control** - if two operations try to modify the same aggregate simultaneously, one will fail with a concurrency conflict.
+- **`AggregateVersion`** — the stream's position: 0 (no events), 1 (after the
+  first event), 2 (after the second), and so on. Used for optimistic
+  concurrency control: `Repository::save`/`EventStore::commit` compare the
+  aggregate's expected version against what is stored, and a mismatch is
+  `Error::ConcurrencyConflict`.
+- **`EventVersion`** — the *schema* version of one event type, set by
+  `@version(n)` in `define_events!` (or `#[event(version = n)]` on a manual
+  event). Unrelated to the aggregate's position in its stream; it exists so
+  `DomainEvent::upcast`/`@upcast` can migrate an older payload shape on load.
 
 ## API Reference
 
+Application code almost never calls the store directly — it goes through
+`Repository<A>` (`store.repository::<A>()`), whose `load`/`save`/`modify`
+delegate to the store's `commit`/`commit_deleted`. This section documents
+both levels: `Repository` for everyday code, `EventStore` for what it's
+built on.
+
 ### EventStore Trait
 
-The core trait that all backends implement:
+A condensed view of the real trait (see
+[Custom Event Store Implementations](#custom-event-store-implementations)
+below, and the full version in
+[architecture.md](architecture.md#eventstore-trait)):
 
 ```rust
 #[async_trait]
 pub trait EventStore: Send + Sync {
-    /// Append events to a stream
-    async fn append_events(
+    // Primitives backends implement:
+    async fn append(
         &self,
         stream_id: StreamId,
         events: Vec<EventEnvelope>,
-        expected_version: Version,
+        expected_version: AggregateVersion,
+        claims: Vec<AggregateClaim>,
+        clear_claims: bool,
     ) -> Result<()>;
 
-    /// Load events from a stream
     async fn load_stream(
         &self,
         stream_id: StreamId,
-        from_version: Version,
+        from_version: AggregateVersion,
     ) -> Result<impl Stream<Item = Result<EventEnvelope>> + Send>;
 
-    /// Commit pending events from an aggregate (convenience method)
+    // ES-specific orchestration, generic over every backend:
     async fn commit<A>(&self, aggregate: &mut AggregateRoot<A>) -> Result<()>
     where
         A: Aggregate,
         A::Event: serde::Serialize;
+
+    // ... append_batch, snapshots, checkpoints, repository() — see architecture.md
 }
 ```
 
 ### commit() - Save Pending Events
 
-The `commit()` method is the primary way to save events:
+`Repository::save` is the everyday entry point; it delegates to
+`EventStore::commit`, which is the primary way to save events:
 
 ```rust
 async fn commit<A>(&self, aggregate: &mut AggregateRoot<A>) -> Result<()>
@@ -162,19 +177,16 @@ match store.commit(&mut counter).await {
 }
 ```
 
-### load() - Reconstruct Aggregate
+### repo.load() - Reconstruct Aggregate
 
-The `load()` function reconstructs an aggregate from stored events:
+`Repository::load` reconstructs an aggregate from stored events:
 
 ```rust
-pub async fn load<S, A>(store: &S, aggregate_id: EntityId) -> Result<AggregateRoot<A>>
-where
-    S: EventStore,
-    A: Aggregate,
-    A::Event: serde::de::DeserializeOwned;
+async fn load<I: EntityIdFor<A> + Send>(&self, id: I) -> Result<AggregateRoot<A>>;
 ```
 
-> **Note:** Due to Rust's async trait limitations with generic return types, `load()` is a standalone function rather than a trait method.
+Obtain the repository from the store with `store.repository::<A>()`; it
+accepts both a raw `EntityId` and a typed `AggregateId` newtype.
 
 **What it does:**
 
@@ -205,13 +217,12 @@ where
 **Example:**
 
 ```rust
-use event_sauce::load;
-
-let store = InMemoryEventStore::new();
+let store = Arc::new(InMemoryEventStore::new());
+let repo = store.repository::<Counter>();
 let counter_id = EntityId::new();
 
 // Later, load the aggregate
-let counter: AggregateRoot<Counter> = load(&store, counter_id).await?;
+let counter: AggregateRoot<Counter> = repo.load(counter_id).await?;
 
 println!("Loaded counter value: {}", counter.value());
 println!("Loaded version: {}", counter.version());
@@ -295,12 +306,13 @@ store.migrate().await?;
 ### Basic Save/Load Cycle
 
 ```rust
-use event_sauce::{load, EventStore};
+use std::sync::Arc;
 use event_sauce::memory::InMemoryEventStore;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let store = InMemoryEventStore::new();
+    let store = Arc::new(InMemoryEventStore::new());
+    let repo = store.repository::<Counter>();
     let counter_id = EntityId::new();
 
     // Create and modify aggregate
@@ -310,11 +322,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     counter.decrement(2)?;
 
     // Save to store
-    store.commit(&mut counter).await?;
+    repo.save(&mut counter).await?;
     println!("Saved {} events", 3);
 
     // Load from store
-    let loaded: AggregateRoot<Counter> = load(&store, counter_id).await?;
+    let loaded: AggregateRoot<Counter> = repo.load(counter_id).await?;
 
     assert_eq!(loaded.value(), counter.value());
     assert_eq!(loaded.version(), counter.version());
@@ -329,14 +341,14 @@ After loading, you can continue operations:
 
 ```rust
 // Load existing aggregate
-let mut counter: AggregateRoot<Counter> = load(&store, counter_id).await?;
+let mut counter: AggregateRoot<Counter> = repo.load(counter_id).await?;
 
 // Continue operations
 counter.increment(10)?;
 counter.decrement(3)?;
 
 // Save new events
-store.commit(&mut counter).await?;
+repo.save(&mut counter).await?;
 ```
 
 ### Event Sourcing Loop
@@ -345,12 +357,12 @@ Typical command handling pattern:
 
 ```rust
 async fn handle_counter_command(
-    store: &InMemoryEventStore,
+    repo: &EventSourcedRepository<InMemoryEventStore, Counter>,
     counter_id: EntityId,
     command: CounterCommand,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Load aggregate
-    let mut counter: AggregateRoot<Counter> = load(store, counter_id).await?;
+    let mut counter: AggregateRoot<Counter> = repo.load(counter_id).await?;
 
     // Execute command
     match command {
@@ -360,7 +372,7 @@ async fn handle_counter_command(
     }
 
     // Save events
-    store.commit(&mut counter).await?;
+    repo.save(&mut counter).await?;
 
     Ok(())
 }
@@ -385,11 +397,11 @@ thundering herd.
 
 ```text
 use std::time::Duration;
-use event_sauce::Error;
+use event_sauce::{Error, EventSourcedRepository};
 use event_sauce::postgres::PostgresEventStore;
 
 async fn safe_update(
-    store: &PostgresEventStore,
+    repo: &EventSourcedRepository<PostgresEventStore, Counter>,
     counter_id: EntityId,
     operation: impl Fn(&mut AggregateRoot<Counter>) -> Result<(), CounterError>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -400,13 +412,13 @@ async fn safe_update(
     for attempt in 1..=MAX_RETRIES {
         // Re-load current state on every attempt so the operation is derived
         // from the latest committed events (idempotent retry).
-        let mut counter: AggregateRoot<Counter> = load(store, counter_id).await?;
+        let mut counter: AggregateRoot<Counter> = repo.load(counter_id).await?;
 
         // Execute operation against fresh state.
         operation(&mut counter)?;
 
         // Try to commit.
-        match store.commit(&mut counter).await {
+        match repo.save(&mut counter).await {
             Ok(()) => return Ok(()),
             Err(e) if e.is_concurrency_conflict() && attempt < MAX_RETRIES => {
                 // Jittered exponential backoff: base * 2^(attempt-1), capped,
@@ -494,17 +506,17 @@ Keep aggregate boundaries clear:
 
 ```rust
 // ✅ Good: One aggregate per commit
-let mut order = load(&store, order_id).await?;
+let mut order = repo.load(order_id).await?;
 order.add_item(item)?;
-store.commit(&mut order).await?;
+repo.save(&mut order).await?;
 
 // ✅ Also fine: an intentional, bounded multi-aggregate write via save_all
 // (atomic on PostgreSQL — see "Multi-Aggregate Atomic Writes" above).
 repo.save_all(&mut [&mut from, &mut to]).await?;
 
-// ❌ Bad: hand-rolling multiple separate commits and hoping they all land
-// store.commit(&mut from).await?; // if the next line fails, this is orphaned
-// store.commit(&mut to).await?;
+// ❌ Bad: hand-rolling multiple separate saves and hoping they all land
+// repo.save(&mut from).await?; // if the next line fails, this is orphaned
+// repo.save(&mut to).await?;
 ```
 
 ### 2. Always Handle Conflicts
@@ -550,15 +562,14 @@ Don't store unnecessary data:
 
 ```rust
 // ✅ Good: Only store what changed
-#[derive(Event)]
-pub struct ProductPriceChanged {
+struct PriceChangedEvent {
     new_price: Decimal,
     timestamp: DateTime<Utc>,
 }
+impl ApplyEvent<Product> for PriceChangedEvent { /* ... */ }
 
 // ❌ Bad: Don't duplicate entire aggregate state
-#[derive(Event)]
-pub struct ProductPriceChanged {
+struct PriceChangedEvent {
     new_price: Decimal,
     old_price: Decimal,
     product_name: String,      // Already in product
@@ -566,6 +577,12 @@ pub struct ProductPriceChanged {
     timestamp: DateTime<Utc>,
 }
 ```
+
+(`#[derive(Event)]` generates `EventApplicator` for an enum whose variants each
+wrap one such struct, e.g. `enum ProductEvent { PriceChanged(PriceChangedEvent) }`
+— see [Events Guide](events.md#manual-event-definition) or
+`examples/apply-event.rs` for the full pattern. `define_events!`'s inline
+closures are the declarative alternative and don't need a separate struct.)
 
 ### 5. Event Schema Versioning
 
@@ -597,124 +614,43 @@ Always test that aggregates can be reconstructed:
 ```rust
 #[tokio::test]
 async fn test_counter_replay() {
-    let store = InMemoryEventStore::new();
+    let store = Arc::new(InMemoryEventStore::new());
+    let repo = store.repository::<Counter>();
     let counter_id = EntityId::new();
 
     // Create and modify
     let mut counter = AggregateRoot::<Counter>::new(counter_id);
-    counter.increment(10)?;
-    counter.decrement(3)?;
+    counter.increment(10).unwrap();
+    counter.decrement(3).unwrap();
 
     let expected_value = counter.value();
     let expected_version = counter.version();
 
     // Save
-    store.commit(&mut counter).await?;
+    repo.save(&mut counter).await.unwrap();
 
     // Load and verify
-    let loaded: AggregateRoot<Counter> = load(&store, counter_id).await?;
+    let loaded: AggregateRoot<Counter> = repo.load(counter_id).await.unwrap();
     assert_eq!(loaded.value(), expected_value);
     assert_eq!(loaded.version(), expected_version);
 }
-```
-
-## Migration Guide
-
-### From Manual Event Handling
-
-**Old Pattern:**
-
-```rust
-// Old: Manual envelope creation
-async fn save_counter(store: &InMemoryEventStore, counter: &mut AggregateRoot<Counter>) {
-    let envelopes: Vec<EventEnvelope> = counter
-        .pending_events()
-        .iter()
-        .enumerate()
-        .map(|(i, event)| {
-            EventEnvelope::new(
-                Uuid::new_v4(),
-                counter.entity_id().to_uuid(),
-                "Counter".to_string(),
-                event.event_type().to_string(),
-                counter.version() + Version::new(i as u64 + 1),
-                serde_json::to_value(event).unwrap(),
-            )
-        })
-        .collect();
-
-    let stream_id = StreamId::new("Counter", counter.entity_id().to_uuid());
-    store.append_events(stream_id, envelopes, counter.version()).await?;
-    counter.clear_pending_events();
-}
-```
-
-**New Pattern:**
-
-```rust
-// New: Simple commit
-store.commit(&mut counter).await?;
-```
-
-### From Custom Constructors
-
-**Old Pattern:**
-
-```rust
-impl Counter {
-    fn from_events(id: EntityId, events: Vec<CounterEvent>) -> Self {
-        let mut counter = Self {
-            id,
-            value: 0,
-            version: Version::initial(),
-            pending_events: Vec::new(),
-        };
-
-        for event in events {
-            counter.apply_unchecked(&event);
-        }
-
-        counter
-    }
-}
-
-// Loading
-let events = load_events_from_store(&store, counter_id).await?;
-let counter = Counter::from_events(counter_id, events);
-```
-
-**New Pattern:**
-
-```rust
-// New: Simple load
-let counter: AggregateRoot<Counter> = load(&store, counter_id).await?;
-```
-
-### From StreamId-based APIs
-
-**Old Pattern:**
-
-```rust
-let stream_id = StreamId::new("Counter", counter_id.to_uuid());
-let stream = store.load_stream(stream_id, Version::initial()).await?;
-```
-
-**New Pattern:**
-
-```rust
-// The new API handles StreamId internally
-let counter: AggregateRoot<Counter> = load(&store, counter_id).await?;
 ```
 
 ## Advanced Topics
 
 ### Custom Event Store Implementations
 
-Implement `EventStore` trait for custom backends:
+Implement `EventStore` for a custom backend by providing its primitives —
+`append`, `load_stream`, `stream_all`, and `get_version`. Everything else
+(`commit`, `repository()`, `append_batch`, snapshots, ...) has a default
+built on those four, so a minimal backend needs only them:
 
 ```rust
 use async_trait::async_trait;
-use event_sauce::{EventStore, EventEnvelope, StreamId, Version, Result};
+use event_sauce::{
+    AggregateClaim, AggregateVersion, EventEnvelope, EventLogEntry, EventStore, Position,
+    Result, StreamId,
+};
 use futures::Stream;
 
 pub struct CustomEventStore {
@@ -723,11 +659,13 @@ pub struct CustomEventStore {
 
 #[async_trait]
 impl EventStore for CustomEventStore {
-    async fn append_events(
+    async fn append(
         &self,
         stream_id: StreamId,
         events: Vec<EventEnvelope>,
-        expected_version: Version,
+        expected_version: AggregateVersion,
+        claims: Vec<AggregateClaim>,
+        clear_claims: bool,
     ) -> Result<()> {
         // Your implementation
     }
@@ -735,8 +673,19 @@ impl EventStore for CustomEventStore {
     async fn load_stream(
         &self,
         stream_id: StreamId,
-        from_version: Version,
+        from_version: AggregateVersion,
     ) -> Result<impl Stream<Item = Result<EventEnvelope>> + Send> {
+        // Your implementation
+    }
+
+    async fn stream_all(
+        &self,
+        from_position: Position,
+    ) -> Result<impl Stream<Item = Result<EventLogEntry>> + Send> {
+        // Your implementation
+    }
+
+    async fn get_version(&self, stream_id: StreamId) -> Result<AggregateVersion> {
         // Your implementation
     }
 }
@@ -744,7 +693,7 @@ impl EventStore for CustomEventStore {
 
 ### Event Store Decorators
 
-Add cross-cutting concerns:
+Add cross-cutting concerns by wrapping the primitives and delegating the rest:
 
 ```rust
 pub struct LoggingEventStore<S> {
@@ -753,70 +702,49 @@ pub struct LoggingEventStore<S> {
 
 #[async_trait]
 impl<S: EventStore> EventStore for LoggingEventStore<S> {
-    async fn append_events(
+    async fn append(
         &self,
         stream_id: StreamId,
         events: Vec<EventEnvelope>,
-        expected_version: Version,
+        expected_version: AggregateVersion,
+        claims: Vec<AggregateClaim>,
+        clear_claims: bool,
     ) -> Result<()> {
-        println!("Appending {} events to {}", events.len(), stream_id);
-        self.inner.append_events(stream_id, events, expected_version).await
+        println!("Appending {} events to {stream_id:?}", events.len());
+        self.inner
+            .append(stream_id, events, expected_version, claims, clear_claims)
+            .await
     }
 
-    // ... other methods
+    // ... load_stream, stream_all, get_version delegate the same way
 }
 ```
 
 ### Snapshotting
 
-For aggregates with long event histories, consider snapshotting:
+Don't hand-roll this: snapshotting is built in. Configure a strategy on the
+store —
 
 ```rust
-pub struct SnapshotStore<S> {
-    event_store: S,
-    snapshots: HashMap<Uuid, (Version, Vec<u8>)>,
-}
+use event_sauce::{EveryNEvents, SnapshotConfig};
 
-impl<S: EventStore> SnapshotStore<S> {
-    pub async fn load_with_snapshot<A: Aggregate>(
-        &self,
-        aggregate_id: EntityId,
-    ) -> Result<AggregateRoot<A>> {
-        // Load snapshot if available
-        if let Some((snapshot_version, snapshot_data)) =
-            self.snapshots.get(&aggregate_id.to_uuid())
-        {
-            let entity: A = bincode::deserialize(snapshot_data)?;
-            let mut aggregate = AggregateRoot::restore(entity, *snapshot_version);
-
-            // Load only events after snapshot
-            let stream_id = StreamId::new(
-                A::aggregate_type(),
-                aggregate_id.to_uuid(),
-            );
-            let events = self.event_store
-                .load_stream(stream_id, *snapshot_version)
-                .await?;
-
-            // Replay remaining events
-            futures::pin_mut!(events);
-            while let Some(envelope) = events.next().await {
-                let event: A::Event = serde_json::from_value(envelope?.event_data)?;
-                aggregate.apply_unchecked(&event);
-            }
-
-            return Ok(aggregate);
-        }
-
-        // No snapshot, load from beginning
-        load(&self.event_store, aggregate_id).await
-    }
-}
+let config = SnapshotConfig::builder()
+    .default_strategy(EveryNEvents::try_new(100).expect("100 != 0"))
+    .build();
 ```
+
+— and `repo.load`/`EventStore::commit` use it transparently: a snapshot is a
+fast-forward cache the store consults before replaying, refreshed on the
+cadence the strategy sets, and treated as stale (rebuilt from the full
+stream) whenever its `aggregate_type` or `snapshot_schema_version` doesn't
+match. See [repo.load() - Reconstruct Aggregate](#repoload---reconstruct-aggregate)
+above and
+[architecture.md](architecture.md#snapshots-are-a-cache-never-the-source-of-truth).
 
 ### Event Store Metrics
 
-Track performance and usage:
+Track performance and usage the same way a decorator does — wrap the
+primitives:
 
 ```rust
 pub struct MetricsEventStore<S> {
@@ -826,14 +754,19 @@ pub struct MetricsEventStore<S> {
 
 #[async_trait]
 impl<S: EventStore> EventStore for MetricsEventStore<S> {
-    async fn append_events(
+    async fn append(
         &self,
         stream_id: StreamId,
         events: Vec<EventEnvelope>,
-        expected_version: Version,
+        expected_version: AggregateVersion,
+        claims: Vec<AggregateClaim>,
+        clear_claims: bool,
     ) -> Result<()> {
         let start = Instant::now();
-        let result = self.inner.append_events(stream_id, events, expected_version).await;
+        let result = self
+            .inner
+            .append(stream_id, events, expected_version, claims, clear_claims)
+            .await;
 
         self.metrics.record_append(start.elapsed(), result.is_ok());
         result
@@ -847,7 +780,7 @@ impl<S: EventStore> EventStore for MetricsEventStore<S> {
 
 The event store is the foundation of event sourcing in event-sauce:
 
-- **Simple API**: Just `commit()` and `load()`
+- **Simple API**: Just `repo.save()` and `repo.load()`
 - **Type-safe**: Full Rust type safety
 - **Flexible**: Multiple backend options
 - **Reliable**: ACID guarantees where needed
@@ -855,8 +788,8 @@ The event store is the foundation of event sourcing in event-sauce:
 
 Key takeaways:
 
-1. Use `commit()` to save pending events
-2. Use `load()` to reconstruct aggregates
+1. Use `repo.save()` (or `EventStore::commit`) to save pending events
+2. Use `repo.load()` to reconstruct aggregates
 3. Always handle concurrency conflicts
 4. Test event replay thoroughly
 5. Choose the right backend for your needs

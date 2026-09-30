@@ -212,17 +212,19 @@ assert_eq!(counter.value, 6);  // Read-only access via Deref
 Perfect for testing and development:
 
 ```rust
+use std::sync::Arc;
 use event_sauce::prelude::*;
 use event_sauce::memory::InMemoryEventStore;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     // Using builder pattern (recommended)
-    let store = InMemoryEventStore::builder()
-        .build();
+    let store = Arc::new(InMemoryEventStore::builder().build());
 
     // Or use the simple constructor
-    // let store = InMemoryEventStore::new();
+    // let store = Arc::new(InMemoryEventStore::new());
+
+    let repo = store.repository::<Counter>();
 
     // Create and use the counter
     let mut counter = AggregateRoot::<Counter>::new(EntityId::new());
@@ -232,10 +234,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Save to store
     let id = counter.entity_id();
-    store.commit(&mut counter).await?;
+    repo.save(&mut counter).await?;
 
     // Load from store
-    let loaded: AggregateRoot<Counter> = load(&store, id).await?;
+    let loaded: AggregateRoot<Counter> = repo.load(id).await?;
     println!("Counter value: {}", loaded.value);
 
     Ok(())
@@ -424,14 +426,14 @@ order.complete()?;
 ### Command Handler Pattern
 
 ```rust
-async fn handle_increment_command(
-    store: &impl EventStore,
+async fn handle_increment_command<R: Repository<Counter>>(
+    repo: &R,
     id: EntityId,
     amount: i32,
 ) -> Result<()> {
-    let mut counter: AggregateRoot<Counter> = load(store, id).await?;
+    let mut counter: AggregateRoot<Counter> = repo.load(id).await?;
     counter.increment(amount)?;
-    store.commit(&mut counter).await?;
+    repo.save(&mut counter).await?;
     Ok(())
 }
 ```
