@@ -227,10 +227,59 @@ impl OrderCommands for AggregateRoot<Order> { /* ... */ }
 **Benefits of using both macros together:**
 - Combined 80%+ reduction in boilerplate
 - Consistent patterns - All commands follow the same structure
-- Automatic timestamp handling - No need to manually add `Utc::now()`
-- Type-safe - Compile-time validation of parameters
+- Timestamps stamped automatically for `@clock` commands - no need to manually add `Utc::now()`
+- Type-safe - Compile-time parameter validation
 - Self-documenting - Clear command structure
 - Init creation functions for ergonomic aggregate construction
+
+### Commands without `@clock`, and naming the instant with `@occurred_at`
+
+`@clock` is an opt-in, not the default. Without it, a command takes every
+field of its event as a parameter, instants included, and stamps no clock of
+its own — the form that cannot be wrong, since an event is usually *about* an
+instant, and stamping it with the moment the command happened to run is only
+right when those two coincide.
+
+It is also what a producer needs when its facts carry two clocks: the time
+the world did something, and the time this service found out. A single
+injected `timestamp` could only be one of those, and would read as either.
+`define_events!`'s `@occurred_at(field)` names the instant that
+[`DomainEvent::occurred_at`](https://docs.rs/event-sauce/latest/event_sauce/trait.DomainEvent.html#tymethod.occurred_at)
+should answer with, while the event's other clocks stay ordinary fields:
+
+```rust
+define_events! {
+    enum SensorEvent for Sensor {
+        Measured {
+            received_at: DateTime<Utc>,   // detection time — an ordinary field
+            celsius: i32,
+        }
+        @occurred_at(measured_at)         // data time — names the instant
+        => |sensor, event| {
+            sensor.celsius = event.celsius;
+        },
+    }
+}
+```
+
+Pair an `@occurred_at` variant with a `command_handler!` command that has no
+`@clock` (an `@clock` command would set a `timestamp` field the variant no
+longer has), so the caller supplies both instants directly. A variant with
+no marker keeps its `timestamp` field and works with either form:
+
+```rust
+command_handler! {
+    impl Sensor {
+        fn measure(
+            measured_at: DateTime<Utc>,
+            received_at: DateTime<Utc>,
+            celsius: i32,
+        ) -> MeasuredEvent { measured_at, received_at, celsius };
+    }
+}
+
+sensor.measure(measured_at, Utc::now(), 21)?;
+```
 
 ### Init Events with define_events!
 
@@ -776,7 +825,9 @@ impl ApplyEvent<BankAccount> for AccountWithdrawnEvent {
 
 ### 6. Timestamp Handling
 
-Always use `Utc::now()` for consistency:
+Keep instants in UTC (`DateTime<Utc>`). When an event's instant really is
+"when this ran", let `@clock` stamp it or use `Utc::now()`, never
+`Local::now()`. Otherwise take the instant as a parameter.
 
 ```rust
 // Good:

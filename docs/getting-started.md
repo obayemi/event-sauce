@@ -188,7 +188,8 @@ command_handler! {
 ```
 
 That's it! Your aggregate is ready with full event sourcing capabilities:
-- 70% less boilerplate - Automatic event creation and timestamp handling
+- 70% less boilerplate - automatic event creation, and timestamps stamped
+  automatically for `@clock` commands like the ones above
 - Type-safe - Compile-time validation
 - Inline validation - Business rules enforced during command execution
 
