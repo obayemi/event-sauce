@@ -107,12 +107,14 @@ where
     let stream_id = StreamId::new(aggregate_type, aggregate_id);
 
     Ok(Some(PreparedCommit {
-        stream_id,
-        events: envelopes,
-        expected_version,
+        commit: StreamCommit {
+            stream_id,
+            events: envelopes,
+            expected_version,
+            claims: root.claims(),
+            clear_claims: R::IS_DELETED,
+        },
         snapshot,
-        claims: root.claims(),
-        clear_claims: R::IS_DELETED,
     }))
 }
 
@@ -123,23 +125,20 @@ pub(crate) async fn flush_prepared<S: EventStore + ?Sized>(
     store: &S,
     prepared: PreparedCommit,
 ) -> Result<()> {
+    let PreparedCommit { commit, snapshot } = prepared;
     store
         .append(
-            prepared.stream_id.clone(),
-            prepared.events,
-            prepared.expected_version,
-            prepared.claims,
-            prepared.clear_claims,
+            commit.stream_id,
+            commit.events,
+            commit.expected_version,
+            commit.claims,
+            commit.clear_claims,
         )
         .await?;
 
-    if let Some(snapshot) = prepared.snapshot {
+    if let Some(snapshot) = snapshot {
         if let Err(e) = store.save_snapshot(snapshot).await {
-            tracing::warn!(
-                stream_id = %prepared.stream_id,
-                error = %e,
-                "Failed to save snapshot"
-            );
+            tracing::warn!(error = %e, "Failed to save snapshot");
         }
     }
 
@@ -162,18 +161,13 @@ pub(crate) async fn flush_prepared_batch<S: EventStore + ?Sized>(
         return Ok(());
     }
 
-    let commits: Vec<StreamCommit> = prepared.iter().map(StreamCommit::from).collect();
+    let (commits, snapshots): (Vec<StreamCommit>, Vec<Option<Snapshot>>) =
+        prepared.into_iter().map(|p| (p.commit, p.snapshot)).unzip();
     store.append_batch(commits).await?;
 
-    for commit in prepared {
-        if let Some(snapshot) = commit.snapshot {
-            if let Err(e) = store.save_snapshot(snapshot).await {
-                tracing::warn!(
-                    stream_id = %commit.stream_id,
-                    error = %e,
-                    "Failed to save snapshot"
-                );
-            }
+    for snapshot in snapshots.into_iter().flatten() {
+        if let Err(e) = store.save_snapshot(snapshot).await {
+            tracing::warn!(error = %e, "Failed to save snapshot");
         }
     }
 
@@ -554,10 +548,10 @@ mod tests {
         let prepared = prepare_commit(&store, &agg).await.unwrap().unwrap();
         let expected = agg.entity().claims();
 
-        assert_eq!(prepared.claims.len(), expected.len());
-        assert_eq!(prepared.claims[0].claim_type, expected[0].claim_type);
-        assert_eq!(prepared.claims[0].claim_key, expected[0].claim_key);
-        assert!(!prepared.clear_claims);
+        assert_eq!(prepared.commit.claims.len(), expected.len());
+        assert_eq!(prepared.commit.claims[0].claim_type, expected[0].claim_type);
+        assert_eq!(prepared.commit.claims[0].claim_key, expected[0].claim_key);
+        assert!(!prepared.commit.clear_claims);
     }
 
     #[tokio::test]
@@ -576,8 +570,8 @@ mod tests {
 
         let prepared = prepare_commit(&store, &deleted).await.unwrap().unwrap();
 
-        assert!(prepared.claims.is_empty());
-        assert!(prepared.clear_claims);
+        assert!(prepared.commit.claims.is_empty());
+        assert!(prepared.commit.clear_claims);
     }
 
     #[tokio::test]

@@ -29,12 +29,8 @@ use crate::{
 /// Created by [`prepare_commit()`] and flushed by [`flush_prepared()`].
 #[derive(Debug)]
 pub(crate) struct PreparedCommit {
-    pub stream_id: StreamId,
-    pub events: Vec<EventEnvelope>,
-    pub expected_version: AggregateVersion,
+    pub commit: StreamCommit,
     pub snapshot: Option<Snapshot>,
-    pub claims: Vec<AggregateClaim>,
-    pub clear_claims: bool,
 }
 
 /// A single stream's contribution to a multi-stream atomic write.
@@ -75,18 +71,6 @@ pub struct StreamCommit {
     pub claims: Vec<AggregateClaim>,
     /// When true, all existing claims for the aggregate are cleared.
     pub clear_claims: bool,
-}
-
-impl From<&PreparedCommit> for StreamCommit {
-    fn from(prepared: &PreparedCommit) -> Self {
-        Self {
-            stream_id: prepared.stream_id.clone(),
-            events: prepared.events.clone(),
-            expected_version: prepared.expected_version,
-            claims: prepared.claims.clone(),
-            clear_claims: prepared.clear_claims,
-        }
-    }
 }
 
 /// Snapshot of an aggregate's state.
