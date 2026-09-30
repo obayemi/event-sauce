@@ -1007,6 +1007,37 @@ mod tests {
         assert_eq!(repo.load(second_id).await.unwrap().title, "duplicate");
     }
 
+    /// Regression test: a claim type an aggregate no longer holds must free
+    /// its value for a different aggregate to claim. `enforce`'s cleanup
+    /// deletes rows for claim types absent from the new claim set; if it
+    /// silently no-ops, the stale row keeps the value locked forever.
+    #[tokio::test]
+    async fn test_dropping_a_claim_type_releases_it() {
+        let db = TestDb::new().await;
+        let store = db.store().await;
+
+        let first = Uuid::new_v4();
+        let second = Uuid::new_v4();
+
+        let mut both_claims = manual_commit(first, 1, 0);
+        both_claims.claims = vec![
+            AggregateClaim::new("Test.name", json!("kept")),
+            AggregateClaim::new("Test.alias", json!("dropped")),
+        ];
+        store.save(both_claims).await.unwrap();
+
+        let mut narrowed = manual_commit(first, 2, 1);
+        narrowed.claims = vec![AggregateClaim::new("Test.name", json!("kept"))];
+        store.save(narrowed).await.unwrap();
+
+        let mut reclaims_alias = manual_commit(second, 1, 0);
+        reclaims_alias.claims = vec![AggregateClaim::new("Test.alias", json!("dropped"))];
+        store
+            .save(reclaims_alias)
+            .await
+            .expect("a claim type dropped by one aggregate must free it for another");
+    }
+
     /// Regression test for CLAIM-RACE-1: two transactions racing to claim the
     /// same `(claim_type, claim_hash)` for different aggregates must surface
     /// [`Error::ClaimConflict`] for the loser, not a generic backend error.
