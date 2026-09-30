@@ -966,6 +966,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn save_all_skips_aggregates_with_no_pending_events() {
+        let store = Arc::new(MockEventStore::new());
+        let repo = store.repository::<SimpleTestEntity>();
+
+        let mut dirty = AggregateRoot::<SimpleTestEntity>::new(EntityId::new());
+        dirty.apply(SimpleTestEvent::Created { value: 1 }).unwrap();
+        let mut clean = AggregateRoot::<SimpleTestEntity>::new(EntityId::new());
+
+        repo.save_all(&mut [&mut dirty, &mut clean]).await.unwrap();
+
+        assert!(dirty.pending_events().is_empty());
+        assert!(clean.pending_events().is_empty());
+        assert_eq!(
+            store.get_events().len(),
+            1,
+            "a clean aggregate must not be persisted by save_all"
+        );
+    }
+
+    #[tokio::test]
     async fn save_all_keeps_every_pending_event_when_the_batch_fails() {
         let store = Arc::new(FailingBatchStore {
             succeed_first: 1,
