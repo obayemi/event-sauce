@@ -166,7 +166,7 @@ pub fn derive_event(input: TokenStream) -> TokenStream {
                 }
             }
 
-            fn occurred_at(&self) -> #core::__private::chrono::DateTime<#core::__private::chrono::Utc> {
+            fn occurred_at(&self) -> #core::chrono::DateTime<#core::chrono::Utc> {
                 match self {
                     #(#occurred_at_arms)*
                 }

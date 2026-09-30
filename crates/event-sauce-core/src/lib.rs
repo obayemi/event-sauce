@@ -97,14 +97,10 @@ mod test_fixtures;
 
 /// Re-exports the exported macros expand through, so a caller depending only
 /// on `event-sauce`/`event-sauce-core` needs no direct dependency on
-/// `pastey`, `uuid`, `serde_json` or `async-trait` to use them. `chrono` is
-/// also re-exported here for the macros' own internal use, but a caller
-/// names it through the public [`chrono`](crate::chrono) re-export instead:
-/// instants are part of the public API, not a macro-only detail.
+/// `pastey`, `uuid`, `serde_json` or `async-trait` to use them.
 #[doc(hidden)]
 pub mod __private {
     pub use async_trait::async_trait;
-    pub use chrono;
     pub use pastey::paste;
     pub use serde_json;
     pub use uuid;

@@ -497,7 +497,7 @@ macro_rules! define_events {
                 #[derive(Debug, Clone, PartialEq, ::serde::Serialize, ::serde::Deserialize)]
                 $vis struct [<$variant Event>] {
                     $($(#[$field_attr])* pub $field: $field_ty,)*
-                    pub $clock: $crate::__private::chrono::DateTime<$crate::__private::chrono::Utc>,
+                    pub $clock: $crate::chrono::DateTime<$crate::chrono::Utc>,
                 }
 
                 impl ::std::convert::From<[<$variant Event>]> for $event_enum {
@@ -539,7 +539,7 @@ macro_rules! define_events {
             $(
                 $variant {
                     $($(#[$field_attr])* $field: $field_ty,)*
-                    $clock: $crate::__private::chrono::DateTime<$crate::__private::chrono::Utc>,
+                    $clock: $crate::chrono::DateTime<$crate::chrono::Utc>,
                 }
             ),*
         }
@@ -571,7 +571,7 @@ macro_rules! define_events {
                     }
                 }
 
-                fn occurred_at(&self) -> $crate::__private::chrono::DateTime<$crate::__private::chrono::Utc> {
+                fn occurred_at(&self) -> $crate::chrono::DateTime<$crate::chrono::Utc> {
                     match self {
                         $(
                             $event_enum::$variant { $clock, .. } => *$clock

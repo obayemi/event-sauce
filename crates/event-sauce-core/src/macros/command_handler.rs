@@ -160,7 +160,7 @@ macro_rules! __command_handler_event {
     (clock: [now] $evt:ident { $($field:ident: $value:expr,)* }) => {
         $evt {
             $($field: $value,)*
-            timestamp: $crate::__private::chrono::Utc::now(),
+            timestamp: $crate::chrono::Utc::now(),
         }
     };
     (clock: [none] $evt:ident { $($field:ident: $value:expr,)* }) => {
