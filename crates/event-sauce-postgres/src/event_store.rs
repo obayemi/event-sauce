@@ -962,16 +962,14 @@ impl PostgresEventStore {
     /// first commit in the batch is the only one whose expected version can
     /// be checked against the database — that check is left to the caller,
     /// via [`Self::precheck_version`]. Every later commit to the same stream
-    /// expects the version the earlier commit is about to create, so it is
-    /// checked here instead: its `expected_version` must equal the previous
-    /// commit's `expected_version` plus that commit's event count, or the
-    /// batch is rejected as a [`Error::concurrency_conflict`].
+    /// must supply the version the previous commit to that stream leaves it
+    /// at, or the batch is rejected as a [`Error::concurrency_conflict`].
     ///
     /// Returns, in batch order, the indices of the commits whose stream is
     /// seen here for the first time and therefore still need
     /// [`Self::precheck_version`] against the database.
     fn plan_version_chain_checks(commits: &[event_sauce_core::StreamCommit]) -> Result<Vec<usize>> {
-        let mut last_committed: std::collections::HashMap<&StreamId, (AggregateVersion, i64)> =
+        let mut next_required: std::collections::HashMap<&StreamId, AggregateVersion> =
             std::collections::HashMap::new();
         let mut needs_db_check = Vec::new();
 
@@ -983,8 +981,7 @@ impl PostgresEventStore {
                 Error::invalid_state("a single commit cannot carry this many events")
             })?;
 
-            if let Some(&(prev_expected, prev_count)) = last_committed.get(&commit.stream_id) {
-                let required = AggregateVersion::new(prev_expected.as_i64() + prev_count);
+            if let Some(&required) = next_required.get(&commit.stream_id) {
                 if commit.expected_version != required {
                     return Err(Error::concurrency_conflict(
                         commit.expected_version,
@@ -995,7 +992,8 @@ impl PostgresEventStore {
                 needs_db_check.push(index);
             }
 
-            last_committed.insert(&commit.stream_id, (commit.expected_version, event_count));
+            let leaves_at = AggregateVersion::new(commit.expected_version.as_i64() + event_count);
+            next_required.insert(&commit.stream_id, leaves_at);
         }
 
         Ok(needs_db_check)
