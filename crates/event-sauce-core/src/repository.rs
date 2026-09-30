@@ -469,18 +469,16 @@ where
 
     async fn save_all(&self, aggregates: &mut [&mut AggregateRoot<A>]) -> Result<()> {
         let mut prepared = Vec::with_capacity(aggregates.len());
-        let mut dirty = Vec::with_capacity(aggregates.len());
-        for (index, aggregate) in aggregates.iter_mut().enumerate() {
+        for aggregate in aggregates.iter_mut() {
             if let Some(commit) =
                 crate::event_store::prepare_commit(&*self.store, &**aggregate).await?
             {
                 prepared.push(commit);
-                dirty.push(index);
             }
         }
         crate::event_store::flush_prepared_batch(&*self.store, prepared).await?;
-        for index in dirty {
-            aggregates[index].clear_pending_events();
+        for aggregate in aggregates.iter_mut() {
+            aggregate.clear_pending_events();
         }
         Ok(())
     }

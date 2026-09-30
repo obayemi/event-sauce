@@ -175,16 +175,14 @@ where
 
     async fn save_all(&self, aggregates: &mut [&mut AggregateRoot<A>]) -> Result<()> {
         let mut commits = Vec::with_capacity(aggregates.len());
-        let mut dirty = Vec::with_capacity(aggregates.len());
-        for (index, aggregate) in aggregates.iter().enumerate() {
+        for aggregate in aggregates.iter() {
             if let Some(commit) = Self::prepare(&**aggregate)? {
                 commits.push(commit);
-                dirty.push(index);
             }
         }
         self.store.save_batch(commits).await?;
-        for index in dirty {
-            aggregates[index].clear_pending_events();
+        for aggregate in aggregates.iter_mut() {
+            aggregate.clear_pending_events();
         }
         Ok(())
     }
