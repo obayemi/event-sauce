@@ -149,6 +149,69 @@ impl Default for BackoffPolicy {
     }
 }
 
+#[cfg(test)]
+impl BackoffPolicy {
+    /// A policy whose `mark_failed` always applies zero delay, for tests
+    /// that assert on state transitions without waiting out a backoff.
+    pub(crate) fn none() -> Self {
+        Self::new(Duration::ZERO, Duration::ZERO, 0.0)
+    }
+}
+
+/// Exponent clamp for [`BackoffPolicy`]'s `base * 2^failures` growth, so the
+/// delay never overflows however large `failures` gets — in particular under
+/// `max_attempts: None`, which retries forever.
+const MAX_BACKOFF_EXPONENT: i32 = 30;
+
+/// Applies a fenced `mark_failed` update to one outbox row: increments
+/// `failures`, moves the row to `failed` once `max_failures` is reached
+/// (otherwise back to `pending` behind [`BackoffPolicy`]'s delay), and clears
+/// the lock. Shared by [`PostgresPolicyOutbox::mark_failed`] and
+/// [`crate::state_outbox::PostgresStateOutbox::mark_failed`], whose tables
+/// have identical failure/backoff/DLQ columns.
+///
+/// Fenced on `WHERE id = $1 AND locked_by = $2`: a worker that no longer
+/// owns the claim gets `Ok(false)` rather than clearing another claimant's
+/// lock. Returns the raw `sqlx::Error` so each caller can label it with its
+/// own context.
+pub(crate) async fn mark_row_failed(
+    pool: &PgPool,
+    table: &str,
+    id: i64,
+    worker_id: &str,
+    error_message: &str,
+    max_failures: Option<i32>,
+    backoff: BackoffPolicy,
+) -> sqlx::Result<bool> {
+    let query = format!(
+        "UPDATE {table}
+         SET failures = failures + 1,
+             status = CASE
+                WHEN $3 IS NOT NULL AND failures + 1 >= $3 THEN 'failed'
+                ELSE 'pending'
+             END,
+             locked_by = NULL,
+             locked_until = NOW() + make_interval(secs =>
+                LEAST($5::float8, $4::float8 * POWER(2, LEAST(failures, {MAX_BACKOFF_EXPONENT})))
+                * (1 + random() * $6::float8)),
+             last_error = $7,
+             updated_at = NOW()
+         WHERE id = $1 AND locked_by = $2"
+    );
+    let affected = sqlx::query(&query)
+        .bind(id)
+        .bind(worker_id)
+        .bind(max_failures)
+        .bind(backoff.base().as_secs_f64())
+        .bind(backoff.cap().as_secs_f64())
+        .bind(backoff.jitter())
+        .bind(error_message)
+        .execute(pool)
+        .await?
+        .rows_affected();
+    Ok(affected == 1)
+}
+
 /// Postgres-backed policy outbox.
 ///
 /// Owns its own table (`policy_outbox`, schema-qualified). Multiple workers
@@ -477,34 +540,17 @@ impl PostgresPolicyOutbox {
         backoff: BackoffPolicy,
     ) -> Result<bool> {
         let outbox_table = self.outbox_table();
-        let query = format!(
-            "UPDATE {outbox_table}
-             SET failures = failures + 1,
-                 status = CASE
-                    WHEN $3 IS NOT NULL AND failures + 1 >= $3 THEN 'failed'
-                    ELSE 'pending'
-                 END,
-                 locked_by = NULL,
-                 locked_until = NOW() + make_interval(secs =>
-                    LEAST($5::float8, $4::float8 * POWER(2, LEAST(failures, 30)))
-                    * (1 + random() * $6::float8)),
-                 last_error = $7,
-                 updated_at = NOW()
-             WHERE id = $1 AND locked_by = $2"
-        );
-        let affected = sqlx::query(&query)
-            .bind(id)
-            .bind(worker_id)
-            .bind(max_attempts)
-            .bind(backoff.base().as_secs_f64())
-            .bind(backoff.cap().as_secs_f64())
-            .bind(backoff.jitter())
-            .bind(error_message)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| Error::backend("Failed to mark outbox row failed", e))?
-            .rows_affected();
-        Ok(affected == 1)
+        mark_row_failed(
+            &self.pool,
+            &outbox_table,
+            id,
+            worker_id,
+            error_message,
+            max_attempts,
+            backoff,
+        )
+        .await
+        .map_err(|e| Error::backend("Failed to mark outbox row failed", e))
     }
 
     /// Returns the number of pending rows for `policy_name` (rows in
@@ -586,12 +632,6 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
     use testcontainers_modules::postgres::Postgres;
-
-    /// A zero backoff, for tests exercising claim/retry semantics that
-    /// predate backoff and expect a failed row to be immediately reclaimable.
-    fn no_backoff() -> BackoffPolicy {
-        BackoffPolicy::new(Duration::ZERO, Duration::ZERO, 0.0)
-    }
 
     #[test]
     fn backoff_policy_default_is_one_second_capped_at_five_minutes() {
@@ -767,7 +807,13 @@ mod tests {
             .await
             .unwrap();
         assert!(outbox
-            .mark_failed(claims[0].id, "w-1", "transient", Some(3), no_backoff())
+            .mark_failed(
+                claims[0].id,
+                "w-1",
+                "transient",
+                Some(3),
+                BackoffPolicy::none()
+            )
             .await
             .unwrap());
 
@@ -936,7 +982,13 @@ mod tests {
             .unwrap();
         // attempts is now 1; with max_attempts=1, this counts as failed.
         assert!(outbox
-            .mark_failed(claims[0].id, "w-1", "permanent", Some(1), no_backoff())
+            .mark_failed(
+                claims[0].id,
+                "w-1",
+                "permanent",
+                Some(1),
+                BackoffPolicy::none()
+            )
             .await
             .unwrap());
 
@@ -1046,7 +1098,7 @@ mod tests {
         // second failure -> failed (2 >= 2). It must NOT flip to failed on the
         // first failure just because `attempts` (claims) already reached 3.
         outbox
-            .mark_failed(id, "crasher", "transient", Some(2), no_backoff())
+            .mark_failed(id, "crasher", "transient", Some(2), BackoffPolicy::none())
             .await
             .unwrap();
         let status = status_of(&outbox, id).await;
@@ -1066,7 +1118,13 @@ mod tests {
             "row must still be claimable after 1st failure"
         );
         outbox
-            .mark_failed(claims[0].id, "retrier", "permanent", Some(2), no_backoff())
+            .mark_failed(
+                claims[0].id,
+                "retrier",
+                "permanent",
+                Some(2),
+                BackoffPolicy::none(),
+            )
             .await
             .unwrap();
         let status = status_of(&outbox, id).await;
@@ -1133,7 +1191,7 @@ mod tests {
             .unwrap();
 
         let landed = outbox
-            .mark_failed(id, "worker-a", "stale", Some(3), no_backoff())
+            .mark_failed(id, "worker-a", "stale", Some(3), BackoffPolicy::none())
             .await
             .unwrap();
         assert!(
@@ -1162,7 +1220,13 @@ mod tests {
         assert_eq!(status_of(&outbox, id).await, "done");
 
         let landed = outbox
-            .mark_failed(id, "worker-a", "late failure report", Some(3), no_backoff())
+            .mark_failed(
+                id,
+                "worker-a",
+                "late failure report",
+                Some(3),
+                BackoffPolicy::none(),
+            )
             .await
             .unwrap();
         assert!(!landed, "a done row must never be resurrected");

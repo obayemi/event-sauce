@@ -243,34 +243,17 @@ impl PostgresStateOutbox {
         backoff: crate::BackoffPolicy,
     ) -> Result<bool> {
         let outbox_table = self.outbox_table();
-        let query = format!(
-            "UPDATE {outbox_table}
-             SET failures = failures + 1,
-                 status = CASE
-                    WHEN $3 IS NOT NULL AND failures + 1 >= $3 THEN 'failed'
-                    ELSE 'pending'
-                 END,
-                 locked_by = NULL,
-                 locked_until = NOW() + make_interval(secs =>
-                    LEAST($5::float8, $4::float8 * POWER(2, LEAST(failures, 30)))
-                    * (1 + random() * $6::float8)),
-                 last_error = $7,
-                 updated_at = NOW()
-             WHERE id = $1 AND locked_by = $2"
-        );
-        let affected = sqlx::query(&query)
-            .bind(id)
-            .bind(worker_id)
-            .bind(max_failures)
-            .bind(backoff.base().as_secs_f64())
-            .bind(backoff.cap().as_secs_f64())
-            .bind(backoff.jitter())
-            .bind(error_message)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| Error::backend("Failed to mark state outbox row failed", e))?
-            .rows_affected();
-        Ok(affected == 1)
+        crate::policy_outbox::mark_row_failed(
+            &self.pool,
+            &outbox_table,
+            id,
+            worker_id,
+            error_message,
+            max_failures,
+            backoff,
+        )
+        .await
+        .map_err(|e| Error::backend("Failed to mark state outbox row failed", e))
     }
 
     /// Returns the number of pending rows (rows in `pending` status with no

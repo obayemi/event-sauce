@@ -591,12 +591,6 @@ mod tests {
     use testcontainers_modules::postgres::Postgres;
     use uuid::Uuid;
 
-    /// A zero backoff, for tests exercising claim/retry semantics that
-    /// predate backoff and expect a failed row to be immediately reclaimable.
-    fn no_backoff() -> BackoffPolicy {
-        BackoffPolicy::new(Duration::ZERO, Duration::ZERO, 0.0)
-    }
-
     struct TestDb {
         pool: PgPool,
         #[allow(dead_code)]
@@ -1303,7 +1297,7 @@ mod tests {
             .outbox()
             .dispatcher(Arc::new(AlwaysFailingHandler))
             .with_max_failures(Some(2))
-            .with_backoff(no_backoff());
+            .with_backoff(BackoffPolicy::none());
 
         assert_eq!(dispatcher.run_once().await.unwrap(), 0);
         let (status, failures): (String, i32) =
@@ -1451,7 +1445,7 @@ mod tests {
                 failed: AtomicBool::new(false),
             }))
             .with_max_failures(Some(3))
-            .with_backoff(no_backoff());
+            .with_backoff(BackoffPolicy::none());
 
         assert_eq!(dispatcher.run_once().await.unwrap(), 0);
         assert_eq!(dispatcher.run_once().await.unwrap(), 1);
@@ -1530,7 +1524,7 @@ mod tests {
             .unwrap();
 
         let landed = outbox
-            .mark_failed(id, "worker-a", "stale", Some(3), no_backoff())
+            .mark_failed(id, "worker-a", "stale", Some(3), BackoffPolicy::none())
             .await
             .unwrap();
         assert!(
