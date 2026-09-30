@@ -251,6 +251,43 @@ impl PostgresCheckpointStore {
         Ok(landed.is_some())
     }
 
+    /// Seeds `target`'s checkpoint from `legacy`'s stored position.
+    ///
+    /// A no-op when `target` already has a row (including one already
+    /// seeded by an earlier call) or when `legacy` has none. Never touches
+    /// a lease — the caller still needs [`try_acquire_lease`] afterward.
+    ///
+    /// This is how a checkpoint that used to be shared under one name can
+    /// be split into several without losing the progress already made
+    /// under the old name: seed each new name from the old one before
+    /// acquiring its lease, once, and every later call is a no-op.
+    ///
+    /// [`try_acquire_lease`]: event_sauce_core::CheckpointStore::try_acquire_lease
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the insert fails.
+    pub(crate) async fn seed_checkpoint_from_legacy(
+        &self,
+        target: &str,
+        legacy: &str,
+    ) -> Result<()> {
+        let checkpoints_table = self.qualify_table("checkpoints");
+        let query = format!(
+            "INSERT INTO {checkpoints_table} (subscription_name, position, updated_at)
+             SELECT $1, position, NOW() FROM {checkpoints_table}
+             WHERE subscription_name = $2
+             ON CONFLICT (subscription_name) DO NOTHING"
+        );
+        sqlx::query(&query)
+            .bind(target)
+            .bind(legacy)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| Error::backend("Failed to seed checkpoint from legacy row", e))?;
+        Ok(())
+    }
+
     /// Runs database migrations to set up the checkpoint store schema.
     ///
     /// This method creates the necessary tables (`checkpoints`) for the checkpoint store.
@@ -1298,6 +1335,61 @@ mod tests {
             store.load_checkpoint("stall-sub").await.unwrap(),
             Some(Position::new(60)),
             "checkpoint must not regress below the value written by the current lease holder"
+        );
+    }
+
+    /// A later legacy advance must not retroactively move the already-seeded
+    /// row.
+    #[tokio::test]
+    async fn test_seed_checkpoint_from_legacy_copies_position_once() {
+        let db = TestDatabase::new().await.unwrap();
+        let store = PostgresCheckpointStore::new(db.pool().clone());
+        store.migrate().await.unwrap();
+
+        store
+            .save_checkpoint("legacy-sub", Position::new(42))
+            .await
+            .unwrap();
+
+        store
+            .seed_checkpoint_from_legacy("new-sub", "legacy-sub")
+            .await
+            .unwrap();
+        assert_eq!(
+            store.load_checkpoint("new-sub").await.unwrap(),
+            Some(Position::new(42)),
+            "the new subscription must start from the legacy position"
+        );
+
+        store
+            .save_checkpoint("legacy-sub", Position::new(99))
+            .await
+            .unwrap();
+        store
+            .seed_checkpoint_from_legacy("new-sub", "legacy-sub")
+            .await
+            .unwrap();
+        assert_eq!(
+            store.load_checkpoint("new-sub").await.unwrap(),
+            Some(Position::new(42)),
+            "seeding is a one-time copy, not an ongoing link"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_seed_checkpoint_from_legacy_is_noop_without_a_legacy_row() {
+        let db = TestDatabase::new().await.unwrap();
+        let store = PostgresCheckpointStore::new(db.pool().clone());
+        store.migrate().await.unwrap();
+
+        store
+            .seed_checkpoint_from_legacy("new-sub", "no-such-legacy-sub")
+            .await
+            .unwrap();
+        assert_eq!(
+            store.load_checkpoint("new-sub").await.unwrap(),
+            None,
+            "nothing to seed from means no row is created"
         );
     }
 }
