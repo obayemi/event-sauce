@@ -1,5 +1,42 @@
 //! [`define_events!`](crate::define_events): its TT-muncher parse phase, its
 //! per-kind emit phase, and the tests for both.
+//!
+//! The macro runs in two phases — *parse* (TT muncher) and *emit* (per-kind
+//! trait emitter). Both treat "kind" and "has an actor" as independent axes:
+//! a variant's kind is exactly one of `regular` / `init` / `delete`, and
+//! `@actor(T)` only ever adds an extra trait impl on top of that kind's
+//! ordinary one — it never changes which kind the variant is, or how it
+//! replays.
+//!
+//! 1. **Parse phase**, itself split in two steps so the hook grammar is
+//!    written once instead of once per kind:
+//!
+//!    - **Classify** (the `@munch` arms): six tiny arms match only the
+//!      variant's marker tokens — structural, not lookahead, so a marker
+//!      that requires a literal `@init`/`@delete`/`@actor(Ty)` token must be
+//!      tried before the marker-less catch-all — and forward to `@hooks`
+//!      with the kind tag and actor type resolved. See the table above the
+//!      `@munch` arms below for the marker-to-kind mapping.
+//!
+//!    - **Parse hooks** (the `@hooks` arms): the eight optional clauses
+//!      (`@version`, `@occurred_at`, `@validate`, `@validate_spec`,
+//!      `@post_validate`, `@post_validate_spec`, `@encrypted_fields`,
+//!      `@aliases`) and the `=> apply` closure are parsed once, kind-agnostic,
+//!      and pushed into the normalised metadata blob (variant name, fields,
+//!      kind, optional actor type, version, `validate`/`post_validate`/spec
+//!      hooks, encrypted fields, apply closure). Two arms exist here, not
+//!      one, only because `macro_rules` can't default the `@occurred_at`
+//!      field name to `timestamp` when the clause is absent.
+//!
+//! 2. **Emit phase** (`@emit_trait` arms): once all variants are parsed, each
+//!    variant in the accumulator is dispatched to one of three emit arms (one
+//!    per kind), which emits that kind's base trait impl
+//!    (`ApplyEvent`/`InitEvent`/`DeleteEvent`) and then forwards to a small
+//!    `@emit_actor_*_event` helper with the (possibly empty) actor type. That
+//!    helper expands to nothing when the variant has no actor, or to the
+//!    matching `ActorEvent`/`ActorInitEvent`/`ActorDeleteEvent` impl when it
+//!    does — the same validate closure feeding both the base impl's 2-arg (or
+//!    1-arg, for init) dispatch and the actor impl's 3-arg (or 2-arg) one.
 
 /// Declaratively define domain events for an aggregate.
 ///
@@ -55,52 +92,6 @@
 /// - Automatic timestamp handling
 /// - Clear, declarative syntax
 /// - Full integration with `ApplyEvent` trait
-// Internal architecture of `define_events!`:
-//
-// The macro runs in two phases — *parse* (TT muncher) and *emit* (per-kind
-// trait emitter). Both treat "kind" and "has an actor" as independent axes:
-// a variant's kind is exactly one of `regular` / `init` / `delete`, and
-// `@actor(T)` only ever adds an extra trait impl on top of that kind's
-// ordinary one — it never changes which kind the variant is, or how it
-// replays.
-//
-// 1. **Parse phase**, itself split in two steps so the hook grammar is
-//    written once instead of once per kind:
-//
-//    - **Classify** (the `@munch` arms): six tiny arms match only the
-//      variant's marker tokens — structural, not lookahead, so a marker
-//      that requires a literal `@init`/`@delete`/`@actor(Ty)` token must be
-//      tried before the marker-less catch-all — and forward to `@hooks`
-//      with the kind tag and actor type resolved.
-//
-//      | Annotations          | Kind tag  | Actor type |
-//      |----------------------|-----------|------------|
-//      | `@actor(T)`          | `regular` | `T`        |
-//      | `@init @actor(T)`    | `init`    | `T`        |
-//      | `@delete @actor(T)`  | `delete`  | `T`        |
-//      | `@delete`            | `delete`  | (none)     |
-//      | `@init`              | `init`    | (none)     |
-//      | (none)               | `regular` | (none)     |
-//
-//    - **Parse hooks** (the `@hooks` arms): the eight optional clauses
-//      (`@version`, `@occurred_at`, `@validate`, `@validate_spec`,
-//      `@post_validate`, `@post_validate_spec`, `@encrypted_fields`,
-//      `@aliases`) and the `=> apply` closure are parsed once, kind-agnostic,
-//      and pushed into the normalised metadata blob (variant name, fields,
-//      kind, optional actor type, version, validate/post_validate/spec
-//      hooks, encrypted fields, apply closure). Two arms exist here, not
-//      one, only because macro_rules can't default the `@occurred_at` field
-//      name to `timestamp` when the clause is absent.
-//
-// 2. **Emit phase** (`@emit_trait` arms): once all variants are parsed, each
-//    variant in the accumulator is dispatched to one of three emit arms (one
-//    per kind), which emits that kind's base trait impl
-//    (`ApplyEvent`/`InitEvent`/`DeleteEvent`) and then forwards to a small
-//    `@emit_actor_*_event` helper with the (possibly empty) actor type. That
-//    helper expands to nothing when the variant has no actor, or to the
-//    matching `ActorEvent`/`ActorInitEvent`/`ActorDeleteEvent` impl when it
-//    does — the same validate closure feeding both the base impl's 2-arg (or
-//    1-arg, for init) dispatch and the actor impl's 3-arg (or 2-arg) one.
 ///
 /// # `@occurred_at`, and the fact that carries two clocks
 ///
