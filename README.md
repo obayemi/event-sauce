@@ -497,8 +497,10 @@ backend.run_postgres_projection(&mut UserListProjection).await?;
 
 ## Installation
 
-`event-sauce` is the only dependency you need — the derive macros expand to
-paths rooted at it, so the sibling crates never appear in your `Cargo.toml`:
+`event-sauce` is the only **event-sauce** crate you need — the derive
+macros expand to paths rooted at it, so the sibling crates
+(`event-sauce-core`, `-macros`, `-memory`, `-postgres`, `-crypto`) never
+appear in your `Cargo.toml`:
 
 ```toml
 [dependencies]
@@ -506,7 +508,27 @@ event-sauce = "0.1"
 
 # With specific features
 event-sauce = { version = "0.1", features = ["postgres"] }
+
+# The one companion dependency every caller of define_events!/command_handler!
+# needs: the generated event structs derive Serialize/Deserialize themselves.
+serde = { version = "1", features = ["derive"] }
 ```
+
+`paste`, `uuid`, `serde_json` and `async-trait` (needed only by `policy!`)
+are macro-only — a caller adds none of them. `chrono` is reachable as
+`event_sauce::chrono` (the same one the macros use), so a command's
+`DateTime<Utc>` fields need no separate `chrono` line either, even though
+`chrono` isn't macro-only: it's part of the public API (every command
+without `@clock` takes its instant as a parameter). `thiserror` isn't
+required by the library, but every example pairs it with
+`#[derive(AggregateError)]` for the `Error` bound the trait needs — add it
+if you follow that pattern. Implementing one of the async traits by hand —
+`PostgresProjection`, `EventStore`, `CheckpointStore`, `StateProjection` —
+needs `async-trait` as a direct dependency, since each trait is itself
+declared with `#[async_trait]`; a Postgres implementation also adds `sqlx`
+for the pool and transaction types those APIs take. See
+[event-sauce's crate docs](https://docs.rs/event-sauce) for the full
+breakdown.
 
 Backends live under their own module, so a swap is a one-line change:
 
@@ -522,7 +544,7 @@ use event_sauce::crypto::Aes256GcmProvider;
 - `memory` (default) - In-memory backend for testing
 - `event-sourcing` (default) - The event-sourced persistence style: `EventStore`, snapshots, checkpoints, policies, audit log, encryption
 - `state-store` (default) - The state-stored persistence style: `StateStore`, in-transaction projections
-- `postgres` - PostgreSQL backend (implies `event-sourcing`)
+- `postgres` - PostgreSQL backend (implies `event-sourcing` and `state-store`)
 - `crypto` - Encryption support (AES-256-GCM provider, key stores); turns on encryption in whichever backends are enabled
 - `full` - All features enabled
 

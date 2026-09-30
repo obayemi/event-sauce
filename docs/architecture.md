@@ -205,17 +205,23 @@ it, so a new consumer can be added later by replaying history.
 
 ### event-sauce (facade)
 
-The single dependency downstream crates take. It re-exports the core surface
-at its root, the backends as `event_sauce::{memory, postgres}`, and the
-AES-256-GCM provider alongside the traits it implements in
+The single **event-sauce** dependency downstream crates take (none of the
+sibling crates appear in a caller's `Cargo.toml`). It re-exports the core
+surface at its root, the backends as `event_sauce::{memory, postgres}`, and
+the AES-256-GCM provider alongside the traits it implements in
 `event_sauce::crypto`. The derive macros resolve their generated paths to
-whichever of `event-sauce` or `event-sauce-core` a crate depends on, so
-depending on the facade alone is enough:
+whichever of `event-sauce` or `event-sauce-core` a crate depends on:
 
 ```toml
 [dependencies]
 event-sauce = { version = "0.1", features = ["postgres", "macros"] }
+serde = { version = "1", features = ["derive"] }
 ```
+
+`serde` (with `derive`) is the one companion dependency a caller of
+`define_events!`/`command_handler!` needs directly — see
+[event-sauce's crate docs](https://docs.rs/event-sauce) for why `chrono`,
+`paste`, `uuid`, `serde_json` and `async-trait` don't need their own line.
 
 ## Event Sourcing Flow
 
