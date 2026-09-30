@@ -578,7 +578,7 @@ impl StateStore for PostgresStateStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{BackoffPolicy, StateOutboxHandler};
+    use crate::{AckOutcome, BackoffPolicy, StateOutboxHandler};
     use event_sauce_core::{
         command_handler, define_events, Aggregate, AggregateClaim, AggregateError, AggregateType,
         Entity, EntityId, EventFilter, Repository,
@@ -1414,7 +1414,11 @@ mod tests {
             .mark_failed(id, "w-1", "still failing", None, backoff)
             .await
             .unwrap();
-        assert!(landed, "the exponent must be clamped, never overflow");
+        assert_eq!(
+            landed,
+            AckOutcome::Acked,
+            "the exponent must be clamped, never overflow"
+        );
 
         let (offset_secs,): (f64,) = sqlx::query_as(
             "SELECT EXTRACT(EPOCH FROM (locked_until - NOW()))::float8
@@ -1483,14 +1487,19 @@ mod tests {
         assert_eq!(reclaimed.len(), 1);
 
         let landed = outbox.mark_done(id, "worker-a").await.unwrap();
-        assert!(
-            !landed,
+        assert_eq!(
+            landed,
+            AckOutcome::Fenced,
             "a worker that no longer owns the claim must not delete the row"
         );
         assert_eq!(outbox_row_count(&db.pool).await, 1);
 
         let landed = outbox.mark_done(id, "worker-b").await.unwrap();
-        assert!(landed, "the current owner must be able to prune the row");
+        assert_eq!(
+            landed,
+            AckOutcome::Acked,
+            "the current owner must be able to prune the row"
+        );
         assert_eq!(outbox_row_count(&db.pool).await, 0);
     }
 
@@ -1527,8 +1536,9 @@ mod tests {
             .mark_failed(id, "worker-a", "stale", Some(3), BackoffPolicy::none())
             .await
             .unwrap();
-        assert!(
-            !landed,
+        assert_eq!(
+            landed,
+            AckOutcome::Fenced,
             "a worker that no longer owns the claim must not record a failure"
         );
         let (status, failures): (String, i32) =

@@ -163,6 +163,35 @@ impl BackoffPolicy {
 /// `max_attempts: None`, which retries forever.
 const MAX_BACKOFF_EXPONENT: i32 = 30;
 
+/// Outcome of a fenced ack ([`PostgresPolicyOutbox::mark_done`],
+/// [`PostgresPolicyOutbox::mark_failed`] and their state-outbox
+/// counterparts) against one outbox row.
+///
+/// The fence is `WHERE id = $1 AND locked_by = $2`: [`Fenced`](Self::Fenced)
+/// means that predicate matched no row, because another worker already
+/// reclaimed the lease (or, for `mark_done`, the row was already acked), so
+/// the write was rejected rather than clobbering the new claimant's
+/// in-flight work or resurrecting a finished row.
+#[must_use]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AckOutcome {
+    /// The row matched the fence and was updated (or, for `mark_done` on the
+    /// state outbox, deleted) as requested.
+    Acked,
+    /// The fence rejected the write: this worker no longer owns the row.
+    Fenced,
+}
+
+impl AckOutcome {
+    pub(crate) fn from_rows_affected(affected: u64) -> Self {
+        if affected == 1 {
+            Self::Acked
+        } else {
+            Self::Fenced
+        }
+    }
+}
+
 /// Applies a fenced `mark_failed` update to one outbox row: increments
 /// `failures`, moves the row to `failed` once `max_failures` is reached
 /// (otherwise back to `pending` behind [`BackoffPolicy`]'s delay), and clears
@@ -171,9 +200,9 @@ const MAX_BACKOFF_EXPONENT: i32 = 30;
 /// have identical failure/backoff/DLQ columns.
 ///
 /// Fenced on `WHERE id = $1 AND locked_by = $2`: a worker that no longer
-/// owns the claim gets `Ok(false)` rather than clearing another claimant's
-/// lock. Returns the raw `sqlx::Error` so each caller can label it with its
-/// own context.
+/// owns the claim gets [`AckOutcome::Fenced`] rather than clearing another
+/// claimant's lock. Returns the raw `sqlx::Error` so each caller can label
+/// it with its own context.
 pub(crate) async fn mark_row_failed(
     pool: &PgPool,
     table: &str,
@@ -182,7 +211,7 @@ pub(crate) async fn mark_row_failed(
     error_message: &str,
     max_failures: Option<i32>,
     backoff: BackoffPolicy,
-) -> sqlx::Result<bool> {
+) -> sqlx::Result<AckOutcome> {
     let query = format!(
         "UPDATE {table}
          SET failures = failures + 1,
@@ -209,7 +238,7 @@ pub(crate) async fn mark_row_failed(
         .execute(pool)
         .await?
         .rows_affected();
-    Ok(affected == 1)
+    Ok(AckOutcome::from_rows_affected(affected))
 }
 
 /// Postgres-backed policy outbox.
@@ -476,15 +505,15 @@ impl PostgresPolicyOutbox {
     /// the lock.
     ///
     /// Fenced on `locked_by = worker_id`: a worker whose claim already expired
-    /// and was reclaimed by someone else has its ack silently rejected
-    /// (`Ok(false)`) instead of overwriting the new claimant's in-flight work.
-    /// Once a row is done, `locked_by` is cleared, so a stale, delayed ack for
-    /// the same worker can never resurrect it either.
+    /// and was reclaimed by someone else gets [`AckOutcome::Fenced`] instead
+    /// of overwriting the new claimant's in-flight work. Once a row is done,
+    /// `locked_by` is cleared, so a stale, delayed ack for the same worker
+    /// can never resurrect it either.
     ///
     /// # Errors
     ///
     /// Returns an error if the update fails.
-    pub async fn mark_done(&self, id: i64, worker_id: &str) -> Result<bool> {
+    pub async fn mark_done(&self, id: i64, worker_id: &str) -> Result<AckOutcome> {
         let outbox_table = self.outbox_table();
         let query = format!(
             "UPDATE {outbox_table}
@@ -502,7 +531,7 @@ impl PostgresPolicyOutbox {
             .await
             .map_err(|e| Error::backend("Failed to mark outbox row done", e))?
             .rows_affected();
-        Ok(affected == 1)
+        Ok(AckOutcome::from_rows_affected(affected))
     }
 
     /// Records a real handler failure for an outbox row claimed by
@@ -512,9 +541,9 @@ impl PostgresPolicyOutbox {
     ///
     /// Fenced on `locked_by = worker_id`, for the same reason as
     /// [`mark_done`](Self::mark_done): a worker that no longer owns the claim
-    /// (reclaimed after its lock expired, or already acked) has its report
-    /// rejected (`Ok(false)`) rather than resurrecting a done row or clearing
-    /// the new claimant's lock.
+    /// (reclaimed after its lock expired, or already acked) gets
+    /// [`AckOutcome::Fenced`] rather than resurrecting a done row or
+    /// clearing the new claimant's lock.
     ///
     /// Increments the row's `failures` counter, then decides where it lands:
     /// if `max_attempts` is `None`, or the row's `failures` is still below
@@ -538,7 +567,7 @@ impl PostgresPolicyOutbox {
         error_message: &str,
         max_attempts: Option<i32>,
         backoff: BackoffPolicy,
-    ) -> Result<bool> {
+    ) -> Result<AckOutcome> {
         let outbox_table = self.outbox_table();
         mark_row_failed(
             &self.pool,
@@ -789,7 +818,10 @@ mod tests {
             .claim_batch("policy-a", "w-1", 10, Duration::from_secs(60))
             .await
             .unwrap();
-        assert!(outbox.mark_done(claims[0].id, "w-1").await.unwrap());
+        assert_eq!(
+            outbox.mark_done(claims[0].id, "w-1").await.unwrap(),
+            AckOutcome::Acked
+        );
 
         let pending = outbox.pending_count("policy-a").await.unwrap();
         assert_eq!(pending, 0);
@@ -806,16 +838,19 @@ mod tests {
             .claim_batch("policy-a", "w-1", 10, Duration::from_secs(60))
             .await
             .unwrap();
-        assert!(outbox
-            .mark_failed(
-                claims[0].id,
-                "w-1",
-                "transient",
-                Some(3),
-                BackoffPolicy::none()
-            )
-            .await
-            .unwrap());
+        assert_eq!(
+            outbox
+                .mark_failed(
+                    claims[0].id,
+                    "w-1",
+                    "transient",
+                    Some(3),
+                    BackoffPolicy::none()
+                )
+                .await
+                .unwrap(),
+            AckOutcome::Acked
+        );
 
         // Row is back to pending (since attempts=1 < max=3); next claim sees it.
         let next = outbox
@@ -843,10 +878,13 @@ mod tests {
             .unwrap();
         let id = claims[0].id;
         let backoff = BackoffPolicy::new(Duration::from_secs(60), Duration::from_secs(300), 0.0);
-        assert!(outbox
-            .mark_failed(id, "w-1", "transient", None, backoff)
-            .await
-            .unwrap());
+        assert_eq!(
+            outbox
+                .mark_failed(id, "w-1", "transient", None, backoff)
+                .await
+                .unwrap(),
+            AckOutcome::Acked
+        );
 
         let offset = locked_until_offset_secs(&outbox, id).await;
         assert!(
@@ -903,7 +941,7 @@ mod tests {
             .await
             .unwrap();
         let id = claims[0].id;
-        outbox
+        let _ = outbox
             .mark_failed(id, "w-1", "e1", None, backoff)
             .await
             .unwrap();
@@ -922,7 +960,7 @@ mod tests {
             .claim_batch("policy-a", "w-1", 10, Duration::from_secs(60))
             .await
             .unwrap();
-        outbox
+        let _ = outbox
             .mark_failed(claims[0].id, "w-1", "e2", None, backoff)
             .await
             .unwrap();
@@ -960,7 +998,11 @@ mod tests {
             .mark_failed(id, "w-1", "still failing", None, backoff)
             .await
             .unwrap();
-        assert!(landed, "the exponent must be clamped, never overflow");
+        assert_eq!(
+            landed,
+            AckOutcome::Acked,
+            "the exponent must be clamped, never overflow"
+        );
 
         let locked_until_offset = locked_until_offset_secs(&outbox, id).await;
         assert!(
@@ -981,16 +1023,19 @@ mod tests {
             .await
             .unwrap();
         // attempts is now 1; with max_attempts=1, this counts as failed.
-        assert!(outbox
-            .mark_failed(
-                claims[0].id,
-                "w-1",
-                "permanent",
-                Some(1),
-                BackoffPolicy::none()
-            )
-            .await
-            .unwrap());
+        assert_eq!(
+            outbox
+                .mark_failed(
+                    claims[0].id,
+                    "w-1",
+                    "permanent",
+                    Some(1),
+                    BackoffPolicy::none()
+                )
+                .await
+                .unwrap(),
+            AckOutcome::Acked
+        );
 
         // No more pending rows — it's in failed status.
         let pending = outbox.pending_count("policy-a").await.unwrap();
@@ -1097,7 +1142,7 @@ mod tests {
         // must key off real failures: first failure -> still pending (1 < 2),
         // second failure -> failed (2 >= 2). It must NOT flip to failed on the
         // first failure just because `attempts` (claims) already reached 3.
-        outbox
+        let _ = outbox
             .mark_failed(id, "crasher", "transient", Some(2), BackoffPolicy::none())
             .await
             .unwrap();
@@ -1117,7 +1162,7 @@ mod tests {
             1,
             "row must still be claimable after 1st failure"
         );
-        outbox
+        let _ = outbox
             .mark_failed(
                 claims[0].id,
                 "retrier",
@@ -1158,14 +1203,19 @@ mod tests {
         assert_eq!(reclaimed.len(), 1);
 
         let landed = outbox.mark_done(id, "worker-a").await.unwrap();
-        assert!(
-            !landed,
+        assert_eq!(
+            landed,
+            AckOutcome::Fenced,
             "a worker that no longer owns the claim must not be able to mark it done"
         );
         assert_eq!(status_of(&outbox, id).await, "pending");
 
         let landed = outbox.mark_done(id, "worker-b").await.unwrap();
-        assert!(landed, "the current owner must be able to mark it done");
+        assert_eq!(
+            landed,
+            AckOutcome::Acked,
+            "the current owner must be able to mark it done"
+        );
         assert_eq!(status_of(&outbox, id).await, "done");
     }
 
@@ -1194,8 +1244,9 @@ mod tests {
             .mark_failed(id, "worker-a", "stale", Some(3), BackoffPolicy::none())
             .await
             .unwrap();
-        assert!(
-            !landed,
+        assert_eq!(
+            landed,
+            AckOutcome::Fenced,
             "a worker that no longer owns the claim must not be able to mark it failed"
         );
         assert_eq!(status_of(&outbox, id).await, "pending");
@@ -1216,7 +1267,10 @@ mod tests {
             .await
             .unwrap();
         let id = claims[0].id;
-        assert!(outbox.mark_done(id, "worker-a").await.unwrap());
+        assert_eq!(
+            outbox.mark_done(id, "worker-a").await.unwrap(),
+            AckOutcome::Acked
+        );
         assert_eq!(status_of(&outbox, id).await, "done");
 
         let landed = outbox
@@ -1229,7 +1283,11 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(!landed, "a done row must never be resurrected");
+        assert_eq!(
+            landed,
+            AckOutcome::Fenced,
+            "a done row must never be resurrected"
+        );
         assert_eq!(status_of(&outbox, id).await, "done");
     }
 
@@ -1293,7 +1351,10 @@ mod tests {
             .await
             .unwrap();
         let id = claims.iter().find(|c| c.event_id == event_id).unwrap().id;
-        assert!(outbox.mark_done(id, "pruner-setup").await.unwrap());
+        assert_eq!(
+            outbox.mark_done(id, "pruner-setup").await.unwrap(),
+            AckOutcome::Acked
+        );
         sqlx::query(
             "UPDATE event_sauce.policy_outbox
              SET updated_at = NOW() - make_interval(secs => $2::float8)

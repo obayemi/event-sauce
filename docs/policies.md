@@ -350,10 +350,15 @@ loop {
     }
 
     for claim in claims {
-        let acked = match send_email_for(claim.event_id).await {
-            Ok(_) => outbox.mark_done(claim.id, "drainer-1").await?,
+        // `AckOutcome::Fenced` means another worker's lease already
+        // reclaimed this row — this worker's ack lost the race and must
+        // not be treated as ours.
+        match send_email_for(claim.event_id).await {
+            Ok(_) => {
+                let _ = outbox.mark_done(claim.id, "drainer-1").await?;
+            }
             Err(e) => {
-                outbox
+                let _ = outbox
                     .mark_failed(
                         claim.id,
                         "drainer-1",
@@ -361,12 +366,9 @@ loop {
                         Some(5),
                         BackoffPolicy::default(),
                     )
-                    .await?
+                    .await?;
             }
-        };
-        // `false` means another worker's lease already reclaimed this row —
-        // this worker's ack lost the race and must not be treated as ours.
-        let _ = acked;
+        }
     }
 }
 ```

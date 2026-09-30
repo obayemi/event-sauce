@@ -82,12 +82,12 @@ explicitly rather than gated behind a major version bump.
   should account for the new backoff delay before a row becomes claimable
   again.
 - **`mark_done` and `mark_failed` on both outboxes now take the claiming
-  `worker_id` and return `Result<bool>`** instead of `Result<()>`. `false`
-  means the ack was fenced out — the caller's claim on that row already
-  expired and was reclaimed by another worker, so the row was left
-  untouched. Callers must pass their worker id and handle the `bool`,
-  typically by treating a `false` ack as "someone else owns this row now"
-  rather than as an error.
+  `worker_id` and return `Result<AckOutcome>`** instead of `Result<()>`.
+  `AckOutcome::Fenced` means the ack was fenced out — the caller's claim on
+  that row already expired and was reclaimed by another worker, so the row
+  was left untouched. Callers must pass their worker id and handle the
+  outcome, typically by treating `Fenced` as "someone else owns this row
+  now" rather than as an error.
 - **`EveryNEvents` wraps a `NonZeroU32`**, not a public `u32` tuple field, so
   `EveryNEvents(0)` can no longer be constructed at all — it previously
   compiled and only panicked later, inside the commit path, on first use.

@@ -35,6 +35,8 @@ use async_trait::async_trait;
 use event_sauce_core::{Error, EventEnvelope, Result};
 use sqlx::PgPool;
 
+use crate::policy_outbox::AckOutcome;
+
 /// Handler invoked by the [`StateOutboxDispatcher`] for each outbox event.
 ///
 /// Implementations must be idempotent: delivery is at-least-once, keyed by
@@ -193,14 +195,13 @@ impl PostgresStateOutbox {
     /// log, so a dispatched row has no replay value.
     ///
     /// Fenced on `locked_by = worker_id`: a worker whose lock already expired
-    /// and was reclaimed by another worker has its delete silently rejected
-    /// (`Ok(false)`) instead of deleting a row the new claimant is still
-    /// processing.
+    /// and was reclaimed by another worker gets [`AckOutcome::Fenced`]
+    /// instead of deleting a row the new claimant is still processing.
     ///
     /// # Errors
     ///
     /// Returns an error if the delete fails.
-    pub async fn mark_done(&self, id: i64, worker_id: &str) -> Result<bool> {
+    pub async fn mark_done(&self, id: i64, worker_id: &str) -> Result<AckOutcome> {
         let outbox_table = self.outbox_table();
         let query = format!("DELETE FROM {outbox_table} WHERE id = $1 AND locked_by = $2");
         let affected = sqlx::query(&query)
@@ -210,15 +211,15 @@ impl PostgresStateOutbox {
             .await
             .map_err(|e| Error::backend("Failed to prune state outbox row", e))?
             .rows_affected();
-        Ok(affected == 1)
+        Ok(AckOutcome::from_rows_affected(affected))
     }
 
     /// Records a handler failure for an outbox row claimed by `worker_id`.
     ///
     /// Fenced on `locked_by = worker_id`, for the same reason as
     /// [`mark_done`](Self::mark_done): a worker that no longer owns the claim
-    /// has its report rejected (`Ok(false)`) rather than clearing a new
-    /// claimant's lock or resurrecting an already-pruned row.
+    /// gets [`AckOutcome::Fenced`] rather than clearing a new claimant's
+    /// lock or resurrecting an already-pruned row.
     ///
     /// Increments the row's `failures` counter and releases its lock. While
     /// `failures` stays below `max_failures` the row returns to `pending` —
@@ -241,7 +242,7 @@ impl PostgresStateOutbox {
         error_message: &str,
         max_failures: Option<i32>,
         backoff: crate::BackoffPolicy,
-    ) -> Result<bool> {
+    ) -> Result<AckOutcome> {
         let outbox_table = self.outbox_table();
         crate::policy_outbox::mark_row_failed(
             &self.pool,
@@ -386,12 +387,14 @@ impl StateOutboxDispatcher {
 
             match self.handler.handle(&claim.envelope).await {
                 Ok(()) => {
-                    if self.outbox.mark_done(claim.id, &self.worker_id).await? {
+                    if self.outbox.mark_done(claim.id, &self.worker_id).await? == AckOutcome::Acked
+                    {
                         dispatched += 1;
                     }
                 }
                 Err(e) => {
-                    self.outbox
+                    let _: AckOutcome = self
+                        .outbox
                         .mark_failed(
                             claim.id,
                             &self.worker_id,

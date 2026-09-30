@@ -2249,7 +2249,7 @@ mod tests {
             } else {
                 "drainer-b"
             };
-            outbox.mark_done(c.id, worker).await.unwrap();
+            let _ = outbox.mark_done(c.id, worker).await.unwrap();
         }
         assert_eq!(
             outbox
@@ -2418,7 +2418,10 @@ mod tests {
             .unwrap();
         assert_eq!(claims.len(), 2);
         for claim in &claims {
-            assert!(outbox.mark_done(claim.id, "w-1").await.unwrap());
+            assert_eq!(
+                outbox.mark_done(claim.id, "w-1").await.unwrap(),
+                crate::AckOutcome::Acked
+            );
         }
         outbox
             .prune_done(std::time::Duration::ZERO, 100)
