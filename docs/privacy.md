@@ -183,9 +183,24 @@ key_store.delete_key(user_id.as_uuid()).await?;
 // Any subsequent load will fail with KeyNotFound
 let result = repo.load(user_id).await;
 assert!(result.unwrap_err().is_key_not_found());
+
+// So does any further commit — shredding is permanent
+let result = repo.save(&mut aggregate).await;
+assert!(result.unwrap_err().is_key_not_found());
 ```
 
 The encrypted event and snapshot data remains in the database but is permanently unreadable without the key. This satisfies GDPR Article 17 (right to erasure) without requiring actual deletion of event history.
+
+Shredding is permanent, and it does not rest on a pre-check a caller could
+race past: the `is_shredded` check a commit makes first is only a fast
+path, and the `get_or_insert_key` call behind it refuses atomically for a
+shredded aggregate
+([`CryptoKeyStore::get_or_insert_key`](https://docs.rs/event-sauce/latest/event_sauce/trait.CryptoKeyStore.html#tymethod.get_or_insert_key)) —
+the only way to reverse a shred is an explicit
+[`upsert_key`](https://docs.rs/event-sauce/latest/event_sauce/trait.CryptoKeyStore.html#tymethod.upsert_key)
+call, which always wins and clears the tombstone the delete left behind. The
+Postgres key store persists that tombstone as a `shredded_at` timestamp on the
+`crypto_keys` row.
 
 ## Field-Level Encryption
 
@@ -259,7 +274,7 @@ The `VisitRecorded` event is stored entirely in plaintext (no `@encrypted_fields
 
 | Component | Description |
 |-----------|-------------|
-| `CryptoKeyStore` trait | Per-aggregate key lifecycle (get/upsert/delete) |
+| `CryptoKeyStore` trait | Per-aggregate key lifecycle (get/upsert/delete/get_or_insert_key/is_shredded) |
 | `CryptoProvider` trait | Pluggable encryption implementation |
 | `Aes256GcmProvider` | Default AES-256-GCM implementation |
 | `InMemoryCryptoKeyStore` | In-memory key store for testing |
@@ -270,7 +285,7 @@ The `VisitRecorded` event is stored entirely in plaintext (no `@encrypted_fields
 Each encrypted aggregate instance gets its own unique encryption key. This means:
 
 - Deleting one user's key doesn't affect other users
-- Keys are generated automatically on first `commit()`
+- Keys are generated automatically on first `commit()`, unless the aggregate was shredded
 - Keys are stored in the configured `CryptoKeyStore`
 
 ### Non-Encrypted Aggregates Are Unaffected
