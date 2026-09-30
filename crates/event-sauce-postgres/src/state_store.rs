@@ -853,6 +853,13 @@ mod tests {
             .unwrap()
     }
 
+    async fn outbox_failures(pool: &PgPool) -> i32 {
+        sqlx::query_scalar("SELECT failures FROM event_sauce.state_outbox")
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
     #[test]
     fn test_builder_requires_pool() {
         let err = PostgresStateStore::builder().build().unwrap_err();
@@ -1350,19 +1357,12 @@ mod tests {
             ));
 
         dispatcher.run_once().await.unwrap();
-        let (failures,): (i32,) = sqlx::query_as("SELECT failures FROM event_sauce.state_outbox")
-            .fetch_one(&db.pool)
-            .await
-            .unwrap();
-        assert_eq!(failures, 1);
+        assert_eq!(outbox_failures(&db.pool).await, 1);
 
         dispatcher.run_once().await.unwrap();
-        let (still_one,): (i32,) = sqlx::query_as("SELECT failures FROM event_sauce.state_outbox")
-            .fetch_one(&db.pool)
-            .await
-            .unwrap();
         assert_eq!(
-            still_one, 1,
+            outbox_failures(&db.pool).await,
+            1,
             "an immediate retry must not reclaim a row that is backing off"
         );
 
@@ -1373,13 +1373,9 @@ mod tests {
         .await
         .unwrap();
         dispatcher.run_once().await.unwrap();
-        let (after_backoff,): (i32,) =
-            sqlx::query_as("SELECT failures FROM event_sauce.state_outbox")
-                .fetch_one(&db.pool)
-                .await
-                .unwrap();
         assert_eq!(
-            after_backoff, 2,
+            outbox_failures(&db.pool).await,
+            2,
             "the row must become reclaimable once its backoff elapses"
         );
     }
