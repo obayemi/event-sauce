@@ -86,34 +86,29 @@ pub(crate) async fn enforce(
 ) -> Result<()> {
     if !claims.is_empty() {
         let hashed = hash_claims(&claims)?;
-
-        let current_claim_types: Vec<String> = hashed
-            .iter()
-            .map(|(c, _)| c.claim_type.to_string())
-            .collect();
+        let types: Vec<&str> = hashed.iter().map(|(c, _)| c.claim_type).collect();
+        let claim_hashes: Vec<&[u8]> = hashed.iter().map(|(_, h)| h.as_slice()).collect();
 
         let aggregate_id = stream_id.aggregate_id();
-        upsert_or_conflict(tx, claims_table, aggregate_id, &hashed).await?;
+        upsert_or_conflict(
+            tx,
+            claims_table,
+            aggregate_id,
+            &hashed,
+            &types,
+            &claim_hashes,
+        )
+        .await?;
 
-        if !current_claim_types.is_empty() {
-            let placeholders: Vec<String> = current_claim_types
-                .iter()
-                .enumerate()
-                .map(|(i, _)| format!("${}", i + 2))
-                .collect();
-            let cleanup_query = format!(
-                "DELETE FROM {claims_table} WHERE aggregate_id = $1 AND claim_type NOT IN ({})",
-                placeholders.join(", ")
-            );
-            let mut query = sqlx::query(&cleanup_query).bind(aggregate_id);
-            for ct in &current_claim_types {
-                query = query.bind(ct);
-            }
-            query
-                .execute(&mut **tx)
-                .await
-                .map_err(|e| Error::backend("Failed to cleanup old claims", e))?;
-        }
+        let cleanup_query = format!(
+            "DELETE FROM {claims_table} WHERE aggregate_id = $1 AND claim_type <> ALL($2::text[])"
+        );
+        sqlx::query(&cleanup_query)
+            .bind(aggregate_id)
+            .bind(&types)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| Error::backend("Failed to cleanup old claims", e))?;
     }
 
     if clear_claims {
@@ -144,14 +139,17 @@ async fn upsert_or_conflict(
     claims_table: &str,
     aggregate_id: uuid::Uuid,
     hashed: &[(&AggregateClaim, Vec<u8>)],
+    types: &[&str],
+    claim_hashes: &[&[u8]],
 ) -> Result<()> {
     use sqlx::Acquire;
 
-    let row_placeholders: Vec<String> = (0..hashed.len())
-        .map(|i| format!("(${}::text, ${}::bytea)", 2 + 2 * i, 3 + 2 * i))
-        .collect();
     let combined_query = format!(
-        "WITH input(claim_type, claim_hash) AS (VALUES {rows}),
+        "WITH input(claim_type, claim_hash) AS (
+                  SELECT claim_type, claim_hash
+                  FROM UNNEST($2::text[], $3::bytea[]) WITH ORDINALITY AS t(claim_type, claim_hash, ordinality)
+                  ORDER BY ordinality
+              ),
               conflicts AS (
                   SELECT i.claim_type, i.claim_hash, c.aggregate_id AS holder
                   FROM input i
@@ -164,17 +162,14 @@ async fn upsert_or_conflict(
                   WHERE NOT EXISTS (SELECT 1 FROM conflicts)
                   ON CONFLICT (aggregate_id, claim_type)
                   DO UPDATE SET claim_hash = EXCLUDED.claim_hash
-                  RETURNING aggregate_id
               )
-          SELECT claim_type, claim_hash, holder FROM conflicts LIMIT 1",
-        rows = row_placeholders.join(", "),
+          SELECT claim_type, claim_hash, holder FROM conflicts LIMIT 1"
     );
 
-    let mut query =
-        sqlx::query_as::<_, (String, Vec<u8>, uuid::Uuid)>(&combined_query).bind(aggregate_id);
-    for (claim, hash) in hashed {
-        query = query.bind(claim.claim_type).bind(hash);
-    }
+    let query = sqlx::query_as::<_, (String, Vec<u8>, uuid::Uuid)>(&combined_query)
+        .bind(aggregate_id)
+        .bind(types)
+        .bind(claim_hashes);
 
     let mut savepoint = tx
         .begin()
@@ -196,7 +191,8 @@ async fn upsert_or_conflict(
                 .rollback()
                 .await
                 .map_err(|e| Error::backend("Failed to roll back claims savepoint", e))?;
-            recover_concurrent_conflict(tx, claims_table, aggregate_id, hashed).await
+            recover_concurrent_conflict(tx, claims_table, aggregate_id, hashed, types, claim_hashes)
+                .await
         }
         Err(e) => Err(Error::backend("Failed to upsert claims", e)),
     }
@@ -223,21 +219,19 @@ async fn recover_concurrent_conflict(
     claims_table: &str,
     aggregate_id: uuid::Uuid,
     hashed: &[(&AggregateClaim, Vec<u8>)],
+    types: &[&str],
+    claim_hashes: &[&[u8]],
 ) -> Result<()> {
-    let row_placeholders: Vec<String> = (0..hashed.len())
-        .map(|i| format!("(${}::text, ${}::bytea)", 2 + 2 * i, 3 + 2 * i))
-        .collect();
     let holder_query = format!(
         "SELECT claim_type, claim_hash, aggregate_id FROM {claims_table}
-         WHERE (claim_type, claim_hash) IN ({rows}) AND aggregate_id <> $1
-         LIMIT 1",
-        rows = row_placeholders.join(", "),
+         WHERE (claim_type, claim_hash) IN (SELECT * FROM UNNEST($2::text[], $3::bytea[]))
+         AND aggregate_id <> $1
+         LIMIT 1"
     );
-    let mut query =
-        sqlx::query_as::<_, (String, Vec<u8>, uuid::Uuid)>(&holder_query).bind(aggregate_id);
-    for (claim, hash) in hashed {
-        query = query.bind(claim.claim_type).bind(hash);
-    }
+    let query = sqlx::query_as::<_, (String, Vec<u8>, uuid::Uuid)>(&holder_query)
+        .bind(aggregate_id)
+        .bind(types)
+        .bind(claim_hashes);
 
     match query.fetch_optional(&mut **tx).await {
         Ok(Some((claim_type, claim_hash, holder))) => Err(build_conflict_error(
