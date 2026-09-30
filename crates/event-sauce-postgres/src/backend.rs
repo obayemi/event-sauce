@@ -4,11 +4,12 @@
 //! (event store + checkpoint store) with migrations.
 
 use std::sync::Arc;
+use std::time::Duration;
 
-use event_sauce_core::SnapshotConfig;
+use event_sauce_core::{CheckpointStore, Error, EventFilter, Position, Result, SnapshotConfig};
 use sqlx::PgPool;
 
-use crate::{PostgresCheckpointStore, PostgresEventStore};
+use crate::{LeaseOutcome, PostgresCheckpointStore, PostgresEventStore, PostgresProjection};
 
 /// A fully configured `PostgreSQL` backend with event store and checkpoint store.
 ///
@@ -53,7 +54,7 @@ impl PostgresBackend {
     /// # Errors
     ///
     /// Returns an error if the database connection fails or migrations cannot be applied.
-    pub async fn setup(database_url: &str, schema: &str) -> event_sauce_core::Result<Self> {
+    pub async fn setup(database_url: &str, schema: &str) -> Result<Self> {
         Self::builder()
             .database_url(database_url)
             .schema(schema)
@@ -119,10 +120,10 @@ impl PostgresBackend {
         self.event_store.event_log_query()
     }
 
-    /// Runs a [`PostgresProjection`](crate::PostgresProjection) atomically.
+    /// Runs a [`PostgresProjection`](PostgresProjection) atomically.
     ///
     /// For every matched event the runner opens a transaction, calls
-    /// [`PostgresProjection::handle`](crate::PostgresProjection::handle) with
+    /// [`PostgresProjection::handle`](PostgresProjection::handle) with
     /// it, advances the subscription checkpoint inside the same transaction,
     /// and commits. If any step fails the transaction is dropped (rolled back)
     /// and the error propagates — the checkpoint never advances past an event
@@ -151,12 +152,10 @@ impl PostgresBackend {
     /// Returns an error if checkpoint loading fails, the event stream errors,
     /// the projection's `handle` returns an error, or the per-event
     /// transaction cannot be started or committed.
-    pub async fn run_postgres_projection<P: crate::PostgresProjection>(
+    pub async fn run_postgres_projection<P: PostgresProjection>(
         &self,
         projection: &mut P,
-    ) -> event_sauce_core::Result<()> {
-        use event_sauce_core::{CheckpointStore, Position};
-
+    ) -> Result<()> {
         let mut current_position = self
             .checkpoint_store
             .load_checkpoint(P::NAME)
@@ -182,18 +181,16 @@ impl PostgresBackend {
                     continue;
                 }
 
-                let mut tx = self.pool.begin().await.map_err(|e| {
-                    event_sauce_core::Error::backend("Failed to start projection transaction", e)
-                })?;
+                let mut tx = self.begin("projection").await?;
 
                 projection.handle(&entry.envelope, &mut tx).await?;
                 self.checkpoint_store
                     .save_checkpoint_tx(&mut tx, P::NAME, current_position)
                     .await?;
 
-                tx.commit().await.map_err(|e| {
-                    event_sauce_core::Error::backend("Failed to commit projection transaction", e)
-                })?;
+                tx.commit()
+                    .await
+                    .map_err(|e| Error::backend("Failed to commit projection transaction", e))?;
                 checkpointed_position = current_position;
             }
 
@@ -207,14 +204,14 @@ impl PostgresBackend {
         Ok(())
     }
 
-    /// Runs a [`PostgresProjection`](crate::PostgresProjection) under a lease.
+    /// Runs a [`PostgresProjection`](PostgresProjection) under a lease.
     ///
     /// Acquires the lease for `P::NAME` on behalf of `worker_id`, drains all
     /// currently-available events (atomically per event, identically to
     /// [`run_postgres_projection`](Self::run_postgres_projection)), then
     /// releases the lease and returns. If another worker holds an active
     /// lease, this is a no-op that returns
-    /// [`LeaseOutcome::Busy`](crate::LeaseOutcome::Busy) — the caller can
+    /// [`LeaseOutcome::Busy`](LeaseOutcome::Busy) — the caller can
     /// retry later.
     ///
     /// While processing, the lease is renewed roughly every
@@ -225,7 +222,7 @@ impl PostgresBackend {
     /// ownership and monotonicity: if this worker stalled past `leased_until`
     /// and another worker took over while a transaction was in flight, the
     /// fenced write is rejected, the transaction is rolled back, and the run
-    /// stops with [`Error::LeaseLost`](event_sauce_core::Error::LeaseLost) —
+    /// stops with [`Error::LeaseLost`](Error::LeaseLost) —
     /// never double-applying an event or regressing the checkpoint.
     ///
     /// # Examples
@@ -245,19 +242,19 @@ impl PostgresBackend {
     /// errors, the projection's `handle` returns an error, the per-event
     /// transaction cannot be started or committed, or the lease is lost
     /// during the run.
-    pub async fn run_leased_projection<P: crate::PostgresProjection>(
+    pub async fn run_leased_projection<P: PostgresProjection>(
         &self,
         projection: &mut P,
         worker_id: &str,
-        lease_duration: std::time::Duration,
-    ) -> event_sauce_core::Result<crate::LeaseOutcome> {
+        lease_duration: Duration,
+    ) -> Result<LeaseOutcome> {
         self.with_lease(P::NAME, worker_id, lease_duration, |start_position| {
             self.run_under_lease(projection, worker_id, lease_duration, start_position)
         })
         .await
     }
 
-    /// Runs a [`PostgresProjection`](crate::PostgresProjection) under a lease
+    /// Runs a [`PostgresProjection`](PostgresProjection) under a lease
     /// that is held across idle ticks, instead of being released and
     /// re-acquired on every call like [`run_leased_projection`].
     ///
@@ -278,7 +275,7 @@ impl PostgresBackend {
     /// signaled during that sleep is noticed immediately, with no extra
     /// renewal or drain first. Once `should_continue` returns `false` the
     /// lease is released and the run returns
-    /// [`LeaseOutcome::Completed`](crate::LeaseOutcome::Completed). The lease
+    /// [`LeaseOutcome::Completed`](LeaseOutcome::Completed). The lease
     /// is also released if it is ever lost (an unexpected renewal failure, or
     /// a fenced checkpoint save rejected mid-drain), in which case the error
     /// propagates.
@@ -288,8 +285,8 @@ impl PostgresBackend {
     /// lapse during the idle sleep itself,
     /// before there is a chance to renew
     /// it; this is rejected with
-    /// [`Error::InvalidState`](event_sauce_core::Error::InvalidState) rather
-    /// than left to fail with [`Error::LeaseLost`](event_sauce_core::Error::LeaseLost)
+    /// [`Error::InvalidState`](Error::InvalidState) rather
+    /// than left to fail with [`Error::LeaseLost`](Error::LeaseLost)
     /// on the first idle tick.
     ///
     /// This does not change how a **non-holder** waits — the checkpoint store
@@ -307,18 +304,16 @@ impl PostgresBackend {
     /// idle ticks fails.
     ///
     /// [`run_leased_projection`]: Self::run_leased_projection
-    pub async fn run_sticky_projection<P: crate::PostgresProjection>(
+    pub async fn run_sticky_projection<P: PostgresProjection>(
         &self,
         projection: &mut P,
         worker_id: &str,
-        lease_duration: std::time::Duration,
-        idle_interval: std::time::Duration,
+        lease_duration: Duration,
+        idle_interval: Duration,
         mut should_continue: impl FnMut() -> bool + Send,
-    ) -> event_sauce_core::Result<crate::LeaseOutcome> {
-        use event_sauce_core::CheckpointStore;
-
+    ) -> Result<LeaseOutcome> {
         if idle_interval >= lease_duration / 3 {
-            return Err(event_sauce_core::Error::invalid_state(format!(
+            return Err(Error::invalid_state(format!(
                 "idle_interval ({idle_interval:?}) must be below lease_duration / 3 \
                  ({:?}), or the lease could lapse before the next renewal",
                 lease_duration / 3,
@@ -364,7 +359,7 @@ impl PostgresBackend {
     /// Shared by every entry point that holds a single named lease
     /// ([`run_leased_projection`](Self::run_leased_projection),
     /// [`rebuild`](Self::rebuild)) so the
-    /// acquire/Busy/release/[`LeaseOutcome`](crate::LeaseOutcome) mapping is
+    /// acquire/Busy/release/[`LeaseOutcome`](LeaseOutcome) mapping is
     /// written once.
     /// [`dispatch_policies_to_outbox`](Self::dispatch_policies_to_outbox)
     /// holds one lease per policy instead — it may end up dispatching only
@@ -374,31 +369,29 @@ impl PostgresBackend {
         &self,
         name: &str,
         worker_id: &str,
-        lease_duration: std::time::Duration,
+        lease_duration: Duration,
         body: F,
-    ) -> event_sauce_core::Result<crate::LeaseOutcome>
+    ) -> Result<LeaseOutcome>
     where
-        F: FnOnce(event_sauce_core::Position) -> Fut,
-        Fut: std::future::Future<Output = event_sauce_core::Result<()>>,
+        F: FnOnce(Position) -> Fut,
+        Fut: std::future::Future<Output = Result<()>>,
     {
-        use event_sauce_core::CheckpointStore;
-
         let Some(start_position) = self
             .checkpoint_store
             .try_acquire_lease(name, worker_id, lease_duration)
             .await?
         else {
-            return Ok(crate::LeaseOutcome::Busy);
+            return Ok(LeaseOutcome::Busy);
         };
 
         let result = body(start_position).await;
 
         let _ = self.checkpoint_store.release_lease(name, worker_id).await;
 
-        result.map(|()| crate::LeaseOutcome::Completed)
+        result.map(|()| LeaseOutcome::Completed)
     }
 
-    /// Rebuilds a [`PostgresProjection`](crate::PostgresProjection) from genesis
+    /// Rebuilds a [`PostgresProjection`](PostgresProjection) from genesis
     /// under a lease.
     ///
     /// A rebuild wipes the projection's read-model, rewinds its checkpoint to
@@ -408,14 +401,14 @@ impl PostgresBackend {
     ///
     /// 1. Acquire the lease for `P::NAME` on behalf of `worker_id`. If another
     ///    worker holds an active lease, return
-    ///    [`LeaseOutcome::Busy`](crate::LeaseOutcome::Busy) **without touching**
+    ///    [`LeaseOutcome::Busy`](LeaseOutcome::Busy) **without touching**
     ///    the read-model or the checkpoint — a concurrent worker is still
     ///    running against the live model, so resetting it would corrupt its
     ///    view.
     /// 2. In a single transaction, call
-    ///    [`reset`](crate::PostgresProjection::reset) to clear the read-model
+    ///    [`reset`](PostgresProjection::reset) to clear the read-model
     ///    and rewind the checkpoint to
-    ///    [`Position::start`](event_sauce_core::Position::start). Both commit or
+    ///    [`Position::start`](Position::start). Both commit or
     ///    roll back together, so a rebuild never leaves a wiped table paired
     ///    with a stale checkpoint.
     /// 3. Re-drain from genesis using the same fenced per-event loop as
@@ -423,7 +416,7 @@ impl PostgresBackend {
     /// 4. Release the lease on exit, including on error.
     ///
     /// The projection **must** override
-    /// [`reset`](crate::PostgresProjection::reset); the default implementation
+    /// [`reset`](PostgresProjection::reset); the default implementation
     /// returns an error so a projection that has not opted in fails loudly here
     /// rather than being silently half-rebuilt.
     ///
@@ -451,16 +444,16 @@ impl PostgresBackend {
     /// # Errors
     ///
     /// Returns an error if the projection does not override
-    /// [`reset`](crate::PostgresProjection::reset), if the reset/checkpoint
+    /// [`reset`](PostgresProjection::reset), if the reset/checkpoint
     /// transaction fails, or for any reason
     /// [`run_leased_projection`](Self::run_leased_projection) would error during
     /// the re-drain.
-    pub async fn rebuild<P: crate::PostgresProjection>(
+    pub async fn rebuild<P: PostgresProjection>(
         &self,
         projection: &mut P,
         worker_id: &str,
-        lease_duration: std::time::Duration,
-    ) -> event_sauce_core::Result<crate::LeaseOutcome> {
+        lease_duration: Duration,
+    ) -> Result<LeaseOutcome> {
         self.with_lease(P::NAME, worker_id, lease_duration, |_start_position| {
             self.rebuild_under_lease(projection, worker_id, lease_duration)
         })
@@ -470,37 +463,30 @@ impl PostgresBackend {
     /// Performs the atomic reset (read-model wipe + checkpoint rewind) and the
     /// subsequent fenced re-drain. The caller already holds the lease and is
     /// responsible for releasing it.
-    async fn rebuild_under_lease<P: crate::PostgresProjection>(
+    async fn rebuild_under_lease<P: PostgresProjection>(
         &self,
         projection: &mut P,
         worker_id: &str,
-        lease_duration: std::time::Duration,
-    ) -> event_sauce_core::Result<()> {
+        lease_duration: Duration,
+    ) -> Result<()> {
         // Atomic reset: clear the read-model and rewind the checkpoint to
         // genesis in one transaction. The rewind is a backward move, so it uses
         // the UNFENCED save (the fenced save would reject it) — safe because we
         // hold the lease and this is a deliberate rewind by the owner.
-        let mut tx = self.pool.begin().await.map_err(|e| {
-            event_sauce_core::Error::backend("Failed to start rebuild reset transaction", e)
-        })?;
+        let mut tx = self.begin("rebuild reset").await?;
 
         projection.reset(&mut tx).await?;
         self.checkpoint_store
-            .save_checkpoint_tx(&mut tx, P::NAME, event_sauce_core::Position::start())
+            .save_checkpoint_tx(&mut tx, P::NAME, Position::start())
             .await?;
 
-        tx.commit().await.map_err(|e| {
-            event_sauce_core::Error::backend("Failed to commit rebuild reset transaction", e)
-        })?;
+        tx.commit()
+            .await
+            .map_err(|e| Error::backend("Failed to commit rebuild reset transaction", e))?;
 
         // Re-drain from genesis with the usual fenced per-event loop.
-        self.run_under_lease(
-            projection,
-            worker_id,
-            lease_duration,
-            event_sauce_core::Position::start(),
-        )
-        .await
+        self.run_under_lease(projection, worker_id, lease_duration, Position::start())
+            .await
     }
 
     /// Reads new events from the log and fans them out into the policy
@@ -533,7 +519,7 @@ impl PostgresBackend {
     /// This call acquires the lease of every policy in `policies` and
     /// dispatches only the ones it successfully holds — another worker
     /// already dispatching a subset of them does not block the rest.
-    /// Returns [`LeaseOutcome::Busy`](crate::LeaseOutcome::Busy) only if
+    /// Returns [`LeaseOutcome::Busy`](LeaseOutcome::Busy) only if
     /// none of them could be held.
     ///
     /// Fan-out and every held policy's checkpoint advance run inside one
@@ -556,10 +542,8 @@ impl PostgresBackend {
         outbox: &crate::PostgresPolicyOutbox,
         worker_id: &str,
         policies: &[PolicyDispatch],
-        lease_duration: std::time::Duration,
-    ) -> event_sauce_core::Result<crate::LeaseOutcome> {
-        use event_sauce_core::CheckpointStore;
-
+        lease_duration: Duration,
+    ) -> Result<LeaseOutcome> {
         let grouped = group_policies_by_name(policies);
         let mut held = Vec::with_capacity(grouped.len());
 
@@ -587,12 +571,10 @@ impl PostgresBackend {
         &self,
         outbox: &crate::PostgresPolicyOutbox,
         worker_id: &str,
-        grouped: Vec<(&'p str, Vec<&'p event_sauce_core::EventFilter>)>,
-        lease_duration: std::time::Duration,
+        grouped: Vec<(&'p str, Vec<&'p EventFilter>)>,
+        lease_duration: Duration,
         held: &mut Vec<HeldPolicy<'p>>,
-    ) -> event_sauce_core::Result<crate::LeaseOutcome> {
-        use event_sauce_core::CheckpointStore;
-
+    ) -> Result<LeaseOutcome> {
         for (name, filters) in grouped {
             let checkpoint_name = policy_checkpoint_name(name);
             self.checkpoint_store
@@ -613,12 +595,12 @@ impl PostgresBackend {
         }
 
         if held.is_empty() {
-            return Ok(crate::LeaseOutcome::Busy);
+            return Ok(LeaseOutcome::Busy);
         }
 
         self.dispatch_under_lease(outbox, worker_id, held, lease_duration)
             .await
-            .map(|()| crate::LeaseOutcome::Completed)
+            .map(|()| LeaseOutcome::Completed)
     }
 
     /// Drains events for every policy in `held`, one transaction per
@@ -636,7 +618,7 @@ impl PostgresBackend {
     ///
     /// If any held policy's fenced write is rejected (its lease was lost
     /// mid-batch), the whole batch rolls back and this returns
-    /// [`Error::LeaseLost`](event_sauce_core::Error::LeaseLost) for that
+    /// [`Error::LeaseLost`](Error::LeaseLost) for that
     /// policy — re-fetching from the last successfully committed batch's
     /// position is always idempotent (`enqueue_tx` is `ON CONFLICT DO
     /// NOTHING`).
@@ -645,10 +627,8 @@ impl PostgresBackend {
         outbox: &crate::PostgresPolicyOutbox,
         worker_id: &str,
         held: &mut [HeldPolicy<'_>],
-        lease_duration: std::time::Duration,
-    ) -> event_sauce_core::Result<()> {
-        use event_sauce_core::CheckpointStore;
-
+        lease_duration: Duration,
+    ) -> Result<()> {
         let mut current_position = held
             .iter()
             .map(|held_policy| held_policy.position)
@@ -675,9 +655,7 @@ impl PostgresBackend {
                 last_renew = std::time::Instant::now();
             }
 
-            let mut tx = self.pool.begin().await.map_err(|e| {
-                event_sauce_core::Error::backend("Failed to start dispatcher transaction", e)
-            })?;
+            let mut tx = self.begin("dispatcher").await?;
 
             let mut batch_position = current_position;
             for entry in &batch {
@@ -701,7 +679,7 @@ impl PostgresBackend {
                 }
             }
 
-            let advancing: Vec<(&str, event_sauce_core::Position)> = held
+            let advancing: Vec<(&str, Position)> = held
                 .iter()
                 .filter(|held_policy| batch_position > held_policy.position)
                 .map(|held_policy| (held_policy.checkpoint_name.as_str(), batch_position))
@@ -724,15 +702,13 @@ impl PostgresBackend {
     /// doesn't re-fetch it — unfenced would let a stalled worker move the
     /// checkpoint after losing the lease, the same risk the per-event
     /// fenced save guards against.
-    async fn run_under_lease<P: crate::PostgresProjection>(
+    async fn run_under_lease<P: PostgresProjection>(
         &self,
         projection: &mut P,
         worker_id: &str,
-        lease_duration: std::time::Duration,
-        start_position: event_sauce_core::Position,
-    ) -> event_sauce_core::Result<()> {
-        use event_sauce_core::CheckpointStore;
-
+        lease_duration: Duration,
+        start_position: Position,
+    ) -> Result<()> {
         let filter = P::event_filter();
         let mut current_position = start_position;
         let renew_interval = lease_duration / 3;
@@ -762,9 +738,7 @@ impl PostgresBackend {
                     continue;
                 }
 
-                let mut tx = self.pool.begin().await.map_err(|e| {
-                    event_sauce_core::Error::backend("Failed to start projection transaction", e)
-                })?;
+                let mut tx = self.begin("projection").await?;
 
                 projection.handle(&entry.envelope, &mut tx).await?;
                 self.commit_fenced(tx, worker_id, &[(P::NAME, current_position)])
@@ -773,9 +747,7 @@ impl PostgresBackend {
             }
 
             if checkpointed_position != current_position {
-                let tx = self.pool.begin().await.map_err(|e| {
-                    event_sauce_core::Error::backend("Failed to start projection transaction", e)
-                })?;
+                let tx = self.begin("projection").await?;
                 self.commit_fenced(tx, worker_id, &[(P::NAME, current_position)])
                     .await?;
             }
@@ -784,11 +756,20 @@ impl PostgresBackend {
         Ok(())
     }
 
+    /// Starts a transaction on the pool, mapping a failure to
+    /// `Failed to start {what} transaction`.
+    async fn begin(&self, what: &str) -> Result<sqlx::Transaction<'_, sqlx::Postgres>> {
+        self.pool
+            .begin()
+            .await
+            .map_err(|e| Error::backend(format!("Failed to start {what} transaction"), e))
+    }
+
     /// Applies every `(name, position)` fenced checkpoint write inside `tx`;
     /// if all land, commits and returns `Ok(())`. If any is rejected by the
     /// fence — the caller no longer holds that lease, or the position does
     /// not strictly advance — rolls back the whole transaction and returns
-    /// [`Error::LeaseLost`](event_sauce_core::Error::LeaseLost) for that
+    /// [`Error::LeaseLost`](Error::LeaseLost) for that
     /// name, so a partially-applied batch never lands.
     ///
     /// Shared by every fenced commit site: the per-event and tail advances
@@ -799,25 +780,24 @@ impl PostgresBackend {
         &self,
         mut tx: sqlx::Transaction<'_, sqlx::Postgres>,
         worker_id: &str,
-        checkpoints: &[(&str, event_sauce_core::Position)],
-    ) -> event_sauce_core::Result<()> {
+        checkpoints: &[(&str, Position)],
+    ) -> Result<()> {
         for (name, position) in checkpoints {
             let landed = self
                 .checkpoint_store
                 .save_checkpoint_fenced_tx(&mut tx, name, worker_id, *position)
                 .await?;
             if !landed {
-                tx.rollback().await.map_err(|e| {
-                    event_sauce_core::Error::backend("Failed to roll back transaction", e)
-                })?;
-                return Err(event_sauce_core::Error::lease_lost(*name, worker_id));
+                tx.rollback()
+                    .await
+                    .map_err(|e| Error::backend("Failed to roll back transaction", e))?;
+                return Err(Error::lease_lost(*name, worker_id));
             }
         }
 
         tx.commit()
             .await
-            .map_err(|e| event_sauce_core::Error::backend("Failed to commit transaction", e))?;
-        Ok(())
+            .map_err(|e| Error::backend("Failed to commit transaction", e))
     }
 }
 
@@ -850,10 +830,8 @@ fn policy_checkpoint_name(policy_name: &str) -> String {
 /// downstream handler through two `EventFilter`s) collapses into one entry
 /// whose event matches the union of its filters — the same outbox row and
 /// checkpoint a caller would get by registering it once with an `Or` filter.
-fn group_policies_by_name(
-    policies: &[PolicyDispatch],
-) -> Vec<(&str, Vec<&event_sauce_core::EventFilter>)> {
-    let mut grouped: Vec<(&str, Vec<&event_sauce_core::EventFilter>)> = Vec::new();
+fn group_policies_by_name(policies: &[PolicyDispatch]) -> Vec<(&str, Vec<&EventFilter>)> {
+    let mut grouped: Vec<(&str, Vec<&EventFilter>)> = Vec::new();
     for policy in policies {
         match grouped.iter_mut().find(|(name, _)| *name == policy.name) {
             Some((_, filters)) => filters.push(&policy.filter),
@@ -868,9 +846,9 @@ fn group_policies_by_name(
 /// the position that checkpoint held when the lease was acquired.
 struct HeldPolicy<'a> {
     name: &'a str,
-    filters: Vec<&'a event_sauce_core::EventFilter>,
+    filters: Vec<&'a EventFilter>,
     checkpoint_name: String,
-    position: event_sauce_core::Position,
+    position: Position,
 }
 
 /// One entry in the policy registry passed to
@@ -888,13 +866,13 @@ pub struct PolicyDispatch {
     /// into one checkpoint whose match is the union of those filters.
     pub name: String,
     /// Which events trigger an outbox row for this policy.
-    pub filter: event_sauce_core::EventFilter,
+    pub filter: EventFilter,
 }
 
 impl PolicyDispatch {
     /// Convenience constructor.
     #[must_use]
-    pub fn new(name: impl Into<String>, filter: event_sauce_core::EventFilter) -> Self {
+    pub fn new(name: impl Into<String>, filter: EventFilter) -> Self {
         Self {
             name: name.into(),
             filter,
@@ -1003,7 +981,7 @@ impl PostgresBackendBuilder {
     ///
     /// Returns an error if neither `database_url` nor `pool` has been set, or
     /// if the database connection fails or migrations cannot be applied.
-    pub async fn build(self) -> event_sauce_core::Result<PostgresBackend> {
+    pub async fn build(self) -> Result<PostgresBackend> {
         let schema = self.schema.unwrap_or_else(|| "event_sauce".to_string());
         let snapshot_config = self
             .snapshot_config
@@ -1013,9 +991,9 @@ impl PostgresBackendBuilder {
             (Some(pool), _) => pool,
             (None, Some(url)) => PgPool::connect(&url)
                 .await
-                .map_err(|e| event_sauce_core::Error::backend("Failed to connect", e))?,
+                .map_err(|e| Error::backend("Failed to connect", e))?,
             (None, None) => {
-                return Err(event_sauce_core::Error::invalid_state(
+                return Err(Error::invalid_state(
                     "either database_url or pool is required",
                 ));
             }
@@ -1033,9 +1011,7 @@ impl PostgresBackendBuilder {
             .pool(pool.clone())
             .schema(&schema)
             .snapshot_config(snapshot_config)
-            .checkpoint_store(
-                Arc::clone(&checkpoint_store) as Arc<dyn event_sauce_core::CheckpointStore>
-            );
+            .checkpoint_store(Arc::clone(&checkpoint_store) as Arc<dyn CheckpointStore>);
 
         if let Some(key_store) = self.crypto_key_store {
             event_store_builder = event_store_builder.crypto_key_store(key_store);
@@ -1064,10 +1040,7 @@ impl Default for PostgresBackendBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use event_sauce_core::{
-        AggregateVersion, CheckpointStore, EventEnvelope, EventStore, EventVersion, Position,
-        StreamId,
-    };
+    use event_sauce_core::{AggregateVersion, EventEnvelope, EventStore, EventVersion, StreamId};
     use futures::StreamExt;
     use serde_json::json;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -1351,7 +1324,7 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl crate::PostgresProjection for CountingProjection {
+    impl PostgresProjection for CountingProjection {
         const NAME: &'static str = "CountingProjection";
 
         fn handled_event_types() -> Option<Vec<&'static str>> {
@@ -1362,17 +1335,17 @@ mod tests {
             &mut self,
             _envelope: &EventEnvelope,
             tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-        ) -> event_sauce_core::Result<()> {
+        ) -> Result<()> {
             self.seen += 1;
             if let Some(limit) = self.fail_after {
                 if self.seen > limit {
-                    return Err(event_sauce_core::Error::custom("forced failure"));
+                    return Err(Error::custom("forced failure"));
                 }
             }
             sqlx::query("UPDATE event_sauce.counting_projection SET n = n + 1 WHERE id = 1")
                 .execute(&mut **tx)
                 .await
-                .map_err(|e| event_sauce_core::Error::custom(format!("update failed: {e}")))?;
+                .map_err(|e| Error::custom(format!("update failed: {e}")))?;
             Ok(())
         }
     }
@@ -1415,7 +1388,7 @@ mod tests {
 
         let checkpoint = backend
             .checkpoint_store()
-            .load_checkpoint(<CountingProjection as crate::PostgresProjection>::NAME)
+            .load_checkpoint(<CountingProjection as PostgresProjection>::NAME)
             .await
             .unwrap();
         assert_eq!(checkpoint, Some(Position::new(3)));
@@ -1447,7 +1420,7 @@ mod tests {
 
         let checkpoint = backend
             .checkpoint_store()
-            .load_checkpoint(<CountingProjection as crate::PostgresProjection>::NAME)
+            .load_checkpoint(<CountingProjection as PostgresProjection>::NAME)
             .await
             .unwrap();
         assert_eq!(checkpoint, Some(Position::new(2)));
@@ -1530,7 +1503,7 @@ mod tests {
         );
         let checkpoint = backend
             .checkpoint_store()
-            .load_checkpoint(<CountingProjection as crate::PostgresProjection>::NAME)
+            .load_checkpoint(<CountingProjection as PostgresProjection>::NAME)
             .await
             .unwrap();
         assert_eq!(
@@ -1573,7 +1546,7 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl crate::PostgresProjection for RecordingProjection {
+    impl PostgresProjection for RecordingProjection {
         const NAME: &'static str = "RecordingProjection";
 
         fn handled_event_types() -> Option<Vec<&'static str>> {
@@ -1584,12 +1557,12 @@ mod tests {
             &mut self,
             envelope: &EventEnvelope,
             tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-        ) -> event_sauce_core::Result<()> {
+        ) -> Result<()> {
             sqlx::query("INSERT INTO event_sauce.recording_projection (event_id) VALUES ($1)")
                 .bind(envelope.id)
                 .execute(&mut **tx)
                 .await
-                .map_err(|e| event_sauce_core::Error::custom(format!("insert failed: {e}")))?;
+                .map_err(|e| Error::custom(format!("insert failed: {e}")))?;
             Ok(())
         }
     }
@@ -1699,7 +1672,7 @@ mod tests {
             });
 
             // Let the loser reach (and block on) its INSERT, then release it.
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            tokio::time::sleep(Duration::from_millis(200)).await;
             seeder.commit().await.unwrap();
 
             let result = loser.await.unwrap();
@@ -1760,14 +1733,10 @@ mod tests {
             seen: 0,
         };
         let outcome = backend
-            .run_leased_projection(
-                &mut projection,
-                "worker-1",
-                std::time::Duration::from_secs(30),
-            )
+            .run_leased_projection(&mut projection, "worker-1", Duration::from_secs(30))
             .await
             .unwrap();
-        assert_eq!(outcome, crate::LeaseOutcome::Completed);
+        assert_eq!(outcome, LeaseOutcome::Completed);
         assert_eq!(
             CountingProjection::read(backend.pool(), "event_sauce").await,
             3
@@ -1795,14 +1764,10 @@ mod tests {
             seen: 0,
         };
         let outcome = backend
-            .run_leased_projection(
-                &mut projection,
-                "worker-1",
-                std::time::Duration::from_secs(30),
-            )
+            .run_leased_projection(&mut projection, "worker-1", Duration::from_secs(30))
             .await
             .unwrap();
-        assert_eq!(outcome, crate::LeaseOutcome::Completed);
+        assert_eq!(outcome, LeaseOutcome::Completed);
         assert_eq!(
             CountingProjection::read(backend.pool(), "event_sauce").await,
             2
@@ -1810,7 +1775,7 @@ mod tests {
 
         let checkpoint = backend
             .checkpoint_store()
-            .load_checkpoint(<CountingProjection as crate::PostgresProjection>::NAME)
+            .load_checkpoint(<CountingProjection as PostgresProjection>::NAME)
             .await
             .unwrap();
         assert_eq!(
@@ -1830,9 +1795,9 @@ mod tests {
         backend
             .checkpoint_store()
             .try_acquire_lease(
-                <CountingProjection as crate::PostgresProjection>::NAME,
+                <CountingProjection as PostgresProjection>::NAME,
                 "worker-a",
-                std::time::Duration::from_secs(60),
+                Duration::from_secs(60),
             )
             .await
             .unwrap();
@@ -1843,14 +1808,10 @@ mod tests {
             seen: 0,
         };
         let outcome = backend
-            .run_leased_projection(
-                &mut projection,
-                "worker-b",
-                std::time::Duration::from_secs(30),
-            )
+            .run_leased_projection(&mut projection, "worker-b", Duration::from_secs(30))
             .await
             .unwrap();
-        assert_eq!(outcome, crate::LeaseOutcome::Busy);
+        assert_eq!(outcome, LeaseOutcome::Busy);
         // No work was done.
         assert_eq!(projection.seen, 0);
     }
@@ -1866,11 +1827,7 @@ mod tests {
             seen: 0,
         };
         backend
-            .run_leased_projection(
-                &mut projection,
-                "worker-a",
-                std::time::Duration::from_secs(30),
-            )
+            .run_leased_projection(&mut projection, "worker-a", Duration::from_secs(30))
             .await
             .unwrap();
 
@@ -1880,14 +1837,10 @@ mod tests {
             seen: 0,
         };
         let outcome = backend
-            .run_leased_projection(
-                &mut projection,
-                "worker-b",
-                std::time::Duration::from_secs(30),
-            )
+            .run_leased_projection(&mut projection, "worker-b", Duration::from_secs(30))
             .await
             .unwrap();
-        assert_eq!(outcome, crate::LeaseOutcome::Completed);
+        assert_eq!(outcome, LeaseOutcome::Completed);
     }
 
     #[tokio::test]
@@ -1907,11 +1860,7 @@ mod tests {
             seen: 0,
         };
         let result = backend
-            .run_leased_projection(
-                &mut projection,
-                "worker-a",
-                std::time::Duration::from_secs(30),
-            )
+            .run_leased_projection(&mut projection, "worker-a", Duration::from_secs(30))
             .await;
         assert!(result.is_err());
 
@@ -1919,9 +1868,9 @@ mod tests {
         let acquired = backend
             .checkpoint_store()
             .try_acquire_lease(
-                <CountingProjection as crate::PostgresProjection>::NAME,
+                <CountingProjection as PostgresProjection>::NAME,
                 "worker-b",
-                std::time::Duration::from_secs(30),
+                Duration::from_secs(30),
             )
             .await
             .unwrap();
@@ -1946,19 +1895,19 @@ mod tests {
         let sticky = backend.run_sticky_projection(
             &mut projection,
             "worker-a",
-            std::time::Duration::from_secs(30),
-            std::time::Duration::from_millis(30),
+            Duration::from_secs(30),
+            Duration::from_millis(30),
             move || keep_going_for_runner.load(Ordering::SeqCst),
         );
 
         let probe = async {
-            tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+            tokio::time::sleep(Duration::from_millis(60)).await;
             let still_busy = backend
                 .checkpoint_store()
                 .try_acquire_lease(
-                    <CountingProjection as crate::PostgresProjection>::NAME,
+                    <CountingProjection as PostgresProjection>::NAME,
                     "worker-b",
-                    std::time::Duration::from_secs(30),
+                    Duration::from_secs(30),
                 )
                 .await
                 .unwrap();
@@ -1971,14 +1920,14 @@ mod tests {
         };
 
         let (outcome, ()) = tokio::join!(sticky, probe);
-        assert_eq!(outcome.unwrap(), crate::LeaseOutcome::Completed);
+        assert_eq!(outcome.unwrap(), LeaseOutcome::Completed);
 
         let now_free = backend
             .checkpoint_store()
             .try_acquire_lease(
-                <CountingProjection as crate::PostgresProjection>::NAME,
+                <CountingProjection as PostgresProjection>::NAME,
                 "worker-b",
-                std::time::Duration::from_secs(30),
+                Duration::from_secs(30),
             )
             .await
             .unwrap();
@@ -2003,23 +1952,23 @@ mod tests {
             .run_sticky_projection(
                 &mut projection,
                 "worker-a",
-                std::time::Duration::from_secs(30),
-                std::time::Duration::from_secs(11),
+                Duration::from_secs(30),
+                Duration::from_secs(11),
                 || true,
             )
             .await
             .unwrap_err();
         assert!(
-            matches!(err, event_sauce_core::Error::InvalidState(_)),
+            matches!(err, Error::InvalidState(_)),
             "idle_interval >= lease_duration / 3 must be rejected up front: {err:?}"
         );
 
         let still_free = backend
             .checkpoint_store()
             .try_acquire_lease(
-                <CountingProjection as crate::PostgresProjection>::NAME,
+                <CountingProjection as PostgresProjection>::NAME,
                 "worker-b",
-                std::time::Duration::from_secs(30),
+                Duration::from_secs(30),
             )
             .await
             .unwrap();
@@ -2085,7 +2034,7 @@ mod tests {
 
         let policies = vec![PolicyDispatch::new(
             "send-order-confirmation",
-            event_sauce_core::EventFilter::by_aggregate_type("Order"),
+            EventFilter::by_aggregate_type("Order"),
         )];
 
         let outcome = backend
@@ -2093,11 +2042,11 @@ mod tests {
                 &outbox,
                 "dispatcher-1",
                 &policies,
-                std::time::Duration::from_secs(30),
+                Duration::from_secs(30),
             )
             .await
             .unwrap();
-        assert_eq!(outcome, crate::LeaseOutcome::Completed);
+        assert_eq!(outcome, LeaseOutcome::Completed);
 
         // Three Order events should be in the outbox; two User events should not.
         assert_eq!(
@@ -2125,14 +2074,14 @@ mod tests {
 
         let policies = vec![PolicyDispatch::new(
             "send-order-confirmation",
-            event_sauce_core::EventFilter::by_aggregate_type("Order"),
+            EventFilter::by_aggregate_type("Order"),
         )];
         backend
             .dispatch_policies_to_outbox(
                 &outbox,
                 "dispatcher-1",
                 &policies,
-                std::time::Duration::from_secs(30),
+                Duration::from_secs(30),
             )
             .await
             .unwrap();
@@ -2192,14 +2141,14 @@ mod tests {
 
         let policies = vec![PolicyDispatch::new(
             "send-order-confirmation",
-            event_sauce_core::EventFilter::by_aggregate_type("Order"),
+            EventFilter::by_aggregate_type("Order"),
         )];
         backend
             .dispatch_policies_to_outbox(
                 &outbox,
                 "dispatcher-1",
                 &policies,
-                std::time::Duration::from_secs(30),
+                Duration::from_secs(30),
             )
             .await
             .unwrap();
@@ -2214,7 +2163,7 @@ mod tests {
                         "send-order-confirmation",
                         "drainer-a",
                         100,
-                        std::time::Duration::from_secs(30),
+                        Duration::from_secs(30),
                     )
                     .await
             }),
@@ -2224,7 +2173,7 @@ mod tests {
                         "send-order-confirmation",
                         "drainer-b",
                         100,
-                        std::time::Duration::from_secs(30),
+                        Duration::from_secs(30),
                     )
                     .await
             })
@@ -2301,14 +2250,14 @@ mod tests {
 
         let order_only = vec![PolicyDispatch::new(
             "send-order-confirmation",
-            event_sauce_core::EventFilter::by_aggregate_type("Order"),
+            EventFilter::by_aggregate_type("Order"),
         )];
         backend
             .dispatch_policies_to_outbox(
                 &outbox,
                 "old-deploy",
                 &order_only,
-                std::time::Duration::from_secs(30),
+                Duration::from_secs(30),
             )
             .await
             .unwrap();
@@ -2323,19 +2272,16 @@ mod tests {
         let order_and_user = vec![
             PolicyDispatch::new(
                 "send-order-confirmation",
-                event_sauce_core::EventFilter::by_aggregate_type("Order"),
+                EventFilter::by_aggregate_type("Order"),
             ),
-            PolicyDispatch::new(
-                "send-welcome-email",
-                event_sauce_core::EventFilter::by_aggregate_type("User"),
-            ),
+            PolicyDispatch::new("send-welcome-email", EventFilter::by_aggregate_type("User")),
         ];
         backend
             .dispatch_policies_to_outbox(
                 &outbox,
                 "new-deploy",
                 &order_and_user,
-                std::time::Duration::from_secs(30),
+                Duration::from_secs(30),
             )
             .await
             .unwrap();
@@ -2387,15 +2333,10 @@ mod tests {
 
         let order_only = vec![PolicyDispatch::new(
             "send-order-confirmation",
-            event_sauce_core::EventFilter::by_aggregate_type("Order"),
+            EventFilter::by_aggregate_type("Order"),
         )];
         backend
-            .dispatch_policies_to_outbox(
-                &outbox,
-                "w-1",
-                &order_only,
-                std::time::Duration::from_secs(30),
-            )
+            .dispatch_policies_to_outbox(&outbox, "w-1", &order_only, Duration::from_secs(30))
             .await
             .unwrap();
 
@@ -2404,7 +2345,7 @@ mod tests {
                 "send-order-confirmation",
                 "w-1",
                 10,
-                std::time::Duration::from_secs(30),
+                Duration::from_secs(30),
             )
             .await
             .unwrap();
@@ -2415,28 +2356,17 @@ mod tests {
                 crate::AckOutcome::Acked
             );
         }
-        outbox
-            .prune_done(std::time::Duration::ZERO, 100)
-            .await
-            .unwrap();
+        outbox.prune_done(Duration::ZERO, 100).await.unwrap();
 
         let order_and_user = vec![
             PolicyDispatch::new(
                 "send-order-confirmation",
-                event_sauce_core::EventFilter::by_aggregate_type("Order"),
+                EventFilter::by_aggregate_type("Order"),
             ),
-            PolicyDispatch::new(
-                "send-welcome-email",
-                event_sauce_core::EventFilter::by_aggregate_type("User"),
-            ),
+            PolicyDispatch::new("send-welcome-email", EventFilter::by_aggregate_type("User")),
         ];
         backend
-            .dispatch_policies_to_outbox(
-                &outbox,
-                "w-1",
-                &order_and_user,
-                std::time::Duration::from_secs(30),
-            )
+            .dispatch_policies_to_outbox(&outbox, "w-1", &order_and_user, Duration::from_secs(30))
             .await
             .unwrap();
 
@@ -2459,8 +2389,6 @@ mod tests {
     /// past all 3 events.
     #[tokio::test]
     async fn test_dispatch_seeds_new_policy_checkpoint_from_legacy_shared_row() {
-        use event_sauce_core::CheckpointStore;
-
         let (url, _container) = start_test_db().await;
         let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
         let outbox = crate::PostgresPolicyOutbox::new(backend.pool().clone(), "event_sauce");
@@ -2479,15 +2407,10 @@ mod tests {
 
         let policies = vec![PolicyDispatch::new(
             "send-order-confirmation",
-            event_sauce_core::EventFilter::by_aggregate_type("Order"),
+            EventFilter::by_aggregate_type("Order"),
         )];
         backend
-            .dispatch_policies_to_outbox(
-                &outbox,
-                "w-1",
-                &policies,
-                std::time::Duration::from_secs(30),
-            )
+            .dispatch_policies_to_outbox(&outbox, "w-1", &policies, Duration::from_secs(30))
             .await
             .unwrap();
 
@@ -2520,26 +2443,15 @@ mod tests {
         append_typed(&store, "Invoice".to_string(), "Invoice.Created".to_string()).await;
 
         let policies = vec![
-            PolicyDispatch::new(
-                "notify",
-                event_sauce_core::EventFilter::by_aggregate_type("Order"),
-            ),
-            PolicyDispatch::new(
-                "notify",
-                event_sauce_core::EventFilter::by_aggregate_type("Invoice"),
-            ),
+            PolicyDispatch::new("notify", EventFilter::by_aggregate_type("Order")),
+            PolicyDispatch::new("notify", EventFilter::by_aggregate_type("Invoice")),
         ];
 
         let outcome = backend
-            .dispatch_policies_to_outbox(
-                &outbox,
-                "w-1",
-                &policies,
-                std::time::Duration::from_secs(30),
-            )
+            .dispatch_policies_to_outbox(&outbox, "w-1", &policies, Duration::from_secs(30))
             .await
             .unwrap();
-        assert_eq!(outcome, crate::LeaseOutcome::Completed);
+        assert_eq!(outcome, LeaseOutcome::Completed);
         assert_eq!(
             outbox.pending_count("notify").await.unwrap(),
             2,
@@ -2555,8 +2467,6 @@ mod tests {
     /// must be free again for another worker to acquire.
     #[tokio::test]
     async fn test_dispatch_runs_only_the_policies_whose_lease_it_holds() {
-        use event_sauce_core::CheckpointStore;
-
         let (url, _container) = start_test_db().await;
         let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
         let outbox = crate::PostgresPolicyOutbox::new(backend.pool().clone(), "event_sauce");
@@ -2569,35 +2479,20 @@ mod tests {
         let checkpoint_b = policy_checkpoint_name("policy-b");
         backend
             .checkpoint_store()
-            .try_acquire_lease(
-                &checkpoint_b,
-                "worker-b",
-                std::time::Duration::from_secs(30),
-            )
+            .try_acquire_lease(&checkpoint_b, "worker-b", Duration::from_secs(30))
             .await
             .unwrap();
 
         let policies = vec![
-            PolicyDispatch::new(
-                "policy-a",
-                event_sauce_core::EventFilter::by_aggregate_type("Order"),
-            ),
-            PolicyDispatch::new(
-                "policy-b",
-                event_sauce_core::EventFilter::by_aggregate_type("User"),
-            ),
+            PolicyDispatch::new("policy-a", EventFilter::by_aggregate_type("Order")),
+            PolicyDispatch::new("policy-b", EventFilter::by_aggregate_type("User")),
         ];
         let outcome = backend
-            .dispatch_policies_to_outbox(
-                &outbox,
-                "worker-a",
-                &policies,
-                std::time::Duration::from_secs(30),
-            )
+            .dispatch_policies_to_outbox(&outbox, "worker-a", &policies, Duration::from_secs(30))
             .await
             .unwrap();
 
-        assert_eq!(outcome, crate::LeaseOutcome::Completed);
+        assert_eq!(outcome, LeaseOutcome::Completed);
         assert_eq!(
             outbox.pending_count("policy-a").await.unwrap(),
             1,
@@ -2614,7 +2509,7 @@ mod tests {
                 .load_checkpoint(&checkpoint_b)
                 .await
                 .unwrap(),
-            Some(event_sauce_core::Position::start()),
+            Some(Position::start()),
             "a policy left undispatched must not have its checkpoint moved \
              past the position it held when worker-b acquired the lease"
         );
@@ -2622,11 +2517,7 @@ mod tests {
         let checkpoint_a = policy_checkpoint_name("policy-a");
         let reacquired = backend
             .checkpoint_store()
-            .try_acquire_lease(
-                &checkpoint_a,
-                "worker-c",
-                std::time::Duration::from_secs(30),
-            )
+            .try_acquire_lease(&checkpoint_a, "worker-c", Duration::from_secs(30))
             .await
             .unwrap();
         assert!(
@@ -2650,7 +2541,7 @@ mod tests {
 
         let policies = vec![PolicyDispatch::new(
             "policy-a",
-            event_sauce_core::EventFilter::by_aggregate_type("Order"),
+            EventFilter::by_aggregate_type("Order"),
         )];
         for policy in &policies {
             backend
@@ -2658,23 +2549,18 @@ mod tests {
                 .try_acquire_lease(
                     &policy_checkpoint_name(&policy.name),
                     "worker-b",
-                    std::time::Duration::from_secs(30),
+                    Duration::from_secs(30),
                 )
                 .await
                 .unwrap();
         }
 
         let outcome = backend
-            .dispatch_policies_to_outbox(
-                &outbox,
-                "worker-a",
-                &policies,
-                std::time::Duration::from_secs(30),
-            )
+            .dispatch_policies_to_outbox(&outbox, "worker-a", &policies, Duration::from_secs(30))
             .await
             .unwrap();
 
-        assert_eq!(outcome, crate::LeaseOutcome::Busy);
+        assert_eq!(outcome, LeaseOutcome::Busy);
         assert_eq!(outbox.pending_count("policy-a").await.unwrap(), 0);
     }
 
@@ -2684,8 +2570,6 @@ mod tests {
     /// caller has no `held` list of its own to release from.
     #[tokio::test]
     async fn test_dispatch_error_while_acquiring_releases_earlier_leases() {
-        use event_sauce_core::CheckpointStore;
-
         let (url, _container) = start_test_db().await;
         let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
         let outbox = crate::PostgresPolicyOutbox::new(backend.pool().clone(), "event_sauce");
@@ -2716,22 +2600,11 @@ mod tests {
         .unwrap();
 
         let policies = vec![
-            PolicyDispatch::new(
-                "policy-a",
-                event_sauce_core::EventFilter::by_aggregate_type("Order"),
-            ),
-            PolicyDispatch::new(
-                "policy-b",
-                event_sauce_core::EventFilter::by_aggregate_type("User"),
-            ),
+            PolicyDispatch::new("policy-a", EventFilter::by_aggregate_type("Order")),
+            PolicyDispatch::new("policy-b", EventFilter::by_aggregate_type("User")),
         ];
         let err = backend
-            .dispatch_policies_to_outbox(
-                &outbox,
-                "worker-a",
-                &policies,
-                std::time::Duration::from_secs(30),
-            )
+            .dispatch_policies_to_outbox(&outbox, "worker-a", &policies, Duration::from_secs(30))
             .await
             .unwrap_err();
         assert!(
@@ -2742,11 +2615,7 @@ mod tests {
         let checkpoint_a = policy_checkpoint_name("policy-a");
         let reacquired = backend
             .checkpoint_store()
-            .try_acquire_lease(
-                &checkpoint_a,
-                "worker-c",
-                std::time::Duration::from_secs(30),
-            )
+            .try_acquire_lease(&checkpoint_a, "worker-c", Duration::from_secs(30))
             .await
             .unwrap();
         assert!(
@@ -2763,8 +2632,6 @@ mod tests {
     /// lands, not just the checkpoint whose fence was rejected.
     #[tokio::test]
     async fn test_commit_fenced_rolls_back_the_whole_transaction_on_one_rejection() {
-        use event_sauce_core::CheckpointStore;
-
         let (url, _container) = start_test_db().await;
         let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
         let outbox = crate::PostgresPolicyOutbox::new(backend.pool().clone(), "event_sauce");
@@ -2772,12 +2639,12 @@ mod tests {
 
         backend
             .checkpoint_store()
-            .try_acquire_lease("cp-held", "worker-a", std::time::Duration::from_secs(30))
+            .try_acquire_lease("cp-held", "worker-a", Duration::from_secs(30))
             .await
             .unwrap();
         backend
             .checkpoint_store()
-            .try_acquire_lease("cp-foreign", "worker-b", std::time::Duration::from_secs(30))
+            .try_acquire_lease("cp-foreign", "worker-b", Duration::from_secs(30))
             .await
             .unwrap();
 
@@ -2792,14 +2659,14 @@ mod tests {
                 tx,
                 "worker-a",
                 &[
-                    ("cp-held", event_sauce_core::Position::new(1)),
-                    ("cp-foreign", event_sauce_core::Position::new(1)),
+                    ("cp-held", Position::new(1)),
+                    ("cp-foreign", Position::new(1)),
                 ],
             )
             .await
             .unwrap_err();
         assert!(
-            matches!(err, event_sauce_core::Error::LeaseLost { .. }),
+            matches!(err, Error::LeaseLost { .. }),
             "the name worker-a does not hold must be reported as LeaseLost: {err:?}"
         );
 
@@ -2814,7 +2681,7 @@ mod tests {
                 .load_checkpoint("cp-held")
                 .await
                 .unwrap(),
-            Some(event_sauce_core::Position::start()),
+            Some(Position::start()),
             "even the name whose fence would have passed must not move, \
              since it shared the rolled-back transaction"
         );
@@ -2824,7 +2691,7 @@ mod tests {
                 .load_checkpoint("cp-foreign")
                 .await
                 .unwrap(),
-            Some(event_sauce_core::Position::start()),
+            Some(Position::start()),
             "the foreign checkpoint must not move either"
         );
     }
@@ -2838,8 +2705,6 @@ mod tests {
     /// checkpoint claims to have seen.
     #[tokio::test]
     async fn test_dispatch_lease_stolen_mid_batch_rolls_back_every_policy() {
-        use event_sauce_core::CheckpointStore;
-
         let (url, _container) = start_test_db().await;
         let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
         let outbox = crate::PostgresPolicyOutbox::new(backend.pool().clone(), "event_sauce");
@@ -2872,22 +2737,11 @@ mod tests {
         .unwrap();
 
         let policies = vec![
-            PolicyDispatch::new(
-                "policy-a",
-                event_sauce_core::EventFilter::by_aggregate_type("Order"),
-            ),
-            PolicyDispatch::new(
-                "policy-b",
-                event_sauce_core::EventFilter::by_aggregate_type("User"),
-            ),
+            PolicyDispatch::new("policy-a", EventFilter::by_aggregate_type("Order")),
+            PolicyDispatch::new("policy-b", EventFilter::by_aggregate_type("User")),
         ];
         let err = backend
-            .dispatch_policies_to_outbox(
-                &outbox,
-                "worker-a",
-                &policies,
-                std::time::Duration::from_secs(30),
-            )
+            .dispatch_policies_to_outbox(&outbox, "worker-a", &policies, Duration::from_secs(30))
             .await
             .unwrap_err();
         assert!(
@@ -2921,21 +2775,13 @@ mod tests {
         );
         assert!(backend
             .checkpoint_store()
-            .try_acquire_lease(
-                &checkpoint_a,
-                "worker-c",
-                std::time::Duration::from_secs(30)
-            )
+            .try_acquire_lease(&checkpoint_a, "worker-c", Duration::from_secs(30))
             .await
             .unwrap()
             .is_some());
         assert!(backend
             .checkpoint_store()
-            .try_acquire_lease(
-                &checkpoint_b,
-                "worker-c",
-                std::time::Duration::from_secs(30)
-            )
+            .try_acquire_lease(&checkpoint_b, "worker-c", Duration::from_secs(30))
             .await
             .unwrap()
             .is_some());
@@ -2947,7 +2793,7 @@ mod tests {
     struct StealingProjection;
 
     #[async_trait::async_trait]
-    impl crate::PostgresProjection for StealingProjection {
+    impl PostgresProjection for StealingProjection {
         const NAME: &'static str = "StealingProjection";
 
         fn handled_event_types() -> Option<Vec<&'static str>> {
@@ -2958,7 +2804,7 @@ mod tests {
             &mut self,
             _envelope: &EventEnvelope,
             tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-        ) -> event_sauce_core::Result<()> {
+        ) -> Result<()> {
             sqlx::query("UPDATE event_sauce.counting_projection SET n = n + 1 WHERE id = 1")
                 .execute(&mut **tx)
                 .await
@@ -2987,8 +2833,6 @@ mod tests {
     /// already-landed transaction) stands.
     #[tokio::test]
     async fn test_run_leased_projection_lease_stolen_mid_drain_rolls_back_the_stolen_event() {
-        use event_sauce_core::CheckpointStore;
-
         let (url, _container) = start_test_db().await;
         let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
         CountingProjection::migrate(backend.pool(), "event_sauce").await;
@@ -2999,11 +2843,7 @@ mod tests {
         }
 
         let err = backend
-            .run_leased_projection(
-                &mut StealingProjection,
-                "worker-a",
-                std::time::Duration::from_secs(30),
-            )
+            .run_leased_projection(&mut StealingProjection, "worker-a", Duration::from_secs(30))
             .await
             .unwrap_err();
         assert!(
@@ -3081,7 +2921,7 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl crate::PostgresProjection for RebuildProjection {
+    impl PostgresProjection for RebuildProjection {
         const NAME: &'static str = "RebuildProjection";
 
         fn handled_event_types() -> Option<Vec<&'static str>> {
@@ -3092,23 +2932,20 @@ mod tests {
             &mut self,
             envelope: &EventEnvelope,
             tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-        ) -> event_sauce_core::Result<()> {
+        ) -> Result<()> {
             sqlx::query("INSERT INTO event_sauce.rebuild_projection (event_id) VALUES ($1)")
                 .bind(envelope.id)
                 .execute(&mut **tx)
                 .await
-                .map_err(|e| event_sauce_core::Error::custom(format!("insert failed: {e}")))?;
+                .map_err(|e| Error::custom(format!("insert failed: {e}")))?;
             Ok(())
         }
 
-        async fn reset(
-            &mut self,
-            tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-        ) -> event_sauce_core::Result<()> {
+        async fn reset(&mut self, tx: &mut sqlx::Transaction<'_, sqlx::Postgres>) -> Result<()> {
             sqlx::query("TRUNCATE event_sauce.rebuild_projection")
                 .execute(&mut **tx)
                 .await
-                .map_err(|e| event_sauce_core::Error::custom(format!("truncate failed: {e}")))?;
+                .map_err(|e| Error::custom(format!("truncate failed: {e}")))?;
             Ok(())
         }
     }
@@ -3133,7 +2970,7 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl crate::PostgresProjection for NoResetProjection {
+    impl PostgresProjection for NoResetProjection {
         const NAME: &'static str = "NoResetProjection";
 
         fn handled_event_types() -> Option<Vec<&'static str>> {
@@ -3144,12 +2981,12 @@ mod tests {
             &mut self,
             envelope: &EventEnvelope,
             tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-        ) -> event_sauce_core::Result<()> {
+        ) -> Result<()> {
             sqlx::query("INSERT INTO event_sauce.no_reset_projection (event_id) VALUES ($1)")
                 .bind(envelope.id)
                 .execute(&mut **tx)
                 .await
-                .map_err(|e| event_sauce_core::Error::custom(format!("insert failed: {e}")))?;
+                .map_err(|e| Error::custom(format!("insert failed: {e}")))?;
             Ok(())
         }
         // intentionally no `reset()` override — uses the trait default.
@@ -3176,7 +3013,7 @@ mod tests {
         backend
             .checkpoint_store()
             .save_checkpoint(
-                <RebuildProjection as crate::PostgresProjection>::NAME,
+                <RebuildProjection as PostgresProjection>::NAME,
                 Position::new(999),
             )
             .await
@@ -3185,14 +3022,10 @@ mod tests {
         // Rebuild: lease-guarded, atomic table+checkpoint reset, re-drain from 0.
         let mut projection = RebuildProjection;
         let outcome = backend
-            .rebuild(
-                &mut projection,
-                "worker-1",
-                std::time::Duration::from_secs(30),
-            )
+            .rebuild(&mut projection, "worker-1", Duration::from_secs(30))
             .await
             .unwrap();
-        assert_eq!(outcome, crate::LeaseOutcome::Completed);
+        assert_eq!(outcome, LeaseOutcome::Completed);
 
         // (a) The stale row is gone and the table reflects a clean re-derivation:
         //     exactly one row per real event, no extras.
@@ -3217,7 +3050,7 @@ mod tests {
         // (b) The checkpoint was reset off 999 and advanced to the real max (3).
         let checkpoint = backend
             .checkpoint_store()
-            .load_checkpoint(<RebuildProjection as crate::PostgresProjection>::NAME)
+            .load_checkpoint(<RebuildProjection as PostgresProjection>::NAME)
             .await
             .unwrap();
         assert_eq!(
@@ -3243,7 +3076,7 @@ mod tests {
         backend
             .checkpoint_store()
             .save_checkpoint(
-                <RebuildProjection as crate::PostgresProjection>::NAME,
+                <RebuildProjection as PostgresProjection>::NAME,
                 Position::new(777),
             )
             .await
@@ -3253,25 +3086,21 @@ mod tests {
         backend
             .checkpoint_store()
             .try_acquire_lease(
-                <RebuildProjection as crate::PostgresProjection>::NAME,
+                <RebuildProjection as PostgresProjection>::NAME,
                 "other-worker",
-                std::time::Duration::from_secs(60),
+                Duration::from_secs(60),
             )
             .await
             .unwrap();
 
         let mut projection = RebuildProjection;
         let outcome = backend
-            .rebuild(
-                &mut projection,
-                "worker-1",
-                std::time::Duration::from_secs(30),
-            )
+            .rebuild(&mut projection, "worker-1", Duration::from_secs(30))
             .await
             .unwrap();
         assert_eq!(
             outcome,
-            crate::LeaseOutcome::Busy,
+            LeaseOutcome::Busy,
             "rebuild must report Busy when another worker holds the lease"
         );
 
@@ -3283,7 +3112,7 @@ mod tests {
         );
         let checkpoint = backend
             .checkpoint_store()
-            .load_checkpoint(<RebuildProjection as crate::PostgresProjection>::NAME)
+            .load_checkpoint(<RebuildProjection as PostgresProjection>::NAME)
             .await
             .unwrap();
         assert_eq!(
@@ -3306,11 +3135,7 @@ mod tests {
         // half-rebuilt: rebuild must fail loudly via the default `reset()`.
         let mut projection = NoResetProjection;
         let result = backend
-            .rebuild(
-                &mut projection,
-                "worker-1",
-                std::time::Duration::from_secs(30),
-            )
+            .rebuild(&mut projection, "worker-1", Duration::from_secs(30))
             .await;
         assert!(
             result.is_err(),
