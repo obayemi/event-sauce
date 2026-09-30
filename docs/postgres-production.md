@@ -487,7 +487,7 @@ use tracing::{info, warn};
 
 // 1. Event write latency
 let start = std::time::Instant::now();
-store.append(stream_id, events, version).await?;
+repo.save(&mut aggregate).await?;
 info!("Event append took: {:?}", start.elapsed());
 
 // 2. Event count per aggregate
