@@ -5,13 +5,15 @@
 //! error handling strategies, and the `policy!` macro.
 
 use event_sauce_core::{
-    command_handler, define_events, policy, Aggregate, AggregateError, AggregateRoot,
-    CheckpointStore, Entity, EntityId, EventEnvelope, EventFilter, EventSourcedRepository,
-    EventStore, OnError, OnRetryExhausted, PolicyContext, PolicyRunner, Repository, RetryConfig,
-    RetryLimit,
+    command_handler, define_events, policy, Aggregate, AggregateClaim, AggregateError,
+    AggregateRoot, AggregateVersion, CheckpointStore, Entity, EntityId, Error, EventEnvelope,
+    EventFilter, EventLogEntry, EventSourcedRepository, EventStore, OnError, OnRetryExhausted,
+    PolicyContext, PolicyRunner, Position, Repository, Result, RetryConfig, RetryLimit,
+    StreamCommit, StreamId,
 };
 use event_sauce_memory::{InMemoryCheckpointStore, InMemoryEventStore};
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 // ============================================================================
@@ -2049,68 +2051,54 @@ async fn test_skip_with_commit_before_fail_does_not_leak_events() {
 /// `ConcurrencyConflict`, simulating a flush that races another writer.
 struct FlakyBatchStore<S> {
     inner: Arc<S>,
-    fail_times: std::sync::atomic::AtomicUsize,
+    fail_times: AtomicUsize,
 }
 
 #[async_trait::async_trait]
 impl<S: EventStore + 'static> EventStore for FlakyBatchStore<S> {
     async fn append(
         &self,
-        stream_id: event_sauce_core::StreamId,
+        stream_id: StreamId,
         events: Vec<EventEnvelope>,
-        expected_version: event_sauce_core::AggregateVersion,
-        claims: Vec<event_sauce_core::AggregateClaim>,
+        expected_version: AggregateVersion,
+        claims: Vec<AggregateClaim>,
         clear_claims: bool,
-    ) -> event_sauce_core::Result<()> {
+    ) -> Result<()> {
         self.inner
             .append(stream_id, events, expected_version, claims, clear_claims)
             .await
     }
 
-    async fn append_batch(
-        &self,
-        commits: Vec<event_sauce_core::StreamCommit>,
-    ) -> event_sauce_core::Result<()> {
+    async fn append_batch(&self, commits: Vec<StreamCommit>) -> Result<()> {
         if self
             .fail_times
-            .fetch_update(
-                std::sync::atomic::Ordering::SeqCst,
-                std::sync::atomic::Ordering::SeqCst,
-                |n| (n > 0).then(|| n - 1),
-            )
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+                (n > 0).then(|| n - 1)
+            })
             .is_ok()
         {
-            let version = event_sauce_core::AggregateVersion::initial();
-            return Err(event_sauce_core::Error::concurrency_conflict(
-                version, version,
-            ));
+            let version = AggregateVersion::initial();
+            return Err(Error::concurrency_conflict(version, version));
         }
         self.inner.append_batch(commits).await
     }
 
     async fn load_stream(
         &self,
-        stream_id: event_sauce_core::StreamId,
-        from_version: event_sauce_core::AggregateVersion,
-    ) -> event_sauce_core::Result<
-        impl futures::Stream<Item = event_sauce_core::Result<EventEnvelope>> + Send,
-    > {
+        stream_id: StreamId,
+        from_version: AggregateVersion,
+    ) -> Result<impl futures::Stream<Item = Result<EventEnvelope>> + Send> {
         self.inner.load_stream(stream_id, from_version).await
     }
 
     async fn stream_all(
         &self,
-        from_position: event_sauce_core::Position,
-    ) -> event_sauce_core::Result<
-        impl futures::Stream<Item = event_sauce_core::Result<event_sauce_core::EventLogEntry>> + Send,
-    > {
+        from_position: Position,
+    ) -> Result<impl futures::Stream<Item = Result<EventLogEntry>> + Send> {
         self.inner.stream_all(from_position).await
     }
 
-    async fn get_version(
-        &self,
-        stream_id: event_sauce_core::StreamId,
-    ) -> event_sauce_core::Result<event_sauce_core::AggregateVersion> {
+    async fn get_version(&self, stream_id: StreamId) -> Result<AggregateVersion> {
         self.inner.get_version(stream_id).await
     }
 }
@@ -2130,10 +2118,10 @@ async fn test_on_error_retry_retries_a_conflicting_flush() {
 
     let flaky = Arc::new(FlakyBatchStore {
         inner: Arc::clone(&inner),
-        fail_times: std::sync::atomic::AtomicUsize::new(1),
+        fail_times: AtomicUsize::new(1),
     });
 
-    struct FlushConflictPolicy(Arc<std::sync::Mutex<usize>>);
+    struct FlushConflictPolicy(Arc<AtomicUsize>);
 
     #[async_trait::async_trait]
     impl<S: EventStore + 'static> event_sauce_core::Policy<S> for FlushConflictPolicy {
@@ -2143,29 +2131,21 @@ async fn test_on_error_retry_retries_a_conflicting_flush() {
         fn event_filter(&self) -> EventFilter {
             EventFilter::by_event_type("User.Registered")
         }
-        async fn handle(
-            &self,
-            _event: &EventEnvelope,
-            ctx: &PolicyContext<S>,
-        ) -> event_sauce_core::Result<()> {
-            let current = {
-                let mut count = self.0.lock().unwrap();
-                *count += 1;
-                *count
-            };
+        async fn handle(&self, _event: &EventEnvelope, ctx: &PolicyContext<S>) -> Result<()> {
+            let current = self.0.fetch_add(1, Ordering::SeqCst) + 1;
 
             let id = EntityId::new();
             let mut notification = AggregateRoot::<Notification>::new(id);
             notification
                 .send_notification(format!("attempt {current}"))
-                .map_err(|e| event_sauce_core::Error::invalid_state(format!("{e}")))?;
+                .map_err(|e| Error::invalid_state(format!("{e}")))?;
             ctx.commit(&mut notification).await?;
 
             Ok(())
         }
     }
 
-    let attempt = Arc::new(std::sync::Mutex::new(0));
+    let attempt = Arc::new(AtomicUsize::new(0));
     let retry_config = RetryConfig {
         base_delay: std::time::Duration::from_millis(1),
         max_delay: std::time::Duration::from_millis(10),
@@ -2183,15 +2163,12 @@ async fn test_on_error_retry_retries_a_conflicting_flush() {
         "a flush conflict must be retried, not returned straight to the caller: {result:?}"
     );
     assert!(
-        *attempt.lock().unwrap() >= 2,
+        attempt.load(Ordering::SeqCst) >= 2,
         "the conflicting flush must have triggered a retry"
     );
 
     use futures::StreamExt;
-    let stream = inner
-        .stream_all(event_sauce_core::Position::start())
-        .await
-        .unwrap();
+    let stream = inner.stream_all(Position::start()).await.unwrap();
     futures::pin_mut!(stream);
 
     let mut notification_count = 0;
