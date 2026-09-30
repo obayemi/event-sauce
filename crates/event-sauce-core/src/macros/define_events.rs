@@ -988,6 +988,13 @@ macro_rules! define_events {
         }
     };
 
+    (@rebuild $evt_type:ident [$($field:ident),*] [$timestamp:ident]) => {
+        $evt_type {
+            $($field: $field.clone(),)*
+            $timestamp: *$timestamp,
+        }
+    };
+
     // =========================================================================
     // Helper: dispatch arm — called from within pastey::paste! so $evt_type
     // is already resolved (e.g. CreatedEvent). No inner pastey needed.
@@ -999,10 +1006,7 @@ macro_rules! define_events {
     (@validate_only_arm regular [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
         {
             use $crate::ApplyEvent;
-            let evt = $evt_type {
-                $($field: $field.clone(),)*
-                $timestamp: *$timestamp,
-            };
+            let evt = $crate::define_events!(@rebuild $evt_type [$($field),*] [$timestamp]);
             evt.validate($aggregate_var)?;
         }
     };
@@ -1015,10 +1019,7 @@ macro_rules! define_events {
     (@dispatch_arm regular [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
         {
             use $crate::ApplyEvent;
-            let evt = $evt_type {
-                $($field: $field.clone(),)*
-                $timestamp: *$timestamp,
-            };
+            let evt = $crate::define_events!(@rebuild $evt_type [$($field),*] [$timestamp]);
             evt.validate($aggregate_var)?;
             evt.apply($aggregate_var);
             evt.post_validate($aggregate_var)?;
@@ -1031,10 +1032,7 @@ macro_rules! define_events {
     (@dispatch_unchecked_arm regular [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
         {
             use $crate::ApplyEvent;
-            let evt = $evt_type {
-                $($field: $field.clone(),)*
-                $timestamp: *$timestamp,
-            };
+            let evt = $crate::define_events!(@rebuild $evt_type [$($field),*] [$timestamp]);
             evt.apply($aggregate_var);
         }
     };
@@ -1045,10 +1043,7 @@ macro_rules! define_events {
     (@dispatch_init_arm init [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$id_var:ident]) => {
         {
             use $crate::InitEvent;
-            let evt = $evt_type {
-                $($field: $field.clone(),)*
-                $timestamp: *$timestamp,
-            };
+            let evt = $crate::define_events!(@rebuild $evt_type [$($field),*] [$timestamp]);
             evt.validate_init()?;
             let entity = evt.init($id_var);
             evt.post_validate_init(&entity)?;
@@ -1062,10 +1057,7 @@ macro_rules! define_events {
     (@dispatch_init_unchecked_arm init [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$id_var:ident]) => {
         {
             use $crate::InitEvent;
-            let evt = $evt_type {
-                $($field: $field.clone(),)*
-                $timestamp: *$timestamp,
-            };
+            let evt = $crate::define_events!(@rebuild $evt_type [$($field),*] [$timestamp]);
             evt.init($id_var)
         }
     };
@@ -1082,10 +1074,7 @@ macro_rules! define_events {
     (@dispatch_delete_arm delete [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
         {
             use $crate::DeleteEvent;
-            let evt = $evt_type {
-                $($field: $field.clone(),)*
-                $timestamp: *$timestamp,
-            };
+            let evt = $crate::define_events!(@rebuild $evt_type [$($field),*] [$timestamp]);
             evt.validate_delete(&$aggregate_var)?;
             let state = evt.delete($aggregate_var);
             evt.post_validate_delete(&state)?;
@@ -1099,10 +1088,7 @@ macro_rules! define_events {
     (@dispatch_delete_unchecked_arm delete [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
         {
             use $crate::DeleteEvent;
-            let evt = $evt_type {
-                $($field: $field.clone(),)*
-                $timestamp: *$timestamp,
-            };
+            let evt = $crate::define_events!(@rebuild $evt_type [$($field),*] [$timestamp]);
             evt.delete($aggregate_var)
         }
     };
