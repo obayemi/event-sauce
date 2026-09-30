@@ -1001,41 +1001,17 @@ impl PostgresEventStore {
         Ok(needs_db_check)
     }
 
-    /// Persists one stream's events inside an already-open transaction that
-    /// already holds the append lock. Claims are enforced separately, by
-    /// [`Self::append_batch`], once that same lock is held.
+    /// Inserts every event of one commit in a single `INSERT ... SELECT FROM
+    /// UNNEST(...)` statement, one round trip regardless of batch size.
+    /// Persists inside an already-open transaction that already holds the
+    /// append lock; claims are enforced separately, by
+    /// [`Self::append_batch`], once that same lock is held. Its only caller
+    /// filters out empty commits first, since an empty commit has nothing to
+    /// insert.
     ///
     /// Trusts the version chain [`Self::plan_version_chain_checks`] and
     /// [`Self::precheck_version`] already validated before the lock was
-    /// taken, so it does not re-check the version itself: it inserts all
-    /// events in a single statement, translating a unique violation into a
-    /// typed `ConcurrencyConflict`. Returns the global id of the last
-    /// inserted event (0 if this commit had no events), so the caller can
-    /// emit a single NOTIFY for the whole transaction.
-    ///
-    /// Does NOT begin/commit the transaction or emit NOTIFY — [`Self::append_batch`],
-    /// its only caller, owns the transaction and issues a single NOTIFY for
-    /// the whole batch once every commit has been written.
-    async fn write_commit_in_tx(
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-        events_table: &str,
-        commit: &event_sauce_core::StreamCommit,
-    ) -> Result<i64> {
-        if commit.events.is_empty() {
-            return Ok(0);
-        }
-        Self::insert_events_batch(
-            tx,
-            events_table,
-            &commit.stream_id,
-            commit.expected_version,
-            &commit.events,
-        )
-        .await
-    }
-
-    /// Inserts every event of one commit in a single `INSERT ... SELECT FROM
-    /// UNNEST(...)` statement, one round trip regardless of batch size.
+    /// taken, so it does not re-check the version itself.
     ///
     /// Returns the highest inserted `id`. A unique-index violation (a
     /// concurrent writer took one of these `stream_version` slots first)
@@ -1047,13 +1023,19 @@ impl PostgresEventStore {
     /// lower bound `expected + 1`, since the winner committed at
     /// `expected_version` and the true current version is at least one
     /// beyond it.
+    ///
+    /// Does NOT begin/commit the transaction or emit NOTIFY —
+    /// [`Self::append_batch`], its only caller, owns the transaction and
+    /// issues a single NOTIFY for the whole batch once every commit has been
+    /// written.
     async fn insert_events_batch(
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         events_table: &str,
-        stream_id: &StreamId,
-        expected_version: AggregateVersion,
-        events: &[EventEnvelope],
+        commit: &event_sauce_core::StreamCommit,
     ) -> Result<i64> {
+        let stream_id = &commit.stream_id;
+        let expected_version = commit.expected_version;
+        let events = &commit.events;
         let aggregate_id = stream_id.aggregate_id();
         let aggregate_type = stream_id.aggregate_type().as_str().to_string();
 
@@ -1236,8 +1218,8 @@ impl EventStore for PostgresEventStore {
         }
 
         let mut max_inserted_id: i64 = 0;
-        for commit in &commits {
-            let last = Self::write_commit_in_tx(&mut tx, &events_table, commit).await?;
+        for commit in commits.iter().filter(|c| !c.events.is_empty()) {
+            let last = Self::insert_events_batch(&mut tx, &events_table, commit).await?;
             max_inserted_id = max_inserted_id.max(last);
         }
 
@@ -3795,8 +3777,8 @@ mod tests {
         );
     }
 
-    /// Regression test for CONT-1/XN-6: since `write_commit_in_tx` no longer
-    /// re-checks the version itself, the in-memory chain check in
+    /// Regression test for CONT-1/XN-6: since `insert_events_batch` no
+    /// longer re-checks the version itself, the in-memory chain check in
     /// [`PostgresEventStore::plan_version_chain_checks`] is now the only
     /// thing standing between a batch whose second same-stream commit skips
     /// a version and a gap in the stream. It must still be rejected, and
