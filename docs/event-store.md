@@ -542,8 +542,14 @@ store.commit(&mut aggregate).await.unwrap();
 Make commands safe to retry:
 
 ```rust
-impl AggregateRoot<Order> {
-    pub fn cancel(&mut self, reason: String) -> Result<(), OrderError> {
+// AggregateRoot is defined in event-sauce-core, so reach it through an
+// extension trait rather than a plain (orphan-rule-violating) inherent impl.
+trait OrderCommands {
+    fn cancel(&mut self, reason: String) -> Result<(), OrderError>;
+}
+
+impl OrderCommands for AggregateRoot<Order> {
+    fn cancel(&mut self, reason: String) -> Result<(), OrderError> {
         // Idempotent: safe to call multiple times
         if self.status == OrderStatus::Cancelled {
             return Ok(()); // Already cancelled

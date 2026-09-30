@@ -30,12 +30,18 @@ Validation ensures business rules and invariants are enforced before state chang
 
 Event-sauce supports multiple validation strategies:
 
-### 1. Business Method Validation (Recommended)
+### 1. Business Method Validation
 
-Validate in aggregate methods before creating events:
+Validate in aggregate methods before creating events. `AggregateRoot` is
+defined in `event-sauce-core`, so reach it through an extension trait rather
+than a plain (orphan-rule-violating) inherent impl:
 
 ```rust
-impl AggregateRoot<BankAccount> {
+trait BankAccountCommands {
+    fn withdraw(&mut self, amount: i64) -> Result<(), AccountError>;
+}
+
+impl BankAccountCommands for AggregateRoot<BankAccount> {
     fn withdraw(&mut self, amount: i64) -> Result<(), AccountError> {
         // Validate business rules
         if self.status != AccountStatus::Active {
@@ -70,33 +76,40 @@ impl AggregateRoot<BankAccount> {
 - ✅ Simple to understand
 - ✅ Easy to test
 
-### 2. Event Validation (Optional)
+### 2. `define_events!` with `@validate` (Recommended)
 
-Implement validation on events using `ApplyEvent` trait:
+Declare validation inline on the event with `define_events!`'s
+`@validate`/`@validate_spec` closures (see the [Events Guide](events.md) and
+[CLAUDE.md](../CLAUDE.md#event-definition-standards)). This is the pattern
+CLAUDE.md and the README recommend by default:
 
 ```rust
-impl ApplyEvent<BankAccount> for AccountWithdrawnEvent {
-    fn validate(&self, account: &BankAccount) -> Result<(), AccountError> {
-        if account.status != AccountStatus::Active {
-            return Err(AccountError::AccountNotActive(account.status));
+define_events! {
+    pub enum BankAccountEvent for BankAccount {
+        Withdrawn {
+            amount: i64,
         }
+        @validate |account, event| {
+            if account.status != AccountStatus::Active {
+                return Err(AccountError::AccountNotActive(account.status));
+            }
 
-        if self.amount <= 0 {
-            return Err(AccountError::InvalidAmount(self.amount));
+            if event.amount <= 0 {
+                return Err(AccountError::InvalidAmount(event.amount));
+            }
+
+            if account.balance < event.amount {
+                return Err(AccountError::InsufficientFunds {
+                    balance: account.balance,
+                    requested: event.amount,
+                });
+            }
+
+            Ok(())
         }
-
-        if account.balance < self.amount {
-            return Err(AccountError::InsufficientFunds {
-                balance: account.balance,
-                requested: self.amount,
-            });
-        }
-
-        Ok(())
-    }
-
-    fn apply(&self, account: &mut BankAccount) {
-        account.balance -= self.amount;
+        => |account, event| {
+            account.balance -= event.amount;
+        },
     }
 }
 ```
@@ -105,14 +118,30 @@ impl ApplyEvent<BankAccount> for AccountWithdrawnEvent {
 - ✅ Validation coupled with event
 - ✅ Reusable validation logic
 - ✅ Self-documenting events
+- ✅ A `@validate`/`@validate_spec` refusal does not poison the
+  `AggregateRoot` — see [When does a failed command poison the
+  `AggregateRoot`?](#when-does-a-failed-command-poison-the-aggregateroot)
 - ❌ More complex for simple cases
+
+The same validation can be written by hand against the `ApplyEvent` trait
+instead of `define_events!`, but a hand-written impl does not get the
+refusal-vs-poison split above: only `define_events!` overrides
+`EventApplicator::validate_only`, so a hand-written `validate()` failure
+reaches `dispatch()` and **poisons** the aggregate, whether or not the
+entity was mutated by the time it failed. See [When does a failed command
+poison the
+`AggregateRoot`?](#when-does-a-failed-command-poison-the-aggregateroot).
 
 ### 3. Hybrid Approach (Best of Both)
 
 Combine business method and event validation:
 
 ```rust
-impl AggregateRoot<BankAccount> {
+trait BankAccountCommands {
+    fn withdraw(&mut self, amount: i64) -> Result<(), AccountError>;
+}
+
+impl BankAccountCommands for AggregateRoot<BankAccount> {
     fn withdraw(&mut self, amount: i64) -> Result<(), AccountError> {
         // Quick pre-checks
         if amount <= 0 {

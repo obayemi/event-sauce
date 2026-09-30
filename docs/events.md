@@ -361,8 +361,14 @@ This pattern is useful for:
 For complex scenarios requiring fine-grained control (conditional events, saga orchestration, multi-event transactions), you can bypass `command_handler!` and create events manually:
 
 ```rust
-// Advanced escape hatch — use when command_handler! isn't flexible enough
-impl AggregateRoot<Order> {
+// Advanced escape hatch — use when command_handler! isn't flexible enough.
+// AggregateRoot is defined in event-sauce-core, so reach it through an
+// extension trait rather than a plain (orphan-rule-violating) inherent impl.
+trait OrderCommands {
+    fn complex_operation(&mut self, input: ComplexInput) -> Result<(), OrderError>;
+}
+
+impl OrderCommands for AggregateRoot<Order> {
     fn complex_operation(&mut self, input: ComplexInput) -> Result<(), OrderError> {
         // Conditional event creation
         if input.needs_discount {
@@ -568,8 +574,14 @@ During replay with `apply_unchecked`, validation is skipped for performance.
 With the `ApplyEvent` trait, validation is **part of the event** itself:
 
 ```rust
-// In your command methods on AggregateRoot<BankAccount>
-impl AggregateRoot<BankAccount> {
+// In your command methods, reached through an extension trait implemented
+// for AggregateRoot<BankAccount> (a plain inherent impl violates the orphan
+// rule — see the Aggregates Guide)
+trait BankAccountCommands {
+    fn withdraw(&mut self, amount: i64) -> Result<(), AccountError>;
+}
+
+impl BankAccountCommands for AggregateRoot<BankAccount> {
     fn withdraw(&mut self, amount: i64) -> Result<(), AccountError> {
         // Create event
         let event = AccountWithdrawnEvent {

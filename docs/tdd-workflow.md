@@ -63,8 +63,14 @@ impl ShoppingCart {
     }
 }
 
-impl AggregateRoot<ShoppingCart> {
-    pub fn add_item(&mut self, product_id: EntityId, name: &str, price: i64, qty: u32) -> Result<(), CartError> {
+// AggregateRoot is defined in event-sauce-core, so reach it through an
+// extension trait rather than a plain (orphan-rule-violating) inherent impl.
+trait ShoppingCartCommands {
+    fn add_item(&mut self, product_id: EntityId, name: &str, price: i64, qty: u32) -> Result<(), CartError>;
+}
+
+impl ShoppingCartCommands for AggregateRoot<ShoppingCart> {
+    fn add_item(&mut self, product_id: EntityId, name: &str, price: i64, qty: u32) -> Result<(), CartError> {
         let event = ItemAddedEvent {
             product_id,
             name: name.to_string(),
