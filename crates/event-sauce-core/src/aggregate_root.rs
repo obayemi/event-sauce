@@ -119,21 +119,35 @@ pub struct AggregateRoot<A: Aggregate> {
     entity: A,
     version: AggregateVersion,
     pending_events: Vec<PendingEvent<A::Event>>,
-    /// Set to `true` when an [`apply`](Self::apply) call fails *after*
-    /// mutating the entity.
+    /// Set to `true` when a call to `dispatch` (through
+    /// [`apply`](Self::apply) or one of its siblings) fails.
     ///
-    /// A pre-validation refusal (caught by `EventApplicator::validate_only`
-    /// before anything runs) never sets this: the entity is untouched, so the
-    /// aggregate stays exactly as usable as it was. A failure that strikes
-    /// once the apply closure has already run (`post_validate`, or a
-    /// hand-written `EventApplicator` that does not split pre-validation out
-    /// as `validate_only`) does: the entity is mutated, but the version is
-    /// not bumped and the event is not recorded. There is no `Clone` bound to
-    /// roll the entity back, so the aggregate is left in an inconsistent
-    /// state. Rather than let that state be reused or committed silently, the
-    /// root is *poisoned*: further `apply*`/`apply_delete*` calls and the
-    /// commit-preparation path refuse it with [`crate::Error::InvalidState`],
-    /// forcing the caller to discard and reload the aggregate.
+    /// [`EventApplicator::validate_only`](crate::EventApplicator::validate_only)
+    /// runs first, through [`apply`](Self::apply) and
+    /// [`apply_with_actor`](Self::apply_with_actor), so a REFUSAL — nothing
+    /// mutated — never poisons. `define_events!` and `#[derive(Event)]` both
+    /// generate `validate_only` from each variant's pre-validation, so a
+    /// refused event never poisons whichever of the two defined it; only a
+    /// failure once the apply closure has run (`post_validate`) does. A fully
+    /// hand-written `EventApplicator` that leaves `validate_only` at its
+    /// default `Ok(())` has no refusal step: every failure reaches
+    /// `dispatch` and poisons, whether or not the entity was actually
+    /// mutated by the time it failed.
+    /// [`apply_with_metadata`](Self::apply_with_metadata) never calls
+    /// `validate_only` and calls `dispatch` directly, so even a
+    /// pre-validation refusal poisons through it.
+    ///
+    /// There is no `Clone` bound to roll a genuinely poisoned entity back, so
+    /// once poisoned the root is left in an inconsistent state permanently.
+    /// The commit-preparation path (event-sourced commit) and the
+    /// state-store save path both check it and refuse with
+    /// [`crate::Error::InvalidState`]. Further `apply*`/`apply_delete*` calls
+    /// do **not** check it — they still run, against the already-inconsistent
+    /// entity — so a caller that keeps issuing commands after a poisoning
+    /// error gets more (equally unusable) results instead of an early
+    /// refusal. Treat any error from `apply*`/`apply_delete*` as a signal to
+    /// check [`is_poisoned`](Self::is_poisoned) and, if it is set, discard
+    /// the root and reload rather than issue further commands on it.
     poisoned: bool,
 }
 
@@ -237,10 +251,13 @@ impl<A: Aggregate> AggregateRoot<A> {
     /// poisoned this aggregate.
     ///
     /// A poisoned aggregate holds inconsistent state (its entity reflects a
-    /// rejected event, but its version and pending events do not). Any further
-    /// `apply*` call and the commit path refuse it with
-    /// [`crate::Error::InvalidState`]. The aggregate must be discarded and
-    /// reloaded from the event store.
+    /// rejected event, but its version and pending events do not). The
+    /// commit path (event-sourced commit and state-store save alike) checks
+    /// this and refuses with [`crate::Error::InvalidState`] — but further
+    /// `apply*`/`apply_delete*` calls do **not** check it, and keep mutating
+    /// the same inconsistent entity. Check this after any `apply*` failure;
+    /// if it is `true`, discard the aggregate and reload it rather than
+    /// issue further commands on it.
     #[must_use]
     pub fn is_poisoned(&self) -> bool {
         self.poisoned
@@ -285,22 +302,31 @@ impl<A: Aggregate> AggregateRoot<A> {
     ///
     /// This method:
     /// 1. Converts the event into the aggregate's event type (via `Into`)
-    /// 2. Dispatches through `EventApplicator` (validate → apply → `post_validate`)
-    /// 3. Increments the version
-    /// 4. Adds the event to pending events
+    /// 2. Runs [`EventApplicator::validate_only`](crate::EventApplicator::validate_only)
+    /// 3. Dispatches through `EventApplicator::dispatch` (validate → apply →
+    ///    `post_validate`)
+    /// 4. Increments the version
+    /// 5. Adds the event to pending events
     ///
     /// # Errors
     ///
-    /// Returns an error if validation (pre or post) fails. A pre-validation
-    /// **refusal** mutates nothing and leaves the aggregate exactly as it
-    /// was — it is not a poisoning, and the caller may keep using and saving
-    /// it. A failure that strikes once the apply closure has already run
-    /// (`post_validate`, or any error from a hand-written `EventApplicator`
-    /// whose `dispatch` does not split pre-validation out as `validate_only`)
-    /// **poisons** the aggregate instead (see
-    /// [`is_poisoned`](Self::is_poisoned)): the entity was mutated, but the
-    /// version is not bumped and the event is not recorded, leaving
-    /// inconsistent state that cannot be rolled back. A poisoned aggregate is
+    /// Returns an error if validation or dispatch fails.
+    ///
+    /// A `validate_only` refusal (step 2) does **not** poison: nothing has
+    /// been mutated yet, so the aggregate stays exactly as it was and
+    /// remains usable. `define_events!` (its `@validate`/`@validate_spec`
+    /// clauses) and `#[derive(Event)]` (each variant's
+    /// `ApplyEvent::validate`) both get this refusal-vs-poison split by
+    /// generating `validate_only`.
+    ///
+    /// A `dispatch` failure (step 3) **poisons** the aggregate (see
+    /// [`is_poisoned`](Self::is_poisoned)): `dispatch` may already have
+    /// mutated the entity by the time it failed, but the version is not
+    /// bumped and the event is not recorded, leaving state that cannot be
+    /// rolled back. This is what a `post_validate` failure does, for
+    /// `define_events!` and `#[derive(Event)]` alike, and what *every*
+    /// failure does for a fully hand-written `EventApplicator` that leaves
+    /// `validate_only` at its default `Ok(())`. A poisoned aggregate is
     /// refused by the commit path with [`crate::Error::InvalidState`];
     /// discard it and reload.
     ///
@@ -337,8 +363,10 @@ impl<A: Aggregate> AggregateRoot<A> {
     ///
     /// # Errors
     ///
-    /// Returns an error if validation (pre or post) fails. Like
-    /// [`apply()`](Self::apply), a failed call **poisons** the aggregate.
+    /// Returns an error if validation or dispatch fails. Like
+    /// [`apply()`](Self::apply): a `validate_only` refusal does not poison
+    /// the aggregate, while a `dispatch` failure does — see
+    /// [`apply()`](Self::apply) for the full split.
     pub fn apply_with_actor<E: Into<A::Event>>(
         &mut self,
         event: E,
@@ -365,10 +393,16 @@ impl<A: Aggregate> AggregateRoot<A> {
     /// event. At commit time, the metadata merges into `EventEnvelope::metadata`.
     /// Used by the policy system to propagate causation tracking.
     ///
+    /// Unlike [`apply()`](Self::apply), this skips
+    /// [`EventApplicator::validate_only`](crate::EventApplicator::validate_only)
+    /// and dispatches directly, so it has no refusal-vs-poison split: even a
+    /// `define_events!` event refused by its `@validate` clause poisons the
+    /// aggregate through this path.
+    ///
     /// # Errors
     ///
-    /// Returns an error if validation (pre or post) fails. Like
-    /// [`apply()`](Self::apply), a failed call **poisons** the aggregate.
+    /// Returns an error if validation (pre or post) fails. Every failure
+    /// **poisons** the aggregate.
     pub fn apply_with_metadata<E: Into<A::Event>>(
         &mut self,
         event: E,

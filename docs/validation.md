@@ -124,12 +124,11 @@ define_events! {
 - ❌ More complex for simple cases
 
 The same validation can be written by hand against the `ApplyEvent` trait
-instead of `define_events!`, but a hand-written impl does not get the
-refusal-vs-poison split above: only `define_events!` overrides
-`EventApplicator::validate_only`, so a hand-written `validate()` failure
-reaches `dispatch()` and **poisons** the aggregate, whether or not the
-entity was mutated by the time it failed. See [When does a failed command
-poison the
+instead of `define_events!` and dispatched through `#[derive(Event)]`, with
+the same refusal-vs-poison split: the derive generates
+`EventApplicator::validate_only` from each variant's `ApplyEvent::validate`,
+exactly as `define_events!` does from `@validate`. See [When does a failed
+command poison the
 `AggregateRoot`?](#when-does-a-failed-command-poison-the-aggregateroot).
 
 ### 3. Hybrid Approach (Best of Both)
@@ -959,28 +958,59 @@ fn apply(&self, account: &mut BankAccount) {
 }
 ```
 
-#### A failed `apply()` poisons the `AggregateRoot`
+#### When does a failed command poison the `AggregateRoot`?
 
-`AggregateRoot::apply()` runs `validate → apply → post_validate`. When
-`post_validate` (or `validate`) rejects an event, the apply closure has
-**already mutated** the entity, but the version is not bumped and the event is
-not recorded — and there is no `Clone` bound to roll the entity back. Rather
-than let that inconsistent state be reused or silently committed, a failed
-`apply*` call **poisons** the `AggregateRoot`:
+`AggregateRoot::apply()`/`apply_with_actor()` first run
+`EventApplicator::validate_only()`, then — only once that passes —
+`EventApplicator::dispatch()` (which itself runs
+`validate → apply → post_validate`). Whether a rejection poisons the
+aggregate depends on which of those two steps returns the error:
+
+- **An event refused by its pre-validation** — a `define_events!`
+  `@validate`/`@validate_spec` clause, or the `ApplyEvent::validate` of an
+  event dispatched through `#[derive(Event)]`: the refusal is caught by
+  `validate_only()` before `dispatch()` runs, so nothing was mutated. The
+  `AggregateRoot` is **not poisoned** and stays usable — the whole point of
+  a typed refusal is that a caller expecting one
+  (`let _ = incident.raise_severity(..)`) can still save what it did
+  change. Both macros generate `validate_only()`, so the two are
+  equivalent here.
+- **An event that fails inside `apply` or `post_validate`** (either
+  macro): that failure comes from `dispatch()`, which may have already
+  mutated the entity with no way to roll it back. The `AggregateRoot`
+  **is poisoned**.
+- **A fully hand-written `EventApplicator` impl** that does not override
+  `validate_only()`: the default returns `Ok(())`, so every event goes
+  straight to `dispatch()` and any failure — from validation, apply, or
+  post-validation — poisons the aggregate, whether or not the entity was
+  actually mutated by the time it failed.
+- **`apply_with_metadata()`**: skips `validate_only()` entirely and calls
+  `dispatch()` directly. Even a pre-validation refusal poisons the
+  aggregate when applied through this path.
+
+Once poisoned:
 
 - `AggregateRoot::is_poisoned()` reports the poisoned state.
 - Committing a poisoned aggregate (`save`/`commit`, including the delete path)
-  fails with `Error::InvalidState` instead of persisting half-mutated state.
+  fails with `Error::InvalidState` instead of persisting inconsistent state.
 
-The contract is **discard and reload**: on a failed `apply()`, drop the
-aggregate and re-`load()` it from the event store before retrying.
+The contract is **discard and reload**: on a failed command, drop the
+aggregate and re-`load()` it from the event store before retrying — unless
+the event was refused by its pre-validation (`define_events!` `@validate`
+or a derived event's `ApplyEvent::validate`) through `apply`/
+`apply_with_actor`, in which case the aggregate is untouched and can be
+reused directly.
 
 ```rust
 let mut account = repo.load(id).await?;
 if account.withdraw(huge_amount).is_err() {
-    // `account` is now poisoned — do NOT commit or reuse it.
-    // Reload a fresh, consistent copy instead.
-    account = repo.load(id).await?;
+    // A pre-validation refusal (e.g. insufficient funds checked up front)
+    // leaves `account` untouched. A failure inside `apply`/`post_validate`
+    // instead poisons it — check `account.is_poisoned()` and, if set,
+    // discard it and reload a fresh copy instead of reusing or committing it.
+    if account.is_poisoned() {
+        account = repo.load(id).await?;
+    }
 }
 ```
 
@@ -1069,6 +1099,6 @@ Validation in event-sauce follows these principles:
 - **Rich errors**: Use aggregate-specific error types with context
 - **Test thoroughly**: Cover valid cases, invalid cases, and boundaries
 - **Keep apply pure**: No validation, clock, RNG, or external state in `ApplyEvent::apply()` — replay must be deterministic
-- **A failed `apply()` poisons the aggregate**: discard and reload; committing a poisoned `AggregateRoot` fails with `Error::InvalidState`
+- **A refusal isn't always a poisoning**: a pre-validation refusal (`define_events!` `@validate` or a derived event's `ApplyEvent::validate`) through `apply`/`apply_with_actor` leaves the aggregate usable; a failure inside `apply`/`post_validate`, any failure from a hand-written `EventApplicator` that does not override `validate_only`, or any failure through `apply_with_metadata` poisons it — discard and reload; committing a poisoned `AggregateRoot` fails with `Error::InvalidState`
 
 Next: [Aggregates Guide](aggregates.md) | [Events Guide](events.md)
