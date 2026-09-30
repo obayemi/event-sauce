@@ -591,7 +591,7 @@ impl PostgresEventStore {
             20_260_930_000_000_i64,
             "add_crypto_keys_shredded_at",
             move |pool| async move {
-                crate::crypto_key_store::add_shredded_at_column(pool, &crypto_keys_table).await
+                crate::crypto_key_store::add_shred_state_columns(pool, &crypto_keys_table).await
             },
         )
         .await

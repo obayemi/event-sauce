@@ -159,9 +159,10 @@ explicitly rather than gated behind a major version bump.
   retries instead of writing nothing and returning `Ok`.
 - Deleting a crypto key now leaves a shredded tombstone (memory: an id set;
   Postgres: a nullable `key_data` plus a new `shredded_at` column, added as
-  its own migration step) instead of removing the row outright, so a stale
-  or concurrent writer can no longer regenerate a key and write fresh PII
-  for an aggregate that was crypto-shredded.
+  its own migration step and enforced by a `crypto_keys_shred_state` CHECK
+  constraint requiring exactly one of the two to be set) instead of removing
+  the row outright, so a stale or concurrent writer can no longer regenerate
+  a key and write fresh PII for an aggregate that was crypto-shredded.
 - A crate using `define_events!`/`command_handler!` needs no direct
   dependency beyond `event-sauce`/`event-sauce-core` and `serde` (with the
   `derive` feature) — the macros no longer require the caller to add
@@ -181,8 +182,12 @@ explicitly rather than gated behind a major version bump.
 
 ### Migration Steps
 
-- `add_crypto_keys_shredded_at` — relaxes `crypto_keys.key_data` to nullable
-  and adds the `shredded_at` marker column. Runs automatically the next time
-  `store.migrate()` is called; no manual action needed.
+- `add_crypto_keys_shredded_at` — relaxes `crypto_keys.key_data` to nullable,
+  adds the `shredded_at` marker column, and adds the
+  `crypto_keys_shred_state` CHECK constraint
+  (`(key_data IS NULL) = (shredded_at IS NOT NULL)`). Runs automatically the
+  next time `store.migrate()` is called; **fails on any existing row where
+  both `key_data` and `shredded_at` are set, or neither is** — clean up such
+  rows before upgrading.
 
 [Unreleased]: https://github.com/obayemi/event-sauce/compare/master...HEAD

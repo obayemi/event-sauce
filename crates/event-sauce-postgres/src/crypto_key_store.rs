@@ -128,7 +128,7 @@ impl PostgresCryptoKeyStore {
             migrations_table,
             20_250_301_000_001_i64,
             "add_crypto_keys_shredded_at",
-            |pool| add_shredded_at_column(pool, &crypto_keys_table),
+            |pool| add_shred_state_columns(pool, &crypto_keys_table),
         )
         .await
     }
@@ -156,18 +156,29 @@ pub(crate) async fn create_table(pool: &PgPool, crypto_keys_table: &str) -> Resu
         .map(|_| ())
 }
 
-/// Relaxes `key_data` to nullable and adds the `shredded_at` marker column.
+/// Relaxes `key_data` to nullable, adds the `shredded_at` marker column, and
+/// enforces that exactly one of them is set (the `crypto_keys_shred_state`
+/// CHECK).
 ///
 /// A shredded key row keeps its `aggregate_id` with `key_data` cleared and
 /// `shredded_at` stamped, so a shred is remembered even after the key
 /// itself is gone, instead of looking like a row that was never created.
+/// The CHECK constraint makes a mixed row (both set, or both null)
+/// unrepresentable at the schema level, not just by the store's own
+/// methods.
 ///
 /// Both [`PostgresCryptoKeyStore::migrate`] and `PostgresEventStore::migrate`
 /// run this step against the same `crypto_keys` table, since a caller who
 /// only ever runs the event store's `migrate()` — the default key store's
 /// own `migrate()` is never called for them — still needs this column to
 /// exist before the first encrypted commit.
-pub(crate) async fn add_shredded_at_column(pool: &PgPool, crypto_keys_table: &str) -> Result<()> {
+///
+/// The CHECK is added with `DROP CONSTRAINT IF EXISTS` then `ADD`, rather
+/// than a plain `ADD CONSTRAINT`, because this step runs once per migration
+/// path that installs `crypto_keys` (the key store's own and the event
+/// store's), each tracked in its own migrations table — so the second
+/// path's "not yet applied" check does not see the first path's work here.
+pub(crate) async fn add_shred_state_columns(pool: &PgPool, crypto_keys_table: &str) -> Result<()> {
     let alter = format!("ALTER TABLE {crypto_keys_table} ALTER COLUMN key_data DROP NOT NULL");
     sqlx::query(&alter)
         .execute(pool)
@@ -182,6 +193,17 @@ pub(crate) async fn add_shredded_at_column(pool: &PgPool, crypto_keys_table: &st
         .execute(pool)
         .await
         .map_err(|e| Error::backend("Failed to add crypto_keys.shredded_at", e))?;
+
+    let constraint = format!(
+        "ALTER TABLE {crypto_keys_table}
+         DROP CONSTRAINT IF EXISTS crypto_keys_shred_state,
+         ADD CONSTRAINT crypto_keys_shred_state
+             CHECK ((key_data IS NULL) = (shredded_at IS NOT NULL))"
+    );
+    sqlx::query(&constraint)
+        .execute(pool)
+        .await
+        .map_err(|e| Error::backend("Failed to add crypto_keys shred-state check", e))?;
     Ok(())
 }
 
