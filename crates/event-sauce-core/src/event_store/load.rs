@@ -255,6 +255,47 @@ where
         .map(Some)
 }
 
+/// Loads and reconstructs an aggregate from its snapshot, if snapshots are
+/// enabled and one exists.
+///
+/// Returns `Ok(None)` when snapshots are disabled, none is stored, or
+/// [`try_load_from_snapshot`] treats the stored one as a cache miss — the
+/// caller then falls through to full event replay.
+///
+/// # Errors
+///
+/// Returns `Error::KeyNotFound` if the snapshot is still ciphertext after
+/// decryption (the aggregate was crypto-shredded), or an error from loading
+/// or replaying its post-snapshot events.
+async fn load_from_snapshot<S, A>(
+    store: &S,
+    stream_id: &StreamId,
+    uuid: Uuid,
+    key: Option<&[u8]>,
+) -> Result<Option<Loaded<A>>>
+where
+    S: EventStore,
+    A: Aggregate + serde::de::DeserializeOwned,
+    A::DeletedState: serde::de::DeserializeOwned,
+    A::Event: serde::de::DeserializeOwned,
+{
+    if !store.snapshot_config().use_snapshots_on_load() {
+        return Ok(None);
+    }
+    let Some(mut snapshot) = store.load_snapshot(stream_id.clone()).await? else {
+        return Ok(None);
+    };
+
+    let snap_aad = snapshot_aad(uuid);
+    decrypt_event_data(store, key, &mut snapshot.snapshot_data, &snap_aad)?;
+
+    if crate::crypto::is_encrypted(&snapshot.snapshot_data) {
+        return Err(crate::Error::key_not_found(uuid));
+    }
+
+    try_load_from_snapshot::<S, A>(store, stream_id.clone(), key, snapshot).await
+}
+
 /// Loads an aggregate from the event store, returning its lifecycle state.
 ///
 /// Returns `Loaded::Active(AggregateRoot<A>)` for active aggregates, or
@@ -263,6 +304,11 @@ where
 /// This function handles `DefaultEntity` aggregates (legacy), init-event
 /// aggregates, and delete events. It detects which pattern is used by
 /// checking `is_init()` and `is_delete()` on events during replay.
+///
+/// A snapshot is a CACHE, never the source of truth — a stale or
+/// incompatible one (see [`try_load_from_snapshot`]) self-heals by falling
+/// through to full event replay below rather than corrupting state or
+/// hard-failing.
 ///
 /// # Errors
 ///
@@ -284,46 +330,8 @@ where
     let crypto_key = resolve_crypto_key::<S, A>(store, uuid, &stream_id).await?;
     let key = crypto_key.as_deref().map(Vec::as_slice);
 
-    // Try to load snapshot if enabled.
-    //
-    // A snapshot is a CACHE, never the source of truth: the authoritative state
-    // is always derivable by replaying events. So a stale or incompatible
-    // snapshot must self-heal — we treat it as a cache miss and fall through to
-    // the full-event-replay path below rather than corrupting state or
-    // hard-failing. The next commit writes a fresh snapshot at the current
-    // version. A cache miss is any of:
-    //   (i)   the snapshot's `aggregate_type` no longer matches `A`,
-    //   (ii)  the snapshot's `snapshot_schema_version` no longer matches
-    //         `A::snapshot_version()` (the aggregate's serialized shape changed),
-    //   (iii) the snapshot can no longer be deserialized into `A` /
-    //         `A::DeletedState`.
-    //
-    // The encrypted-snapshot crypto-shredding path is NOT a cache miss: a
-    // snapshot that is still ciphertext after decryption means the key was
-    // shredded and the data is intentionally unrecoverable — that returns
-    // `KeyNotFound`, never a silent fall-through to replay (replay would fail
-    // the same way), so it is checked first.
-    let config = store.snapshot_config();
-    if config.use_snapshots_on_load() {
-        if let Some(mut snapshot) = store.load_snapshot(stream_id.clone()).await? {
-            let snap_aad = snapshot_aad(uuid);
-            decrypt_event_data(store, key, &mut snapshot.snapshot_data, &snap_aad)?;
-
-            // If the snapshot is still ciphertext after the decryption pass, we
-            // lacked the key to read it — the aggregate was crypto-shredded.
-            // Surface `KeyNotFound` instead of letting `from_value` fail with an
-            // opaque deserialization error on the `__encrypted` blob.
-            if crate::crypto::is_encrypted(&snapshot.snapshot_data) {
-                return Err(crate::Error::key_not_found(uuid));
-            }
-
-            if let Some(loaded) =
-                try_load_from_snapshot::<S, A>(store, stream_id.clone(), key, snapshot).await?
-            {
-                return Ok(loaded);
-            }
-            // Cache miss: fall through to full replay below.
-        }
+    if let Some(loaded) = load_from_snapshot::<S, A>(store, &stream_id, uuid, key).await? {
+        return Ok(loaded);
     }
 
     // No snapshot (or a snapshot that missed): load all events
@@ -333,15 +341,6 @@ where
     futures::pin_mut!(event_stream);
 
     let Some(first_envelope) = event_stream.next().await else {
-        // No events and no snapshot: the aggregate does not exist. Return a
-        // recoverable `NotFound` for ALL aggregate kinds. Synthesizing a
-        // default-state root here only ever worked for `DefaultEntity` types
-        // and was a foot-gun (callers could not distinguish a brand-new empty
-        // aggregate from a genuinely missing one); for init-event aggregates
-        // `Entity::new` panics by design, so this path used to crash on any
-        // unknown ID. `load_any` is generic over `A`, so it cannot branch on
-        // whether `A: DefaultEntity` at runtime — universal `NotFound` is the
-        // clean, panic-free behavior.
         return Err(crate::Error::not_found(
             A::aggregate_type().as_str(),
             uuid.to_string(),
