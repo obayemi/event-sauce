@@ -31,10 +31,14 @@
 //! 2. **Emit phase** (`@emit_trait` arms): once all variants are parsed, each
 //!    variant in the accumulator is dispatched to one of three emit arms (one
 //!    per kind), which emits that kind's base trait impl
-//!    (`ApplyEvent`/`InitEvent`/`DeleteEvent`) and then forwards to a small
-//!    `@emit_actor_*_event` helper with the (possibly empty) actor type. That
-//!    helper expands to nothing when the variant has no actor, or to the
-//!    matching `ActorEvent`/`ActorInitEvent`/`ActorDeleteEvent` impl when it
+//!    (`ApplyEvent`/`InitEvent`/`DeleteEvent`) and then forwards to an actor
+//!    helper with the (possibly empty) actor type: the regular and delete
+//!    emitters both forward to `@emit_actor_impl` (with
+//!    `[ActorEvent validate_actor]` or `[ActorDeleteEvent
+//!    validate_delete_actor]`), and the init emitter forwards to
+//!    `@emit_actor_init_event`. That helper expands to nothing when the
+//!    variant has no actor, or to the matching
+//!    `ActorEvent`/`ActorInitEvent`/`ActorDeleteEvent` impl when it
 //!    does — the same validate closure feeding both the base impl's 2-arg (or
 //!    1-arg, for init) dispatch and the actor impl's 3-arg (or 2-arg) one.
 
@@ -786,7 +790,7 @@ macro_rules! define_events {
             }
         }
         $crate::define_events! {
-            @emit_actor_event [$($actor_type)?]
+            @emit_actor_impl [ActorEvent validate_actor] [$($actor_type)?]
             [$aggregate] [$variant]
             validate: [$([|$($val_args),+| $val_body])?],
             validate_spec: [$([$($val_spec)*])?],
@@ -899,7 +903,7 @@ macro_rules! define_events {
             }
         }
         $crate::define_events! {
-            @emit_actor_delete_event [$($actor_type)?]
+            @emit_actor_impl [ActorDeleteEvent validate_delete_actor] [$($actor_type)?]
             [$aggregate] [$variant]
             validate: [$([|$($val_args),+| $val_body])?],
             validate_spec: [$([$($val_spec)*])?],
@@ -908,20 +912,23 @@ macro_rules! define_events {
 
     // =========================================================================
     // Helper: the extra trait an `@actor(T)` variant adds on top of its base
-    // kind's impl above — nothing when the variant has no actor.
+    // kind's impl above — nothing when the variant has no actor. Shared by
+    // the regular and delete emitters (`ActorEvent`/`validate_actor` and
+    // `ActorDeleteEvent`/`validate_delete_actor` respectively); the init
+    // emitter below has its own arm since it takes no aggregate parameter.
     // =========================================================================
-    (@emit_actor_event [] [$aggregate:ty] [$variant:ident] validate: [$($_v:tt)*], validate_spec: [$($_vs:tt)*],) => {};
+    (@emit_actor_impl [$trait:ident $method:ident] [] [$aggregate:ty] [$variant:ident] validate: [$($_v:tt)*], validate_spec: [$($_vs:tt)*],) => {};
     (
-        @emit_actor_event [$actor_type:ty] [$aggregate:ty] [$variant:ident]
+        @emit_actor_impl [$trait:ident $method:ident] [$actor_type:ty] [$aggregate:ty] [$variant:ident]
         validate: [$([|$($val_args:ident),+| $val_body:block])?],
         validate_spec: [$([$($val_spec:tt)*])?],
     ) => {
         $crate::__private::paste! {
-            impl $crate::ActorEvent<$aggregate> for [<$variant Event>] {
+            impl $crate::$trait<$aggregate> for [<$variant Event>] {
                 type Actor = $actor_type;
 
                 #[allow(unused_variables, unreachable_code, clippy::redundant_closure_call)]
-                fn validate_actor(&self, aggregate: &$aggregate, actor: &$actor_type)
+                fn $method(&self, aggregate: &$aggregate, actor: &$actor_type)
                     -> ::std::result::Result<(), <$aggregate as $crate::Aggregate>::Error>
                 {
                     $(
@@ -962,31 +969,6 @@ macro_rules! define_events {
         }
     };
 
-    (@emit_actor_delete_event [] [$aggregate:ty] [$variant:ident] validate: [$($_v:tt)*], validate_spec: [$($_vs:tt)*],) => {};
-    (
-        @emit_actor_delete_event [$actor_type:ty] [$aggregate:ty] [$variant:ident]
-        validate: [$([|$($val_args:ident),+| $val_body:block])?],
-        validate_spec: [$([$($val_spec:tt)*])?],
-    ) => {
-        $crate::__private::paste! {
-            impl $crate::ActorDeleteEvent<$aggregate> for [<$variant Event>] {
-                type Actor = $actor_type;
-
-                #[allow(unused_variables, unreachable_code, clippy::redundant_closure_call)]
-                fn validate_delete_actor(&self, aggregate: &$aggregate, actor: &$actor_type)
-                    -> ::std::result::Result<(), <$aggregate as $crate::Aggregate>::Error>
-                {
-                    $(
-                        $crate::__validate_actor!(|$($val_args),+| $val_body, $aggregate, $actor_type, Self, aggregate, actor, self);
-                    )?
-                    $(
-                        $crate::__check_spec_actor!($($val_spec)*, $aggregate, $actor_type, Self, aggregate, actor, self);
-                    )?
-                    ::std::result::Result::Ok(())
-                }
-            }
-        }
-    };
 
     (@rebuild $evt_type:ident [$($field:ident),*] [$timestamp:ident]) => {
         $evt_type {
