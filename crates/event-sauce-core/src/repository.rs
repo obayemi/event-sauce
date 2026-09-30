@@ -472,7 +472,7 @@ where
         let mut dirty = Vec::with_capacity(aggregates.len());
         for (index, aggregate) in aggregates.iter_mut().enumerate() {
             if let Some(commit) =
-                crate::event_store::prepare_commit(&*self.store, aggregate).await?
+                crate::event_store::prepare_commit(&*self.store, &**aggregate).await?
             {
                 prepared.push(commit);
                 dirty.push(index);

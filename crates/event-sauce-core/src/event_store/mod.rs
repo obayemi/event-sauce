@@ -8,9 +8,7 @@
 mod commit;
 mod load;
 
-pub(crate) use commit::{
-    flush_prepared, flush_prepared_batch, prepare_commit, prepare_commit_deleted,
-};
+pub(crate) use commit::{flush_prepared, flush_prepared_batch, prepare_commit};
 pub(crate) use load::{count_events, load, load_any, load_deleted};
 
 use std::sync::Arc;
@@ -487,7 +485,7 @@ pub trait EventStore: Send + Sync {
         A::DeletedState: serde::Serialize,
         A::Event: serde::Serialize,
     {
-        if let Some(prepared) = prepare_commit_deleted(self, aggregate).await? {
+        if let Some(prepared) = prepare_commit(self, aggregate).await? {
             flush_prepared(self, prepared).await?;
             aggregate.clear_pending_events();
         }

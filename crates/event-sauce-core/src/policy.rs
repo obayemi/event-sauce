@@ -312,9 +312,7 @@ impl<S: EventStore + 'static> PolicyContext<S> {
     {
         let metadata = self.build_causation_metadata()?;
         aggregate.set_pending_metadata(&metadata);
-        if let Some(prepared) =
-            crate::event_store::prepare_commit_deleted(&*self.store, aggregate).await?
-        {
+        if let Some(prepared) = crate::event_store::prepare_commit(&*self.store, aggregate).await? {
             self.pending_commits.lock().unwrap().push(prepared);
             aggregate.clear_pending_events();
         }

@@ -8,9 +8,10 @@ use super::{
     require_crypto_provider, snapshot_aad, EventStore, PreparedCommit, Snapshot, StreamCommit,
 };
 use crate::commit_source::CommitSource;
+#[cfg(test)]
+use crate::AggregateRoot;
 use crate::{
-    Aggregate, AggregateRoot, AggregateType, AggregateVersion, DeletedAggregateRoot, DomainEvent,
-    EventEnvelope, Result, StreamId,
+    Aggregate, AggregateType, AggregateVersion, DomainEvent, EventEnvelope, Result, StreamId,
 };
 
 /// Encrypts event envelopes in place for an encrypted or field-encrypted
@@ -69,7 +70,7 @@ where
 /// do that only once the prepared commit has actually been persisted, so a
 /// failed or cancelled write can be retried instead of silently losing the
 /// events.
-async fn prepare_commit_for<S: EventStore + ?Sized, A, R: CommitSource<A>>(
+pub(crate) async fn prepare_commit<S: EventStore + ?Sized, A, R: CommitSource<A>>(
     store: &S,
     root: &R,
 ) -> Result<Option<PreparedCommit>>
@@ -130,37 +131,6 @@ where
         claims: root.claims(),
         clear_claims: R::IS_DELETED,
     }))
-}
-
-/// Prepares a commit without persisting it.
-///
-/// See [`prepare_commit_for`] for the shared implementation.
-pub(crate) async fn prepare_commit<S: EventStore + ?Sized, A>(
-    store: &S,
-    aggregate: &AggregateRoot<A>,
-) -> Result<Option<PreparedCommit>>
-where
-    A: Aggregate + serde::Serialize,
-    A::Event: serde::Serialize,
-{
-    prepare_commit_for(store, aggregate).await
-}
-
-/// Prepares a commit for a deleted aggregate without persisting it.
-///
-/// Works like [`prepare_commit()`] but operates on a `DeletedAggregateRoot<A>`.
-/// The snapshot stores the serialized `DeletedState` with `is_deleted = true`.
-/// See [`prepare_commit_for`] for the shared implementation.
-pub(crate) async fn prepare_commit_deleted<S: EventStore + ?Sized, A>(
-    store: &S,
-    aggregate: &DeletedAggregateRoot<A>,
-) -> Result<Option<PreparedCommit>>
-where
-    A: Aggregate + serde::Serialize,
-    A::DeletedState: serde::Serialize,
-    A::Event: serde::Serialize,
-{
-    prepare_commit_for(store, aggregate).await
 }
 
 /// Flushes a prepared commit to the event store.
@@ -562,10 +532,7 @@ mod tests {
             })
             .unwrap();
 
-        let prepared = prepare_commit_deleted(&store, &deleted)
-            .await
-            .unwrap()
-            .unwrap();
+        let prepared = prepare_commit(&store, &deleted).await.unwrap().unwrap();
 
         assert!(prepared.claims.is_empty());
         assert!(prepared.clear_claims);

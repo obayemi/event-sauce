@@ -96,7 +96,7 @@ where
         Ok(())
     }
 
-    /// Shared implementation of `prepare_save`/`prepare_save_deleted`: the two
+    /// Prepares a save for an active or deleted aggregate root: the two
     /// differ only in which state a [`CommitSource`](crate::commit_source::CommitSource)
     /// serializes, whether it carries claims, and whether it is a deletion.
     fn prepare<R: crate::commit_source::CommitSource<A>>(root: &R) -> Result<Option<StateCommit>> {
@@ -126,14 +126,6 @@ where
             claims: root.claims(),
             clear_claims: R::IS_DELETED,
         }))
-    }
-
-    fn prepare_save(aggregate: &AggregateRoot<A>) -> Result<Option<StateCommit>> {
-        Self::prepare(aggregate)
-    }
-
-    fn prepare_save_deleted(aggregate: &DeletedAggregateRoot<A>) -> Result<Option<StateCommit>> {
-        Self::prepare(aggregate)
     }
 
     fn stream_id_for(id: EntityId) -> StreamId {
@@ -184,7 +176,7 @@ where
     }
 
     async fn save(&self, aggregate: &mut AggregateRoot<A>) -> Result<()> {
-        if let Some(commit) = Self::prepare_save(aggregate)? {
+        if let Some(commit) = Self::prepare(aggregate)? {
             self.store.save(commit).await?;
             aggregate.clear_pending_events();
         }
@@ -195,7 +187,7 @@ where
         let mut commits = Vec::with_capacity(aggregates.len());
         let mut dirty = Vec::with_capacity(aggregates.len());
         for (index, aggregate) in aggregates.iter().enumerate() {
-            if let Some(commit) = Self::prepare_save(aggregate)? {
+            if let Some(commit) = Self::prepare(&**aggregate)? {
                 commits.push(commit);
                 dirty.push(index);
             }
@@ -208,7 +200,7 @@ where
     }
 
     async fn save_deleted(&self, aggregate: &mut DeletedAggregateRoot<A>) -> Result<()> {
-        if let Some(commit) = Self::prepare_save_deleted(aggregate)? {
+        if let Some(commit) = Self::prepare(aggregate)? {
             self.store.save(commit).await?;
             aggregate.clear_pending_events();
         }
