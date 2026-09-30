@@ -4,7 +4,8 @@
 /// Generate command handler methods for an aggregate.
 ///
 /// This macro reduces boilerplate by automatically generating command methods
-/// that create events, apply timestamps, and apply the events via `AggregateRoot`.
+/// that create events and apply them via `AggregateRoot`. A command stamps a
+/// `timestamp` from the wall clock only when marked `@clock` — see below.
 /// It generates:
 ///
 /// 1. **Event helper functions** on the entity type (for creating events)
@@ -20,6 +21,18 @@
 ///         // Regular commands (on AggregateRoot)
 ///         fn command_name(param1: Type1, param2: Type2)
 ///             -> EventStruct { field1, field2 };
+///
+///         // @clock stamps `timestamp` from the wall clock instead of
+///         // taking it as a parameter
+///         @clock fn touch() -> TouchedEventStruct { };
+///
+///         // @actor(T) takes an extra `&AggregateRoot<T>` parameter for
+///         // permission checks
+///         @actor(Admin) fn approve(reason: String) -> ApprovedEventStruct { reason };
+///
+///         // @delete consumes the `AggregateRoot` and returns a
+///         // `DeletedAggregateRoot`
+///         @delete fn close(reason: String) -> ClosedEventStruct { reason };
 ///
 ///         // Init commands (on UninitAggregateRoot + creation functions)
 ///         // Multiple @init commands are supported for different creation paths
@@ -62,8 +75,8 @@
 ///
 /// command_handler! {
 ///     impl Order {
-///         @init fn create_order(user_id: EntityId) -> OrderCreatedEvent { user_id };
-///         fn add_item(item: String, qty: u32) -> ItemAddedEvent { item, qty };
+///         @clock @init fn create_order(user_id: EntityId) -> OrderCreatedEvent { user_id };
+///         @clock fn add_item(item: String, qty: u32) -> ItemAddedEvent { item, qty };
 ///     }
 /// }
 ///
@@ -81,7 +94,7 @@
 ///
 /// - Reduces boilerplate by ~70%
 /// - Ensures consistent command pattern
-/// - Automatic timestamp handling
+/// - Opt-in `@clock` timestamp handling (see below)
 /// - Type-safe command parameters
 /// - Commands operate through `AggregateRoot` (events are the only mutation path)
 /// - Init creation functions provide ergonomic aggregate construction
@@ -170,7 +183,25 @@ macro_rules! __command_handler_event {
     };
 }
 
-/// Internal TT muncher for command_handler! — supports @init flag on individual commands.
+/// Internal TT muncher for `command_handler!`.
+///
+/// Each arm matches a distinct command shape (regular / `@init` / `@delete` /
+/// `@actor(Ty)` / combinations) and pushes the parsed metadata into the
+/// corresponding accumulator before recursing on the tail:
+///
+/// | Markers                  | Accumulator             | Variant kind   |
+/// |---------------------------|-------------------------|----------------|
+/// | (none)                   | `regular_commands`      | regular        |
+/// | `@actor(T)`              | `actor_commands`        | actor          |
+/// | `@init`                  | `init_commands`         | init           |
+/// | `@init @actor(T)`        | `actor_init_commands`   | actor_init     |
+/// | `@delete`                | `delete_commands`       | delete         |
+/// | `@delete @actor(T)`      | `actor_delete_commands` | actor_delete   |
+///
+/// The arms are listed most-specific-first (combined markers before bare
+/// markers) so macro_rules picks the right one for compound annotations like
+/// `@init @actor(T)`. After the last command is munched, the base case fires
+/// and emits the actual command-method impls keyed off each accumulator.
 ///
 /// When `@init` is present on a command:
 /// - Event helper is an **associated function** (no `&self`): `Aggregate::cmd_event(params) -> Event`
@@ -178,27 +209,6 @@ macro_rules! __command_handler_event {
 ///   `Result<AggregateRoot<Aggregate>, Error>`
 /// - Creation functions are generated: `Aggregate::cmd(params) -> Result<AggregateRoot<A>, Error>`
 ///   and `Aggregate::cmd_with_id(id, params) -> Result<AggregateRoot<A>, Error>`
-///
-/// Regular commands (no `@init`) generate the same code as before.
-// Internal TT-muncher for `command_handler!`.
-//
-// Each arm matches a distinct command shape (regular / @init / @delete /
-// @actor(Ty) / combinations) and pushes the parsed metadata into the
-// corresponding accumulator before recursing on the tail.
-//
-// | Markers                  | Accumulator             | Variant kind   |
-// |--------------------------|-------------------------|----------------|
-// | (none)                   | `regular_commands`      | regular        |
-// | `@actor(T)`              | `actor_commands`        | actor          |
-// | `@init`                  | `init_commands`         | init           |
-// | `@init @actor(T)`        | `actor_init_commands`   | actor_init     |
-// | `@delete`                | `delete_commands`       | delete         |
-// | `@delete @actor(T)`      | `actor_delete_commands` | actor_delete   |
-//
-// The arms are listed most-specific-first (combined markers before bare
-// markers) so macro_rules picks the right one for compound annotations like
-// `@init @actor(T)`. After the last command is munched, the base case fires
-// and emits the actual command-method impls keyed off each accumulator.
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __command_handler_init_internal {
