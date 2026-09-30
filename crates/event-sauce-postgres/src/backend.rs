@@ -693,36 +693,12 @@ impl PostgresBackend {
                 }
             }
 
-            for held_policy in held.iter() {
-                if batch_position <= held_policy.position {
-                    continue;
-                }
-                let landed = self
-                    .checkpoint_store
-                    .save_checkpoint_fenced_tx(
-                        &mut tx,
-                        &held_policy.checkpoint_name,
-                        worker_id,
-                        batch_position,
-                    )
-                    .await?;
-                if !landed {
-                    tx.rollback().await.map_err(|e| {
-                        event_sauce_core::Error::backend(
-                            "Failed to roll back dispatcher transaction",
-                            e,
-                        )
-                    })?;
-                    return Err(event_sauce_core::Error::lease_lost(
-                        held_policy.checkpoint_name.as_str(),
-                        worker_id,
-                    ));
-                }
-            }
-
-            tx.commit().await.map_err(|e| {
-                event_sauce_core::Error::backend("Failed to commit dispatcher transaction", e)
-            })?;
+            let advancing: Vec<(&str, event_sauce_core::Position)> = held
+                .iter()
+                .filter(|held_policy| batch_position > held_policy.position)
+                .map(|held_policy| (held_policy.checkpoint_name.as_str(), batch_position))
+                .collect();
+            self.commit_fenced(tx, worker_id, &advancing).await?;
             for held_policy in held.iter_mut() {
                 if batch_position > held_policy.position {
                     held_policy.position = batch_position;
@@ -783,48 +759,56 @@ impl PostgresBackend {
                 })?;
 
                 projection.handle(&entry.envelope, &mut tx).await?;
-                let landed = self
-                    .checkpoint_store
-                    .save_checkpoint_fenced_tx(&mut tx, P::NAME, worker_id, current_position)
+                self.commit_fenced(tx, worker_id, &[(P::NAME, current_position)])
                     .await?;
-                if !landed {
-                    tx.rollback().await.map_err(|e| {
-                        event_sauce_core::Error::backend(
-                            "Failed to roll back projection transaction",
-                            e,
-                        )
-                    })?;
-                    return Err(event_sauce_core::Error::lease_lost(P::NAME, worker_id));
-                }
-                tx.commit().await.map_err(|e| {
-                    event_sauce_core::Error::backend("Failed to commit projection transaction", e)
-                })?;
                 checkpointed_position = current_position;
             }
 
             if checkpointed_position != current_position {
-                let mut tx = self.pool.begin().await.map_err(|e| {
+                let tx = self.pool.begin().await.map_err(|e| {
                     event_sauce_core::Error::backend("Failed to start projection transaction", e)
                 })?;
-                let landed = self
-                    .checkpoint_store
-                    .save_checkpoint_fenced_tx(&mut tx, P::NAME, worker_id, current_position)
+                self.commit_fenced(tx, worker_id, &[(P::NAME, current_position)])
                     .await?;
-                if !landed {
-                    tx.rollback().await.map_err(|e| {
-                        event_sauce_core::Error::backend(
-                            "Failed to roll back projection transaction",
-                            e,
-                        )
-                    })?;
-                    return Err(event_sauce_core::Error::lease_lost(P::NAME, worker_id));
-                }
-                tx.commit().await.map_err(|e| {
-                    event_sauce_core::Error::backend("Failed to commit projection transaction", e)
-                })?;
             }
         }
 
+        Ok(())
+    }
+
+    /// Applies every `(name, position)` fenced checkpoint write inside `tx`;
+    /// if all land, commits and returns `Ok(())`. If any is rejected by the
+    /// fence — the caller no longer holds that lease, or the position does
+    /// not strictly advance — rolls back the whole transaction and returns
+    /// [`Error::LeaseLost`](event_sauce_core::Error::LeaseLost) for that
+    /// name, so a partially-applied batch never lands.
+    ///
+    /// Shared by every fenced commit site: the per-event and tail advances
+    /// of [`run_under_lease`](Self::run_under_lease), and every held
+    /// policy's advance in
+    /// [`dispatch_under_lease`](Self::dispatch_under_lease).
+    async fn commit_fenced(
+        &self,
+        mut tx: sqlx::Transaction<'_, sqlx::Postgres>,
+        worker_id: &str,
+        checkpoints: &[(&str, event_sauce_core::Position)],
+    ) -> event_sauce_core::Result<()> {
+        for (name, position) in checkpoints {
+            let landed = self
+                .checkpoint_store
+                .save_checkpoint_fenced_tx(&mut tx, name, worker_id, *position)
+                .await?;
+            if !landed {
+                tx.rollback().await.map_err(|e| {
+                    event_sauce_core::Error::backend("Failed to roll back transaction", e)
+                })?;
+                return Err(event_sauce_core::Error::lease_lost(*name, worker_id));
+            }
+        }
+
+        tx.commit()
+            .await
+            .map_err(|e| event_sauce_core::Error::backend("Failed to commit transaction", e))?;
         Ok(())
     }
 }
@@ -2814,6 +2798,279 @@ mod tests {
             reacquired.is_some(),
             "worker-a must release policy-a's lease even though acquiring \
              policy-b's failed"
+        );
+    }
+
+    /// `commit_fenced` applies every checkpoint in one transaction together
+    /// with whatever else that transaction did — here, an enqueue. One of
+    /// the two checkpoints belongs to another worker: the whole transaction
+    /// must roll back, so neither checkpoint moves and the enqueue never
+    /// lands, not just the checkpoint whose fence was rejected.
+    #[tokio::test]
+    async fn test_commit_fenced_rolls_back_the_whole_transaction_on_one_rejection() {
+        use event_sauce_core::CheckpointStore;
+
+        let (url, _container) = start_test_db().await;
+        let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
+        let outbox = crate::PostgresPolicyOutbox::new(backend.pool().clone(), "event_sauce");
+        outbox.migrate().await.unwrap();
+
+        backend
+            .checkpoint_store()
+            .try_acquire_lease("cp-held", "worker-a", std::time::Duration::from_secs(30))
+            .await
+            .unwrap();
+        backend
+            .checkpoint_store()
+            .try_acquire_lease("cp-foreign", "worker-b", std::time::Duration::from_secs(30))
+            .await
+            .unwrap();
+
+        let mut tx = backend.pool().begin().await.unwrap();
+        outbox
+            .enqueue_tx(&mut tx, "policy-a", Uuid::new_v4(), 1)
+            .await
+            .unwrap();
+
+        let err = backend
+            .commit_fenced(
+                tx,
+                "worker-a",
+                &[
+                    ("cp-held", event_sauce_core::Position::new(1)),
+                    ("cp-foreign", event_sauce_core::Position::new(1)),
+                ],
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, event_sauce_core::Error::LeaseLost { .. }),
+            "the name worker-a does not hold must be reported as LeaseLost: {err:?}"
+        );
+
+        assert_eq!(
+            outbox.pending_count("policy-a").await.unwrap(),
+            0,
+            "the enqueue sharing the rolled-back transaction must not land"
+        );
+        assert_eq!(
+            backend
+                .checkpoint_store()
+                .load_checkpoint("cp-held")
+                .await
+                .unwrap(),
+            Some(event_sauce_core::Position::start()),
+            "even the name whose fence would have passed must not move, \
+             since it shared the rolled-back transaction"
+        );
+        assert_eq!(
+            backend
+                .checkpoint_store()
+                .load_checkpoint("cp-foreign")
+                .await
+                .unwrap(),
+            Some(event_sauce_core::Position::start()),
+            "the foreign checkpoint must not move either"
+        );
+    }
+
+    /// One held policy's lease is stolen mid-batch (an `AFTER INSERT`
+    /// trigger on `policy_outbox` reassigns its checkpoint row to another
+    /// worker as soon as any row lands): the whole batch's transaction
+    /// must roll back, so no other held policy's enqueues or checkpoint
+    /// advance from that same batch survive either — partial application
+    /// would let a still-held policy silently skip events its own
+    /// checkpoint claims to have seen.
+    #[tokio::test]
+    async fn test_dispatch_lease_stolen_mid_batch_rolls_back_every_policy() {
+        use event_sauce_core::CheckpointStore;
+
+        let (url, _container) = start_test_db().await;
+        let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
+        let outbox = crate::PostgresPolicyOutbox::new(backend.pool().clone(), "event_sauce");
+        outbox.migrate().await.unwrap();
+
+        let store = backend.event_store();
+        append_typed(&store, "Order".to_string(), "Order.Created".to_string()).await;
+        append_typed(&store, "User".to_string(), "User.Created".to_string()).await;
+        append_typed(&store, "Order".to_string(), "Order.Created".to_string()).await;
+
+        let checkpoint_a = policy_checkpoint_name("policy-a");
+        let checkpoint_b = policy_checkpoint_name("policy-b");
+        sqlx::query(&format!(
+            "CREATE FUNCTION event_sauce.steal() RETURNS trigger AS $$
+             BEGIN
+                 UPDATE event_sauce.checkpoints SET worker_id = 'thief'
+                 WHERE subscription_name = '{checkpoint_b}';
+                 RETURN NEW;
+             END $$ LANGUAGE plpgsql"
+        ))
+        .execute(backend.pool())
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE TRIGGER steal AFTER INSERT ON event_sauce.policy_outbox
+             FOR EACH ROW EXECUTE FUNCTION event_sauce.steal()",
+        )
+        .execute(backend.pool())
+        .await
+        .unwrap();
+
+        let policies = vec![
+            PolicyDispatch::new(
+                "policy-a",
+                event_sauce_core::EventFilter::by_aggregate_type("Order"),
+            ),
+            PolicyDispatch::new(
+                "policy-b",
+                event_sauce_core::EventFilter::by_aggregate_type("User"),
+            ),
+        ];
+        let err = backend
+            .dispatch_policies_to_outbox(
+                &outbox,
+                "worker-a",
+                &policies,
+                std::time::Duration::from_secs(30),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            err.is_lease_lost(),
+            "expected LeaseLost for the stolen policy: {err:?}"
+        );
+
+        assert_eq!(
+            outbox.pending_count("policy-a").await.unwrap(),
+            0,
+            "policy-a's enqueues must roll back with the batch"
+        );
+        assert_eq!(outbox.pending_count("policy-b").await.unwrap(), 0);
+        assert_eq!(
+            backend
+                .checkpoint_store()
+                .load_checkpoint(&checkpoint_a)
+                .await
+                .unwrap(),
+            Some(Position::start()),
+            "policy-a's checkpoint must not move either, since it shared \
+             the rolled-back transaction"
+        );
+        assert_eq!(
+            backend
+                .checkpoint_store()
+                .load_checkpoint(&checkpoint_b)
+                .await
+                .unwrap(),
+            Some(Position::start())
+        );
+        assert!(backend
+            .checkpoint_store()
+            .try_acquire_lease(
+                &checkpoint_a,
+                "worker-c",
+                std::time::Duration::from_secs(30)
+            )
+            .await
+            .unwrap()
+            .is_some());
+        assert!(backend
+            .checkpoint_store()
+            .try_acquire_lease(
+                &checkpoint_b,
+                "worker-c",
+                std::time::Duration::from_secs(30)
+            )
+            .await
+            .unwrap()
+            .is_some());
+    }
+
+    /// A projection whose `handle` reassigns its own checkpoint row to
+    /// another worker while handling the 2nd event, so that event's
+    /// fenced commit is rejected mid-drain.
+    struct StealingProjection;
+
+    #[async_trait::async_trait]
+    impl crate::PostgresProjection for StealingProjection {
+        const NAME: &'static str = "StealingProjection";
+
+        fn handled_event_types() -> Option<Vec<&'static str>> {
+            Some(vec!["TestEvent"])
+        }
+
+        async fn handle(
+            &mut self,
+            _envelope: &EventEnvelope,
+            tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        ) -> event_sauce_core::Result<()> {
+            sqlx::query("UPDATE event_sauce.counting_projection SET n = n + 1 WHERE id = 1")
+                .execute(&mut **tx)
+                .await
+                .unwrap();
+            let n: i64 =
+                sqlx::query_scalar("SELECT n FROM event_sauce.counting_projection WHERE id = 1")
+                    .fetch_one(&mut **tx)
+                    .await
+                    .unwrap();
+            if n == 2 {
+                sqlx::query(
+                    "UPDATE event_sauce.checkpoints SET worker_id = 'thief' \
+                     WHERE subscription_name = 'StealingProjection'",
+                )
+                .execute(&mut **tx)
+                .await
+                .unwrap();
+            }
+            Ok(())
+        }
+    }
+
+    /// The lease is stolen mid-drain, on the 2nd of 3 fetched events: that
+    /// event's fenced checkpoint write must be rejected, rolling back its
+    /// own handler's work, while the 1st event's earlier commit (its own,
+    /// already-landed transaction) stands.
+    #[tokio::test]
+    async fn test_run_leased_projection_lease_stolen_mid_drain_rolls_back_the_stolen_event() {
+        use event_sauce_core::CheckpointStore;
+
+        let (url, _container) = start_test_db().await;
+        let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
+        CountingProjection::migrate(backend.pool(), "event_sauce").await;
+
+        let store = backend.event_store();
+        for _ in 0..3 {
+            append_test_event(&store, AggregateVersion::initial()).await;
+        }
+
+        let err = backend
+            .run_leased_projection(
+                &mut StealingProjection,
+                "worker-a",
+                std::time::Duration::from_secs(30),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            err.is_lease_lost(),
+            "expected LeaseLost once the lease is stolen mid-drain: {err:?}"
+        );
+
+        assert_eq!(
+            CountingProjection::read(backend.pool(), "event_sauce").await,
+            1,
+            "only the 1st event's handler work, committed before the \
+             lease was stolen, must land"
+        );
+        assert_eq!(
+            backend
+                .checkpoint_store()
+                .load_checkpoint("StealingProjection")
+                .await
+                .unwrap(),
+            Some(Position::new(1)),
+            "the checkpoint must stop at the last event whose fenced \
+             commit actually landed"
         );
     }
 
