@@ -1946,6 +1946,71 @@ mod tests {
         );
     }
 
+    /// Polls `CountingProjection::read` until it reaches `target`, or panics
+    /// after `timeout` — a bounded wait so a regression fails the test
+    /// instead of hanging the suite.
+    async fn poll_count_reaches(pool: &PgPool, schema: &str, target: i64, timeout: Duration) {
+        tokio::time::timeout(timeout, async {
+            loop {
+                if CountingProjection::read(pool, schema).await >= target {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("count never reached {target} within {timeout:?}"));
+    }
+
+    /// Pins where the next tick resumes: it must be the position
+    /// [`run_under_lease`](PostgresBackend::run_under_lease) actually
+    /// reached, not whatever the checkpoint store happens to hold — an
+    /// event appended between two ticks must still be picked up by the
+    /// very next one.
+    #[tokio::test]
+    async fn test_run_sticky_projection_resumes_where_previous_tick_left_off() {
+        let (url, _container) = start_test_db().await;
+        let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
+        CountingProjection::migrate(backend.pool(), "event_sauce").await;
+
+        let store = backend.event_store();
+        append_test_event(&store, AggregateVersion::initial()).await;
+        append_test_event(&store, AggregateVersion::initial()).await;
+
+        let mut projection = CountingProjection {
+            fail_after: None,
+            seen: 0,
+        };
+        let keep_going = Arc::new(AtomicBool::new(true));
+        let keep_going_for_runner = Arc::clone(&keep_going);
+
+        let sticky = backend.run_sticky_projection(
+            &mut projection,
+            "worker-a",
+            Duration::from_secs(30),
+            Duration::from_millis(30),
+            move || keep_going_for_runner.load(Ordering::SeqCst),
+        );
+
+        let driver = async {
+            poll_count_reaches(backend.pool(), "event_sauce", 2, Duration::from_secs(5)).await;
+
+            append_test_event(&store, AggregateVersion::initial()).await;
+
+            poll_count_reaches(backend.pool(), "event_sauce", 3, Duration::from_secs(5)).await;
+
+            keep_going.store(false, Ordering::SeqCst);
+        };
+
+        let (outcome, ()) = tokio::join!(sticky, driver);
+        assert_eq!(outcome.unwrap(), LeaseOutcome::Completed);
+        assert_eq!(
+            CountingProjection::read(backend.pool(), "event_sauce").await,
+            3,
+            "the event appended between ticks must have been handled too"
+        );
+    }
+
     #[tokio::test]
     async fn test_run_sticky_projection_rejects_idle_interval_too_close_to_lease_duration() {
         let (url, _container) = start_test_db().await;
