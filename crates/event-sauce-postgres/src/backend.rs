@@ -327,24 +327,19 @@ impl PostgresBackend {
             |start_position| async move {
                 let mut position = start_position;
                 loop {
-                    self.run_under_lease(projection, worker_id, lease_duration, position)
+                    position = self
+                        .run_under_lease(projection, worker_id, lease_duration, position)
                         .await?;
 
                     tokio::time::sleep(idle_interval).await;
 
                     if !should_continue() {
-                        return Ok(());
+                        return Ok(position);
                     }
 
                     self.checkpoint_store
                         .renew_lease(P::NAME, worker_id, lease_duration)
                         .await?;
-
-                    position = self
-                        .checkpoint_store
-                        .load_checkpoint(P::NAME)
-                        .await?
-                        .unwrap_or(position);
                 }
             },
         )
@@ -365,7 +360,7 @@ impl PostgresBackend {
     /// holds one lease per policy instead — it may end up dispatching only
     /// a subset of the policies it was given — so it manages its own set of
     /// leases rather than using this helper.
-    async fn with_lease<F, Fut>(
+    async fn with_lease<F, Fut, T>(
         &self,
         name: &str,
         worker_id: &str,
@@ -374,7 +369,7 @@ impl PostgresBackend {
     ) -> Result<LeaseOutcome>
     where
         F: FnOnce(Position) -> Fut,
-        Fut: std::future::Future<Output = Result<()>>,
+        Fut: std::future::Future<Output = Result<T>>,
     {
         let Some(start_position) = self
             .checkpoint_store
@@ -388,7 +383,7 @@ impl PostgresBackend {
 
         let _ = self.checkpoint_store.release_lease(name, worker_id).await;
 
-        result.map(|()| LeaseOutcome::Completed)
+        result.map(|_| LeaseOutcome::Completed)
     }
 
     /// Rebuilds a [`PostgresProjection`](PostgresProjection) from genesis
@@ -468,7 +463,7 @@ impl PostgresBackend {
         projection: &mut P,
         worker_id: &str,
         lease_duration: Duration,
-    ) -> Result<()> {
+    ) -> Result<Position> {
         // Atomic reset: clear the read-model and rewind the checkpoint to
         // genesis in one transaction. The rewind is a backward move, so it uses
         // the UNFENCED save (the fenced save would reject it) — safe because we
@@ -705,7 +700,7 @@ impl PostgresBackend {
         worker_id: &str,
         lease_duration: Duration,
         start_position: Position,
-    ) -> Result<()> {
+    ) -> Result<Position> {
         let filter = P::event_filter();
         let mut current_position = start_position;
         let renew_interval = lease_duration / 3;
@@ -750,7 +745,7 @@ impl PostgresBackend {
             }
         }
 
-        Ok(())
+        Ok(current_position)
     }
 
     /// Starts a transaction on the pool, mapping a failure to
