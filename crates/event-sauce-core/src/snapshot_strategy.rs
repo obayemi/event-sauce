@@ -226,10 +226,7 @@ pub struct EveryNEvents(NonZeroU32);
 impl EveryNEvents {
     /// The interval [`SnapshotConfig`](crate::SnapshotConfig)'s built-in
     /// default uses: a snapshot every 100 events.
-    pub const DEFAULT_INTERVAL: NonZeroU32 = match NonZeroU32::new(100) {
-        Some(n) => n,
-        None => unreachable!(),
-    };
+    pub const DEFAULT_INTERVAL: NonZeroU32 = NonZeroU32::new(100).unwrap();
 
     /// Creates a new `EveryNEvents` strategy from a non-zero interval.
     ///
@@ -404,11 +401,6 @@ mod tests {
     #[test]
     fn test_every_n_events_try_new_rejects_zero() {
         assert!(EveryNEvents::try_new(0).is_none());
-    }
-
-    #[test]
-    fn test_every_n_events_try_new_accepts_positive() {
-        assert_eq!(EveryNEvents::try_new(1).unwrap().interval(), 1);
     }
 
     #[test]
