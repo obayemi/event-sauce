@@ -8,7 +8,7 @@ use super::PostgresEventStore;
 
 /// Computes the stable advisory-lock key for an event log: the schema-
 /// qualified events table name (e.g. `"public.events"`), hashed by
-/// [`advisory_lock_key`](crate::migrations::advisory_lock_key), whose doc
+/// [`advisory_lock_key`](crate::sql::advisory_lock_key), whose doc
 /// carries the hash algorithm's stability contract. Keying on the qualified
 /// table name isolates different schemas / test databases — they take
 /// distinct keys and never serialize against one another.
@@ -18,7 +18,7 @@ use super::PostgresEventStore;
 /// commit order across all streams sharing the table (see
 /// [`PostgresEventStore::append`] for the resulting guarantee).
 pub(super) fn append_lock_key(qualified_events_table: &str) -> i64 {
-    crate::migrations::advisory_lock_key(qualified_events_table)
+    crate::sql::advisory_lock_key(qualified_events_table)
 }
 
 /// A commit with nothing to persist: no events, no claims, and no claim
@@ -389,7 +389,7 @@ mod tests {
     /// including ones on different library versions — must compute the SAME
     /// key to actually serialize against each other, so this forwarding
     /// wrapper's output has to stay pinned independently of
-    /// `migrations::tests::advisory_lock_key_is_stable_and_input_distinct`,
+    /// `sql::tests::advisory_lock_key_is_stable_and_input_distinct`,
     /// which only pins the underlying `advisory_lock_key` it forwards to.
     #[test]
     fn test_append_lock_key_pins_wire_value() {

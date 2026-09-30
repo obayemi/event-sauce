@@ -95,6 +95,7 @@ mod event_store;
 mod migrations;
 mod policy_outbox;
 mod projection;
+mod sql;
 mod state_outbox;
 mod state_store;
 

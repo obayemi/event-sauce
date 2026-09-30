@@ -147,7 +147,7 @@ impl PostgresCheckpointStore {
 
     /// Returns a schema-qualified table name (e.g., "schema.checkpoints").
     fn qualify_table(&self, table: &str) -> String {
-        crate::migrations::qualify(&self.schema, table)
+        crate::sql::qualify(&self.schema, table)
     }
 
     /// Builds the upsert SQL used by both pool- and transaction-based saves.

@@ -106,7 +106,7 @@ impl PostgresStateOutbox {
     }
 
     fn outbox_table(&self) -> String {
-        crate::migrations::qualify(&self.schema, "state_outbox")
+        crate::sql::qualify(&self.schema, "state_outbox")
     }
 
     pub(crate) async fn enqueue_tx(

@@ -211,7 +211,7 @@ impl PostgresEventStore {
 
     /// Returns a schema-qualified table name (e.g., "schema.events").
     fn qualify_table(&self, table: &str) -> String {
-        crate::migrations::qualify(&self.schema, table)
+        crate::sql::qualify(&self.schema, table)
     }
 
     /// Returns the `LISTEN`/`NOTIFY` channel name used by this store.

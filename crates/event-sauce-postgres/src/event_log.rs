@@ -47,7 +47,7 @@ impl PostgresEventLogQuery {
     /// `column` is never user input — always a literal at the call site — so
     /// interpolating it into the query text carries no injection risk.
     async fn distinct(&self, column: &'static str) -> Result<Vec<String>> {
-        let events_table = crate::migrations::qualify(&self.schema, "events");
+        let events_table = crate::sql::qualify(&self.schema, "events");
         sqlx::query_scalar(&format!(
             "SELECT DISTINCT {column} FROM {events_table} ORDER BY {column}"
         ))
@@ -92,7 +92,7 @@ fn push_filters(qb: &mut QueryBuilder<'_, Postgres>, params: &EventLogParams) {
 #[async_trait]
 impl EventLogQuery for PostgresEventLogQuery {
     async fn query_events(&self, params: EventLogParams) -> Result<EventLogPage> {
-        let events_table = crate::migrations::qualify(&self.schema, "events");
+        let events_table = crate::sql::qualify(&self.schema, "events");
 
         let mut count_qb: QueryBuilder<Postgres> =
             QueryBuilder::new(format!("SELECT COUNT(*) FROM {events_table}"));

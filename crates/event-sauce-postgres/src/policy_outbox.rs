@@ -298,7 +298,7 @@ impl PostgresPolicyOutbox {
     }
 
     fn outbox_table(&self) -> String {
-        crate::migrations::qualify(&self.schema, "policy_outbox")
+        crate::sql::qualify(&self.schema, "policy_outbox")
     }
 
     /// Creates the `policy_outbox` table and supporting indexes if they

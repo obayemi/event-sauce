@@ -155,7 +155,7 @@ impl PostgresStateStore {
     }
 
     fn qualify_table(&self, table: &str) -> String {
-        crate::migrations::qualify(&self.schema, table)
+        crate::sql::qualify(&self.schema, table)
     }
 
     /// Runs database migrations to set up the state store schema.
