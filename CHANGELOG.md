@@ -96,9 +96,20 @@ explicitly rather than gated behind a major version bump.
 - **`CryptoKeyStore` gains `get_or_insert_key`**, an atomic
   insert-if-absent operation with no default body: every implementor
   (custom key stores included) must now provide one (e.g. a `HashMap::entry`
-  under one write lock, or `INSERT ... ON CONFLICT ... RETURNING`).
-  `ensure_crypto_key()` uses it so concurrent first commits of the same
-  aggregate converge on one key instead of racing.
+  under one write lock, or `INSERT ... ON CONFLICT ... RETURNING`), so
+  concurrent first commits of the same aggregate converge on one key
+  instead of racing. Custom stores must also meet the wider shredding
+  contract this release adds: `get_or_insert_key` MUST refuse a shredded
+  aggregate atomically, returning `Error::key_not_found` and inserting
+  nothing, in the same step as the insert-if-absent check; `delete_key`
+  must leave that shredded state observable instead of just removing the
+  row; and `upsert_key` clears the marker (an explicit key rotation always
+  un-shreds). "Has a key" and "is shredded" are mutually exclusive states
+  a store must never let a reader observe both of at once. Added:
+  `CryptoKeyStore::is_shredded` — a fast-path hint for a caller that wants
+  to reject a shredded aggregate before doing any encryption work; it
+  defaults to `false`, so a store that tracks shredding only through
+  `get_or_insert_key`'s refusal should override it to answer truthfully.
 - **Test fixtures are no longer part of the public API** of
   `event-sauce-core`. A crate depending on them directly (rather than
   through the normal store/repository API) needs to vendor or reimplement
