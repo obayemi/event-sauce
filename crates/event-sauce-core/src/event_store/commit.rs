@@ -98,15 +98,8 @@ where
     let current_version = root.version();
 
     let snapshot = if strategy.should_snapshot_range(expected_version, current_version) {
-        build_snapshot::<S, A>(
-            store,
-            aggregate_id,
-            &aggregate_type,
-            current_version,
-            R::IS_DELETED,
-            || root.serialize_state(),
-        )
-        .await?
+        build_snapshot::<S, A, R>(store, root, aggregate_id, &aggregate_type, current_version)
+            .await?
     } else {
         None
     };
@@ -194,28 +187,23 @@ pub(crate) async fn flush_prepared_batch<S: EventStore + ?Sized>(
 /// failure for an encryption-required aggregate is fatal: it propagates as an
 /// error so the commit fails closed rather than persisting a plaintext snapshot.
 ///
-/// `is_deleted` selects between an active-aggregate snapshot (`entity`,
-/// [`Snapshot::new_with_schema_version`]) and a deleted-aggregate one
-/// (`A::DeletedState`, [`Snapshot::new_deleted_with_schema_version`]).
-///
 /// # Errors
 ///
 /// Returns an error if snapshot encryption fails for an encryption-required
 /// aggregate (see [`encrypt_snapshot_data`]).
-async fn build_snapshot<S: EventStore + ?Sized, A: Aggregate>(
+async fn build_snapshot<S: EventStore + ?Sized, A: Aggregate, R: CommitSource<A>>(
     store: &S,
+    root: &R,
     aggregate_id: uuid::Uuid,
     aggregate_type: &AggregateType,
     current_version: AggregateVersion,
-    is_deleted: bool,
-    serialize: impl FnOnce() -> std::result::Result<serde_json::Value, serde_json::Error>,
 ) -> Result<Option<Snapshot>> {
-    match serialize() {
+    match root.serialize_state() {
         Ok(mut snapshot_data) => {
             if A::is_encrypted() || A::Event::has_any_encrypted_fields() {
                 encrypt_snapshot_data(store, aggregate_id, &mut snapshot_data).await?;
             }
-            let new = if is_deleted {
+            let new = if R::IS_DELETED {
                 Snapshot::new_deleted_with_schema_version
             } else {
                 Snapshot::new_with_schema_version
@@ -232,7 +220,7 @@ async fn build_snapshot<S: EventStore + ?Sized, A: Aggregate>(
             tracing::warn!(
                 aggregate_type = %aggregate_type,
                 aggregate_id = %aggregate_id,
-                is_deleted,
+                is_deleted = R::IS_DELETED,
                 error = %e,
                 "Failed to serialize state for snapshot"
             );
