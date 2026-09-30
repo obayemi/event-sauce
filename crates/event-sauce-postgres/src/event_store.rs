@@ -868,32 +868,35 @@ impl Default for PostgresEventStoreBuilder {
 }
 
 impl PostgresEventStore {
-    /// Reads the current committed stream version inside the given transaction.
+    /// Reads the current committed stream version through `executor`, which
+    /// is either the pool (for a plain read, see [`Self::get_version`]) or an
+    /// open transaction (so callers observe their own uncommitted writes and
+    /// any committed concurrent writes under READ COMMITTED, see
+    /// [`Self::precheck_version`]).
     ///
     /// Computes `MAX(stream_version) + 1` for the stream, treating an empty
-    /// stream (`NULL`) as [`AggregateVersion::initial`]. Runs against the
-    /// transaction so callers observe their own uncommitted writes and any
-    /// committed concurrent writes under READ COMMITTED.
-    async fn current_stream_version(
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    /// stream (`NULL`) as [`AggregateVersion::initial`].
+    async fn current_stream_version<'e, E>(
+        executor: E,
         events_table: &str,
         stream_id: &StreamId,
-    ) -> Result<AggregateVersion> {
+    ) -> Result<AggregateVersion>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+    {
         let query = format!(
             "SELECT MAX(stream_version) FROM {events_table} WHERE aggregate_id = $1 AND aggregate_type = $2"
         );
         let current_version: Option<i64> = sqlx::query_scalar(&query)
             .bind(stream_id.aggregate_id())
             .bind(stream_id.aggregate_type().as_str())
-            .fetch_one(&mut **tx)
+            .fetch_one(executor)
             .await
             .map_err(|e| Error::backend("Failed to check version", e))?;
 
         Ok(AggregateVersion::new(current_version.unwrap_or(-1) + 1))
     }
-}
 
-impl PostgresEventStore {
     /// Takes the per-log append serialization advisory lock inside the given
     /// transaction.
     ///
@@ -945,7 +948,8 @@ impl PostgresEventStore {
         stream_id: &StreamId,
         expected_version: AggregateVersion,
     ) -> Result<()> {
-        let current_version = Self::current_stream_version(tx, events_table, stream_id).await?;
+        let current_version =
+            Self::current_stream_version(&mut **tx, events_table, stream_id).await?;
         if current_version != expected_version {
             return Err(Error::concurrency_conflict(
                 expected_version,
@@ -1301,19 +1305,7 @@ impl EventStore for PostgresEventStore {
 
     async fn get_version(&self, stream_id: StreamId) -> Result<AggregateVersion> {
         let events_table = self.qualify_table("events");
-        let query = format!(
-            "SELECT MAX(stream_version) FROM {events_table} WHERE aggregate_id = $1 AND aggregate_type = $2"
-        );
-
-        let version: Option<i64> = sqlx::query_scalar(&query)
-            .bind(stream_id.aggregate_id())
-            .bind(stream_id.aggregate_type().as_str())
-            .fetch_one(&self.pool)
-            .await
-            .map_err(|e| Error::backend("Failed to get version", e))?;
-
-        let next_version = version.map_or(0, |v| v + 1);
-        Ok(AggregateVersion::new(next_version))
+        Self::current_stream_version(&self.pool, &events_table, &stream_id).await
     }
 
     async fn save_snapshot(&self, snapshot: Snapshot) -> Result<()> {
