@@ -244,7 +244,7 @@ impl PostgresStateOutbox {
         backoff: crate::BackoffPolicy,
     ) -> Result<AckOutcome> {
         let outbox_table = self.outbox_table();
-        crate::policy_outbox::mark_row_failed(
+        crate::outbox_retry::mark_row_failed(
             &self.pool,
             &outbox_table,
             id,

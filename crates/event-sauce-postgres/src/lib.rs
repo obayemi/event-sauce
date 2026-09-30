@@ -93,6 +93,7 @@ mod crypto_key_store;
 mod event_log;
 mod event_store;
 mod migrations;
+mod outbox_retry;
 mod policy_outbox;
 mod projection;
 mod sql;
@@ -107,7 +108,8 @@ pub use checkpoint_store::{PostgresCheckpointStore, PostgresCheckpointStoreBuild
 pub use crypto_key_store::{PostgresCryptoKeyStore, PostgresCryptoKeyStoreBuilder};
 pub use event_log::PostgresEventLogQuery;
 pub use event_store::{PostgresEventStore, PostgresEventStoreBuilder};
-pub use policy_outbox::{AckOutcome, BackoffPolicy, OutboxClaim, PostgresPolicyOutbox};
+pub use outbox_retry::BackoffPolicy;
+pub use policy_outbox::{AckOutcome, OutboxClaim, PostgresPolicyOutbox};
 pub use projection::PostgresProjection;
 pub use state_outbox::{
     PostgresStateOutbox, StateOutboxClaim, StateOutboxDispatcher, StateOutboxHandler,
