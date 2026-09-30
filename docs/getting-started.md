@@ -256,7 +256,7 @@ use std::sync::Arc;
 // Configure with custom snapshot settings
 let store = InMemoryEventStore::builder()
     .snapshot_config(SnapshotConfig::builder()
-        .default_strategy(event_sauce::EveryNEvents(50))
+        .default_strategy(event_sauce::EveryNEvents::try_new(50).expect("50 != 0"))
         .build())
     .build();
 
@@ -324,7 +324,7 @@ mod tests {
         counter.increment(5).unwrap();
 
         assert_eq!(counter.value, 5);
-        assert_eq!(counter.version(), Version::new(1));
+        assert_eq!(counter.version(), AggregateVersion::new(1));
     }
 
     #[test]

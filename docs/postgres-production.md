@@ -100,7 +100,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .pool(pool)
         .schema("event_sauce")
         .snapshot_config(SnapshotConfig::builder()
-            .default_strategy(EveryNEvents(50))
+            .default_strategy(EveryNEvents::try_new(50).expect("50 != 0"))
             .build())
         .checkpoint_store(Arc::new(checkpoint_store))
         .build()?;
@@ -266,18 +266,18 @@ Load aggregate → Load snapshot at event 900 → Replay 100 events → Return (
 ### Snapshot Strategies
 
 ```rust
-use event_sauce::{SnapshotConfig, EveryNEvents, Never};
+use event_sauce::{SnapshotConfig, EveryNEvents};
 
 // Strategy 1: Snapshot every N events (recommended)
 let config = SnapshotConfig::builder()
-    .default_strategy(EveryNEvents(100))  // Snapshot every 100 events
-    .load_from_snapshot(true)
+    .default_strategy(EveryNEvents::try_new(100).expect("100 != 0"))  // Snapshot every 100 events
+    .use_snapshots_on_load(true)
     .build();
 
 // Strategy 2: More frequent snapshots for hot aggregates
 let config = SnapshotConfig::builder()
-    .default_strategy(EveryNEvents(50))   // More frequent
-    .load_from_snapshot(true)
+    .default_strategy(EveryNEvents::try_new(50).expect("50 != 0"))   // More frequent
+    .use_snapshots_on_load(true)
     .build();
 
 // Strategy 3: Disable snapshots (for testing or low-event aggregates)
@@ -466,15 +466,15 @@ ALTER TABLE event_sauce.snapshots SET (
 **Efficient event loading:**
 ```rust
 // GOOD: Load only what you need
-let events = store.load_stream(stream_id, Version::new(10)).await?;
+let events = store.load_stream(stream_id, AggregateVersion::new(10)).await?;
 
 // GOOD: Use snapshots
 let config = SnapshotConfig::builder()
-    .default_strategy(EveryNEvents(100))
+    .default_strategy(EveryNEvents::try_new(100).expect("100 != 0"))
     .build();
 
 // AVOID: Loading all events for a high-event aggregate
-let events = store.load_stream(stream_id, Version::initial()).await?;
+let events = store.load_stream(stream_id, AggregateVersion::initial()).await?;
 // Use snapshots instead!
 ```
 
