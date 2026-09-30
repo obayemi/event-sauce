@@ -1774,6 +1774,70 @@ mod tests {
         );
     }
 
+    /// A projection whose `handle` takes a fixed, configurable delay, so a
+    /// test can make one drain run longer than a given lease duration.
+    struct SlowCountingProjection {
+        delay: Duration,
+        seen: u64,
+    }
+
+    #[async_trait::async_trait]
+    impl PostgresProjection for SlowCountingProjection {
+        const NAME: &'static str = "SlowCountingProjection";
+
+        fn handled_event_types() -> Option<Vec<&'static str>> {
+            Some(vec!["TestEvent"])
+        }
+
+        async fn handle(
+            &mut self,
+            _envelope: &EventEnvelope,
+            tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        ) -> Result<()> {
+            tokio::time::sleep(self.delay).await;
+            self.seen += 1;
+            sqlx::query("UPDATE event_sauce.counting_projection SET n = n + 1 WHERE id = 1")
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| Error::custom(format!("update failed: {e}")))?;
+            Ok(())
+        }
+    }
+
+    /// A single fenced drain that outlasts its own lease duration must keep
+    /// renewing as it goes — every per-event commit is fenced on
+    /// `leased_until > NOW()`, so without renewal a drain this long would
+    /// lose the lease partway through and fail with
+    /// [`Error::LeaseLost`](Error::LeaseLost).
+    #[tokio::test]
+    async fn test_run_leased_projection_renews_across_a_drain_longer_than_the_lease() {
+        const EVENT_COUNT: u64 = 10;
+
+        let (url, _container) = start_test_db().await;
+        let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
+        CountingProjection::migrate(backend.pool(), "event_sauce").await;
+
+        let store = backend.event_store();
+        for _ in 0..EVENT_COUNT {
+            append_test_event(&store, AggregateVersion::initial()).await;
+        }
+
+        let mut projection = SlowCountingProjection {
+            delay: Duration::from_millis(100),
+            seen: 0,
+        };
+        let outcome = backend
+            .run_leased_projection(&mut projection, "worker-1", Duration::from_millis(600))
+            .await
+            .unwrap();
+        assert_eq!(outcome, LeaseOutcome::Completed);
+        assert_eq!(projection.seen, EVENT_COUNT);
+        assert_eq!(
+            CountingProjection::read(backend.pool(), "event_sauce").await,
+            i64::try_from(EVENT_COUNT).unwrap()
+        );
+    }
+
     #[tokio::test]
     async fn test_run_leased_projection_checkpoint_advances_past_unmatched_tail() {
         let (url, _container) = start_test_db().await;
