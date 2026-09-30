@@ -117,3 +117,13 @@ pub mod prelude {
     #[cfg(feature = "macros")]
     pub use event_sauce_macros::*;
 }
+
+/// Runs the README's rust-fenced code blocks as doctests.
+///
+/// Not part of the crate's API — `#[cfg(doctest)]` keeps it out of normal
+/// builds. Its only job is to make `cargo test --doc` compile the README the
+/// same way a copy-pasting reader would, so a macro change that breaks the
+/// README fails CI instead of silently drifting.
+#[cfg(doctest)]
+#[doc = include_str!("../../../README.md")]
+struct ReadmeDoctests;

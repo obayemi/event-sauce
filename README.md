@@ -64,12 +64,13 @@ read models kept up to date from the very events your aggregates emit.
 
 ```rust
 use event_sauce::prelude::*;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use uuid::Uuid;
 
-// 1. Define your aggregate ID
-#[derive(AggregateId, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-struct CounterId(Uuid);
+// 1. Define your aggregate ID — a typed wrapper around EntityId
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, AggregateId)]
+#[aggregate_id(Counter)]
+struct CounterId(EntityId);
 
 // 2. Define domain errors
 #[derive(AggregateError, Debug, Error)]
@@ -79,9 +80,11 @@ enum CounterError {
 }
 
 // 3. Define your aggregate with business state
-#[aggregate(id = "CounterId", event = "CounterEvent", error = "CounterError")]
-#[derive(Default)]
+#[aggregate(event = "CounterEvent", error = "CounterError")]
+#[derive(Default, Debug, Serialize, Deserialize)]
 struct Counter {
+    #[id]
+    id: CounterId,
     value: i32,
 }
 
@@ -89,42 +92,38 @@ struct Counter {
 use event_sauce::define_events;
 
 define_events! {
-    pub enum CounterEvent for Counter {
+    enum CounterEvent for Counter {
         Incremented {
             amount: i32,
         }
-        @validate {
-            if self.amount <= 0 {
-                return Err(CounterError::InvalidAmount(self.amount));
+        @validate |_counter, event| {
+            if event.amount <= 0 {
+                return Err(CounterError::InvalidAmount(event.amount));
             }
-            return Ok(());
+            Ok(())
         }
         => |counter, event| {
-            counter.state.value += event.amount;
+            counter.value += event.amount;
         },
 
         Decremented {
             amount: i32,
         }
         => |counter, event| {
-            counter.state.value -= event.amount;
+            counter.value -= event.amount;
         },
     }
 }
 
-// 5. Implement business logic
+// 5. Generate command methods — @clock stamps `timestamp` from the wall
+// clock; without it a command takes its instant as a parameter instead
+// (see docs/events.md).
 use event_sauce::command_handler;
-
-impl Counter {
-    fn create() -> Self {
-        Self::new(CounterId(Uuid::new_v4()))
-    }
-}
 
 command_handler! {
     impl Counter {
-        fn increment(amount: i32) -> IncrementedEvent { amount };
-        fn decrement(amount: i32) -> DecrementedEvent { amount };
+        @clock fn increment(amount: i32) -> IncrementedEvent { amount };
+        @clock fn decrement(amount: i32) -> DecrementedEvent { amount };
     }
 }
 ```
@@ -132,27 +131,86 @@ command_handler! {
 That's it! Pair your aggregate with a store and start issuing commands:
 
 ```rust
+# use event_sauce::prelude::*;
+# use event_sauce::memory::InMemoryEventStore;
+# use serde::{Deserialize, Serialize};
+# use thiserror::Error;
+# use std::sync::Arc;
+# #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, AggregateId)]
+# #[aggregate_id(Counter)]
+# struct CounterId(EntityId);
+# #[derive(AggregateError, Debug, Error)]
+# enum CounterError {
+#     #[error("Invalid amount: {0}")]
+#     InvalidAmount(i32),
+# }
+# #[aggregate(event = "CounterEvent", error = "CounterError")]
+# #[derive(Default, Debug, Serialize, Deserialize)]
+# struct Counter {
+#     #[id]
+#     id: CounterId,
+#     value: i32,
+# }
+# event_sauce::define_events! {
+#     enum CounterEvent for Counter {
+#         Incremented {
+#             amount: i32,
+#         }
+#         @validate |_counter, event| {
+#             if event.amount <= 0 {
+#                 return Err(CounterError::InvalidAmount(event.amount));
+#             }
+#             Ok(())
+#         }
+#         => |counter, event| {
+#             counter.value += event.amount;
+#         },
+#         Decremented {
+#             amount: i32,
+#         }
+#         => |counter, event| {
+#             counter.value -= event.amount;
+#         },
+#     }
+# }
+# event_sauce::command_handler! {
+#     impl Counter {
+#         @clock fn increment(amount: i32) -> IncrementedEvent { amount };
+#         @clock fn decrement(amount: i32) -> DecrementedEvent { amount };
+#     }
+# }
+# #[tokio::main]
+# async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 let store = Arc::new(InMemoryEventStore::builder().build());
 let repo = store.repository::<Counter>();
 
 let mut counter = repo.create();
 counter.increment(5)?;
 repo.save(&mut counter).await?;
+# Ok(())
+# }
 ```
 
 ### Init Events (Type-State Construction)
 
 Use `@init` events to enforce that aggregates are always constructed through a valid creation event — no more `Default` with invalid states:
 
-```rust
-#[aggregate(id = "OrderId", event = "OrderEvent", error = "OrderError", init)]
+```rust,ignore
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, AggregateId)]
+#[aggregate_id(Order)]
+struct OrderId(EntityId);
+
+#[aggregate(event = "OrderEvent", error = "OrderError", init)]
+#[derive(Debug, Serialize, Deserialize)]
 struct Order {
+    #[id]
+    id: OrderId,
     order_id: String,
     status: OrderStatus,
 }
 
 define_events! {
-    pub enum OrderEvent for Order {
+    enum OrderEvent for Order {
         Created {
             order_id: String,
         }
@@ -164,7 +222,7 @@ define_events! {
             Ok(())
         }
         => |id, event| {
-            Order { order_id: event.order_id.clone(), status: OrderStatus::Pending }
+            Order { id: id.into(), order_id: event.order_id.clone(), status: OrderStatus::Pending }
         },
 
         Completed {} => |order, _event| {
@@ -175,8 +233,8 @@ define_events! {
 
 command_handler! {
     impl Order {
-        @init fn create_order(order_id: String) -> CreatedEvent { order_id };
-        fn complete() -> CompletedEvent {};
+        @clock @init fn create_order(order_id: String) -> CreatedEvent { order_id };
+        @clock fn complete() -> CompletedEvent {};
     }
 }
 
@@ -191,7 +249,7 @@ Multiple init variants are supported for different creation paths (e.g., `Create
 
 Require an actor (e.g., a `User`) for specific commands, with automatic permission validation and audit trail:
 
-```rust
+```rust,ignore
 define_events! {
     pub enum DocumentEvent for Document {
         ContentUpdated {
@@ -199,7 +257,7 @@ define_events! {
         }
         @actor(User)
         @validate |_doc, actor, _evt| {
-            if actor.state.role == Role::Viewer {
+            if actor.role == Role::Viewer {
                 return Err(DocumentError::PermissionDenied);
             }
             Ok(())
@@ -212,7 +270,7 @@ define_events! {
 
 command_handler! {
     impl Document {
-        @actor(User) fn update_content(content: String) -> ContentUpdatedEvent { content };
+        @clock @actor(User) fn update_content(content: String) -> ContentUpdatedEvent { content };
     }
 }
 
@@ -226,7 +284,7 @@ Actor validation is **skipped during replay** — events are historical facts, o
 
 React to events on one aggregate to trigger commands on another, with full causation tracking and checkpoint-based resumption:
 
-```rust
+```rust,ignore
 use event_sauce::policy;
 
 // Declarative policy — reacts to UserKickedEvent, removes them from their group
@@ -261,9 +319,11 @@ Protect sensitive data at rest with full-aggregate or field-level encryption:
 
 **Full-aggregate encryption** — all event and snapshot data encrypted:
 
-```rust
+```rust,ignore
 #[aggregate(event = "UserEvent", error = "UserError", encrypted)]
 struct User {
+    #[id]
+    id: EntityId,
     name: String,
     email: String,
 }
@@ -271,7 +331,7 @@ struct User {
 
 **Field-level encryption** — encrypt only sensitive fields, keep others queryable:
 
-```rust
+```rust,ignore
 define_events! {
     pub enum PatientEvent for Patient {
         Registered {
@@ -293,7 +353,7 @@ All store builders include **AES-256-GCM encryption** by default — no extra se
 
 **Crypto-shredding** (right to be forgotten) — delete the key to make data permanently unreadable:
 
-```rust
+```rust,ignore
 store.crypto_key_store()
     .expect("crypto key store configured")
     .delete_key(user_id.as_uuid()).await?;
@@ -306,7 +366,7 @@ See the **[Privacy & Encryption Guide](docs/privacy.md)** for full details.
 
 Enforce cross-aggregate uniqueness constraints — like unique emails or usernames — transactionally during event commit:
 
-```rust
+```rust,ignore
 #[aggregate(event = "ProfileEvent", error = "ProfileError", claims)]
 struct Profile {
     #[id]
@@ -327,7 +387,7 @@ impl Profile {
 
 Claims are enforced atomically within the same transaction as events. If another aggregate already holds the claim, you get a `ClaimConflict` error:
 
-```rust
+```rust,ignore
 let result = store.commit(&mut profile).await;
 match result {
     Err(e) if e.is_claim_conflict() => println!("Email already taken!"),
@@ -347,15 +407,20 @@ See the **[Claims Guide](docs/claims.md)** for full details.
 
 Every event automatically captures who did what and why. Query the full event history with paginated, filtered access:
 
-```rust
+```rust,ignore
+use event_sauce::memory::InMemoryEventLogQuery;
 use event_sauce::{EventLogQuery, EventLogParams};
+
+// Wrap a store in its backend's EventLogQuery (InMemoryEventLogQuery here;
+// PostgresEventLogQuery for the Postgres backend)
+let log_query = InMemoryEventLogQuery::new(store);
 
 // Find all events created by a specific user
 let params = EventLogParams {
-    created_by: Some(user_id),
+    created_by: Some(user_id.as_uuid()),
     ..Default::default()
 };
-let page = store.event_log_query().query_events(params).await?;
+let page = log_query.query_events(params).await?;
 println!("Found {} events by user", page.total_count);
 
 // Filter by aggregate type and time range
@@ -366,7 +431,7 @@ let params = EventLogParams {
     per_page: 25,
     ..Default::default()
 };
-let page = store.event_log_query().query_events(params).await?;
+let page = log_query.query_events(params).await?;
 ```
 
 **Built-in traceability:**
@@ -385,7 +450,7 @@ transaction, so a crash mid-batch never leaves the projection ahead of (or
 behind) its checkpoint. Implement [`PostgresProjection`] and run it with
 [`PostgresBackend::run_postgres_projection`]:
 
-```rust
+```rust,ignore
 use event_sauce::postgres::{PostgresBackend, PostgresProjection};
 use event_sauce::{EventEnvelope, Result};
 
@@ -445,7 +510,7 @@ event-sauce = { version = "0.1", features = ["postgres"] }
 
 Backends live under their own module, so a swap is a one-line change:
 
-```rust
+```rust,ignore
 use event_sauce::memory::InMemoryEventStore;
 use event_sauce::postgres::PostgresBackend;
 use event_sauce::crypto::Aes256GcmProvider;
@@ -467,7 +532,7 @@ independent, additive features.
 
 ## Architecture
 
-```
+```text
 ┌────────────────────────────────────────────────────────────┐
 │                        Application                         │
 │      aggregates · events · commands · R: Repository<A>     │
@@ -638,7 +703,7 @@ Event-sauce provides PostgreSQL support with **schema isolation** to avoid migra
 
 The builder pattern provides full control over configuration:
 
-```rust
+```rust,ignore
 use event_sauce::postgres::PostgresEventStore;
 use event_sauce::{SnapshotConfig, EveryNEvents};
 use sqlx::postgres::PgPoolOptions;
@@ -658,9 +723,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .pool(pool)
         .schema("event_sauce")                      // Custom schema name
         .snapshot_config(SnapshotConfig::builder()
-            .default_strategy(EveryNEvents(100))    // Snapshot every 100 events
+            .default_strategy(EveryNEvents::try_new(100).expect("100 != 0"))    // Snapshot every 100 events
             .build())
-        .build();
+        .build()?;
 
     // Run migrations to create schema and tables
     store.migrate().await?;
@@ -678,7 +743,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 For quick setup, use the convenience constructor:
 
-```rust
+```rust,ignore
 use event_sauce::postgres::PostgresEventStore;
 use sqlx::PgPool;
 
