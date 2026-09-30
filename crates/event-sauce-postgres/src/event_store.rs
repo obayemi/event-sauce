@@ -60,26 +60,18 @@ pub struct PostgresEventStore {
 /// lock that serializes commit order before giving up with a backend error.
 const DEFAULT_APPEND_LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// Computes the stable advisory-lock key for an event log, derived from the
-/// schema-qualified events table name (e.g. `"public.events"`).
+/// Computes the stable advisory-lock key for an event log: the schema-
+/// qualified events table name (e.g. `"public.events"`), hashed by
+/// [`advisory_lock_key`](crate::migrations::advisory_lock_key), whose doc
+/// carries the hash algorithm's stability contract. Keying on the qualified
+/// table name isolates different schemas / test databases — they take
+/// distinct keys and never serialize against one another.
 ///
 /// [`PostgresEventStore::append`] takes a transaction-scoped advisory lock on
 /// this key before allocating any global event ids, so that id order equals
 /// commit order across all streams sharing the table (see
-/// [`PostgresEventStore::append`] for the resulting guarantee). Keying on the
-/// qualified table name isolates different schemas / test databases — they
-/// take distinct keys and never serialize against one another.
-///
-/// The hash is a 64-bit [FNV-1a] over the UTF-8 bytes of `qualified_events_table`,
-/// reinterpreted as the signed `bigint` that `pg_advisory_xact_lock` expects.
-/// FNV-1a is used deliberately rather than [`std::hash::DefaultHasher`]: the
-/// latter seeds `SipHash` randomly per process, so two processes would compute
-/// *different* keys and the cross-process serialization guarantee would
-/// silently not hold. The algorithm and input string are therefore part of the
-/// store's wire contract and must remain stable.
-///
-/// [FNV-1a]: https://en.wikipedia.org/wiki/Fowler%E2%80%93Noll%E2%80%93Vo_hash_function
-pub(crate) fn append_lock_key(qualified_events_table: &str) -> i64 {
+/// [`PostgresEventStore::append`] for the resulting guarantee).
+fn append_lock_key(qualified_events_table: &str) -> i64 {
     crate::migrations::advisory_lock_key(qualified_events_table)
 }
 
@@ -3222,44 +3214,19 @@ mod tests {
         );
     }
 
-    /// F2 / C4: [`append_lock_key`] must be a stable, deterministic hash so that
-    /// different processes compute the SAME advisory-lock key and actually
-    /// serialize against each other; and distinct qualified table names (e.g.
-    /// different schemas) must map to DISTINCT keys so unrelated logs do not
-    /// serialize. Guards against accidentally swapping in a per-process-seeded
-    /// hasher such as `std::hash::DefaultHasher`.
+    /// Pins the wire value of [`append_lock_key`]'s advisory-lock key for
+    /// `public.events`, the table `append()` locks on: different processes —
+    /// including ones on different library versions — must compute the SAME
+    /// key to actually serialize against each other, so this forwarding
+    /// wrapper's output has to stay pinned independently of
+    /// `migrations::tests::advisory_lock_key_is_stable_and_input_distinct`,
+    /// which only pins the underlying `advisory_lock_key` it forwards to.
     #[test]
-    fn test_append_lock_key_is_stable_and_schema_distinct() {
-        // Deterministic across calls (and, because FNV-1a has no per-process
-        // seed, across processes — the precondition for cross-process locking).
+    fn test_append_lock_key_pins_wire_value() {
         assert_eq!(
             append_lock_key("public.events"),
-            append_lock_key("public.events"),
-            "append_lock_key must be stable for a given table name"
-        );
-
-        // Known-answer check pins the exact algorithm + input so the wire
-        // contract cannot drift silently: FNV-1a over the bytes of
-        // "public.events", reinterpreted as i64.
-        let mut expected: u64 = 0xcbf2_9ce4_8422_2325;
-        for byte in "public.events".as_bytes() {
-            expected ^= u64::from(*byte);
-            expected = expected.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-        #[allow(clippy::cast_possible_wrap)]
-        let expected = expected as i64;
-        assert_eq!(
-            append_lock_key("public.events"),
-            expected,
-            "append_lock_key must be 64-bit FNV-1a of the qualified table name"
-        );
-
-        // Different schemas / tables take different keys → independent logs do
-        // not serialize against each other.
-        assert_ne!(
-            append_lock_key("public.events"),
-            append_lock_key("other.events"),
-            "different qualified table names must take distinct advisory keys"
+            -146_897_220_888_487_505,
+            "append_lock_key must be a stable, known hash of the qualified events table"
         );
     }
 

@@ -214,6 +214,33 @@ mod tests {
     };
     use sqlx::postgres::PgPoolOptions;
 
+    /// Pins [`advisory_lock_key`]'s wire contract: it must be deterministic
+    /// across calls (and, having no per-process seed, across processes — the
+    /// precondition for cross-process locking), it must match a known-answer
+    /// FNV-1a hash of `"public.events"` so the algorithm cannot drift
+    /// silently, and distinct seeds must take distinct keys so independent
+    /// locks never serialize against each other.
+    #[test]
+    fn advisory_lock_key_is_stable_and_input_distinct() {
+        assert_eq!(
+            advisory_lock_key("public.events"),
+            advisory_lock_key("public.events"),
+            "advisory_lock_key must be stable for a given seed"
+        );
+
+        assert_eq!(
+            advisory_lock_key("public.events"),
+            -146_897_220_888_487_505,
+            "advisory_lock_key must be 64-bit FNV-1a of the seed"
+        );
+
+        assert_ne!(
+            advisory_lock_key("public.events"),
+            advisory_lock_key("other.events"),
+            "different seeds must take distinct advisory keys"
+        );
+    }
+
     async fn container_url() -> (
         testcontainers_modules::testcontainers::ContainerAsync<
             testcontainers_modules::postgres::Postgres,
