@@ -304,7 +304,9 @@ async fn ensure_crypto_key<S: EventStore + ?Sized>(
 mod tests {
     use super::*;
     use crate::event_store::test_support::*;
-    use crate::test_fixtures::{SimpleTestDelete, SimpleTestEntity, SimpleTestEvent};
+    use crate::test_fixtures::{
+        AadCheckingCryptoProvider, SimpleTestDelete, SimpleTestEntity, SimpleTestEvent,
+    };
     use crate::{CryptoKeyStore, SnapshotConfig};
 
     // -- commit() tests --

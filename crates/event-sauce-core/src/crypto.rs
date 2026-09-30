@@ -796,55 +796,11 @@ mod tests {
     // must reproduce how they were written (EMPTY aad), regardless of the `aad`
     // argument the caller supplies for fresh (v2) rows.
     //
-    // An AAD-binding mock provider (mirrors `Aes256GcmProvider`, which lives in
-    // a separate crate that core cannot depend on) so the v2 relocation assertion
-    // is provider-driven, not a no-op.
-    struct AadBindingProvider;
-
-    impl CryptoProvider for AadBindingProvider {
-        fn encrypt(&self, key: &[u8], plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
-            // Bind aad by prefixing it; decrypt verifies the prefix matches.
-            let mut out = Vec::new();
-            #[allow(clippy::cast_possible_truncation)]
-            out.extend_from_slice(&(aad.len() as u32).to_le_bytes());
-            out.extend_from_slice(aad);
-            out.extend(
-                plaintext
-                    .iter()
-                    .enumerate()
-                    .map(|(i, b)| b ^ key[i % key.len()]),
-            );
-            Ok(out)
-        }
-
-        fn decrypt(&self, key: &[u8], ciphertext: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
-            if ciphertext.len() < 4 {
-                return Err(crate::Error::encryption("ciphertext too short"));
-            }
-            let (len_bytes, rest) = ciphertext.split_at(4);
-            let aad_len = u32::from_le_bytes(len_bytes.try_into().unwrap()) as usize;
-            if rest.len() < aad_len {
-                return Err(crate::Error::encryption("ciphertext too short"));
-            }
-            let (bound_aad, body) = rest.split_at(aad_len);
-            if bound_aad != aad {
-                return Err(crate::Error::encryption("aad mismatch"));
-            }
-            Ok(body
-                .iter()
-                .enumerate()
-                .map(|(i, b)| b ^ key[i % key.len()])
-                .collect())
-        }
-
-        fn generate_key(&self) -> Vec<u8> {
-            vec![0x42; 32]
-        }
-    }
+    use crate::test_fixtures::AadCheckingCryptoProvider;
 
     #[test]
     fn legacy_v1_ciphertext_decrypts_with_empty_aad() {
-        let provider = AadBindingProvider;
+        let provider = AadCheckingCryptoProvider;
         let key = provider.generate_key();
         let value = serde_json::json!({"order_id": "abc-123"});
 
@@ -867,7 +823,7 @@ mod tests {
     // --- RED (L5): v2 roundtrip binds ciphertext to its aad ---
     #[test]
     fn v2_encrypt_value_binds_aad() {
-        let provider = AadBindingProvider;
+        let provider = AadCheckingCryptoProvider;
         let key = provider.generate_key();
         let value = serde_json::json!({"email": "alice@example.com"});
 
@@ -934,7 +890,7 @@ mod tests {
     // under the same (agg, ev) and is rejected when relocated to another event.
     #[test]
     fn event_aad_binds_value_to_its_event() {
-        let provider = AadBindingProvider;
+        let provider = AadCheckingCryptoProvider;
         let key = provider.generate_key();
         let aggregate_id = Uuid::from_bytes([7; 16]);
         let event_a = Uuid::from_bytes([8; 16]);

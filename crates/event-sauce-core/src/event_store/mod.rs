@@ -910,52 +910,6 @@ pub(crate) mod test_support {
         }
     }
 
-    /// Deterministic provider that binds ciphertext to its AAD by prefixing it,
-    /// so a wrong AAD on decrypt is detected instead of silently accepted (unlike
-    /// a bare XOR mock).
-    pub(crate) struct AadCheckingCryptoProvider;
-
-    impl crate::CryptoProvider for AadCheckingCryptoProvider {
-        fn encrypt(&self, key: &[u8], plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
-            let mut out = Vec::new();
-            let aad_len =
-                u32::try_from(aad.len()).map_err(|_| crate::Error::encryption("aad too long"))?;
-            out.extend_from_slice(&aad_len.to_le_bytes());
-            out.extend_from_slice(aad);
-            out.extend(
-                plaintext
-                    .iter()
-                    .enumerate()
-                    .map(|(i, b)| b ^ key[i % key.len()]),
-            );
-            Ok(out)
-        }
-
-        fn decrypt(&self, key: &[u8], ciphertext: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
-            if ciphertext.len() < 4 {
-                return Err(crate::Error::encryption("ciphertext too short"));
-            }
-            let (len_bytes, rest) = ciphertext.split_at(4);
-            let aad_len = u32::from_le_bytes(len_bytes.try_into().unwrap()) as usize;
-            if rest.len() < aad_len {
-                return Err(crate::Error::encryption("ciphertext too short"));
-            }
-            let (bound_aad, body) = rest.split_at(aad_len);
-            if bound_aad != aad {
-                return Err(crate::Error::encryption("aad mismatch"));
-            }
-            Ok(body
-                .iter()
-                .enumerate()
-                .map(|(i, b)| b ^ key[i % key.len()])
-                .collect())
-        }
-
-        fn generate_key(&self) -> Vec<u8> {
-            vec![0x24; 32]
-        }
-    }
-
     /// In-memory [`crate::CryptoKeyStore`] with an atomic `get_or_insert_key`,
     /// so it can stand in for a real backend in concurrency-sensitive
     /// assertions.
@@ -1032,11 +986,15 @@ pub(crate) mod test_support {
     }
 
     /// Builds a [`CommitTestStore`] with snapshots disabled and a fresh
-    /// [`MockCryptoKeyStore`] plus [`AadCheckingCryptoProvider`] installed.
+    /// [`MockCryptoKeyStore`] plus
+    /// [`AadCheckingCryptoProvider`](crate::test_fixtures::AadCheckingCryptoProvider)
+    /// installed.
     pub(crate) fn crypto_test_store() -> (CommitTestStore, Arc<MockCryptoKeyStore>) {
         let key_store = Arc::new(MockCryptoKeyStore::default());
-        let store = CommitTestStore::new(SnapshotConfig::disabled())
-            .with_crypto(key_store.clone(), Arc::new(AadCheckingCryptoProvider));
+        let store = CommitTestStore::new(SnapshotConfig::disabled()).with_crypto(
+            key_store.clone(),
+            Arc::new(crate::test_fixtures::AadCheckingCryptoProvider),
+        );
         (store, key_store)
     }
 
