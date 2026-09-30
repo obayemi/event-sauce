@@ -832,7 +832,6 @@ macro_rules! __command_handler_init_internal {
 }
 
 #[cfg(test)]
-#[allow(dead_code)]
 mod tests {
     use crate::{
         Aggregate, AggregateError, AggregateRoot, AggregateVersion, ApplyEvent, DomainEvent,
@@ -872,10 +871,42 @@ mod tests {
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
+    struct CreatedEvent {
+        value: i32,
+        timestamp: DateTime<Utc>,
+    }
+
+    impl crate::EventType for CreatedEvent {
+        const EVENT_TYPE: &'static str = "Test.Created";
+    }
+
+    impl crate::InitEvent<TestAggregate> for CreatedEvent {
+        fn init(&self, id: EntityId) -> TestAggregate {
+            TestAggregate {
+                id,
+                value: self.value,
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    struct ClosedEvent {
+        timestamp: DateTime<Utc>,
+    }
+
+    impl crate::EventType for ClosedEvent {
+        const EVENT_TYPE: &'static str = "Test.Closed";
+    }
+
+    impl crate::DeleteEvent<TestAggregate> for ClosedEvent {}
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
     enum TestEvent {
         Incremented(IncrementedEvent),
         Decremented(DecrementedEvent),
         Reset(ResetEvent),
+        Created(CreatedEvent),
+        Closed(ClosedEvent),
     }
 
     impl DomainEvent for TestEvent {
@@ -886,6 +917,8 @@ mod tests {
                 TestEvent::Incremented(_) => "Test.Incremented",
                 TestEvent::Decremented(_) => "Test.Decremented",
                 TestEvent::Reset(_) => "Test.Reset",
+                TestEvent::Created(_) => "Test.Created",
+                TestEvent::Closed(_) => "Test.Closed",
             }
         }
 
@@ -898,6 +931,8 @@ mod tests {
                 TestEvent::Incremented(e) => e.timestamp,
                 TestEvent::Decremented(e) => e.timestamp,
                 TestEvent::Reset(e) => e.timestamp,
+                TestEvent::Created(e) => e.timestamp,
+                TestEvent::Closed(e) => e.timestamp,
             }
         }
     }
@@ -912,6 +947,18 @@ mod tests {
     impl From<DecrementedEvent> for TestEvent {
         fn from(e: DecrementedEvent) -> Self {
             TestEvent::Decremented(e)
+        }
+    }
+
+    impl From<CreatedEvent> for TestEvent {
+        fn from(e: CreatedEvent) -> Self {
+            TestEvent::Created(e)
+        }
+    }
+
+    impl From<ClosedEvent> for TestEvent {
+        fn from(e: ClosedEvent) -> Self {
+            TestEvent::Closed(e)
         }
     }
 
@@ -967,6 +1014,9 @@ mod tests {
                     e.apply(aggregate);
                     e.post_validate(aggregate)?;
                 }
+                TestEvent::Created(_) | TestEvent::Closed(_) => {
+                    unreachable!("dispatch() called on an init/delete event")
+                }
             }
             Ok(())
         }
@@ -981,6 +1031,9 @@ mod tests {
                 }
                 TestEvent::Reset(e) => {
                     e.apply(aggregate);
+                }
+                TestEvent::Created(_) | TestEvent::Closed(_) => {
+                    unreachable!("dispatch_unchecked() called on an init/delete event")
                 }
             }
         }
@@ -1037,6 +1090,8 @@ mod tests {
             @clock fn increment(amount: i32) -> IncrementedEvent { amount };
             @clock fn decrement(amount: i32) -> DecrementedEvent { amount };
             @clock fn reset() -> ResetEvent { };
+            @clock @init fn create(value: i32) -> CreatedEvent { value };
+            @clock @delete fn close() -> ClosedEvent { };
         }
     }
 
@@ -1196,33 +1251,39 @@ mod tests {
     }
 
     #[test]
-    fn test_event_helper_with_multiple_parameters() {
-        // Define a more complex event structure for testing
-        #[derive(Debug, Clone, Serialize, Deserialize)]
-        struct MultiParamEvent {
-            field1: String,
-            field2: i32,
-            field3: bool,
-            timestamp: DateTime<Utc>,
-        }
+    fn test_command_handler_init_creates_aggregate() {
+        let root = TestAggregate::create(9).unwrap();
 
-        impl ApplyEvent<TestAggregate> for MultiParamEvent {
-            fn apply(&self, _aggregate: &mut TestAggregate) {
-                // No-op for test
-            }
-        }
+        assert_eq!(root.value(), 9);
+        assert_eq!(root.pending_events().len(), 1);
+    }
 
-        impl From<MultiParamEvent> for TestEvent {
-            fn from(e: MultiParamEvent) -> Self {
-                // Mock conversion
-                TestEvent::Reset(ResetEvent {
-                    timestamp: e.timestamp,
-                })
-            }
-        }
+    #[test]
+    fn test_command_handler_init_creates_aggregate_with_explicit_id() {
+        let id = EntityId::new();
+        let root = TestAggregate::create_with_id(id, 3).unwrap();
 
-        // We can't actually test this with TestAggregate since we'd need to modify
-        // the command_handler! invocation, but this documents expected behavior
+        assert_eq!(root.entity_id(), id);
+        assert_eq!(root.value(), 3);
+    }
+
+    #[test]
+    fn test_command_handler_init_commands_trait_on_uninit_root() {
+        let id = EntityId::new();
+        let root = crate::UninitAggregateRoot::<TestAggregate>::new(id)
+            .create(11)
+            .unwrap();
+
+        assert_eq!(root.entity_id(), id);
+        assert_eq!(root.value(), 11);
+    }
+
+    #[test]
+    fn test_command_handler_delete_closes_aggregate() {
+        let root = AggregateRoot::<TestAggregate>::new(EntityId::new());
+        let deleted = root.close().unwrap();
+
+        assert_eq!(deleted.value(), 0);
     }
 
     #[test]
