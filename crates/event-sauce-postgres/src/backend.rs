@@ -578,7 +578,7 @@ impl PostgresBackend {
         for (name, filters) in grouped {
             let checkpoint_name = policy_checkpoint_name(name);
             self.checkpoint_store
-                .seed_checkpoint_from_legacy(&checkpoint_name, DISPATCHER_CHECKPOINT_PREFIX)
+                .seed_checkpoint_from_legacy(&checkpoint_name, LEGACY_DISPATCHER_CHECKPOINT)
                 .await?;
             if let Some(position) = self
                 .checkpoint_store
@@ -801,19 +801,31 @@ impl PostgresBackend {
     }
 }
 
-/// Maximum number of events fetched per batch by the projection runners.
+/// Maximum number of events fetched per batch by the projection runners and
+/// the policy dispatcher.
 ///
 /// Bounds memory and ensures the streaming connection is released between
-/// batches, so the connection pool isn't held captive while a projection
-/// catches up. The lease is renewed inside the batch loop, so this only
-/// affects how often the projection runner re-acquires a pool connection.
+/// batches, so the connection pool isn't held captive while a projection or
+/// a dispatch call catches up. The lease is renewed inside each batch loop,
+/// so this also bounds how long a projection runner goes between pool
+/// connections, and, for the dispatcher, the longest stretch between lease
+/// renewals.
 const PROJECTION_BATCH_SIZE: i64 = 500;
 
-/// Name of the shared checkpoint/lease used by every dispatch call before
+/// Name of the shared checkpoint/lease every dispatch call wrote before
 /// per-policy checkpoints existed. No longer written; kept only as a seed
 /// source for a policy's first per-policy checkpoint (see
-/// [`PostgresBackend::dispatch_policies_to_outbox`]).
-const DISPATCHER_CHECKPOINT_PREFIX: &str = "__policy_outbox_dispatcher";
+/// [`PostgresBackend::dispatch_policies_to_outbox`]). Frozen at this literal
+/// regardless of [`DISPATCHER_CHECKPOINT_PREFIX`]'s current value — an
+/// existing deployment's legacy row must stay findable even if the live
+/// naming scheme ever changes.
+const LEGACY_DISPATCHER_CHECKPOINT: &str = "__policy_outbox_dispatcher";
+
+/// Prefix of every live `{prefix}:{policy}` per-policy checkpoint name (see
+/// [`policy_checkpoint_name`]). Shares [`LEGACY_DISPATCHER_CHECKPOINT`]'s
+/// value today, but the two are free to diverge: this one names an ongoing
+/// scheme, that one a fixed historical row.
+const DISPATCHER_CHECKPOINT_PREFIX: &str = LEGACY_DISPATCHER_CHECKPOINT;
 
 /// Derives the checkpoint (and lease) name for one policy passed to
 /// [`PostgresBackend::dispatch_policies_to_outbox`].
