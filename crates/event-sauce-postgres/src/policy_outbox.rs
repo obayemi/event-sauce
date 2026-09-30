@@ -112,7 +112,11 @@ impl BackoffPolicy {
         Self {
             base,
             cap,
-            jitter: jitter.clamp(0.0, 1.0),
+            jitter: if jitter.is_nan() {
+                0.0
+            } else {
+                jitter.clamp(0.0, 1.0)
+            },
         }
     }
 
