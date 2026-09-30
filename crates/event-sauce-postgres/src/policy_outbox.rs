@@ -603,6 +603,8 @@ mod tests {
         assert!((over.jitter() - 1.0).abs() < f64::EPSILON);
         let under = BackoffPolicy::new(Duration::ZERO, Duration::ZERO, -1.0);
         assert!((under.jitter() - 0.0).abs() < f64::EPSILON);
+        let nan = BackoffPolicy::new(Duration::ZERO, Duration::ZERO, f64::NAN);
+        assert!((nan.jitter() - 0.0).abs() < f64::EPSILON);
     }
 
     struct TestDb {
