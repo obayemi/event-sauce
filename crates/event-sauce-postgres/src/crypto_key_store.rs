@@ -119,33 +119,41 @@ impl PostgresCryptoKeyStore {
             migrations_table,
             20_250_301_000_000_i64,
             "create_crypto_keys_table",
-            |pool| async move {
-                let create_crypto_keys = format!(
-                    "CREATE TABLE IF NOT EXISTS {crypto_keys_table} (
-                        aggregate_id UUID PRIMARY KEY,
-                        key_data BYTEA NOT NULL,
-                        created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
-                    )"
-                );
-                sqlx::query(&create_crypto_keys)
-                    .execute(pool)
-                    .await
-                    .map_err(|e| Error::backend("Failed to create crypto_keys table", e))?;
-                Ok(())
-            },
+            |pool| create_table(pool, &crypto_keys_table),
         )
         .await?;
 
-        let crypto_keys_table = self.qualify_table("crypto_keys");
         crate::migrations::apply_once(
             &self.pool,
             migrations_table,
             20_250_301_000_001_i64,
             "add_crypto_keys_shredded_at",
-            |pool| async move { add_shredded_at_column(pool, &crypto_keys_table).await },
+            |pool| add_shredded_at_column(pool, &crypto_keys_table),
         )
         .await
     }
+}
+
+/// Creates the `crypto_keys` table at `crypto_keys_table`.
+///
+/// Both [`PostgresCryptoKeyStore::migrate`] and `PostgresEventStore::migrate`
+/// run this step against the same table, since a caller who only ever runs
+/// the event store's `migrate()` — the default key store's own `migrate()`
+/// is never called for them — still needs it to exist before the first
+/// encrypted commit.
+pub(crate) async fn create_table(pool: &PgPool, crypto_keys_table: &str) -> Result<()> {
+    let create_crypto_keys = format!(
+        "CREATE TABLE IF NOT EXISTS {crypto_keys_table} (
+            aggregate_id UUID PRIMARY KEY,
+            key_data BYTEA NOT NULL,
+            created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+        )"
+    );
+    sqlx::query(&create_crypto_keys)
+        .execute(pool)
+        .await
+        .map_err(|e| Error::backend("Failed to create crypto_keys table", e))
+        .map(|_| ())
 }
 
 /// Relaxes `key_data` to nullable and adds the `shredded_at` marker column.

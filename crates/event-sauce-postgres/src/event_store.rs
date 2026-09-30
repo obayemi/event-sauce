@@ -526,18 +526,7 @@ impl PostgresEventStore {
             20_250_303_000_000_i64,
             "create_crypto_keys_table",
             move |pool| async move {
-                let create_crypto_keys = format!(
-                    "CREATE TABLE IF NOT EXISTS {crypto_keys_table} (
-                        aggregate_id UUID PRIMARY KEY,
-                        key_data BYTEA NOT NULL,
-                        created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
-                    )"
-                );
-                sqlx::query(&create_crypto_keys)
-                    .execute(pool)
-                    .await
-                    .map_err(|e| Error::backend("Failed to create crypto_keys table", e))?;
-                Ok(())
+                crate::crypto_key_store::create_table(pool, &crypto_keys_table).await
             },
         )
         .await
