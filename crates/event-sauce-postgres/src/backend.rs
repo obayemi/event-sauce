@@ -515,8 +515,16 @@ impl PostgresBackend {
     /// (e.g. a rolling deploy) never moves a different policy's progress. A
     /// policy seen for the first time starts from genesis, unless a legacy
     /// checkpoint from before per-policy tracking exists, in which case it
-    /// seeds from that. Replaying already-processed events is harmless
-    /// since [`enqueue_tx`](crate::PostgresPolicyOutbox::enqueue_tx) is
+    /// seeds from that. Either way, that first call is that policy's first
+    /// delivery of every event since its starting point, not a replay — its
+    /// handler runs for that whole history, which can be substantial on a
+    /// long-lived log. To start a newly added policy at the current head
+    /// instead, pre-seed its `__policy_outbox_dispatcher:{policy_name}`
+    /// checkpoint before the first call that names it; seeding here never
+    /// overwrites an existing row.
+    ///
+    /// A *re*scan of a policy already at this checkpoint is harmless, since
+    /// [`enqueue_tx`](crate::PostgresPolicyOutbox::enqueue_tx) is
     /// idempotent — but only while the resulting `done` rows are still in
     /// the outbox; a genesis rescan after
     /// [`prune_done`](crate::PostgresPolicyOutbox::prune_done) would

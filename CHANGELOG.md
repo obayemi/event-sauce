@@ -64,15 +64,19 @@ explicitly rather than gated behind a major version bump.
   shared dispatcher had stopped — no backfill, no re-enqueue. The legacy row
   is never written again after that, only read: a policy added *later*, on
   a deployment that has ever run the shared dispatcher, is also seeded from
-  that same frozen position. It does not replay from genesis and does not
-  backfill events older than that position — it only re-delivers the events
-  after it. Only a deployment that never had a legacy row starts new
-  policies from genesis. That re-enqueue (and any legacy-seeded resume) is
-  idempotent *only while the resulting `done` rows are still in the
-  outbox*: `UNIQUE(policy_name, event_id)` with `ON CONFLICT DO NOTHING`
-  makes re-enqueuing an already-processed event a no-op. Once
-  [`prune_done`](#added) has removed those rows, a rescan re-delivers the
-  event and re-runs its handler.
+  that same frozen position; a deployment that never had a legacy row
+  starts it from genesis instead. Either way, **this is that policy's
+  first delivery of every event since its starting point, not a replay** —
+  its handler runs for that whole history, which can be substantial on a
+  long-lived log. To start a newly registered policy at the current head
+  instead, pre-seed its `__policy_outbox_dispatcher:{policy}` checkpoint
+  before the first call that names it; seeding never overwrites an
+  existing row. A *re*scan of a policy already past its starting point is
+  a different matter and is idempotent *only while the resulting `done`
+  rows are still in the outbox*: `UNIQUE(policy_name, event_id)` with `ON
+  CONFLICT DO NOTHING` makes re-enqueuing an already-processed event a
+  no-op. Once [`prune_done`](#added) has removed those rows, a rescan
+  re-delivers the event and re-runs its handler.
 - **`mark_failed` on both outboxes now takes a `BackoffPolicy`** and sets the
   row's `locked_until` into the future (exponential, capped, jittered)
   instead of clearing it, so a transient failure no longer lets every
