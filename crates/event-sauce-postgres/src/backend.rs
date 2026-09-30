@@ -2071,6 +2071,107 @@ mod tests {
         );
     }
 
+    /// Dispatching several matching events in one fetched batch must enqueue
+    /// each outbox row with *that event's own* log position, not some
+    /// batch-wide value — `claim_batch` orders by `event_position ASC`, so a
+    /// shared position would make claim order (and `OutboxClaim::event_position`
+    /// itself) arbitrary.
+    #[tokio::test]
+    async fn test_dispatch_enqueues_each_events_own_log_position() {
+        let (url, _container) = start_test_db().await;
+        let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
+        let outbox = crate::PostgresPolicyOutbox::new(backend.pool().clone(), "event_sauce");
+        outbox.migrate().await.unwrap();
+
+        let store = backend.event_store();
+        let mut event_ids = Vec::new();
+        for _ in 0..4 {
+            let aggregate_id = Uuid::new_v4();
+            let event_id = Uuid::new_v4();
+            let stream_id = StreamId::new("Order", aggregate_id);
+            let envelope = EventEnvelope::new(
+                event_id,
+                aggregate_id,
+                "Order".to_string(),
+                "Order.Created".to_string(),
+                EventVersion::new(1),
+                json!({}),
+            );
+            store
+                .append(
+                    stream_id,
+                    vec![envelope],
+                    AggregateVersion::initial(),
+                    vec![],
+                    false,
+                )
+                .await
+                .unwrap();
+            event_ids.push(event_id);
+        }
+
+        let log = store
+            .fetch_events_batch(Position::start(), 10)
+            .await
+            .unwrap();
+        let expected_positions: std::collections::HashMap<Uuid, i64> = log
+            .iter()
+            .map(|entry| (entry.envelope.id, entry.position.as_i64()))
+            .collect();
+        assert_eq!(
+            expected_positions.len(),
+            4,
+            "the four appended events must land at four distinct log positions"
+        );
+
+        let policies = vec![PolicyDispatch::new(
+            "send-order-confirmation",
+            EventFilter::by_aggregate_type("Order"),
+        )];
+        backend
+            .dispatch_policies_to_outbox(
+                &outbox,
+                "dispatcher-1",
+                &policies,
+                Duration::from_secs(30),
+            )
+            .await
+            .unwrap();
+
+        let claims = outbox
+            .claim_batch(
+                "send-order-confirmation",
+                "worker-1",
+                10,
+                Duration::from_secs(30),
+            )
+            .await
+            .unwrap();
+        assert_eq!(claims.len(), 4);
+
+        for claim in &claims {
+            assert_eq!(
+                claim.event_position, expected_positions[&claim.event_id],
+                "each outbox row must carry its own event's log position"
+            );
+        }
+
+        let positions: Vec<i64> = claims.iter().map(|c| c.event_position).collect();
+        let mut sorted_positions = positions.clone();
+        sorted_positions.sort_unstable();
+        assert_eq!(
+            positions, sorted_positions,
+            "claim_batch orders by event_position ASC"
+        );
+        let mut deduped = positions.clone();
+        deduped.dedup();
+        assert_eq!(
+            deduped.len(),
+            positions.len(),
+            "every claimed row must have a distinct event_position"
+        );
+    }
+
     /// Every event in the log is a User event; the policy only cares about
     /// Order events, so this whole (single-fetch) batch is a miss.
     #[tokio::test]
