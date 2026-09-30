@@ -127,7 +127,9 @@ impl PostgresBackend {
     /// and commits. If any step fails the transaction is dropped (rolled back)
     /// and the error propagates — the checkpoint never advances past an event
     /// whose materialization didn't commit, so a re-run picks up exactly where
-    /// the failure occurred.
+    /// the failure occurred. A fetched batch's unmatched tail still moves the
+    /// checkpoint, in its own cheap write outside any transaction, so the
+    /// next fetch doesn't re-scan events already known not to match.
     ///
     /// # Multi-instance safety
     ///
@@ -196,10 +198,6 @@ impl PostgresBackend {
             }
 
             if checkpointed_position != current_position {
-                // The batch's tail was unmatched, so no per-event save above
-                // reached the true high-water mark. Advance the checkpoint
-                // over it now — cheaply, with no transaction — so the next
-                // tick's fetch starts past it instead of re-scanning it.
                 self.checkpoint_store
                     .save_checkpoint(P::NAME, current_position)
                     .await?;
@@ -463,8 +461,6 @@ impl PostgresBackend {
         worker_id: &str,
         lease_duration: std::time::Duration,
     ) -> event_sauce_core::Result<crate::LeaseOutcome> {
-        // A rebuild always rewinds to genesis, so the position the lease
-        // started from is irrelevant here (unlike an ordinary leased run).
         self.with_lease(P::NAME, worker_id, lease_duration, |_start_position| {
             self.rebuild_under_lease(projection, worker_id, lease_duration)
         })
@@ -738,6 +734,12 @@ impl PostgresBackend {
         Ok(())
     }
 
+    /// Fenced per-event drain used under a held lease. A fetched batch's
+    /// unmatched tail still advances the checkpoint (fenced, in its own
+    /// small transaction) so a restart or a `wait_for_checkpoint` poll
+    /// doesn't re-fetch it — unfenced would let a stalled worker move the
+    /// checkpoint after losing the lease, the same risk the per-event
+    /// fenced save guards against.
     async fn run_under_lease<P: crate::PostgresProjection>(
         &self,
         projection: &mut P,
@@ -801,12 +803,6 @@ impl PostgresBackend {
             }
 
             if checkpointed_position != current_position {
-                // The batch's tail was unmatched: advance the fenced
-                // checkpoint over it too, in its own small transaction, so a
-                // restart (or the next `wait_for_checkpoint` poll) does not
-                // re-fetch it. Still fenced — an unfenced advance here would
-                // let a stalled worker move the checkpoint after losing the
-                // lease, same risk the per-event fenced save guards against.
                 let mut tx = self.pool.begin().await.map_err(|e| {
                     event_sauce_core::Error::backend("Failed to start projection transaction", e)
                 })?;
