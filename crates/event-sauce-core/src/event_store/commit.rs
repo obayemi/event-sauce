@@ -137,9 +137,7 @@ pub(crate) async fn flush_prepared<S: EventStore + ?Sized>(
         .await?;
 
     if let Some(snapshot) = snapshot {
-        if let Err(e) = store.save_snapshot(snapshot).await {
-            tracing::warn!(error = %e, "Failed to save snapshot");
-        }
+        save_snapshot_best_effort(store, snapshot).await;
     }
 
     Ok(())
@@ -166,12 +164,27 @@ pub(crate) async fn flush_prepared_batch<S: EventStore + ?Sized>(
     store.append_batch(commits).await?;
 
     for snapshot in snapshots.into_iter().flatten() {
-        if let Err(e) = store.save_snapshot(snapshot).await {
-            tracing::warn!(error = %e, "Failed to save snapshot");
-        }
+        save_snapshot_best_effort(store, snapshot).await;
     }
 
     Ok(())
+}
+
+/// Saves a snapshot, warning (rather than failing the caller) if it fails.
+///
+/// A snapshot is a cache of already-durably-committed events, so a failure to
+/// save it is never fatal to the commit that triggered it.
+async fn save_snapshot_best_effort<S: EventStore + ?Sized>(store: &S, snapshot: Snapshot) {
+    let aggregate_type = snapshot.aggregate_type.clone();
+    let aggregate_id = snapshot.aggregate_id;
+    if let Err(e) = store.save_snapshot(snapshot).await {
+        tracing::warn!(
+            aggregate_type = %aggregate_type,
+            aggregate_id = %aggregate_id,
+            error = %e,
+            "Failed to save snapshot"
+        );
+    }
 }
 
 /// Builds an aggregate's snapshot, encrypting if needed.
