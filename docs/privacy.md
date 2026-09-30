@@ -87,14 +87,19 @@ the field name to prevent intra-event field swapping.
 
 ## Setup
 
-All store builders include **AES-256-GCM encryption** and a key store by default — no extra setup needed.
+A key store is always installed. With the `crypto` feature enabled
+(`event-sauce = { version = "0.1", features = ["crypto"] }`), every store
+builder also installs the AES-256-GCM provider automatically — no extra
+setup needed beyond turning the feature on. Without it, no provider is
+installed, and committing or loading an encrypted aggregate fails with
+`Error::InvalidState`.
 
 ### In-Memory (Testing)
 
 ```rust
 use event_sauce::memory::InMemoryEventStore;
 
-// Crypto is included by default (AES-256-GCM + InMemoryCryptoKeyStore)
+// With the `crypto` feature: AES-256-GCM + InMemoryCryptoKeyStore, both automatic
 let store = InMemoryEventStore::new();
 ```
 
@@ -103,7 +108,7 @@ let store = InMemoryEventStore::new();
 ```rust
 use event_sauce::postgres::PostgresEventStore;
 
-// Crypto is included by default (AES-256-GCM + PostgresCryptoKeyStore)
+// With the `crypto` feature: AES-256-GCM + PostgresCryptoKeyStore, both automatic
 let store = PostgresEventStore::builder()
     .pool(pool)
     .build()?;
@@ -116,7 +121,7 @@ Or using `PostgresBackend`:
 ```rust
 use event_sauce::postgres::PostgresBackend;
 
-// Crypto is included by default
+// Same automatic setup, with the `crypto` feature enabled
 let backend = PostgresBackend::builder()
     .database_url("postgresql://localhost/events")
     .build()

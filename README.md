@@ -349,7 +349,9 @@ define_events! {
 }
 ```
 
-All store builders include **AES-256-GCM encryption** by default — no extra setup needed.
+With the `crypto` feature enabled, every store builder installs **AES-256-GCM
+encryption** automatically — no extra setup needed beyond turning the
+feature on (`event-sauce = { version = "0.1", features = ["crypto"] }`).
 
 **Crypto-shredding** (right to be forgotten) — delete the key to make data permanently unreadable:
 
