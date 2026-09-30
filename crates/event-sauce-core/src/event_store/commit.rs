@@ -328,7 +328,7 @@ async fn ensure_crypto_key<S: EventStore + ?Sized>(
 mod tests {
     use super::*;
     use crate::event_store::test_support::*;
-    use crate::test_fixtures::{SimpleTestEntity, SimpleTestEvent};
+    use crate::test_fixtures::{SimpleTestDelete, SimpleTestEntity, SimpleTestEvent};
     use crate::{CryptoKeyStore, SnapshotConfig};
 
     // -- commit() tests --
@@ -828,5 +828,34 @@ mod tests {
         let result = ensure_crypto_key(&store, id).await;
 
         assert!(result.unwrap_err().is_key_not_found());
+    }
+
+    #[tokio::test]
+    async fn commit_refuses_a_poisoned_aggregate() {
+        let store = CommitTestStore::new(SnapshotConfig::disabled());
+        let id = crate::EntityId::new();
+        let mut agg = AggregateRoot::<SimpleTestEntity>::new(id);
+        agg.apply(SimpleTestEvent::Created { value: 1 }).unwrap();
+        assert!(agg.apply(SimpleTestEvent::Rejected).is_err());
+
+        let err = store.commit(&mut agg).await.unwrap_err();
+
+        assert!(matches!(err, crate::Error::InvalidState(_)));
+        assert_eq!(store.append_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn commit_deleted_refuses_a_poisoned_aggregate() {
+        let store = CommitTestStore::new(SnapshotConfig::disabled());
+        let id = crate::EntityId::new();
+        let mut agg = AggregateRoot::<SimpleTestEntity>::new(id);
+        agg.apply(SimpleTestEvent::Created { value: 1 }).unwrap();
+        assert!(agg.apply(SimpleTestEvent::Rejected).is_err());
+        let mut deleted = agg.apply_delete(SimpleTestDelete).unwrap();
+
+        let err = store.commit_deleted(&mut deleted).await.unwrap_err();
+
+        assert!(matches!(err, crate::Error::InvalidState(_)));
+        assert_eq!(store.append_count(), 0);
     }
 }

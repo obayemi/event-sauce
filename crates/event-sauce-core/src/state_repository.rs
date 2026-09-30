@@ -634,6 +634,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_poisoned_deleted_aggregate_is_refused() {
+        let (store, repo) = repo();
+
+        let id = EntityId::new();
+        let mut aggregate = repo.create_with_id(id);
+        aggregate
+            .apply(SimpleTestEvent::Created { value: 1 })
+            .unwrap();
+        assert!(aggregate.apply(SimpleTestEvent::Rejected).is_err());
+        let mut deleted = aggregate.apply_delete(SimpleTestDelete).unwrap();
+        assert!(deleted.is_poisoned());
+
+        let err = repo.save_deleted(&mut deleted).await.unwrap_err();
+        assert!(matches!(err, Error::InvalidState(_)));
+        assert!(store.recorded_commits().is_empty());
+    }
+
+    #[tokio::test]
     async fn test_schema_version_mismatch_fails_load() {
         let (store, repo) = repo();
 
