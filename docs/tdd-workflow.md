@@ -104,7 +104,7 @@ define_events! {
 // Use command_handler! for command methods
 command_handler! {
     impl ShoppingCart {
-        fn add_item(product_id: EntityId, name: String, price: i64, quantity: u32)
+        @clock fn add_item(product_id: EntityId, name: String, price: i64, quantity: u32)
             -> ItemAddedEvent { product_id, name, price, quantity };
     }
 }
@@ -304,7 +304,7 @@ define_events! {
 
 command_handler! {
     impl ShoppingCart {
-        fn add_item(product_id: EntityId, name: String, price: i64, quantity: u32)
+        @clock fn add_item(product_id: EntityId, name: String, price: i64, quantity: u32)
             -> ItemAddedEvent { product_id, name, price, quantity };
     }
 }
@@ -366,11 +366,11 @@ define_events! {
             price: i64,
             quantity: u32,
         }
-        @validate {
-            if self.quantity == 0 {
-                return Err(CartError::InvalidQuantity(self.quantity));
+        @validate |_cart, event| {
+            if event.quantity == 0 {
+                return Err(CartError::InvalidQuantity(event.quantity));
             }
-            return Ok(());
+            Ok(())
         }
         => |cart, event| {
             cart.items.entry(event.product_id)
@@ -410,16 +410,16 @@ define_events! {
         ItemAdded { ... } => ...,
 
         ItemRemoved { product_id: EntityId, quantity: u32 }
-        @validate {
-            let current = aggregate.items.get(&self.product_id)
-                .ok_or(CartError::ItemNotFound(self.product_id))?;
-            if current.quantity < self.quantity {
+        @validate |aggregate, event| {
+            let current = aggregate.items.get(&event.product_id)
+                .ok_or(CartError::ItemNotFound(event.product_id))?;
+            if current.quantity < event.quantity {
                 return Err(CartError::InsufficientQuantity {
                     available: current.quantity,
-                    requested: self.quantity,
+                    requested: event.quantity,
                 });
             }
-            return Ok(());
+            Ok(())
         }
         => |cart, event| {
             if let Some(item) = cart.items.get_mut(&event.product_id) {
@@ -434,9 +434,9 @@ define_events! {
 
 command_handler! {
     impl ShoppingCart {
-        fn add_item(product_id: EntityId, name: String, price: i64, quantity: u32)
+        @clock fn add_item(product_id: EntityId, name: String, price: i64, quantity: u32)
             -> ItemAddedEvent { product_id, name, price, quantity };
-        fn remove_item(product_id: EntityId, quantity: u32)
+        @clock fn remove_item(product_id: EntityId, quantity: u32)
             -> ItemRemovedEvent { product_id, quantity };
     }
 }

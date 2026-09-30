@@ -202,16 +202,16 @@ define_events! {
         }
         @encrypted_fields(name, diagnosis)
         => |patient, event| {
-            patient.state.name = event.name.clone();
-            patient.state.diagnosis = event.diagnosis.clone();
-            patient.state.visit_count = event.visit_count;
+            patient.name = event.name.clone();
+            patient.diagnosis = event.diagnosis.clone();
+            patient.visit_count = event.visit_count;
         },
 
         VisitRecorded {
             visit_count: i32,
         }
         => |patient, event| {
-            patient.state.visit_count = event.visit_count;
+            patient.visit_count = event.visit_count;
         },
     }
 }

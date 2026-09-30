@@ -336,13 +336,13 @@ The `command_handler!` macro supports multiple `@init` commands. For each `@init
 command_handler! {
     impl Member {
         // Two init commands — each produces different initial state
-        @init fn create_admin(email: String, name: String)
+        @clock @init fn create_admin(email: String, name: String)
             -> AdminCreatedEvent { email, name };
-        @init fn create_by_invite(email: String, name: String, invite_code: String)
+        @clock @init fn create_by_invite(email: String, name: String, invite_code: String)
             -> CreatedByInviteEvent { email, name, invite_code };
 
         // Regular command
-        fn verify() -> VerifiedEvent { };
+        @clock fn verify() -> VerifiedEvent { };
     }
 }
 ```

@@ -74,20 +74,20 @@ define_events! {
             quantity: u32,
             price: i64,
         }
-        @validate {
+        @validate |aggregate, event| {
             if aggregate.status == OrderStatus::Completed {
                 return Err(OrderError::OrderAlreadyCompleted);
             }
-            if self.quantity == 0 {
-                return Err(OrderError::InvalidQuantity(self.quantity));
+            if event.quantity == 0 {
+                return Err(OrderError::InvalidQuantity(event.quantity));
             }
-            return Ok(());
+            Ok(())
         }
-        @post_validate {
+        @post_validate |aggregate, _event| {
             if aggregate.total_amount > 1_000_000 {
                 return Err(OrderError::OrderTotalExceeded(aggregate.total_amount));
             }
-            return Ok(());
+            Ok(())
         }
         => |order, event| {
             order.items.push(OrderItem {
@@ -100,11 +100,11 @@ define_events! {
 
         Completed {}
         @version(2)  // Custom version for schema evolution
-        @validate {
+        @validate |aggregate, _event| {
             if aggregate.status == OrderStatus::Completed {
                 return Err(OrderError::OrderAlreadyCompleted);
             }
-            return Ok(());
+            Ok(())
         }
         => |order, _event| {
             order.status = OrderStatus::Completed;
@@ -164,13 +164,15 @@ use event_sauce::command_handler;
 command_handler! {
     impl Order {
         // @init commands generate creation functions + UninitAggregateRoot methods
-        @init fn create_order(order_id: String) -> CreatedEvent { order_id };
+        // @clock stamps `timestamp` from the wall clock; without it a command
+        // takes its instant as an explicit parameter instead
+        @clock @init fn create_order(order_id: String) -> CreatedEvent { order_id };
 
         // Regular commands generate methods on AggregateRoot<Order>
-        fn add_item(item_id: String, quantity: u32, price: i64) -> ItemAddedEvent {
+        @clock fn add_item(item_id: String, quantity: u32, price: i64) -> ItemAddedEvent {
             item_id, quantity, price
         };
-        fn complete() -> CompletedEvent { };
+        @clock fn complete() -> CompletedEvent { };
     }
 }
 
@@ -336,11 +338,11 @@ Each `@init` variant generates its own `InitEvent<A>` implementation with indepe
 ```rust
 command_handler! {
     impl Member {
-        @init fn create_admin(email: String, name: String)
+        @clock @init fn create_admin(email: String, name: String)
             -> AdminCreatedEvent { email, name };
-        @init fn create_by_invite(email: String, name: String, invite_code: String)
+        @clock @init fn create_by_invite(email: String, name: String, invite_code: String)
             -> CreatedByInviteEvent { email, name, invite_code };
-        fn verify() -> VerifiedEvent { };
+        @clock fn verify() -> VerifiedEvent { };
     }
 }
 
@@ -1010,7 +1012,7 @@ The event-sauce event system provides:
 |------|------|---------|
 | 1 | Use define_events! macro | `define_events! { pub enum OrderEvent for Order { ... } }` |
 | 2 | Define event variants | `Created { order_id: String }` |
-| 3 | Add validation (optional) | `@validate { ... } @post_validate { ... }` |
+| 3 | Add validation (optional) | `@validate \|agg, evt\| { ... } @post_validate \|agg, evt\| { ... }` |
 | 4 | Define apply logic | `=> \|order, event\| { order.value = ...; }` |
 | 5 | Use in commands | `self.apply(CreatedEvent { ... })?;` |
 

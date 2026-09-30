@@ -8,6 +8,7 @@ Here's a complete counter aggregate in ~30 lines:
 
 ```rust
 use event_sauce::prelude::*;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 // 1. Define errors
@@ -19,7 +20,7 @@ enum CounterError {
 
 // 2. Define aggregate (EntityId is the universal ID type)
 #[aggregate(event = "CounterEvent", error = "CounterError")]
-#[derive(Default)]
+#[derive(Default, Debug, Serialize, Deserialize)]
 struct Counter {
     #[id]
     id: EntityId,
@@ -28,13 +29,13 @@ struct Counter {
 
 // 3. Define events with validation
 define_events! {
-    pub enum CounterEvent for Counter {
+    enum CounterEvent for Counter {
         Incremented { amount: i32 }
-        @validate {
-            if self.amount <= 0 {
-                return Err(CounterError::InvalidAmount(self.amount));
+        @validate |_counter, event| {
+            if event.amount <= 0 {
+                return Err(CounterError::InvalidAmount(event.amount));
             }
-            return Ok(());
+            Ok(())
         }
         => |counter, event| {
             counter.value += event.amount;
@@ -47,11 +48,13 @@ define_events! {
     }
 }
 
-// 4. Implement commands (generates CounterCommands trait on AggregateRoot<Counter>)
+// 4. Implement commands (generates CounterCommands trait on AggregateRoot<Counter>).
+// @clock stamps `timestamp` from the wall clock; without it a command takes
+// its instant as an explicit parameter instead.
 command_handler! {
     impl Counter {
-        fn increment(amount: i32) -> IncrementedEvent { amount };
-        fn decrement(amount: i32) -> DecrementedEvent { amount };
+        @clock fn increment(amount: i32) -> IncrementedEvent { amount };
+        @clock fn decrement(amount: i32) -> DecrementedEvent { amount };
     }
 }
 ```
@@ -113,9 +116,10 @@ enum CounterError {
 
 ```rust
 use event_sauce::prelude::*;
+use serde::{Deserialize, Serialize};
 
 #[aggregate(event = "CounterEvent", error = "CounterError")]
-#[derive(Default)]
+#[derive(Default, Debug, Serialize, Deserialize)]
 struct Counter {
     #[id]
     id: EntityId,
@@ -136,15 +140,15 @@ All entities use `EntityId` (a UUID-backed newtype) as their identifier. No cust
 use event_sauce::define_events;
 
 define_events! {
-    pub enum CounterEvent for Counter {
+    enum CounterEvent for Counter {
         Incremented {
             amount: i32,
         }
-        @validate {
-            if self.amount <= 0 {
-                return Err(CounterError::InvalidAmount(self.amount));
+        @validate |_counter, event| {
+            if event.amount <= 0 {
+                return Err(CounterError::InvalidAmount(event.amount));
             }
-            return Ok(());
+            Ok(())
         }
         => |counter, event| {
             counter.value += event.amount;
@@ -177,8 +181,8 @@ use event_sauce::command_handler;
 // This generates a CounterCommands trait implemented on AggregateRoot<Counter>
 command_handler! {
     impl Counter {
-        fn increment(amount: i32) -> IncrementedEvent { amount };
-        fn decrement(amount: i32) -> DecrementedEvent { amount };
+        @clock fn increment(amount: i32) -> IncrementedEvent { amount };
+        @clock fn decrement(amount: i32) -> DecrementedEvent { amount };
     }
 }
 ```
@@ -370,7 +374,7 @@ Some aggregates have required fields that can't have meaningful defaults. Use **
 ```rust
 // 1. Define events — mark creation event with @init
 define_events! {
-    pub enum OrderEvent for Order {
+    enum OrderEvent for Order {
         Created {
             user_id: EntityId,
         }
@@ -387,7 +391,7 @@ define_events! {
 
 // 2. Define aggregate with init flag (no Default needed!)
 #[aggregate(event = "OrderEvent", error = "OrderError", init)]
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct Order {
     #[id]
     id: EntityId,
@@ -398,8 +402,8 @@ struct Order {
 // 3. Define commands — @init commands generate creation functions
 command_handler! {
     impl Order {
-        @init fn create_order(user_id: EntityId) -> CreatedEvent { user_id };
-        fn complete() -> CompletedEvent { };
+        @clock @init fn create_order(user_id: EntityId) -> CreatedEvent { user_id };
+        @clock fn complete() -> CompletedEvent { };
     }
 }
 
