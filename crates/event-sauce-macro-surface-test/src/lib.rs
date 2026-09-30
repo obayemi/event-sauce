@@ -21,17 +21,25 @@ use serde::{Deserialize, Serialize};
 /// its own `Cargo.toml`.
 type Instant = event_sauce::chrono::DateTime<event_sauce::chrono::Utc>;
 
+/// Error shared by every aggregate below — its only job is to exist, so the
+/// generated `Result<_, Error>` signatures have a concrete type to name.
 #[derive(Debug)]
-struct CounterError;
+struct SurfaceError;
 
-impl std::fmt::Display for CounterError {
+impl std::fmt::Display for SurfaceError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "counter error")
+        write!(f, "surface error")
     }
 }
 
-impl std::error::Error for CounterError {}
-impl event_sauce::AggregateError for CounterError {}
+impl std::error::Error for SurfaceError {}
+impl event_sauce::AggregateError for SurfaceError {}
+
+impl From<event_sauce::SpecificationError<Vault>> for SurfaceError {
+    fn from(_err: event_sauce::SpecificationError<Vault>) -> Self {
+        SurfaceError
+    }
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Counter {
@@ -53,7 +61,7 @@ impl event_sauce::DefaultEntity for Counter {}
 
 impl event_sauce::Aggregate for Counter {
     type Event = CounterEvent;
-    type Error = CounterError;
+    type Error = SurfaceError;
     type DeletedState = Self;
 }
 
@@ -71,82 +79,6 @@ event_sauce::command_handler! {
     impl Counter {
         @clock fn increment(amount: i32) -> IncrementedEvent { amount };
     }
-}
-
-/// Error shared by every aggregate below — its only job is to exist, so the
-/// generated `Result<_, Error>` signatures have a concrete type to name.
-#[derive(Debug)]
-struct VaultError;
-
-impl std::fmt::Display for VaultError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "vault error")
-    }
-}
-
-impl std::error::Error for VaultError {}
-impl event_sauce::AggregateError for VaultError {}
-
-impl From<event_sauce::SpecificationError<Vault>> for VaultError {
-    fn from(_err: event_sauce::SpecificationError<Vault>) -> Self {
-        VaultError
-    }
-}
-
-/// Stands in as the `@actor(T)` parameter for every actor-flavoured
-/// event/command below. Its own event is hand-written rather than
-/// macro-generated — `@init`, `@actor` and the rest are exercised on
-/// `Vault` instead, this type only needs to exist.
-#[derive(Debug, Serialize, Deserialize)]
-struct Operator {
-    id: event_sauce::EntityId,
-}
-
-impl event_sauce::Entity for Operator {
-    fn new(id: event_sauce::EntityId) -> Self {
-        Self { id }
-    }
-
-    fn entity_id(&self) -> event_sauce::EntityId {
-        self.id
-    }
-}
-
-impl event_sauce::DefaultEntity for Operator {}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-enum OperatorEvent {
-    Noop,
-}
-
-impl event_sauce::DomainEvent for OperatorEvent {
-    type Aggregate = Operator;
-
-    fn event_type(&self) -> &'static str {
-        "Operator.Noop"
-    }
-
-    fn event_version(&self) -> event_sauce::EventVersion {
-        event_sauce::EventVersion::new(1)
-    }
-
-    fn occurred_at(&self) -> Instant {
-        event_sauce::chrono::Utc::now()
-    }
-}
-
-impl event_sauce::EventApplicator<Operator> for OperatorEvent {
-    fn dispatch(&self, _operator: &mut Operator) -> Result<(), VaultError> {
-        Ok(())
-    }
-
-    fn dispatch_unchecked(&self, _operator: &mut Operator) {}
-}
-
-impl event_sauce::Aggregate for Operator {
-    type Event = OperatorEvent;
-    type Error = VaultError;
-    type DeletedState = Self;
 }
 
 event_sauce::spec!(
@@ -171,7 +103,7 @@ impl event_sauce::Entity for Vault {
 
 impl event_sauce::Aggregate for Vault {
     type Event = VaultEvent;
-    type Error = VaultError;
+    type Error = SurfaceError;
     type DeletedState = Self;
 }
 
@@ -194,7 +126,7 @@ event_sauce::define_events! {
             owner: String,
         }
         @init
-        @actor(Operator)
+        @actor(Counter)
         @validate |_actor, _event| {
             return Ok(());
         }
@@ -215,10 +147,10 @@ event_sauce::define_events! {
         },
 
         Locked {}
-        @actor(Operator)
+        @actor(Counter)
         @validate |vault, _actor, _event| {
             if vault.locked {
-                return Err(VaultError);
+                return Err(SurfaceError);
             }
             return Ok(());
         }
@@ -232,7 +164,7 @@ event_sauce::define_events! {
         @delete
         @validate |vault, _event| {
             if vault.locked {
-                return Err(VaultError);
+                return Err(SurfaceError);
             }
             return Ok(());
         }
@@ -244,7 +176,7 @@ event_sauce::define_events! {
             reason: String,
         }
         @delete
-        @actor(Operator)
+        @actor(Counter)
         @validate |_vault, _actor, _event| {
             return Ok(());
         }
@@ -257,11 +189,11 @@ event_sauce::define_events! {
 event_sauce::command_handler! {
     impl Vault {
         @clock @init fn open(label: String) -> OpenedEvent { label };
-        @clock @init @actor(Operator) fn provision(owner: String) -> ProvisionedEvent { owner };
+        @clock @init @actor(Counter) fn provision(owner: String) -> ProvisionedEvent { owner };
         fn rename(renamed_at: Instant, new_label: String) -> RenamedEvent { renamed_at, new_label };
-        @clock @actor(Operator) fn lock() -> LockedEvent { };
+        @clock @actor(Counter) fn lock() -> LockedEvent { };
         @clock @delete fn empty(reason: String) -> EmptiedEvent { reason };
-        @clock @delete @actor(Operator) fn seize(reason: String) -> SeizedEvent { reason };
+        @clock @delete @actor(Counter) fn seize(reason: String) -> SeizedEvent { reason };
     }
 }
 
@@ -308,7 +240,7 @@ mod tests {
     }
 
     impl event_sauce::EventApplicator<Ledger> for CounterAudited {
-        fn dispatch(&self, _ledger: &mut Ledger) -> Result<(), CounterError> {
+        fn dispatch(&self, _ledger: &mut Ledger) -> Result<(), SurfaceError> {
             Ok(())
         }
 
@@ -317,7 +249,7 @@ mod tests {
 
     impl event_sauce::Aggregate for Ledger {
         type Event = CounterAudited;
-        type Error = CounterError;
+        type Error = SurfaceError;
         type DeletedState = Self;
     }
 
@@ -328,8 +260,8 @@ mod tests {
     {
     }
 
-    fn an_operator() -> event_sauce::AggregateRoot<Operator> {
-        event_sauce::AggregateRoot::<Operator>::new(event_sauce::EntityId::new())
+    fn an_operator() -> event_sauce::AggregateRoot<Counter> {
+        event_sauce::AggregateRoot::<Counter>::new(event_sauce::EntityId::new())
     }
 
     #[test]
