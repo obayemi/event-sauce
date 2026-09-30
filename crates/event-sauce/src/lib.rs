@@ -22,7 +22,7 @@
 //!
 //! [`define_events!`](crate::define_events) still expands to
 //! `#[derive(Serialize, Deserialize)]` on the generated event structs, so a
-//! caller using it also needs `serde` with the `derive` feature. `paste`,
+//! caller using it also needs `serde` with the `derive` feature. `pastey`,
 //! `uuid`, `serde_json` and `async-trait` (needed only by `policy!`) are
 //! macro-only: a caller adds none of them to use the macros.
 //!

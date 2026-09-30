@@ -174,6 +174,10 @@ explicitly rather than gated behind a major version bump.
 - The policy dispatcher batches its checkpoint writes per fetched batch (up
   to 500 events) instead of one write per event, so dispatch lag against a
   large log with a low match rate no longer scales with total event volume.
+- The macros' internal `paste` dependency (unmaintained, RUSTSEC-2024-0436)
+  is replaced by its maintained fork, `pastey`. Callers of
+  `define_events!`/`command_handler!` are unaffected either way, since
+  neither was ever a direct dependency.
 
 ### Migration Steps
 

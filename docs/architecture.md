@@ -221,7 +221,7 @@ serde = { version = "1", features = ["derive"] }
 `serde` (with `derive`) is the one companion dependency a caller of
 `define_events!`/`command_handler!` needs directly — see
 [event-sauce's crate docs](https://docs.rs/event-sauce) for why `chrono`,
-`paste`, `uuid`, `serde_json` and `async-trait` don't need their own line.
+`pastey`, `uuid`, `serde_json` and `async-trait` don't need their own line.
 
 ## Event Sourcing Flow
 

@@ -7,7 +7,7 @@
 /// implementations (`DomainEvent`, `EventApplicator`, `ApplyEvent`/`InitEvent`,
 /// `ActorEvent`/`ActorInitEvent`) from a concise, readable declaration.
 ///
-/// Every crate path the expansion needs beyond `$crate` itself (`paste`,
+/// Every crate path the expansion needs beyond `$crate` itself (`pastey`,
 /// `uuid`, `serde_json`) is resolved through `$crate::__private`; `chrono`
 /// resolves through the public `$crate::chrono` instead, since instants are
 /// part of the public API rather than a macro-only detail. Either way a
@@ -545,7 +545,7 @@ macro_rules! define_events {
         }
 
         // ---- Shared: DomainEvent ----
-        // Wrapped in paste::paste! so [<$variant Event>] is available for
+        // Wrapped in pastey::paste! so [<$variant Event>] is available for
         // to_envelope/from_envelope which serialize/deserialize the flat struct format
         $crate::__private::paste! {
             impl $crate::DomainEvent for $event_enum {
@@ -643,7 +643,7 @@ macro_rules! define_events {
         }
 
         // ---- Shared: EventApplicator ----
-        // Wrapped in paste::paste! so [<$variant Event>] is available
+        // Wrapped in pastey::paste! so [<$variant Event>] is available
         $crate::__private::paste! {
             #[allow(unused_variables, unused_assignments)]
             impl $crate::EventApplicator<$aggregate> for $event_enum {
@@ -998,8 +998,8 @@ macro_rules! define_events {
     };
 
     // =========================================================================
-    // Helper: dispatch arm — called from within paste::paste! so $evt_type
-    // is already resolved (e.g. CreatedEvent). No inner paste needed.
+    // Helper: dispatch arm — called from within pastey::paste! so $evt_type
+    // is already resolved (e.g. CreatedEvent). No inner pastey needed.
     //
     // Every dispatch family below matches its one real kind, then falls back
     // to a single catch-all that covers both other kinds: actor-ness never

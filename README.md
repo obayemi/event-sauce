@@ -516,7 +516,7 @@ event-sauce = { version = "0.1", features = ["postgres"] }
 serde = { version = "1", features = ["derive"] }
 ```
 
-`paste`, `uuid`, `serde_json` and `async-trait` (needed only by `policy!`)
+`pastey`, `uuid`, `serde_json` and `async-trait` (needed only by `policy!`)
 are macro-only — a caller adds none of them. `chrono` is reachable as
 `event_sauce::chrono` (the same one the macros use), so a command's
 `DateTime<Utc>` fields need no separate `chrono` line either, even though

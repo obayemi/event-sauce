@@ -1,10 +1,10 @@
 //! Proves that a caller depending only on `event-sauce` and `serde` can use
 //! its exported macros by full path, with no direct dependency of its own
-//! on `paste`, `uuid`, `serde_json` or `async-trait`, and reaches `chrono`
+//! on `pastey`, `uuid`, `serde_json` or `async-trait`, and reaches `chrono`
 //! only through the public [`event_sauce::chrono`] re-export rather than a
 //! direct dependency either.
 //!
-//! If any macro body here resolved `paste`, `uuid`, `serde_json` or
+//! If any macro body here resolved `pastey`, `uuid`, `serde_json` or
 //! `async-trait` through a bare path instead of `$crate::__private::...`,
 //! or recursed into itself by bare name instead of `$crate::...`, this
 //! crate would fail to compile because none of those crates are in its
