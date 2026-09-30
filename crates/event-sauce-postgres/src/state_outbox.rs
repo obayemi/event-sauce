@@ -202,17 +202,15 @@ impl PostgresStateOutbox {
     /// Returns an error if the delete fails.
     pub async fn mark_done(&self, id: i64, worker_id: &str) -> Result<bool> {
         let outbox_table = self.outbox_table();
-        let query = format!(
-            "DELETE FROM {outbox_table} WHERE id = $1 AND locked_by = $2
-             RETURNING id"
-        );
-        let landed: Option<i64> = sqlx::query_scalar(&query)
+        let query = format!("DELETE FROM {outbox_table} WHERE id = $1 AND locked_by = $2");
+        let affected = sqlx::query(&query)
             .bind(id)
             .bind(worker_id)
-            .fetch_optional(&self.pool)
+            .execute(&self.pool)
             .await
-            .map_err(|e| Error::backend("Failed to prune state outbox row", e))?;
-        Ok(landed.is_some())
+            .map_err(|e| Error::backend("Failed to prune state outbox row", e))?
+            .rows_affected();
+        Ok(affected == 1)
     }
 
     /// Records a handler failure for an outbox row claimed by `worker_id`.
@@ -258,10 +256,9 @@ impl PostgresStateOutbox {
                     * (1 + random() * $6::float8)),
                  last_error = $7,
                  updated_at = NOW()
-             WHERE id = $1 AND locked_by = $2
-             RETURNING id"
+             WHERE id = $1 AND locked_by = $2"
         );
-        let landed: Option<i64> = sqlx::query_scalar(&query)
+        let affected = sqlx::query(&query)
             .bind(id)
             .bind(worker_id)
             .bind(max_failures)
@@ -269,10 +266,11 @@ impl PostgresStateOutbox {
             .bind(backoff.cap().as_secs_f64())
             .bind(backoff.jitter())
             .bind(error_message)
-            .fetch_optional(&self.pool)
+            .execute(&self.pool)
             .await
-            .map_err(|e| Error::backend("Failed to mark state outbox row failed", e))?;
-        Ok(landed.is_some())
+            .map_err(|e| Error::backend("Failed to mark state outbox row failed", e))?
+            .rows_affected();
+        Ok(affected == 1)
     }
 
     /// Returns the number of pending rows (rows in `pending` status with no

@@ -430,16 +430,16 @@ impl PostgresPolicyOutbox {
                  locked_until = NULL,
                  last_error = NULL,
                  updated_at = NOW()
-             WHERE id = $1 AND locked_by = $2
-             RETURNING id"
+             WHERE id = $1 AND locked_by = $2"
         );
-        let landed: Option<i64> = sqlx::query_scalar(&query)
+        let affected = sqlx::query(&query)
             .bind(id)
             .bind(worker_id)
-            .fetch_optional(&self.pool)
+            .execute(&self.pool)
             .await
-            .map_err(|e| Error::backend("Failed to mark outbox row done", e))?;
-        Ok(landed.is_some())
+            .map_err(|e| Error::backend("Failed to mark outbox row done", e))?
+            .rows_affected();
+        Ok(affected == 1)
     }
 
     /// Records a real handler failure for an outbox row claimed by
@@ -490,10 +490,9 @@ impl PostgresPolicyOutbox {
                     * (1 + random() * $6::float8)),
                  last_error = $7,
                  updated_at = NOW()
-             WHERE id = $1 AND locked_by = $2
-             RETURNING id"
+             WHERE id = $1 AND locked_by = $2"
         );
-        let landed: Option<i64> = sqlx::query_scalar(&query)
+        let affected = sqlx::query(&query)
             .bind(id)
             .bind(worker_id)
             .bind(max_attempts)
@@ -501,10 +500,11 @@ impl PostgresPolicyOutbox {
             .bind(backoff.cap().as_secs_f64())
             .bind(backoff.jitter())
             .bind(error_message)
-            .fetch_optional(&self.pool)
+            .execute(&self.pool)
             .await
-            .map_err(|e| Error::backend("Failed to mark outbox row failed", e))?;
-        Ok(landed.is_some())
+            .map_err(|e| Error::backend("Failed to mark outbox row failed", e))?
+            .rows_affected();
+        Ok(affected == 1)
     }
 
     /// Returns the number of pending rows for `policy_name` (rows in
