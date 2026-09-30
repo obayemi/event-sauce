@@ -397,11 +397,18 @@ mod tests {
     /// The leak check queries directly against `PostgreSQL`, bypassing
     /// `PgBouncer` entirely: a connection routed through the pooler could be
     /// handed whichever backend still holds the lock, masking the leak.
+    ///
+    /// The `PostgreSQL` container gets a fresh name on every retry attempt, so
+    /// a failed attempt never collides with a name Docker still considers
+    /// taken. That name doubles as `PgBouncer`'s `DB_HOST`, and as a Docker DNS
+    /// hostname it is capped at a 63-byte label: past that, resolution fails
+    /// silently rather than erroring, which is why the id folded into it is 16
+    /// hex characters rather than a full UUID, leaving room for the
+    /// `_{attempt}` suffix.
     #[tokio::test]
     async fn test_with_migration_lock_releases_the_lock_behind_pgbouncer_transaction_pooling() {
         use testcontainers::{
             core::{IntoContainerPort, WaitFor},
-            runners::AsyncRunner,
             GenericImage, ImageExt,
         };
 
@@ -409,19 +416,21 @@ mod tests {
             "event_sauce_pgbouncer_test_{}",
             uuid::Uuid::new_v4().simple()
         );
-        let pg_name = format!(
-            "event_sauce_pgbouncer_test_pg_{}",
-            uuid::Uuid::new_v4().simple()
-        );
+        let pg_name = std::cell::RefCell::new(String::new());
 
-        let pg_container = testcontainers_modules::postgres::Postgres::default()
-            .with_host_auth()
-            .with_tag("16-alpine")
-            .with_container_name(&pg_name)
-            .with_network(&network)
-            .start()
-            .await
-            .expect("start postgres");
+        let pg_container = crate::test_support::start_with_retry(|attempt| {
+            let short_id = &uuid::Uuid::new_v4().simple().to_string()[..16];
+            let name = format!("event_sauce_pgbouncer_test_pg_{short_id}_{attempt}");
+            *pg_name.borrow_mut() = name.clone();
+            testcontainers_modules::postgres::Postgres::default()
+                .with_host_auth()
+                .with_tag("16-alpine")
+                .with_container_name(name)
+                .with_network(&network)
+        })
+        .await
+        .expect("start postgres");
+        let pg_name = pg_name.into_inner();
         let pg_host = pg_container.get_host().await.expect("get postgres host");
         let pg_port = pg_container
             .get_host_port_ipv4(5432)
@@ -429,22 +438,23 @@ mod tests {
             .expect("get postgres port");
         let direct_url = format!("postgresql://postgres@{pg_host}:{pg_port}/postgres");
 
-        let pgbouncer_container = GenericImage::new("edoburu/pgbouncer", "latest")
-            .with_exposed_port(5432.tcp())
-            .with_wait_for(WaitFor::message_on_either_std("process up"))
-            .with_network(&network)
-            .with_env_var("DB_HOST", &pg_name)
-            .with_env_var("DB_PORT", "5432")
-            .with_env_var("DB_NAME", "postgres")
-            .with_env_var("DB_USER", "postgres")
-            .with_env_var("AUTH_TYPE", "trust")
-            .with_env_var("POOL_MODE", "transaction")
-            .with_env_var("SERVER_ROUND_ROBIN", "1")
-            .with_env_var("DEFAULT_POOL_SIZE", "2")
-            .with_env_var("MAX_DB_CONNECTIONS", "2")
-            .start()
-            .await
-            .expect("start pgbouncer");
+        let pgbouncer_container = crate::test_support::start_with_retry(|_attempt| {
+            GenericImage::new("edoburu/pgbouncer", "latest")
+                .with_exposed_port(5432.tcp())
+                .with_wait_for(WaitFor::message_on_either_std("process up"))
+                .with_network(&network)
+                .with_env_var("DB_HOST", &pg_name)
+                .with_env_var("DB_PORT", "5432")
+                .with_env_var("DB_NAME", "postgres")
+                .with_env_var("DB_USER", "postgres")
+                .with_env_var("AUTH_TYPE", "trust")
+                .with_env_var("POOL_MODE", "transaction")
+                .with_env_var("SERVER_ROUND_ROBIN", "1")
+                .with_env_var("DEFAULT_POOL_SIZE", "2")
+                .with_env_var("MAX_DB_CONNECTIONS", "2")
+        })
+        .await
+        .expect("start pgbouncer");
         let pooler_host = pgbouncer_container
             .get_host()
             .await
