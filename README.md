@@ -794,13 +794,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### Learn More
 
 - **Examples** - See `crates/event-sauce/examples/` for complete applications:
-  - **[postgres-quickstart.rs](crates/event-sauce/examples/postgres-quickstart.rs)** - Full-featured example with User and Order aggregates, projections, and PostgreSQL backend
+  - **[postgres-quickstart.rs](crates/event-sauce/examples/postgres-quickstart.rs)** - Full-featured example with User and Order aggregates, projections, and PostgreSQL backend (requires `postgres` + `crypto`; needs Docker)
   - **[apply-event.rs](crates/event-sauce/examples/apply-event.rs)** - Bank account example with manual `ApplyEvent` trait implementation
   - **[actor-events.rs](crates/event-sauce/examples/actor-events.rs)** - Role-based permission validation with actor events
-  - **[crypto-shredding.rs](crates/event-sauce/examples/crypto-shredding.rs)** - Full-aggregate encryption and right-to-be-forgotten
-  - **[field-encryption.rs](crates/event-sauce/examples/field-encryption.rs)** - Selective field-level encryption for sensitive data
+  - **[crypto-shredding.rs](crates/event-sauce/examples/crypto-shredding.rs)** - Full-aggregate encryption and right-to-be-forgotten (requires `memory` + `crypto`)
+  - **[field-encryption.rs](crates/event-sauce/examples/field-encryption.rs)** - Selective field-level encryption for sensitive data (requires `memory` + `crypto`)
   - **[delete-events.rs](crates/event-sauce/examples/delete-events.rs)** - Type-state delete lifecycle with terminal state
   - **[policy.rs](crates/event-sauce/examples/policy.rs)** - Cross-aggregate event orchestration with causation tracking
+  - **[save-all.rs](crates/event-sauce/examples/save-all.rs)** - Multi-aggregate atomic writes with `Repository::save_all`
+  - **[state-stored-order.rs](crates/event-sauce/examples/state-stored-order.rs)** - The same aggregate against both `EventStore` and `StateStore` (requires `memory` + `state-store` + `event-sourcing`)
+  - **[upcasting.rs](crates/event-sauce/examples/upcasting.rs)** - On-load schema migration for historical event payloads
+  - **[projection-worker.rs](crates/event-sauce/examples/projection-worker.rs)** - Running a postgres-backed projection as its own worker process (requires `postgres`; needs Docker)
 - **CLAUDE.md** - Development guidelines and principles
 
 ## Roadmap

@@ -40,12 +40,17 @@ events.
 
 The [`../crates/event-sauce/examples/`](../crates/event-sauce/examples/) directory contains complete, runnable examples:
 
-1. **counter.rs** - Basic event sourcing concepts
-2. **shopping-cart.rs** - Complex aggregate with business rules
-3. **bank-account.rs** - Full workflow with derive macros
-4. **task-projections.rs** - Building read models from events
-5. **crypto-shredding.rs** - Privacy & crypto-shredding for GDPR compliance (requires `crypto` feature)
-6. **policy.rs** - Cross-aggregate event orchestration with cascading reactions and causation tracking
+1. **[apply-event.rs](../crates/event-sauce/examples/apply-event.rs)** - Manual event implementation with the `ApplyEvent` trait (bank account)
+2. **[actor-events.rs](../crates/event-sauce/examples/actor-events.rs)** - Permission-validated events with type-safe actors
+3. **[delete-events.rs](../crates/event-sauce/examples/delete-events.rs)** - Type-state delete transitions (`AggregateRoot<A>` → `DeletedAggregateRoot<A>`)
+4. **[upcasting.rs](../crates/event-sauce/examples/upcasting.rs)** - Event upcasting: on-load schema migration for historical payloads
+5. **[policy.rs](../crates/event-sauce/examples/policy.rs)** - Cross-aggregate event orchestration with cascading reactions and causation tracking
+6. **[save-all.rs](../crates/event-sauce/examples/save-all.rs)** - Multi-aggregate atomic writes with `Repository::save_all`
+7. **[crypto-shredding.rs](../crates/event-sauce/examples/crypto-shredding.rs)** - Full-aggregate encryption and crypto-shredding for GDPR compliance (requires `memory` + `crypto` features)
+8. **[field-encryption.rs](../crates/event-sauce/examples/field-encryption.rs)** - Selective field-level encryption (requires `memory` + `crypto` features)
+9. **[state-stored-order.rs](../crates/event-sauce/examples/state-stored-order.rs)** - One codebase, two persistence styles: the same aggregate against both `EventStore` and `StateStore` (requires `memory` + `state-store` + `event-sourcing` features)
+10. **[postgres-quickstart.rs](../crates/event-sauce/examples/postgres-quickstart.rs)** - Full-featured example with typed aggregate IDs, projections, and the PostgreSQL backend (requires `postgres` + `crypto` features; needs Docker for testcontainers)
+11. **[projection-worker.rs](../crates/event-sauce/examples/projection-worker.rs)** - Running a postgres-backed projection in its own process, alongside other workers (requires `postgres` feature; needs Docker)
 
 ## Quick Links
 
@@ -78,10 +83,10 @@ Event sourcing is a pattern where you store all changes to application state as 
 We recommend following this path:
 
 1. **Start** → [Getting Started Guide](getting-started.md)
-2. **Build** → Run the `postgres-quickstart` or `bank-account` example
+2. **Build** → Run the `actor-events` (in-memory) or `postgres-quickstart` (needs Docker) example
 3. **Learn** → Read [Architecture Overview](architecture.md)
 4. **Practice** → Follow [TDD Workflow](tdd-workflow.md)
-5. **Explore** → Read [Projections & Event Bus](projections.md) and try the `task-projections` example
+5. **Explore** → Read [Projections & Event Bus](projections.md) and try the `projection-worker` example
 6. **Production** → Study [PostgreSQL Production Setup](postgres-production.md)
 
 ## Common Patterns
