@@ -119,35 +119,7 @@ pub struct AggregateRoot<A: Aggregate> {
     entity: A,
     version: AggregateVersion,
     pending_events: Vec<PendingEvent<A::Event>>,
-    /// Set to `true` when a call to `dispatch` (through
-    /// [`apply`](Self::apply) or one of its siblings) fails.
-    ///
-    /// [`EventApplicator::validate_only`](crate::EventApplicator::validate_only)
-    /// runs first, through [`apply`](Self::apply) and
-    /// [`apply_with_actor`](Self::apply_with_actor), so a REFUSAL — nothing
-    /// mutated — never poisons. `define_events!` and `#[derive(Event)]` both
-    /// generate `validate_only` from each variant's pre-validation, so a
-    /// refused event never poisons whichever of the two defined it; only a
-    /// failure once the apply closure has run (`post_validate`) does. A fully
-    /// hand-written `EventApplicator` that leaves `validate_only` at its
-    /// default `Ok(())` has no refusal step: every failure reaches
-    /// `dispatch` and poisons, whether or not the entity was actually
-    /// mutated by the time it failed.
-    /// [`apply_with_metadata`](Self::apply_with_metadata) never calls
-    /// `validate_only` and calls `dispatch` directly, so even a
-    /// pre-validation refusal poisons through it.
-    ///
-    /// There is no `Clone` bound to roll a genuinely poisoned entity back, so
-    /// once poisoned the root is left in an inconsistent state permanently.
-    /// The commit-preparation path (event-sourced commit) and the
-    /// state-store save path both check it and refuse with
-    /// [`crate::Error::InvalidState`]. Further `apply*`/`apply_delete*` calls
-    /// do **not** check it — they still run, against the already-inconsistent
-    /// entity — so a caller that keeps issuing commands after a poisoning
-    /// error gets more (equally unusable) results instead of an early
-    /// refusal. Treat any error from `apply*`/`apply_delete*` as a signal to
-    /// check [`is_poisoned`](Self::is_poisoned) and, if it is set, discard
-    /// the root and reload rather than issue further commands on it.
+    /// Set when a `dispatch` fails; see [`is_poisoned`](Self::is_poisoned).
     poisoned: bool,
 }
 
@@ -336,11 +308,6 @@ impl<A: Aggregate> AggregateRoot<A> {
     /// the stored event always reproduces the same state.
     pub fn apply<E: Into<A::Event>>(&mut self, event: E) -> Result<(), A::Error> {
         let event = event.into();
-        // A REFUSAL is not a poisoning. Pre-validation runs before anything is
-        // mutated, so an aggregate that refused a command is exactly as it was and
-        // stays usable — which is the whole point of a typed refusal: a caller that
-        // expects one (`let _ = incident.raise_severity(..)`) must still be able to
-        // save what it did change.
         EventApplicator::validate_only(&event, &self.entity)?;
         if let Err(error) = EventApplicator::dispatch(&event, &mut self.entity) {
             self.poisoned = true;
