@@ -552,22 +552,39 @@ WHERE schemaname = 'event_sauce';
 
 ### Read Replicas
 
+**Command-side loads and appends must go to the primary.** A replica lags
+the primary by a variable, unbounded amount, so an aggregate loaded from a
+replica can be stale: a command validated against that stale state and then
+appended (necessarily to the primary — replicas are read-only) either
+produces a decision based on facts that no longer hold, or simply loses the
+optimistic-concurrency race against whatever *did* reach the primary in the
+meantime, over and over, under load. The same staleness applies to a
+replica-backed [`CryptoKeyStore`](https://docs.rs/event-sauce-core/latest/event_sauce_core/trait.CryptoKeyStore.html):
+a key rotated or deleted (crypto-shredded) on the primary may not have
+replicated yet, so a load could transiently succeed with a key that should
+already be gone.
+
+Replicas are for **read models and event-log queries only** — the workloads
+that already tolerate eventual consistency because they're derived, not the
+source of truth:
+
 ```rust
 use sqlx::PgPool;
+use event_sauce::postgres::{PostgresEventStore, PostgresEventLogQuery};
 
-// Write pool (primary)
-let write_pool = PgPool::connect(&primary_url).await?;
-let write_store = PostgresEventStore::new(write_pool);
+// Primary pool — all command-side loads, saves, and appends
+let primary_pool = PgPool::connect(&primary_url).await?;
+let store = std::sync::Arc::new(PostgresEventStore::new(primary_pool));
+let repo = store.repository::<Order>();
+let mut order = repo.load(order_id).await?; // Always the primary
+order.confirm()?;
+repo.save(&mut order).await?; // Always the primary
 
-// Read pool (replica)
-let read_pool = PgPool::connect(&replica_url).await?;
-let read_store = PostgresEventStore::new(read_pool);
-
-// Use write_store for appends
-write_store.append(stream_id, events, version).await?;
-
-// Use read_store for queries (reduces primary load)
-let stream = read_store.load_stream(stream_id, Version::initial()).await?;
+// Replica pool — read models and audit/event-log queries only
+let replica_pool = PgPool::connect(&replica_url).await?;
+let replica_store = PostgresEventStore::new(replica_pool);
+let log_query = PostgresEventLogQuery::new(replica_store.pool().clone(), replica_store.schema().to_string());
+let page = log_query.query_events(Default::default()).await?;
 ```
 
 ### Connection Pooling with PgBouncer
@@ -578,12 +595,60 @@ let stream = read_store.load_stream(stream_id, Version::initial()).await?;
 events = host=postgres-primary port=5432 dbname=events
 
 [pgbouncer]
-pool_mode = transaction          # Transaction pooling for event-sauce
+pool_mode = transaction          # Fine for repo.load/save and migrate() —
+                                  # NOT for listen_for_events (see below)
 max_client_conn = 1000
 default_pool_size = 25
 reserve_pool_size = 5
 reserve_pool_timeout = 3
 ```
+
+Transaction-mode pooling hands out a backend connection per transaction, so
+it's exactly what `repo.load`/`repo.save` and `store.migrate()` need — a
+migration's advisory lock is itself transaction-scoped, which is why
+`migrate()` is safe to run concurrently from every replica of your app, even
+behind a transaction-mode PgBouncer.
+
+`listen_for_events` is different: it opens one `PgListener` connection and
+holds a session-level `LISTEN` registration on it for as long as the worker
+runs. Transaction-mode pooling cycles the backend connection between
+transactions, so that registration does not survive past the first
+transaction boundary — `NOTIFY` wake-ups silently stop arriving, with no
+error to signal it. Give `listen_for_events` its own pool (or a direct,
+unpooled connection) pointed at a `session`-mode PgBouncer database, or bypass
+PgBouncer for it entirely:
+
+```ini
+[databases]
+events_session = host=postgres-primary port=5432 dbname=events pool_mode=session
+```
+
+Either way, treat `NOTIFY` as a latency optimization, not a delivery
+guarantee: keep a polling fallback (a periodic `run_leased_projection`/
+`run_postgres_projection` tick regardless of notifications) so a dropped or
+misconfigured listener degrades to polling latency instead of silently
+stalling.
+
+### Which Components Are Multi-Node Safe
+
+Running more than one instance of your app (multiple pods, multiple
+processes) is safe for commands and for most background work, but not
+uniformly — check each component against this table before scaling
+horizontally:
+
+| Component | Multi-node safe? | Why |
+|---|---|---|
+| `repo.load`/`repo.save`, `EventStore::commit` | ✅ Yes | Optimistic concurrency (`ConcurrencyConflict`) plus, on Postgres, a DB-enforced unique constraint make a lost write impossible even under a race. |
+| `Repository::save_all` (Postgres) | ✅ Yes | Runs the whole batch in one transaction under a single append serialization lock. |
+| `run_leased_projection`, `run_sticky_projection` | ✅ Yes | Lease-fenced: only the current lease holder's checkpoint writes are accepted; a losing racer's write is rejected, not silently overwritten. |
+| Policy outbox (`claim_batch` / `mark_done` / `mark_failed`) | ✅ Yes | `FOR UPDATE SKIP LOCKED` partitions work across workers; acks are fenced on `locked_by`, so a worker whose lease already expired can't falsely ack a row a different worker has since reclaimed. |
+| `dispatch_policies_to_outbox` | ✅ Yes | Each policy tracks its own lease and fenced checkpoint (`__policy_outbox_dispatcher:{policy}`), so every instance can call it: each policy is dispatched by whichever instance currently holds its lease, and the rest sit out that policy without blocking on it. |
+| `prune_done` | ✅ Yes | Deletes strictly by `status = 'done' AND updated_at < cutoff`; concurrent claims/acks on other rows are unaffected. |
+| `BackoffPolicy` (retry backoff for outbox handlers) | ✅ Yes | Pure computation of a delay from an attempt count; no shared state to race on. |
+| `store.migrate()` (any store) | ✅ Yes, even behind PgBouncer transaction mode | Guarded by a transaction-scoped `pg_advisory_xact_lock`; safe to call from every instance on every startup. |
+| `run_postgres_projection` (unleased) | ❌ No | Explicitly documented as **not** taking a lease — two instances race on the checkpoint and double-apply events. Use `run_leased_projection` instead whenever more than one instance might run the same projection. |
+| `PolicyRunner::process_pending` | ❌ No | Resolves and advances policy checkpoints with no lease of its own. Run it from exactly one instance (a dedicated worker, a leader-elected pod, or a single cron-triggered job), not from every app replica. |
+| `listen_for_events` behind a transaction-mode PgBouncer | ❌ No (silently) | See above — the session-level `LISTEN` doesn't survive transaction-mode pooling. Safe once pointed at a session-mode connection. |
 
 ### Kubernetes Deployment
 

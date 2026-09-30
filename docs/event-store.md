@@ -289,7 +289,6 @@ store.migrate().await?;
 - Full ACID transactions
 - Optimistic locking via DB constraints
 - Efficient stream queries
-- Scalable for production
 
 **Requirements:**
 - PostgreSQL 12+
@@ -297,9 +296,15 @@ store.migrate().await?;
 
 **When to use:**
 - Production applications
-- Multi-instance deployments
 - Strong consistency requirements
 - Complex querying needs
+
+**Multiple instances of your app** (commands, `repo.load`/`repo.save`,
+`store.migrate()`) are safe to run side by side — see
+[postgres-production.md](postgres-production.md#which-components-are-multi-node-safe)
+for exactly which *background* components (projections, policies, the
+outbox) need a lease or a dedicated worker to stay safe under more than one
+instance.
 
 ## Usage Patterns
 
