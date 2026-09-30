@@ -419,6 +419,50 @@ mod tests {
         store.migrate().await.unwrap();
     }
 
+    /// A row must either hold a key (`shredded_at` NULL) or be shredded
+    /// (`key_data` NULL, `shredded_at` set) — never both null, never both
+    /// set. This is enforced at the schema level, not just by the store's
+    /// own methods, so a manual repair or a future bug can't silently leave
+    /// a row in an in-between state.
+    #[tokio::test]
+    async fn test_crypto_keys_shred_state_check_rejects_a_mixed_row() {
+        let db = TestDatabase::new().await.unwrap();
+        let store = db.store();
+        store.migrate().await.unwrap();
+
+        let err = sqlx::query(
+            "INSERT INTO event_sauce.crypto_keys (aggregate_id, key_data, shredded_at)
+             VALUES ($1, $2, NOW())",
+        )
+        .bind(Uuid::new_v4())
+        .bind(b"a-key".as_slice())
+        .execute(db.pool())
+        .await
+        .unwrap_err();
+
+        assert!(
+            err.to_string().contains("crypto_keys_shred_state"),
+            "expected the shred-state CHECK constraint to reject a row with both \
+             key_data and shredded_at set, got: {err}"
+        );
+    }
+
+    /// Both migration paths (the key store's own `migrate()` and the event
+    /// store's, which also installs `crypto_keys`) add the same CHECK
+    /// constraint. Running both against the same schema must not fail with
+    /// a duplicate-object error.
+    #[tokio::test]
+    async fn test_crypto_keys_shred_state_check_is_idempotent_across_both_migrate_paths() {
+        let db = TestDatabase::new().await.unwrap();
+        let event_store = crate::PostgresEventStore::builder()
+            .pool(db.pool().clone())
+            .build()
+            .unwrap();
+
+        db.store().migrate().await.unwrap();
+        event_store.migrate().await.unwrap();
+    }
+
     #[tokio::test]
     async fn test_get_key_returns_none_for_unknown() {
         let db = TestDatabase::new().await.unwrap();
