@@ -3,9 +3,11 @@
 //! Defines the `EventStore` trait for persisting and retrieving events with streaming support.
 //!
 //! The commit pipeline (preparing and flushing writes) lives in [`commit`];
-//! loading and replay live in [`load`].
+//! loading and replay live in [`load`]; their shared crypto helpers live in
+//! [`encryption`].
 
 mod commit;
+mod encryption;
 mod load;
 
 pub(crate) use commit::{flush_prepared, flush_prepared_batch, prepare_commit};
@@ -475,37 +477,6 @@ pub trait EventStore: Send + Sync {
         }
         Ok(())
     }
-}
-
-/// Unwraps the crypto provider or returns an error.
-fn require_crypto_provider<S: EventStore + ?Sized>(
-    store: &S,
-) -> Result<&dyn crate::CryptoProvider> {
-    store
-        .crypto_provider()
-        .ok_or_else(|| crate::Error::invalid_state("Encrypted aggregate requires crypto_provider"))
-}
-
-/// Unwraps the crypto key store or returns an error.
-fn require_crypto_key_store<S: EventStore + ?Sized>(
-    store: &S,
-) -> Result<&dyn crate::CryptoKeyStore> {
-    store
-        .crypto_key_store()
-        .ok_or_else(|| crate::Error::invalid_state("Encrypted aggregate requires crypto_key_store"))
-}
-
-/// Builds the AAD that binds a snapshot's ciphertext to its aggregate.
-///
-/// A snapshot has no per-event UUID, so it is bound to `aggregate_id || "snap"`.
-/// This separates the snapshot domain from event ciphertext (an event blob cannot
-/// be relocated into the snapshot slot, and vice versa) while staying stable
-/// across the encrypt (write) and decrypt (load) sides.
-fn snapshot_aad(aggregate_id: Uuid) -> Vec<u8> {
-    let mut aad = Vec::with_capacity(20);
-    aad.extend_from_slice(aggregate_id.as_bytes());
-    aad.extend_from_slice(b"snap");
-    aad
 }
 
 #[cfg(test)]

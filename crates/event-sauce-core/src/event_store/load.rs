@@ -2,109 +2,15 @@
 //! resuming from a snapshot.
 
 use uuid::Uuid;
-use zeroize::Zeroizing;
 
 use futures::Stream;
 
-use super::{
-    require_crypto_key_store, require_crypto_provider, snapshot_aad, EventStore, Snapshot,
-};
+use super::encryption::{decrypt_event_data, resolve_crypto_key};
+use super::{EventStore, Snapshot};
 use crate::{
     Aggregate, AggregateRoot, AggregateVersion, DeletedAggregateRoot, DomainEvent, EntityId,
     EventEnvelope, Loaded, Result, StreamId,
 };
-
-/// Decrypts event envelope data using either full-value or field-level decryption.
-///
-/// `aad` binds the ciphertext to its context (event or snapshot); see
-/// [`event_aad`]/[`snapshot_aad`]. Legacy (v1) rows ignore the AAD via the
-/// versioned envelope, so pre-existing ciphertext stays readable.
-fn decrypt_event_data<S: EventStore + ?Sized>(
-    store: &S,
-    crypto_key: Option<&[u8]>,
-    event_data: &mut serde_json::Value,
-    aad: &[u8],
-) -> Result<()> {
-    if let Some(key) = crypto_key {
-        if crate::crypto::is_encrypted(event_data) {
-            let provider = require_crypto_provider(store)?;
-            *event_data = crate::crypto::decrypt_value(provider, key, event_data, aad)?;
-        } else if crate::crypto::has_encrypted_fields(event_data) {
-            let provider = require_crypto_provider(store)?;
-            crate::crypto::decrypt_encrypted_fields(provider, key, event_data, aad)?;
-        }
-    }
-    Ok(())
-}
-
-/// Returns `true` if the aggregate has any committed data — a persisted
-/// snapshot, or at least one event in its stream.
-///
-/// Used to distinguish a crypto-shredded aggregate (data exists but its key is
-/// gone) from a genuinely never-committed one (nothing to read), so that a
-/// missing field-encryption key only surfaces as `KeyNotFound` when there is
-/// actually data that has become unreadable.
-async fn has_committed_data<S: EventStore + ?Sized>(
-    store: &S,
-    stream_id: &StreamId,
-) -> Result<bool> {
-    use futures::StreamExt;
-
-    if store.snapshot_config().use_snapshots_on_load()
-        && store.load_snapshot(stream_id.clone()).await?.is_some()
-    {
-        return Ok(true);
-    }
-
-    let event_stream = store
-        .load_stream(stream_id.clone(), AggregateVersion::initial())
-        .await?;
-    futures::pin_mut!(event_stream);
-    Ok(event_stream.next().await.is_some())
-}
-
-/// Resolves the crypto key to use when loading an aggregate, or `None` for a
-/// plaintext one.
-///
-/// For a fully encrypted aggregate the key must exist: `Error::KeyNotFound`
-/// otherwise. For field-level encryption the key may legitimately be absent
-/// when nothing has been committed yet — but if data already exists and the
-/// key is gone, it was crypto-shredded out from under it, so that also
-/// surfaces as `KeyNotFound`, uniformly with the fully-encrypted case.
-///
-/// # Errors
-///
-/// Returns `Error::InvalidState` if a fully encrypted aggregate has no
-/// configured [`CryptoKeyStore`](crate::CryptoKeyStore), or `Error::KeyNotFound`
-/// if the aggregate was crypto-shredded.
-async fn resolve_crypto_key<S: EventStore + ?Sized, A: Aggregate>(
-    store: &S,
-    uuid: Uuid,
-    stream_id: &StreamId,
-) -> Result<Option<Zeroizing<Vec<u8>>>> {
-    if A::is_encrypted() {
-        let key_store = require_crypto_key_store(store)?;
-        let key = key_store
-            .get_key(uuid)
-            .await?
-            .ok_or_else(|| crate::Error::key_not_found(uuid))?;
-        return Ok(Some(Zeroizing::new(key)));
-    }
-
-    if !A::Event::has_any_encrypted_fields() {
-        return Ok(None);
-    }
-    let Some(key_store) = store.crypto_key_store() else {
-        return Ok(None);
-    };
-    if let Some(key) = key_store.get_key(uuid).await? {
-        return Ok(Some(Zeroizing::new(key)));
-    }
-    if has_committed_data(store, stream_id).await? {
-        return Err(crate::Error::key_not_found(uuid));
-    }
-    Ok(None)
-}
 
 /// Decrypts (if needed) and deserializes one event envelope.
 fn decode_event<S: EventStore + ?Sized, A: Aggregate>(
@@ -286,7 +192,7 @@ where
         return Ok(None);
     };
 
-    let snap_aad = snapshot_aad(uuid);
+    let snap_aad = crate::crypto::snapshot_aad(uuid);
     decrypt_event_data(store, key, &mut snapshot.snapshot_data, &snap_aad)?;
 
     if crate::crypto::is_encrypted(&snapshot.snapshot_data) {

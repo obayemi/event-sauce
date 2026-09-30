@@ -331,6 +331,19 @@ pub fn event_aad(aggregate_id: Uuid, event_id: Uuid) -> [u8; 32] {
     aad
 }
 
+/// Builds the AAD that binds a snapshot's ciphertext to its aggregate.
+///
+/// A snapshot has no per-event UUID, so it is bound to `aggregate_id || "snap"`.
+/// This separates the snapshot domain from event ciphertext (an event blob cannot
+/// be relocated into the snapshot slot, and vice versa) while staying stable
+/// across the encrypt (write) and decrypt (load) sides.
+pub(crate) fn snapshot_aad(aggregate_id: Uuid) -> Vec<u8> {
+    let mut aad = Vec::with_capacity(20);
+    aad.extend_from_slice(aggregate_id.as_bytes());
+    aad.extend_from_slice(b"snap");
+    aad
+}
+
 /// Builds the per-field AAD (`base_aad || field_name`) used by field-level
 /// encryption to defeat intra-event field swapping.
 fn field_aad(base: &[u8], field: &str) -> Vec<u8> {
