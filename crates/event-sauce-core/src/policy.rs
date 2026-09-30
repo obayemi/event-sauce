@@ -554,6 +554,23 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
         self.store.max_position().await
     }
 
+    /// Runs one policy against one event: builds its [`PolicyContext`], calls
+    /// [`Policy::handle`], and — only on success — flushes the buffered
+    /// commits, folding both steps into the single outcome callers react to.
+    async fn handle_and_flush(
+        &self,
+        policy: &Arc<dyn Policy<S>>,
+        envelope: &EventEnvelope,
+    ) -> Result<()> {
+        let ctx = PolicyContext::new(
+            Arc::clone(&self.store),
+            envelope.clone(),
+            self.max_cascade_depth,
+        );
+        policy.handle(envelope, &ctx).await?;
+        ctx.flush().await
+    }
+
     /// Processes all pending events in one-shot mode with checkpoint support.
     ///
     /// For each registered policy:
@@ -620,17 +637,7 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
                     }
 
                     if policy.event_filter().matches(&envelope) {
-                        let ctx = PolicyContext::new(
-                            Arc::clone(&self.store),
-                            envelope.clone(),
-                            self.max_cascade_depth,
-                        );
-
-                        let outcome = match policy.handle(&envelope, &ctx).await {
-                            Ok(()) => ctx.flush().await,
-                            Err(e) => Err(e),
-                        };
-                        match outcome {
+                        match self.handle_and_flush(policy, &envelope).await {
                             Ok(()) => {
                                 round_processed += 1;
                             }
@@ -732,7 +739,6 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
     ) -> Result<bool> {
         let started = std::time::Instant::now();
         let mut attempt = 0;
-        let mut last_error;
 
         // Initial attempt already failed before this function is called.
         // Now we do retries.
@@ -771,17 +777,7 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
                 .min(config.max_delay);
             tokio::time::sleep(delay).await;
 
-            let ctx = PolicyContext::new(
-                Arc::clone(&self.store),
-                envelope.clone(),
-                self.max_cascade_depth,
-            );
-
-            let outcome = match policy.handle(envelope, &ctx).await {
-                Ok(()) => ctx.flush().await,
-                Err(e) => Err(e),
-            };
-            match outcome {
+            match self.handle_and_flush(policy, envelope).await {
                 Ok(()) => {
                     return Ok(false); // success
                 }
@@ -793,8 +789,6 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
                         error = %e,
                         "Policy handler retry failed"
                     );
-                    last_error = e;
-                    let _ = last_error; // suppress unused warning
                 }
             }
         }
@@ -813,17 +807,7 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
 
         for policy in &self.policies {
             if policy.event_filter().matches(envelope) {
-                let ctx = PolicyContext::new(
-                    Arc::clone(&self.store),
-                    envelope.clone(),
-                    self.max_cascade_depth,
-                );
-
-                let outcome = match policy.handle(envelope, &ctx).await {
-                    Ok(()) => ctx.flush().await,
-                    Err(e) => Err(e),
-                };
-                match outcome {
+                match self.handle_and_flush(policy, envelope).await {
                     Ok(()) => {
                         handled += 1;
                     }
