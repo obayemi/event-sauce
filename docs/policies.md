@@ -274,12 +274,15 @@ fits the job.
                 └──────┬───────┘
                        │
                        ▼
-                ┌──────────────┐    Dispatcher process:
-                │ checkpoint:  │    leased; reads log via stream_all,
-                │  __policy_   │    applies each registered policy filter,
-                │  outbox_     │    INSERTs matching rows into policy_outbox
-                │  dispatcher  │    inside the same tx as the checkpoint advance.
-                └──────┬───────┘
+                ┌──────────────┐    Any instance may call dispatch:
+                │ checkpoint:  │    fetches events in batches, applies each
+                │  __policy_   │    registered policy's filter, INSERTs
+                │  outbox_     │    matching rows into policy_outbox inside
+                │  dispatcher: │    the same tx as its checkpoint advance.
+                │  {policy}    │    Each policy's checkpoint and lease are
+                │  (one per    │    its own — one instance dispatching
+                │   policy)    │    policy A does not block another
+                └──────┬───────┘    instance dispatching policy B.
                        │
                        ▼
                 ┌──────────────┐    Worker processes (1..N per policy):
@@ -291,7 +294,7 @@ fits the job.
 ### Setting up the outbox
 
 ```rust
-use event_sauce::postgres::{PolicyDispatch, PostgresPolicyOutbox};
+use event_sauce::postgres::{BackoffPolicy, PolicyDispatch, PostgresPolicyOutbox};
 use event_sauce::EventFilter;
 use std::time::Duration;
 
@@ -312,11 +315,13 @@ let policies = vec![
 ];
 ```
 
-### Dispatching (one process)
+### Dispatching
 
-Run this in **one** worker — the lease ensures it. It reads new events from
-the log and inserts outbox rows for each registered policy whose filter
-matches:
+Every instance may call this — each policy is dispatched by whichever
+instance holds its lease, independently of the others. A `Busy` result
+means none of `policies` could be held right now, not that dispatch
+failed. It reads new events from the log and inserts outbox rows for each
+registered policy whose filter matches:
 
 ```rust
 backend
