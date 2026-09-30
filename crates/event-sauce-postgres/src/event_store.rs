@@ -1013,7 +1013,7 @@ impl PostgresEventStore {
     /// [`Self::precheck_version`] already validated before the lock was
     /// taken, so it does not re-check the version itself.
     ///
-    /// Returns the highest inserted `id`. A unique-index violation (a
+    /// Returns the highest inserted [`Position`]. A unique-index violation (a
     /// concurrent writer took one of these `stream_version` slots first)
     /// aborts the whole multi-row insert atomically — nothing from this
     /// commit is left behind — and is translated to a typed
@@ -1032,7 +1032,7 @@ impl PostgresEventStore {
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         events_table: &str,
         commit: &event_sauce_core::StreamCommit,
-    ) -> Result<i64> {
+    ) -> Result<Option<Position>> {
         let stream_id = &commit.stream_id;
         let expected_version = commit.expected_version;
         let events = &commit.events;
@@ -1089,7 +1089,7 @@ impl PostgresEventStore {
             .await;
 
         match insert_result {
-            Ok(ids) => Ok(ids.into_iter().max().unwrap_or(0)),
+            Ok(ids) => Ok(ids.into_iter().max().map(Position::new)),
             Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => {
                 let actual = AggregateVersion::new(expected_version.as_i64() + 1);
                 Err(Error::concurrency_conflict(expected_version, actual))
@@ -1098,22 +1098,22 @@ impl PostgresEventStore {
         }
     }
 
-    /// Emits a single NOTIFY carrying the highest inserted id for the
-    /// transaction. Postgres holds notifications until commit, so this fires only
-    /// if the transaction succeeds. A `last_inserted_id` of 0 means no events
-    /// were inserted (claims-only / clear-only) — nothing to notify.
+    /// Emits a single NOTIFY carrying the highest inserted position for the
+    /// transaction. Postgres holds notifications until commit, so this fires
+    /// only if the transaction succeeds. `None` means no events were
+    /// inserted (claims-only / clear-only) — nothing to notify.
     async fn notify_inserted(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-        last_inserted_id: i64,
+        last_inserted: Option<Position>,
     ) -> Result<()> {
-        if last_inserted_id == 0 {
+        let Some(last_inserted) = last_inserted else {
             return Ok(());
-        }
+        };
         let channel = self.notify_channel();
         sqlx::query("SELECT pg_notify($1, $2)")
             .bind(&channel)
-            .bind(last_inserted_id.to_string())
+            .bind(last_inserted.as_i64().to_string())
             .execute(&mut **tx)
             .await
             .map_err(|e| Error::backend("Failed to issue NOTIFY", e))?;
@@ -1217,13 +1217,13 @@ impl EventStore for PostgresEventStore {
             .await?;
         }
 
-        let mut max_inserted_id: i64 = 0;
+        let mut max_inserted: Option<Position> = None;
         for commit in commits.iter().filter(|c| !c.events.is_empty()) {
             let last = Self::insert_events_batch(&mut tx, &events_table, commit).await?;
-            max_inserted_id = max_inserted_id.max(last);
+            max_inserted = max_inserted.max(last);
         }
 
-        self.notify_inserted(&mut tx, max_inserted_id).await?;
+        self.notify_inserted(&mut tx, max_inserted).await?;
 
         tx.commit()
             .await
