@@ -428,6 +428,70 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_flush_prepared_batch_saves_a_snapshot_per_aggregate() {
+        let store = CommitTestStore::new(SnapshotConfig::always());
+
+        let id_a = crate::EntityId::new();
+        let mut agg_a = AggregateRoot::<SimpleTestEntity>::new(id_a);
+        agg_a.apply(SimpleTestEvent::Created { value: 1 }).unwrap();
+
+        let id_b = crate::EntityId::new();
+        let mut agg_b = AggregateRoot::<SimpleTestEntity>::new(id_b);
+        agg_b.apply(SimpleTestEvent::Created { value: 2 }).unwrap();
+
+        let prepared_a = prepare_commit(&store, &agg_a).await.unwrap().unwrap();
+        let prepared_b = prepare_commit(&store, &agg_b).await.unwrap().unwrap();
+
+        flush_prepared_batch(&store, vec![prepared_a, prepared_b])
+            .await
+            .unwrap();
+
+        assert_eq!(
+            store.save_snapshot_count(),
+            2,
+            "each dirty aggregate in the batch should get its own snapshot"
+        );
+
+        for id in [id_a, id_b] {
+            let stream_id = StreamId::new("SimpleTestEntity", id.as_uuid());
+            let snapshots = store.snapshots.lock().unwrap();
+            let snapshot = snapshots
+                .get(&stream_id)
+                .expect("snapshot should exist for this stream");
+            assert_eq!(snapshot.snapshot_version, AggregateVersion::new(1));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_flush_prepared_batch_survives_snapshot_save_failure() {
+        let store = CommitTestStore::new(SnapshotConfig::always()).with_fail_save_snapshot();
+
+        let id = crate::EntityId::new();
+        let mut agg = AggregateRoot::<SimpleTestEntity>::new(id);
+        agg.apply(SimpleTestEvent::Created { value: 1 }).unwrap();
+
+        let prepared = prepare_commit(&store, &agg).await.unwrap().unwrap();
+
+        let result = flush_prepared_batch(&store, vec![prepared]).await;
+        assert!(
+            result.is_ok(),
+            "batch should succeed even if a snapshot save fails"
+        );
+        assert_eq!(store.append_count(), 1, "events should still be appended");
+        assert_eq!(
+            store.save_snapshot_count(),
+            1,
+            "save_snapshot should have been attempted"
+        );
+
+        agg.clear_pending_events();
+        assert!(
+            agg.pending_events().is_empty(),
+            "pending events should still be cleared once the batch is durable"
+        );
+    }
+
+    #[tokio::test]
     async fn test_commit_clears_pending_events_after_success() {
         let store = CommitTestStore::new(SnapshotConfig::disabled());
         let id = crate::EntityId::new();
