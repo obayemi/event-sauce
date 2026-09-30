@@ -46,6 +46,26 @@ pub(crate) trait CommitSource<A: Aggregate> {
     /// Serializes the state a snapshot or stored row should hold: the entity
     /// for an active root, `A::DeletedState` for a deleted one.
     fn serialize_state(&self) -> std::result::Result<serde_json::Value, serde_json::Error>;
+
+    /// Refuses to prepare a write for a poisoned root.
+    ///
+    /// `verb` names the operation in the error message (e.g. `"commit"` or
+    /// `"save"`); the noun ("aggregate" or "deleted aggregate") follows from
+    /// [`IS_DELETED`](Self::IS_DELETED).
+    fn ensure_not_poisoned(&self, verb: &str) -> crate::Result<()> {
+        if self.is_poisoned() {
+            let noun = if Self::IS_DELETED {
+                "deleted aggregate"
+            } else {
+                "aggregate"
+            };
+            return Err(crate::Error::invalid_state(format!(
+                "cannot {verb} a poisoned {noun}: a previous apply() failed, \
+                 leaving inconsistent state — discard and reload the aggregate"
+            )));
+        }
+        Ok(())
+    }
 }
 
 impl<A: Aggregate + serde::Serialize> CommitSource<A> for AggregateRoot<A> {

@@ -86,22 +86,12 @@ where
         Ok(())
     }
 
-    fn check_not_poisoned(poisoned: bool) -> Result<()> {
-        if poisoned {
-            return Err(Error::invalid_state(
-                "cannot save a poisoned aggregate: a previous apply() failed, \
-                 leaving inconsistent state — discard and reload the aggregate",
-            ));
-        }
-        Ok(())
-    }
-
     /// Prepares a save for an active or deleted aggregate root: the two
     /// differ only in which state a [`CommitSource`](crate::commit_source::CommitSource)
     /// serializes, whether it carries claims, and whether it is a deletion.
     fn prepare<R: crate::commit_source::CommitSource<A>>(root: &R) -> Result<Option<StateCommit>> {
         Self::reject_encrypted()?;
-        Self::check_not_poisoned(root.is_poisoned())?;
+        root.ensure_not_poisoned("save")?;
 
         let pending = root.pending_events_with_actors();
         if pending.is_empty() {

@@ -78,17 +78,7 @@ where
     A: Aggregate,
     A::Event: serde::Serialize,
 {
-    if root.is_poisoned() {
-        let what = if R::IS_DELETED {
-            "poisoned deleted aggregate"
-        } else {
-            "poisoned aggregate"
-        };
-        return Err(crate::Error::invalid_state(format!(
-            "cannot commit a {what}: a previous apply() failed, \
-             leaving inconsistent state — discard and reload the aggregate"
-        )));
-    }
+    root.ensure_not_poisoned("commit")?;
 
     let pending = root.pending_events_with_actors();
     if pending.is_empty() {
