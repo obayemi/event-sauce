@@ -337,6 +337,13 @@ events; a stalled worker that loses its lease mid-transaction has its write
 fenced (rolled back, surfaced as `Error::LeaseLost`), so the checkpoint never
 regresses and no event is double-applied across the hand-off.
 
+For a long-running worker process, prefer `run_sticky_projection` over
+looping `run_leased_projection` by hand: the holder keeps the lease between
+drains instead of releasing and re-acquiring it on every call, removing its
+own contended acquire per tick. Non-holders still get `Busy` and keep
+probing the lease on every wake-up — this only removes the *holder's* extra
+contended write, not every node's `NOTIFY` wake-up.
+
 ## Rebuilding a projection
 
 When you need to re-derive a read-model from scratch — a schema change, a fixed

@@ -217,40 +217,24 @@ impl PostgresBackend {
         .await
     }
 
-    /// Runs a [`PostgresProjection`](PostgresProjection) under a lease
-    /// that is held across idle ticks, instead of being released and
-    /// re-acquired on every call like [`run_leased_projection`].
+    /// Runs a [`PostgresProjection`](PostgresProjection) under a lease held
+    /// across idle ticks, rather than released and re-acquired on every call
+    /// like [`run_leased_projection`].
     ///
-    /// [`run_leased_projection`] acquires the lease, drains whatever is
-    /// currently available, and releases it — every single call. Driven from
-    /// a `NOTIFY`-woken loop, every commit then wakes every worker on every
-    /// node to race for that lease via a contended `INSERT ... ON CONFLICT DO
-    /// UPDATE`, even though only one of them can ever win it, and only the
-    /// winner had any work to do.
+    /// Acquires the lease once, then repeats: drain, sleep `idle_interval`,
+    /// check `should_continue`, renew — without releasing in between.
+    /// Checking right after the sleep and before the renewal means a
+    /// shutdown signaled during that sleep is noticed immediately, with no
+    /// extra renewal or drain first. Once `should_continue` returns `false`
+    /// the lease is released and the run returns
+    /// [`LeaseOutcome::Completed`](LeaseOutcome::Completed); it is also
+    /// released if ever lost (a renewal failure, or a fenced checkpoint
+    /// save rejected mid-drain), in which case the error propagates.
     ///
-    /// This entry point instead acquires the lease once and holds it,
-    /// sharing the same acquire/release wrapper [`run_leased_projection`]
-    /// itself uses (the policy dispatcher manages its own per-policy leases
-    /// separately): after each drain it sleeps `idle_interval`, checks
-    /// `should_continue`, and — only if told to keep going — renews the
-    /// lease and drains again, without releasing in between. Checking
-    /// right after the sleep and before the renewal means a shutdown
-    /// signaled during that sleep is noticed immediately, with no extra
-    /// renewal or drain first. Once `should_continue` returns `false` the
-    /// lease is released and the run returns
-    /// [`LeaseOutcome::Completed`](LeaseOutcome::Completed). The lease
-    /// is also released if it is ever lost (an unexpected renewal failure, or
-    /// a fenced checkpoint save rejected mid-drain), in which case the error
-    /// propagates.
-    ///
-    /// `idle_interval` must stay below `lease_duration / 3` — the same
-    /// margin the drain's own per-event renewal uses — or the lease could
-    /// lapse during the idle sleep itself,
-    /// before there is a chance to renew
-    /// it; this is rejected with
-    /// [`Error::InvalidState`](Error::InvalidState) rather
-    /// than left to fail with [`Error::LeaseLost`](Error::LeaseLost)
-    /// on the first idle tick.
+    /// `idle_interval` must stay below the lease's renewal interval
+    /// (`lease_duration / 3`), or the lease could lapse during the idle
+    /// sleep itself, before there is a chance to renew it; this is rejected
+    /// with [`Error::InvalidState`](Error::InvalidState).
     ///
     /// This does not change how a **non-holder** waits — the checkpoint store
     /// does not currently expose a lease's expiry for a non-holder to sleep
@@ -259,10 +243,29 @@ impl PostgresBackend {
     /// one contended write the *previous* holder no longer also performs on
     /// every tick).
     ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use std::sync::atomic::{AtomicBool, Ordering};
+    /// use std::time::Duration;
+    ///
+    /// let shutdown = AtomicBool::new(false);
+    /// let worker_id = format!("{}-{}", hostname()?, std::process::id());
+    /// let outcome = backend
+    ///     .run_sticky_projection(
+    ///         &mut OrderTotalsProjection,
+    ///         &worker_id,
+    ///         Duration::from_secs(30),
+    ///         Duration::from_secs(1),
+    ///         || !shutdown.load(Ordering::Relaxed),
+    ///     )
+    ///     .await?;
+    /// ```
+    ///
     /// # Errors
     ///
-    /// Returns an error if `idle_interval` is not below `lease_duration / 3`,
-    /// or under the same conditions as
+    /// Returns an error if `idle_interval` is not below the lease's renewal
+    /// interval, or under the same conditions as
     /// [`run_leased_projection`], plus if renewing the held lease between
     /// idle ticks fails.
     ///
@@ -310,19 +313,9 @@ impl PostgresBackend {
     }
 
     /// Acquires the lease for `name` on behalf of `worker_id`, runs `body`
-    /// with the position the lease started from, and always releases the
+    /// from the position the lease started at, and always releases the
     /// lease on the way out (including on error — releasing a lease we no
-    /// longer hold is a no-op).
-    ///
-    /// Shared by every entry point that holds a single named lease
-    /// ([`run_leased_projection`](Self::run_leased_projection),
-    /// [`rebuild`](Self::rebuild)) so the
-    /// acquire/Busy/release/[`LeaseOutcome`](LeaseOutcome) mapping is
-    /// written once.
-    /// [`dispatch_policies_to_outbox`](Self::dispatch_policies_to_outbox)
-    /// holds one lease per policy instead — it may end up dispatching only
-    /// a subset of the policies it was given — so it manages its own set of
-    /// leases rather than using this helper.
+    /// longer hold is a no-op), mapping `body`'s outcome to [`LeaseOutcome`].
     async fn with_lease<F, Fut, T>(
         &self,
         name: &str,
@@ -353,9 +346,8 @@ impl PostgresBackend {
     /// under a lease.
     ///
     /// A rebuild wipes the projection's read-model, rewinds its checkpoint to
-    /// the start, and re-derives the whole model by replaying every event from
-    /// position 0. Unlike the old manual procedure (drop the table by hand,
-    /// `delete_checkpoint`, re-run), this is **lease-guarded** and **atomic**:
+    /// the start, and re-derives the whole model by replaying every event
+    /// from position 0. It is **lease-guarded** and **atomic**:
     ///
     /// 1. Acquire the lease for `P::NAME` on behalf of `worker_id`. If another
     ///    worker holds an active lease, return
@@ -427,10 +419,6 @@ impl PostgresBackend {
         worker_id: &str,
         lease_duration: Duration,
     ) -> Result<Position> {
-        // Atomic reset: clear the read-model and rewind the checkpoint to
-        // genesis in one transaction. The rewind is a backward move, so it uses
-        // the UNFENCED save (the fenced save would reject it) — safe because we
-        // hold the lease and this is a deliberate rewind by the owner.
         let mut tx = self.begin("rebuild reset").await?;
 
         projection.reset(&mut tx).await?;
@@ -442,7 +430,6 @@ impl PostgresBackend {
             .await
             .map_err(|e| Error::backend("Failed to commit rebuild reset transaction", e))?;
 
-        // Re-drain from genesis with the usual fenced per-event loop.
         self.run_under_lease(projection, worker_id, lease_duration, Position::start())
             .await
     }
