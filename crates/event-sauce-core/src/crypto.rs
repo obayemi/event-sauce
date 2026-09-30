@@ -95,19 +95,16 @@ pub trait CryptoKeyStore: Send + Sync {
     /// (crypto-shredded via [`delete_key`](Self::delete_key)), as opposed to
     /// simply never having had a key.
     ///
-    /// This is a fast-path hint only, for a caller that wants to reject a
-    /// shredded aggregate before doing any encryption work. It is not what
-    /// makes shredding permanent: checking it and then calling
+    /// It is not what makes shredding permanent: checking it and then calling
     /// [`get_or_insert_key`](Self::get_or_insert_key) is two round trips, and
-    /// a concurrent writer can insert a key in between. Permanence comes
-    /// from [`get_or_insert_key`](Self::get_or_insert_key) itself refusing a
-    /// shredded aggregate atomically; this method exists only to answer the
-    /// question cheaply elsewhere.
+    /// a concurrent writer can insert a key in between. Permanence comes from
+    /// [`get_or_insert_key`](Self::get_or_insert_key) itself refusing a
+    /// shredded aggregate atomically, which every implementation MUST do —
+    /// this method exists only to answer the question cheaply elsewhere.
     ///
-    /// The default implementation always answers `false`. A store that does
-    /// not track shredding at all still answers `false` here, but SHOULD
-    /// still refuse in [`get_or_insert_key`](Self::get_or_insert_key) if it
-    /// persists a shredded marker there.
+    /// The default `false` is for a store that keeps no shredded marker at
+    /// all. A store that does keep the marker [`delete_key`](Self::delete_key)
+    /// requires should override this so the two agree.
     ///
     /// # Errors
     ///

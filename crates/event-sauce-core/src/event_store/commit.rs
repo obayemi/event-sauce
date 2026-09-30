@@ -295,10 +295,6 @@ async fn ensure_crypto_key<S: EventStore + ?Sized>(
         return Ok(Zeroizing::new(existing));
     }
 
-    if key_store.is_shredded(aggregate_id).await? {
-        return Err(crate::Error::key_not_found(aggregate_id));
-    }
-
     let candidate = provider.generate_key();
     let winner = key_store.get_or_insert_key(aggregate_id, candidate).await?;
     Ok(Zeroizing::new(winner))
