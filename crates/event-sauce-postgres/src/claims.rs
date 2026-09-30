@@ -10,6 +10,38 @@
 use event_sauce_core::{AggregateClaim, Error, Result, StreamId};
 use sqlx::PgPool;
 
+/// Hashes each claim's key for SQL binding, pairing it with the claim it
+/// came from for error reporting, and returns the pairs sorted by
+/// `(claim_type, claim_hash)`.
+///
+/// A writer that skips the append lock — a state-store save or a
+/// claims-only append — races other such writers directly on
+/// `aggregate_claims`'s indexes. Two overlapping claim sets touch two or
+/// more of the same rows there; without a fixed order, opposite input
+/// orders can lock those rows in opposite order and deadlock instead of one
+/// caller simply waiting for the other. Sorting first gives every caller
+/// the same lock order, so a race waits and then resolves to a typed
+/// `ClaimConflict` for the loser. A batch that does take the append lock
+/// already serializes claim enforcement across the whole batch, so this
+/// ordering is not what protects it.
+fn hash_claims(claims: &[AggregateClaim]) -> Result<Vec<(&AggregateClaim, Vec<u8>)>> {
+    use sha2::{Digest, Sha256};
+
+    let mut hashed: Vec<(&AggregateClaim, Vec<u8>)> = Vec::with_capacity(claims.len());
+    for claim in claims {
+        let key_json = serde_json::to_string(&claim.claim_key)
+            .map_err(|e| Error::backend("Failed to serialize claim key", e))?;
+        let claim_hash = Sha256::digest(key_json.as_bytes()).to_vec();
+        hashed.push((claim, claim_hash));
+    }
+    hashed.sort_by(|(a, a_hash), (b, b_hash)| {
+        a.claim_type
+            .cmp(b.claim_type)
+            .then_with(|| a_hash.cmp(b_hash))
+    });
+    Ok(hashed)
+}
+
 /// Creates the shared `aggregate_claims` table and its index at `claims_table`.
 pub(crate) async fn create_table(pool: &PgPool, claims_table: &str) -> Result<()> {
     let create_claims = format!(
@@ -53,17 +85,7 @@ pub(crate) async fn enforce(
     clear_claims: bool,
 ) -> Result<()> {
     if !claims.is_empty() {
-        use sha2::{Digest, Sha256};
-
-        // Hash each claim once — we need both the hash for SQL binding and
-        // the original claim metadata for error reporting.
-        let mut hashed: Vec<(&AggregateClaim, Vec<u8>)> = Vec::with_capacity(claims.len());
-        for claim in &claims {
-            let key_json = serde_json::to_string(&claim.claim_key)
-                .map_err(|e| Error::backend("Failed to serialize claim key", e))?;
-            let claim_hash = Sha256::digest(key_json.as_bytes()).to_vec();
-            hashed.push((claim, claim_hash));
-        }
+        let hashed = hash_claims(&claims)?;
 
         let current_claim_types: Vec<String> = hashed
             .iter()
@@ -228,5 +250,36 @@ async fn recover_concurrent_conflict(
             "Claim upsert failed with unique violation but no conflicting holder found",
         )),
         Err(e) => Err(Error::backend("Failed to look up claim holder", e)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// Two callers enforcing the same overlapping claim set in opposite
+    /// input order must still take `upsert_or_conflict`'s row locks in the
+    /// same order, or they can deadlock instead of one simply waiting for
+    /// the other.
+    #[test]
+    fn test_hash_claims_orders_independently_of_input_order() {
+        let claims = vec![
+            AggregateClaim::new("Acct.email", json!("a@example.com")),
+            AggregateClaim::new("Acct.username", json!("alice")),
+        ];
+        let mut reversed = claims.clone();
+        reversed.reverse();
+
+        let forward = hash_claims(&claims).unwrap();
+        let backward = hash_claims(&reversed).unwrap();
+
+        let forward_order: Vec<&str> = forward.iter().map(|(c, _)| c.claim_type).collect();
+        let backward_order: Vec<&str> = backward.iter().map(|(c, _)| c.claim_type).collect();
+
+        assert_eq!(
+            forward_order, backward_order,
+            "two permutations of the same claim set must hash to the same lock order"
+        );
     }
 }
