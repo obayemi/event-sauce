@@ -2,7 +2,7 @@
 
 **Event-driven modeling and event sourcing for Rust**
 
-> **Note**: event-sauce is **not production-ready**. The current architecture targets single-node deployments and has not been validated for horizontal scalability or high-throughput distributed workloads. Use it for prototyping, learning, and small-scale applications.
+> **Note**: event-sauce is **not production-ready** and has not been validated for high-throughput distributed workloads. Multi-instance deployments are supported on a per-component basis — see [Which Components Are Multi-Node Safe](docs/postgres-production.md#which-components-are-multi-node-safe). Use it for prototyping, learning, and small-scale applications.
 
 [![CI](https://github.com/obayemi/event-sauce/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/obayemi/event-sauce/actions/workflows/ci.yml)
 [![Coverage](https://codecov.io/gh/obayemi/event-sauce/branch/master/graph/badge.svg)](https://codecov.io/gh/obayemi/event-sauce)
@@ -42,7 +42,7 @@ read models kept up to date from the very events your aggregates emit.
 - 🔒 **Uniqueness Claims**: Cross-aggregate uniqueness constraints enforced transactionally (e.g., unique emails)
 - 📦 **Optimistic Concurrency**: Version-checked writes with typed `ConcurrencyConflict` errors
 - 🗄️ **Multiple Backends**: PostgreSQL, in-memory
-- 🧪 **Testing First-Class**: Built-in test helpers and fixtures; 🚀 latest stable dependencies (Tokio 1.48, SQLx 0.8); strict TDD with property-based testing
+- 🧪 **Testing First-Class**: In-memory backend for fast tests; 🚀 latest stable dependencies (Tokio 1.48, SQLx 0.8); strict TDD with property-based testing
 
 ### Event sourcing
 
@@ -543,11 +543,11 @@ use event_sauce::crypto::Aes256GcmProvider;
 ### Feature Flags
 
 - `macros` (default) - Derive macros for aggregates and events
-- `memory` (default) - In-memory backend for testing
+- `memory` (default) - In-memory backend for testing; needs `event-sourcing` and/or `state-store` to export anything from `event_sauce::memory`
 - `event-sourcing` (default) - The event-sourced persistence style: `EventStore`, snapshots, checkpoints, policies, audit log, encryption
 - `state-store` (default) - The state-stored persistence style: `StateStore`, in-transaction projections
 - `postgres` - PostgreSQL backend (implies `event-sourcing` and `state-store`)
-- `crypto` - Encryption support (AES-256-GCM provider, key stores); turns on encryption in whichever backends are enabled
+- `crypto` - Encryption support (AES-256-GCM provider, key stores); implies `event-sourcing`; turns on encryption in whichever backends are enabled
 - `full` - All features enabled
 
 The event-driven domain layer (aggregates, events, commands, the `Repository`
