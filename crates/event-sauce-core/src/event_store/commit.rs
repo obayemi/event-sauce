@@ -2,11 +2,21 @@
 //! flushing them, shared between active and deleted aggregates.
 
 use super::encryption::{encrypt_envelopes, encrypt_snapshot_data};
-use super::{EventStore, PreparedCommit, Snapshot, StreamCommit};
+use super::{EventStore, Snapshot, StreamCommit};
 use crate::commit_source::CommitSource;
 #[cfg(test)]
 use crate::AggregateRoot;
 use crate::{Aggregate, AggregateType, AggregateVersion, DomainEvent, Result, StreamId};
+
+/// A prepared but not-yet-persisted commit.
+///
+/// Contains all the data needed to persist events and an optional snapshot.
+/// Created by [`prepare_commit()`] and flushed by [`flush_prepared()`].
+#[derive(Debug)]
+pub(crate) struct PreparedCommit {
+    pub commit: StreamCommit,
+    pub snapshot: Option<Snapshot>,
+}
 
 /// Prepares a commit without persisting it.
 ///
