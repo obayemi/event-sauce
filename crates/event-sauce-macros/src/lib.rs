@@ -954,8 +954,7 @@ fn generate_unit_spec(
     fn_body: &syn::Block,
 ) -> TokenStream {
     let core = core_path();
-    let message = &parsed.message;
-    let error_message_body = build_error_message_body(message, &parsed.context);
+    let error_message_body = build_error_message_body(parsed);
 
     // If the error message doesn't reference the candidate, prefix with _ to avoid warning
     let err_msg_param = if parsed.context.is_empty() {
@@ -993,7 +992,6 @@ fn generate_parameterized_spec(
     extra_params: &[&syn::FnArg],
 ) -> TokenStream {
     let core = core_path();
-    let message = &parsed.message;
 
     let field_defs: Vec<_> = extra_params
         .iter()
@@ -1015,7 +1013,7 @@ fn generate_parameterized_spec(
         })
         .collect();
 
-    let error_message_body = build_error_message_body(message, &parsed.context);
+    let error_message_body = build_error_message_body(parsed);
 
     // If no context expr references the candidate, prefix with _ to avoid warning
     let err_msg_param = if context_references_candidate(&parsed.context, candidate_name) {
@@ -1048,11 +1046,9 @@ fn generate_parameterized_spec(
     gen.into()
 }
 
-/// Build the error message body token stream from context pairs
-fn build_error_message_body(
-    message: &str,
-    context: &[(Ident, proc_macro2::TokenStream)],
-) -> proc_macro2::TokenStream {
+/// Build the error message body token stream from a parsed specification
+fn build_error_message_body(parsed: &SpecificationAttrData) -> proc_macro2::TokenStream {
+    let SpecificationAttrData { message, context } = parsed;
     if context.is_empty() {
         quote! { #message.to_string() }
     } else {
