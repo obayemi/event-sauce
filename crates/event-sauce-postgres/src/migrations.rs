@@ -47,6 +47,11 @@ pub(crate) fn advisory_lock_key(seed: &str) -> i64 {
 /// must therefore call this with that same `schema`, not a store-specific
 /// key such as its own migrations table name.
 ///
+/// Also creates the schema and `migrations_table` (a bare table name, which
+/// this function qualifies with `schema`) before running `body`, and passes
+/// `body` that same qualified name — every store's `migrate()` needs both
+/// done under this same lock, ahead of its own migration steps.
+///
 /// The lock is taken on a connection opened directly from `pool`'s connect
 /// options, never one checked out of `pool` itself: `body` runs its own
 /// queries against `pool`, and a lock connection borrowed from the same pool
@@ -71,10 +76,11 @@ pub(crate) fn advisory_lock_key(seed: &str) -> i64 {
 pub(crate) async fn with_migration_lock<'a, F, Fut>(
     pool: &'a PgPool,
     schema: &'a str,
+    migrations_table: &str,
     body: F,
 ) -> Result<()>
 where
-    F: FnOnce() -> Fut,
+    F: FnOnce(String) -> Fut,
     Fut: Future<Output = Result<()>> + 'a,
 {
     let key = advisory_lock_key(&qualify(schema, "_event_sauce_migrate_lock"));
@@ -93,7 +99,13 @@ where
         .await
         .map_err(|e| Error::backend("Failed to acquire migration lock", e))?;
 
-    let result = body().await;
+    let result = async {
+        ensure_schema(pool, schema).await?;
+        let qualified_table = qualify(schema, migrations_table);
+        ensure_migrations_table(pool, &qualified_table).await?;
+        body(qualified_table).await
+    }
+    .await;
 
     lock_tx
         .rollback()
@@ -109,7 +121,7 @@ where
 
 /// Ensures the named schema exists, skipping the call for the `public` schema
 /// (which is created automatically by `PostgreSQL`).
-pub(crate) async fn ensure_schema(pool: &PgPool, schema: &str) -> Result<()> {
+async fn ensure_schema(pool: &PgPool, schema: &str) -> Result<()> {
     if schema != "public" {
         let create_schema = format!("CREATE SCHEMA IF NOT EXISTS {schema}");
         sqlx::query(&create_schema)
@@ -121,7 +133,7 @@ pub(crate) async fn ensure_schema(pool: &PgPool, schema: &str) -> Result<()> {
 }
 
 /// Ensures the migration tracking table exists at `qualified_table`.
-pub(crate) async fn ensure_migrations_table(pool: &PgPool, qualified_table: &str) -> Result<()> {
+async fn ensure_migrations_table(pool: &PgPool, qualified_table: &str) -> Result<()> {
     let create = format!(
         "CREATE TABLE IF NOT EXISTS {qualified_table} (
             version BIGINT PRIMARY KEY,
@@ -423,7 +435,7 @@ mod tests {
         let lock_task = tokio::spawn({
             let pool = pool.clone();
             async move {
-                with_migration_lock(&pool, "public", || async {
+                with_migration_lock(&pool, "public", "_test_migration_lock", |_| async {
                     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                     Ok(())
                 })

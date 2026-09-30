@@ -319,20 +319,20 @@ impl PostgresCheckpointStore {
     /// - The migrations cannot be applied due to permission issues
     /// - There are SQL syntax errors in migration statements
     pub async fn migrate(&self) -> Result<()> {
-        crate::migrations::with_migration_lock(&self.pool, &self.schema, || self.apply_migrations())
-            .await
+        crate::migrations::with_migration_lock(
+            &self.pool,
+            &self.schema,
+            "_checkpoint_migrations",
+            |migrations_table| async move { self.apply_migrations(&migrations_table).await },
+        )
+        .await
     }
 
     /// Applies every checkpoint-store migration step, run by [`Self::migrate`]
     /// while it holds the cross-store migration lock.
-    async fn apply_migrations(&self) -> Result<()> {
-        crate::migrations::ensure_schema(&self.pool, &self.schema).await?;
-
-        let migrations_table = self.qualify_table("_checkpoint_migrations");
-        crate::migrations::ensure_migrations_table(&self.pool, &migrations_table).await?;
-
-        self.migrate_checkpoints_table(&migrations_table).await?;
-        self.migrate_lease_columns(&migrations_table).await?;
+    async fn apply_migrations(&self, migrations_table: &str) -> Result<()> {
+        self.migrate_checkpoints_table(migrations_table).await?;
+        self.migrate_lease_columns(migrations_table).await?;
         Ok(())
     }
 

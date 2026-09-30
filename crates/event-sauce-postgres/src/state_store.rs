@@ -170,21 +170,18 @@ impl PostgresStateStore {
     /// Returns an error if the database connection fails or the migration
     /// statements cannot be applied.
     pub async fn migrate(&self) -> Result<()> {
-        let migrations_table = self.qualify_table("_state_store_migrations");
-
-        crate::migrations::with_migration_lock(&self.pool, &self.schema, || async {
-            crate::migrations::ensure_schema(&self.pool, &self.schema).await?;
-            crate::migrations::ensure_migrations_table(&self.pool, &migrations_table).await?;
-            self.run_migration_steps(&migrations_table).await
-        })
+        crate::migrations::with_migration_lock(
+            &self.pool,
+            &self.schema,
+            "_state_store_migrations",
+            |migrations_table| async move { self.apply_migrations(&migrations_table).await },
+        )
         .await
     }
 
-    /// Runs the state store's individual migration steps. Split out of
-    /// [`Self::migrate`] so the outer method reads as "set up, then run the
-    /// steps under the cross-process lock" and stays under clippy's line
-    /// budget.
-    async fn run_migration_steps(&self, migrations_table: &str) -> Result<()> {
+    /// Applies every state-store migration step, run by [`Self::migrate`]
+    /// while it holds the cross-store migration lock.
+    async fn apply_migrations(&self, migrations_table: &str) -> Result<()> {
         let states_table = self.qualify_table("aggregate_states");
         crate::migrations::apply_once(
             &self.pool,
