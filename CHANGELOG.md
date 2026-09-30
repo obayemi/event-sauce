@@ -115,9 +115,10 @@ explicitly rather than gated behind a major version bump.
   explicitly on the builder, to keep the old behavior.
 - **The memory backend now honors the `event-sourcing`/`state-store`
   feature flags it's paired with**, instead of always compiling both.
-  `event-sauce = { features = ["memory"] }` alone now exports nothing from
-  `event_sauce::memory`; add `event-sourcing` and/or `state-store` to get
-  `InMemoryEventStore`/`InMemoryStateStore` back. (`event-sauce-postgres`
+  `event-sauce = { default-features = false, features = ["memory"] }` now
+  exports nothing from `event_sauce::memory`; add `event-sourcing` and/or
+  `state-store` to get `InMemoryEventStore`/`InMemoryStateStore` back. With
+  default features (which include both), nothing changes. (`event-sauce-postgres`
   still requires both core features regardless of which facade flag is
   enabled — its state store calls into the event store for claim
   enforcement, so the two aren't separable yet.)
