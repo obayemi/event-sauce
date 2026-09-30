@@ -257,7 +257,7 @@ rows are correct **and** the checkpoint advanced. Then make `handle` fail on
 a specific event and assert that neither the row nor the checkpoint moved
 past the failure point.
 
-See `crates/event-sauce-postgres/src/backend.rs` (the
+See `crates/event-sauce-postgres/src/backend/projection_runner.rs` (the
 `test_run_postgres_projection_*` tests) for working examples.
 
 ## Scaling out: standalone workers
