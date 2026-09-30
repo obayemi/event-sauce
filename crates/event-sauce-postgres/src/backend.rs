@@ -643,9 +643,9 @@ impl PostgresBackend {
                 .event_store
                 .fetch_events_batch(current_position, PROJECTION_BATCH_SIZE)
                 .await?;
-            if batch.is_empty() {
+            let Some(batch_end) = batch.last().map(|e| e.position) else {
                 break;
-            }
+            };
 
             if last_renew.elapsed() >= renew_interval {
                 for held_policy in held.iter() {
@@ -658,9 +658,7 @@ impl PostgresBackend {
 
             let mut tx = self.begin("dispatcher").await?;
 
-            let mut batch_position = current_position;
             for entry in &batch {
-                batch_position = entry.position;
                 for held_policy in held.iter() {
                     if entry.position > held_policy.position
                         && held_policy
@@ -673,7 +671,7 @@ impl PostgresBackend {
                                 &mut tx,
                                 held_policy.name,
                                 entry.envelope.id,
-                                batch_position.as_i64(),
+                                entry.position.as_i64(),
                             )
                             .await?;
                     }
@@ -682,16 +680,14 @@ impl PostgresBackend {
 
             let advancing: Vec<(&str, Position)> = held
                 .iter()
-                .filter(|held_policy| batch_position > held_policy.position)
-                .map(|held_policy| (held_policy.checkpoint_name.as_str(), batch_position))
+                .filter(|held_policy| batch_end > held_policy.position)
+                .map(|held_policy| (held_policy.checkpoint_name.as_str(), batch_end))
                 .collect();
             self.commit_fenced(tx, worker_id, &advancing).await?;
             for held_policy in held.iter_mut() {
-                if batch_position > held_policy.position {
-                    held_policy.position = batch_position;
-                }
+                held_policy.position = held_policy.position.max(batch_end);
             }
-            current_position = batch_position;
+            current_position = batch_end;
         }
 
         Ok(())
