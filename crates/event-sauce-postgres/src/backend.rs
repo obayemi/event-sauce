@@ -547,9 +547,19 @@ impl PostgresBackend {
         let grouped = group_policies_by_name(policies);
         let mut held = Vec::with_capacity(grouped.len());
 
-        let result = self
-            .acquire_and_dispatch_policies(outbox, worker_id, grouped, lease_duration, &mut held)
-            .await;
+        let result = match self
+            .acquire_policy_leases(grouped, worker_id, lease_duration, &mut held)
+            .await
+        {
+            Ok(()) => match held.iter().map(|h| h.position).min() {
+                None => Ok(LeaseOutcome::Busy),
+                Some(start) => self
+                    .dispatch_under_lease(outbox, worker_id, &mut held, lease_duration, start)
+                    .await
+                    .map(|()| LeaseOutcome::Completed),
+            },
+            Err(error) => Err(error),
+        };
 
         for held_policy in &held {
             let _ = self
@@ -562,19 +572,17 @@ impl PostgresBackend {
     }
 
     /// Acquires every held-able policy's lease, appending each one to
-    /// `held` as it goes, then dispatches under whatever it ends up
-    /// holding. `held` reflects every lease acquired so far even when this
-    /// returns `Err` — seeding or acquiring a later policy's lease can fail
-    /// after an earlier one already succeeded, and the caller releases
-    /// everything in `held` regardless of where this returns.
-    async fn acquire_and_dispatch_policies<'p>(
+    /// `held` as it goes. `held` reflects every lease acquired so far even
+    /// when this returns `Err` — seeding or acquiring a later policy's lease
+    /// can fail after an earlier one already succeeded, and the caller
+    /// releases everything in `held` regardless of where this returns.
+    async fn acquire_policy_leases<'p>(
         &self,
-        outbox: &crate::PostgresPolicyOutbox,
-        worker_id: &str,
         grouped: Vec<(&'p str, Vec<&'p EventFilter>)>,
+        worker_id: &str,
         lease_duration: Duration,
         held: &mut Vec<HeldPolicy<'p>>,
-    ) -> Result<LeaseOutcome> {
+    ) -> Result<()> {
         for (name, filters) in grouped {
             let checkpoint_name = policy_checkpoint_name(name);
             self.checkpoint_store
@@ -594,20 +602,16 @@ impl PostgresBackend {
             }
         }
 
-        if held.is_empty() {
-            return Ok(LeaseOutcome::Busy);
-        }
-
-        self.dispatch_under_lease(outbox, worker_id, held, lease_duration)
-            .await
-            .map(|()| LeaseOutcome::Completed)
+        Ok(())
     }
 
     /// Drains events for every policy in `held`, one transaction per
-    /// **fetched batch** (up to [`PROJECTION_BATCH_SIZE`] events).
+    /// **fetched batch** (up to [`PROJECTION_BATCH_SIZE`] events), starting
+    /// from `start_position` — the minimum of every held policy's own
+    /// checkpoint, which the caller computes since an empty `held` has no
+    /// minimum to start from.
     ///
-    /// The batch loop starts from the minimum of every held policy's own
-    /// checkpoint. Inside one transaction, an event is enqueued for a held
+    /// Inside one transaction, an event is enqueued for a held
     /// policy only when the event's position is past *that policy's* own
     /// checkpoint and its filter matches — a policy already ahead (ran
     /// under a different call more recently) skips events it has already
@@ -628,12 +632,9 @@ impl PostgresBackend {
         worker_id: &str,
         held: &mut [HeldPolicy<'_>],
         lease_duration: Duration,
+        start_position: Position,
     ) -> Result<()> {
-        let mut current_position = held
-            .iter()
-            .map(|held_policy| held_policy.position)
-            .min()
-            .expect("dispatch_policies_to_outbox only calls this with a non-empty `held`");
+        let mut current_position = start_position;
         let renew_interval = lease_duration / 3;
         let mut last_renew = std::time::Instant::now();
 
