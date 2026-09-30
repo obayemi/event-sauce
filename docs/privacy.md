@@ -192,16 +192,17 @@ assert!(result.unwrap_err().is_key_not_found());
 The encrypted event and snapshot data remains in the database but is permanently unreadable without the key. This satisfies GDPR Article 17 (right to erasure) without requiring actual deletion of event history.
 
 Shredding is permanent, and it does not rest on a pre-check a caller could
-race past: the `is_shredded` check a commit makes first is only a fast
-path, and the `get_or_insert_key` call behind it refuses atomically for a
-shredded aggregate
-([`CryptoKeyStore::get_or_insert_key`](https://docs.rs/event-sauce/latest/event_sauce/trait.CryptoKeyStore.html#tymethod.get_or_insert_key)) —
-the only way to reverse a shred is an explicit
+race past: a commit reads the key with
+[`get_key`](https://docs.rs/event-sauce/latest/event_sauce/trait.CryptoKeyStore.html#tymethod.get_key)
+and, when none exists, calls
+[`get_or_insert_key`](https://docs.rs/event-sauce/latest/event_sauce/trait.CryptoKeyStore.html#tymethod.get_or_insert_key),
+which refuses atomically for a shredded aggregate; there is no separate
+`is_shredded` pre-check to race past. The only way to reverse a shred is an
+explicit
 [`upsert_key`](https://docs.rs/event-sauce/latest/event_sauce/trait.CryptoKeyStore.html#tymethod.upsert_key)
 call, which always wins and clears the tombstone the delete left behind. The
 Postgres key store persists that tombstone as a `shredded_at` timestamp on the
 `crypto_keys` row.
-
 ## Field-Level Encryption
 
 For aggregates where only some fields are sensitive, you can encrypt individual fields instead of the entire event. Non-sensitive fields remain queryable in plaintext, while encrypted fields are stored as `{"__encrypted": "..."}`.
