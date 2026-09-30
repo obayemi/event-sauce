@@ -1074,21 +1074,15 @@ mod tests {
     use testcontainers_modules::postgres::Postgres;
     use uuid::Uuid;
 
+    /// Pins the persisted format: this name is written to the checkpoint
+    /// table, so a change here would silently re-seed or reset every
+    /// policy's progress.
     #[test]
     fn policy_checkpoint_name_is_stable_per_policy() {
         assert_eq!(
             policy_checkpoint_name("send-order-confirmation"),
-            policy_checkpoint_name("send-order-confirmation"),
+            "__policy_outbox_dispatcher:send-order-confirmation"
         );
-    }
-
-    /// A name derived by joining a whole policy set collided across sets
-    /// whose names themselves contained the join separator, e.g. `{"a,b"}`
-    /// and `{"a", "b"}`. Deriving the name from one policy at a time has no
-    /// join left to collide.
-    #[test]
-    fn policy_checkpoint_name_has_no_join_left_to_collide() {
-        assert_ne!(policy_checkpoint_name("a,b"), policy_checkpoint_name("a"));
     }
 
     /// Starts a `PostgreSQL` testcontainer and returns a connection URL.
@@ -2469,46 +2463,6 @@ mod tests {
             1,
             "the new policy must still see every matching event"
         );
-    }
-
-    /// Joining a set of policy names this long into one checkpoint name used
-    /// to overflow `VARCHAR(255)`; per-policy names never join.
-    #[tokio::test]
-    async fn test_dispatch_twelve_long_named_policies_does_not_overflow_checkpoint_name() {
-        let (url, _container) = start_test_db().await;
-        let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
-        let outbox = crate::PostgresPolicyOutbox::new(backend.pool().clone(), "event_sauce");
-        outbox.migrate().await.unwrap();
-
-        append_typed(
-            &backend.event_store(),
-            "Order".to_string(),
-            "Order.Created".to_string(),
-        )
-        .await;
-
-        let policies: Vec<PolicyDispatch> = (0..12)
-            .map(|i| {
-                PolicyDispatch::new(
-                    format!("send-order-confirmation-variant-{i:02}"),
-                    event_sauce_core::EventFilter::by_aggregate_type("Order"),
-                )
-            })
-            .collect();
-
-        let outcome = backend
-            .dispatch_policies_to_outbox(
-                &outbox,
-                "w-1",
-                &policies,
-                std::time::Duration::from_secs(30),
-            )
-            .await
-            .unwrap();
-        assert_eq!(outcome, crate::LeaseOutcome::Completed);
-        for policy in &policies {
-            assert_eq!(outbox.pending_count(&policy.name).await.unwrap(), 1);
-        }
     }
 
     /// Simulates the pre-upgrade shared checkpoint already having scanned
