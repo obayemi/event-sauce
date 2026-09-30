@@ -156,51 +156,14 @@ impl PostgresBackend {
         &self,
         projection: &mut P,
     ) -> Result<()> {
-        let mut current_position = self
+        let start_position = self
             .checkpoint_store
             .load_checkpoint(P::NAME)
             .await?
             .unwrap_or_else(Position::start);
 
-        let filter = P::event_filter();
-
-        loop {
-            let batch = self
-                .event_store
-                .fetch_events_batch(current_position, PROJECTION_BATCH_SIZE)
-                .await?;
-            if batch.is_empty() {
-                break;
-            }
-
-            let mut checkpointed_position = current_position;
-            for entry in batch {
-                current_position = entry.position;
-
-                if !filter.matches(&entry.envelope) {
-                    continue;
-                }
-
-                let mut tx = self.begin("projection").await?;
-
-                projection.handle(&entry.envelope, &mut tx).await?;
-                self.checkpoint_store
-                    .save_checkpoint_tx(&mut tx, P::NAME, current_position)
-                    .await?;
-
-                tx.commit()
-                    .await
-                    .map_err(|e| Error::backend("Failed to commit projection transaction", e))?;
-                checkpointed_position = current_position;
-            }
-
-            if checkpointed_position != current_position {
-                self.checkpoint_store
-                    .save_checkpoint(P::NAME, current_position)
-                    .await?;
-            }
-        }
-
+        self.drain(projection, start_position, Checkpointing::Unfenced)
+            .await?;
         Ok(())
     }
 
@@ -701,9 +664,32 @@ impl PostgresBackend {
         lease_duration: Duration,
         start_position: Position,
     ) -> Result<Position> {
+        self.drain(
+            projection,
+            start_position,
+            Checkpointing::Fenced {
+                worker_id,
+                lease_duration,
+            },
+        )
+        .await
+    }
+
+    /// Drains every event batch fetched from `start_position` onward into
+    /// `projection`, advancing its checkpoint past each matched event —
+    /// fenced on a held lease, or as a plain write — then catching up an
+    /// unmatched batch tail the same way. Shared by
+    /// [`run_postgres_projection`](Self::run_postgres_projection) and
+    /// [`run_under_lease`](Self::run_under_lease), which differ only in
+    /// `checkpointing`. Returns the position reached.
+    async fn drain<P: PostgresProjection>(
+        &self,
+        projection: &mut P,
+        start_position: Position,
+        checkpointing: Checkpointing<'_>,
+    ) -> Result<Position> {
         let filter = P::event_filter();
         let mut current_position = start_position;
-        let renew_interval = lease_duration / 3;
         let mut last_renew = std::time::Instant::now();
 
         loop {
@@ -719,11 +705,17 @@ impl PostgresBackend {
             for entry in batch {
                 current_position = entry.position;
 
-                if last_renew.elapsed() >= renew_interval {
-                    self.checkpoint_store
-                        .renew_lease(P::NAME, worker_id, lease_duration)
-                        .await?;
-                    last_renew = std::time::Instant::now();
+                if let Checkpointing::Fenced {
+                    worker_id,
+                    lease_duration,
+                } = &checkpointing
+                {
+                    if last_renew.elapsed() >= *lease_duration / 3 {
+                        self.checkpoint_store
+                            .renew_lease(P::NAME, worker_id, *lease_duration)
+                            .await?;
+                        last_renew = std::time::Instant::now();
+                    }
                 }
 
                 if !filter.matches(&entry.envelope) {
@@ -731,17 +723,38 @@ impl PostgresBackend {
                 }
 
                 let mut tx = self.begin("projection").await?;
-
                 projection.handle(&entry.envelope, &mut tx).await?;
-                self.commit_fenced(tx, worker_id, &[(P::NAME, current_position)])
-                    .await?;
+
+                match &checkpointing {
+                    Checkpointing::Unfenced => {
+                        self.checkpoint_store
+                            .save_checkpoint_tx(&mut tx, P::NAME, current_position)
+                            .await?;
+                        tx.commit().await.map_err(|e| {
+                            Error::backend("Failed to commit projection transaction", e)
+                        })?;
+                    }
+                    Checkpointing::Fenced { worker_id, .. } => {
+                        self.commit_fenced(tx, worker_id, &[(P::NAME, current_position)])
+                            .await?;
+                    }
+                }
                 checkpointed_position = current_position;
             }
 
             if checkpointed_position != current_position {
-                let tx = self.begin("projection").await?;
-                self.commit_fenced(tx, worker_id, &[(P::NAME, current_position)])
-                    .await?;
+                match &checkpointing {
+                    Checkpointing::Unfenced => {
+                        self.checkpoint_store
+                            .save_checkpoint(P::NAME, current_position)
+                            .await?;
+                    }
+                    Checkpointing::Fenced { worker_id, .. } => {
+                        let tx = self.begin("projection").await?;
+                        self.commit_fenced(tx, worker_id, &[(P::NAME, current_position)])
+                            .await?;
+                    }
+                }
             }
         }
 
@@ -843,6 +856,20 @@ fn group_policies_by_name(policies: &[PolicyDispatch]) -> Vec<(&str, Vec<&EventF
         }
     }
     grouped
+}
+
+/// How [`PostgresBackend::drain`] writes a checkpoint: a plain update, or
+/// one fenced on still holding `worker_id`'s lease, which `drain` also
+/// renews roughly every `lease_duration / 3`.
+enum Checkpointing<'a> {
+    /// Checkpoint writes are ordinary, unfenced updates.
+    Unfenced,
+    /// Checkpoint writes are fenced on still holding `worker_id`'s lease,
+    /// renewed roughly every `lease_duration / 3`.
+    Fenced {
+        worker_id: &'a str,
+        lease_duration: Duration,
+    },
 }
 
 /// One policy name [`PostgresBackend::dispatch_policies_to_outbox`]
