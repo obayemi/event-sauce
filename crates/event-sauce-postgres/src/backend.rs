@@ -275,11 +275,11 @@ impl PostgresBackend {
         idle_interval: Duration,
         mut should_continue: impl FnMut() -> bool + Send,
     ) -> Result<LeaseOutcome> {
-        if idle_interval >= lease_duration / 3 {
+        let renew_interval = LeaseRenewal::interval_for(lease_duration);
+        if idle_interval >= renew_interval {
             return Err(Error::invalid_state(format!(
                 "idle_interval ({idle_interval:?}) must be below lease_duration / 3 \
-                 ({:?}), or the lease could lapse before the next renewal",
-                lease_duration / 3,
+                 ({renew_interval:?}), or the lease could lapse before the next renewal",
             )));
         }
 
@@ -483,9 +483,10 @@ impl PostgresBackend {
     /// Fan-out and every held policy's checkpoint advance run inside one
     /// transaction per fetched batch of events: an event is enqueued for
     /// every matching held policy or for none, and the batch's checkpoint
-    /// writes commit or roll back together — never partial. The lease of
-    /// every held policy is renewed once per batch rather than once per
-    /// event.
+    /// writes commit or roll back together — never partial. Every held
+    /// policy's lease is renewed on the same cadence as the projection
+    /// runners (a third of `lease_duration`, see `LeaseRenewal`), checked
+    /// once per fetched batch rather than once per event.
     ///
     /// Workers (typically separate processes) then drain the outbox via
     /// [`PostgresPolicyOutbox::claim_batch`](crate::PostgresPolicyOutbox::claim_batch).
@@ -593,8 +594,7 @@ impl PostgresBackend {
         start_position: Position,
     ) -> Result<()> {
         let mut current_position = start_position;
-        let renew_interval = lease_duration / 3;
-        let mut last_renew = std::time::Instant::now();
+        let mut renewal = LeaseRenewal::new(lease_duration);
 
         loop {
             let batch = self
@@ -605,13 +605,13 @@ impl PostgresBackend {
                 break;
             };
 
-            if last_renew.elapsed() >= renew_interval {
+            if renewal.due() {
                 for held_policy in held.iter() {
                     self.checkpoint_store
                         .renew_lease(&held_policy.checkpoint_name, worker_id, lease_duration)
                         .await?;
                 }
-                last_renew = std::time::Instant::now();
+                renewal.renewed();
             }
 
             let mut tx = self.begin("dispatcher").await?;
@@ -690,7 +690,12 @@ impl PostgresBackend {
     ) -> Result<Position> {
         let filter = P::event_filter();
         let mut current_position = start_position;
-        let mut last_renew = std::time::Instant::now();
+        let mut renewal = match &checkpointing {
+            Checkpointing::Fenced { lease_duration, .. } => {
+                Some(LeaseRenewal::new(*lease_duration))
+            }
+            Checkpointing::Unfenced => None,
+        };
 
         loop {
             let batch = self
@@ -705,16 +710,19 @@ impl PostgresBackend {
             for entry in batch {
                 current_position = entry.position;
 
-                if let Checkpointing::Fenced {
-                    worker_id,
-                    lease_duration,
-                } = &checkpointing
+                if let (
+                    Checkpointing::Fenced {
+                        worker_id,
+                        lease_duration,
+                    },
+                    Some(renewal),
+                ) = (&checkpointing, &mut renewal)
                 {
-                    if last_renew.elapsed() >= *lease_duration / 3 {
+                    if renewal.due() {
                         self.checkpoint_store
                             .renew_lease(P::NAME, worker_id, *lease_duration)
                             .await?;
-                        last_renew = std::time::Instant::now();
+                        renewal.renewed();
                     }
                 }
 
@@ -870,6 +878,41 @@ enum Checkpointing<'a> {
         worker_id: &'a str,
         lease_duration: Duration,
     },
+}
+
+/// Tracks when a held lease is next due for renewal.
+///
+/// Every long-running holder — the drain loop under a fenced lease, and the
+/// policy dispatcher's own leases — renews on the same cadence, a third of
+/// the lease's duration, so this is the only place that divides by 3.
+struct LeaseRenewal {
+    interval: Duration,
+    last: std::time::Instant,
+}
+
+impl LeaseRenewal {
+    /// The renewal cadence for a lease held for `lease_duration`.
+    fn interval_for(lease_duration: Duration) -> Duration {
+        lease_duration / 3
+    }
+
+    fn new(lease_duration: Duration) -> Self {
+        Self {
+            interval: Self::interval_for(lease_duration),
+            last: std::time::Instant::now(),
+        }
+    }
+
+    /// Whether at least one renewal interval has passed since the last
+    /// renewal (or since this was created, if none yet).
+    fn due(&self) -> bool {
+        self.last.elapsed() >= self.interval
+    }
+
+    /// Resets the clock after a successful renewal.
+    fn renewed(&mut self) {
+        self.last = std::time::Instant::now();
+    }
 }
 
 /// One policy name [`PostgresBackend::dispatch_policies_to_outbox`]
