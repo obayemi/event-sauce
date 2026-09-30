@@ -1708,6 +1708,8 @@ mod tests {
         /// When `true`, `append` never resolves — for cancellation-safety
         /// tests that drop the in-flight commit future.
         hang_append: bool,
+        key_store: Option<Arc<dyn crate::CryptoKeyStore>>,
+        provider: Option<Arc<dyn crate::CryptoProvider>>,
     }
 
     impl CommitTestStore {
@@ -1721,6 +1723,8 @@ mod tests {
                 fail_save_snapshot: false,
                 fail_append_times: Arc::new(Mutex::new(0)),
                 hang_append: false,
+                key_store: None,
+                provider: None,
             }
         }
 
@@ -1736,6 +1740,16 @@ mod tests {
 
         fn with_hang_append(mut self) -> Self {
             self.hang_append = true;
+            self
+        }
+
+        fn with_crypto(
+            mut self,
+            key_store: Arc<dyn crate::CryptoKeyStore>,
+            provider: Arc<dyn crate::CryptoProvider>,
+        ) -> Self {
+            self.key_store = Some(key_store);
+            self.provider = Some(provider);
             self
         }
 
@@ -1825,6 +1839,14 @@ mod tests {
 
         fn snapshot_config(&self) -> &SnapshotConfig {
             &self.config
+        }
+
+        fn crypto_key_store(&self) -> Option<&dyn crate::CryptoKeyStore> {
+            self.key_store.as_deref()
+        }
+
+        fn crypto_provider(&self) -> Option<&dyn crate::CryptoProvider> {
+            self.provider.as_deref()
         }
     }
 
@@ -2568,6 +2590,52 @@ mod tests {
         type Event = DeletableEvent;
         type Error = DeletableError;
         type DeletedState = Self;
+
+        fn claims(&self) -> Vec<AggregateClaim> {
+            vec![AggregateClaim::new(
+                "DeletableEntity.value",
+                serde_json::json!(self.value),
+            )]
+        }
+    }
+
+    #[tokio::test]
+    async fn prepare_commit_carries_the_active_root_claims() {
+        let store = CommitTestStore::new(SnapshotConfig::disabled());
+        let id = crate::EntityId::new();
+        let mut agg = AggregateRoot::<DeletableEntity>::new(id);
+        agg.apply(DeletableEvent::Created { value: 7 }).unwrap();
+
+        let prepared = prepare_commit(&store, &mut agg).await.unwrap().unwrap();
+        let expected = agg.entity().claims();
+
+        assert_eq!(prepared.claims.len(), expected.len());
+        assert_eq!(prepared.claims[0].claim_type, expected[0].claim_type);
+        assert_eq!(prepared.claims[0].claim_key, expected[0].claim_key);
+        assert!(!prepared.clear_claims);
+    }
+
+    #[tokio::test]
+    async fn prepare_commit_deleted_clears_claims() {
+        let store = CommitTestStore::new(SnapshotConfig::disabled());
+        let id = crate::EntityId::new();
+        let mut agg = AggregateRoot::<DeletableEntity>::new(id);
+        agg.apply(DeletableEvent::Created { value: 7 }).unwrap();
+        store.commit(&mut agg).await.unwrap();
+
+        let mut deleted = agg
+            .apply_delete(DeletableEvent::Deleted {
+                reason: "gone".to_string(),
+            })
+            .unwrap();
+
+        let prepared = prepare_commit_deleted(&store, &mut deleted)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert!(prepared.claims.is_empty());
+        assert!(prepared.clear_claims);
     }
 
     #[tokio::test]
@@ -2969,5 +3037,506 @@ mod tests {
             1,
             "a dropped commit future must not drop the pending events"
         );
+    }
+
+    mod crypto_behavior {
+        use super::*;
+        use crate::CryptoKeyStore;
+        use std::collections::{HashMap as Map, HashSet};
+        use std::sync::Mutex;
+
+        #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+        struct SecretThing {
+            id: crate::EntityId,
+            email: String,
+        }
+
+        impl crate::Entity for SecretThing {
+            fn new(id: crate::EntityId) -> Self {
+                Self {
+                    id,
+                    email: String::new(),
+                }
+            }
+            fn entity_id(&self) -> crate::EntityId {
+                self.id
+            }
+        }
+        impl crate::DefaultEntity for SecretThing {}
+
+        #[derive(Debug, thiserror::Error)]
+        #[error("secret thing error")]
+        struct SecretThingError;
+        impl crate::AggregateError for SecretThingError {}
+
+        impl Aggregate for SecretThing {
+            type Event = SecretCreated;
+            type Error = SecretThingError;
+            type DeletedState = Self;
+
+            fn is_encrypted() -> bool {
+                true
+            }
+        }
+
+        #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+        struct SecretCreated {
+            email: String,
+        }
+
+        impl DomainEvent for SecretCreated {
+            type Aggregate = SecretThing;
+            fn event_type(&self) -> &'static str {
+                "SecretThing.Created"
+            }
+            fn event_version(&self) -> crate::EventVersion {
+                crate::EventVersion::new(1)
+            }
+            fn occurred_at(&self) -> chrono::DateTime<chrono::Utc> {
+                chrono::Utc::now()
+            }
+        }
+
+        impl crate::ApplyEvent<SecretThing> for SecretCreated {
+            fn apply(&self, entity: &mut SecretThing) {
+                entity.email = self.email.clone();
+            }
+        }
+
+        impl crate::EventApplicator<SecretThing> for SecretCreated {
+            fn dispatch(
+                &self,
+                entity: &mut SecretThing,
+            ) -> std::result::Result<(), SecretThingError> {
+                crate::ApplyEvent::apply(self, entity);
+                Ok(())
+            }
+            fn dispatch_unchecked(&self, entity: &mut SecretThing) {
+                crate::ApplyEvent::apply(self, entity);
+            }
+        }
+
+        /// Field-encrypted (not fully encrypted) aggregate: only `secret` is
+        /// declared as an encrypted field.
+        #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+        struct PartialSecretThing {
+            id: crate::EntityId,
+            public: String,
+            secret: String,
+        }
+
+        impl crate::Entity for PartialSecretThing {
+            fn new(id: crate::EntityId) -> Self {
+                Self {
+                    id,
+                    public: String::new(),
+                    secret: String::new(),
+                }
+            }
+            fn entity_id(&self) -> crate::EntityId {
+                self.id
+            }
+        }
+        impl crate::DefaultEntity for PartialSecretThing {}
+
+        #[derive(Debug, thiserror::Error)]
+        #[error("partial secret thing error")]
+        struct PartialSecretThingError;
+        impl crate::AggregateError for PartialSecretThingError {}
+
+        impl Aggregate for PartialSecretThing {
+            type Event = PartialSecretCreated;
+            type Error = PartialSecretThingError;
+            type DeletedState = Self;
+        }
+
+        #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+        struct PartialSecretCreated {
+            public: String,
+            secret: String,
+        }
+
+        impl DomainEvent for PartialSecretCreated {
+            type Aggregate = PartialSecretThing;
+            fn event_type(&self) -> &'static str {
+                "PartialSecretThing.Created"
+            }
+            fn event_version(&self) -> crate::EventVersion {
+                crate::EventVersion::new(1)
+            }
+            fn occurred_at(&self) -> chrono::DateTime<chrono::Utc> {
+                chrono::Utc::now()
+            }
+            fn encrypted_fields(&self) -> &'static [&'static str] {
+                &["secret"]
+            }
+            fn has_any_encrypted_fields() -> bool {
+                true
+            }
+        }
+
+        impl crate::ApplyEvent<PartialSecretThing> for PartialSecretCreated {
+            fn apply(&self, entity: &mut PartialSecretThing) {
+                entity.public = self.public.clone();
+                entity.secret = self.secret.clone();
+            }
+        }
+
+        impl crate::EventApplicator<PartialSecretThing> for PartialSecretCreated {
+            fn dispatch(
+                &self,
+                entity: &mut PartialSecretThing,
+            ) -> std::result::Result<(), PartialSecretThingError> {
+                crate::ApplyEvent::apply(self, entity);
+                Ok(())
+            }
+            fn dispatch_unchecked(&self, entity: &mut PartialSecretThing) {
+                crate::ApplyEvent::apply(self, entity);
+            }
+        }
+
+        /// Deterministic provider that binds ciphertext to its AAD by
+        /// prefixing it, so a wrong AAD on decrypt is detected instead of
+        /// silently accepted (unlike a bare XOR mock).
+        struct AadCheckingCryptoProvider;
+
+        impl crate::CryptoProvider for AadCheckingCryptoProvider {
+            fn encrypt(&self, key: &[u8], plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
+                let mut out = Vec::new();
+                let aad_len = u32::try_from(aad.len())
+                    .map_err(|_| crate::Error::encryption("aad too long"))?;
+                out.extend_from_slice(&aad_len.to_le_bytes());
+                out.extend_from_slice(aad);
+                out.extend(
+                    plaintext
+                        .iter()
+                        .enumerate()
+                        .map(|(i, b)| b ^ key[i % key.len()]),
+                );
+                Ok(out)
+            }
+
+            fn decrypt(&self, key: &[u8], ciphertext: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
+                if ciphertext.len() < 4 {
+                    return Err(crate::Error::encryption("ciphertext too short"));
+                }
+                let (len_bytes, rest) = ciphertext.split_at(4);
+                let aad_len = u32::from_le_bytes(len_bytes.try_into().unwrap()) as usize;
+                if rest.len() < aad_len {
+                    return Err(crate::Error::encryption("ciphertext too short"));
+                }
+                let (bound_aad, body) = rest.split_at(aad_len);
+                if bound_aad != aad {
+                    return Err(crate::Error::encryption("aad mismatch"));
+                }
+                Ok(body
+                    .iter()
+                    .enumerate()
+                    .map(|(i, b)| b ^ key[i % key.len()])
+                    .collect())
+            }
+
+            fn generate_key(&self) -> Vec<u8> {
+                vec![0x24; 32]
+            }
+        }
+
+        /// In-memory [`CryptoKeyStore`](crate::CryptoKeyStore) with an atomic
+        /// `get_or_insert_key`, so it can stand in for a real backend in
+        /// concurrency-sensitive assertions.
+        #[derive(Default)]
+        struct MockCryptoKeyStore {
+            keys: Mutex<Map<Uuid, Vec<u8>>>,
+            shredded: Mutex<HashSet<Uuid>>,
+        }
+
+        #[async_trait]
+        impl crate::CryptoKeyStore for MockCryptoKeyStore {
+            async fn get_key(&self, aggregate_id: Uuid) -> Result<Option<Vec<u8>>> {
+                Ok(self.keys.lock().unwrap().get(&aggregate_id).cloned())
+            }
+
+            async fn upsert_key(&self, aggregate_id: Uuid, key: Vec<u8>) -> Result<()> {
+                self.shredded.lock().unwrap().remove(&aggregate_id);
+                self.keys.lock().unwrap().insert(aggregate_id, key);
+                Ok(())
+            }
+
+            async fn delete_key(&self, aggregate_id: Uuid) -> Result<()> {
+                self.keys.lock().unwrap().remove(&aggregate_id);
+                self.shredded.lock().unwrap().insert(aggregate_id);
+                Ok(())
+            }
+
+            async fn get_or_insert_key(
+                &self,
+                aggregate_id: Uuid,
+                candidate: Vec<u8>,
+            ) -> Result<Vec<u8>> {
+                if self.shredded.lock().unwrap().contains(&aggregate_id) {
+                    return Err(crate::Error::key_not_found(aggregate_id));
+                }
+                let mut keys = self.keys.lock().unwrap();
+                Ok(keys.entry(aggregate_id).or_insert(candidate).clone())
+            }
+
+            async fn is_shredded(&self, aggregate_id: Uuid) -> Result<bool> {
+                Ok(self.shredded.lock().unwrap().contains(&aggregate_id))
+            }
+        }
+
+        /// A [`MockCryptoKeyStore`] whose `get_or_insert_key` always returns a
+        /// fixed key, as if another writer had already won the race — used to
+        /// prove `ensure_crypto_key` returns the winning key, not its own
+        /// candidate.
+        struct AlwaysWinsKeyStore {
+            winning_key: Vec<u8>,
+        }
+
+        #[async_trait]
+        impl crate::CryptoKeyStore for AlwaysWinsKeyStore {
+            async fn get_key(&self, _aggregate_id: Uuid) -> Result<Option<Vec<u8>>> {
+                Ok(None)
+            }
+            async fn upsert_key(&self, _aggregate_id: Uuid, _key: Vec<u8>) -> Result<()> {
+                Ok(())
+            }
+            async fn delete_key(&self, _aggregate_id: Uuid) -> Result<()> {
+                Ok(())
+            }
+            async fn get_or_insert_key(
+                &self,
+                _aggregate_id: Uuid,
+                _candidate: Vec<u8>,
+            ) -> Result<Vec<u8>> {
+                Ok(self.winning_key.clone())
+            }
+            async fn is_shredded(&self, _aggregate_id: Uuid) -> Result<bool> {
+                Ok(false)
+            }
+        }
+
+        /// Builds a [`CommitTestStore`] with snapshots disabled and a fresh
+        /// [`MockCryptoKeyStore`] plus [`AadCheckingCryptoProvider`] installed.
+        fn crypto_store() -> (CommitTestStore, Arc<MockCryptoKeyStore>) {
+            let key_store = Arc::new(MockCryptoKeyStore::default());
+            let store = CommitTestStore::new(SnapshotConfig::disabled())
+                .with_crypto(key_store.clone(), Arc::new(AadCheckingCryptoProvider));
+            (store, key_store)
+        }
+
+        #[tokio::test]
+        async fn commit_of_a_fully_encrypted_aggregate_replaces_event_data() {
+            let (store, _key_store) = crypto_store();
+            let id = crate::EntityId::new();
+            let mut agg = AggregateRoot::<SecretThing>::new(id);
+            agg.apply(SecretCreated {
+                email: "alice@example.com".into(),
+            })
+            .unwrap();
+
+            store.commit(&mut agg).await.unwrap();
+
+            let stream_id = StreamId::new(SecretThing::aggregate_type(), id.as_uuid());
+            let stored = store.streams.lock().unwrap().get(&stream_id).unwrap()[0].clone();
+            assert!(
+                crate::crypto::is_encrypted(&stored.event_data),
+                "event_data must be replaced by its ciphertext envelope"
+            );
+        }
+
+        #[tokio::test]
+        async fn load_of_a_fully_encrypted_aggregate_decrypts_back_to_the_original() {
+            let (store, _key_store) = crypto_store();
+            let id = crate::EntityId::new();
+            let mut agg = AggregateRoot::<SecretThing>::new(id);
+            agg.apply(SecretCreated {
+                email: "alice@example.com".into(),
+            })
+            .unwrap();
+            store.commit(&mut agg).await.unwrap();
+
+            let loaded = load_any::<CommitTestStore, SecretThing>(&store, id)
+                .await
+                .unwrap()
+                .into_active()
+                .unwrap();
+
+            assert_eq!(loaded.entity().email, "alice@example.com");
+        }
+
+        #[tokio::test]
+        async fn commit_of_a_field_encrypted_aggregate_only_touches_declared_fields() {
+            let (store, _key_store) = crypto_store();
+            let id = crate::EntityId::new();
+            let mut agg = AggregateRoot::<PartialSecretThing>::new(id);
+            agg.apply(PartialSecretCreated {
+                public: "visible".into(),
+                secret: "hidden".into(),
+            })
+            .unwrap();
+
+            store.commit(&mut agg).await.unwrap();
+
+            let stream_id = StreamId::new(PartialSecretThing::aggregate_type(), id.as_uuid());
+            let stored = store.streams.lock().unwrap().get(&stream_id).unwrap()[0].clone();
+            let obj = stored.event_data.as_object().unwrap();
+            assert_eq!(obj.get("public").unwrap(), "visible");
+            assert!(
+                crate::crypto::is_encrypted(obj.get("secret").unwrap()),
+                "the declared field must be encrypted"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_snapshot_of_an_encrypted_aggregate_is_produced_encrypted() {
+            let store = CommitTestStore::new(SnapshotConfig::always()).with_crypto(
+                Arc::new(MockCryptoKeyStore::default()),
+                Arc::new(AadCheckingCryptoProvider),
+            );
+            let id = crate::EntityId::new();
+            let mut agg = AggregateRoot::<SecretThing>::new(id);
+            agg.apply(SecretCreated {
+                email: "shielded@example.com".into(),
+            })
+            .unwrap();
+
+            store.commit(&mut agg).await.unwrap();
+
+            let stream_id = StreamId::new(SecretThing::aggregate_type(), id.as_uuid());
+            let snapshot = store
+                .snapshots
+                .lock()
+                .unwrap()
+                .get(&stream_id)
+                .cloned()
+                .expect("snapshot must have been saved");
+            assert!(
+                crate::crypto::is_encrypted(&snapshot.snapshot_data),
+                "an encrypted aggregate's snapshot must be encrypted at rest"
+            );
+
+            let loaded = load_any::<CommitTestStore, SecretThing>(&store, id)
+                .await
+                .unwrap()
+                .into_active()
+                .unwrap();
+            assert_eq!(loaded.entity().email, "shielded@example.com");
+        }
+
+        #[tokio::test]
+        async fn ensure_crypto_key_returns_the_existing_key_unchanged() {
+            let key_store = Arc::new(MockCryptoKeyStore::default());
+            let id = Uuid::new_v4();
+            key_store.upsert_key(id, vec![9; 32]).await.unwrap();
+            let store = CommitTestStore::new(SnapshotConfig::disabled())
+                .with_crypto(key_store, Arc::new(AadCheckingCryptoProvider));
+
+            let key = ensure_crypto_key(&store, id).await.unwrap();
+
+            assert_eq!(&*key, &[9; 32]);
+        }
+
+        #[tokio::test]
+        async fn ensure_crypto_key_returns_whichever_key_won_the_race() {
+            let winning_key = vec![7; 32];
+            let store = CommitTestStore::new(SnapshotConfig::disabled()).with_crypto(
+                Arc::new(AlwaysWinsKeyStore {
+                    winning_key: winning_key.clone(),
+                }),
+                Arc::new(AadCheckingCryptoProvider),
+            );
+
+            let key = ensure_crypto_key(&store, Uuid::new_v4()).await.unwrap();
+
+            assert_eq!(
+                key.to_vec(),
+                winning_key,
+                "the caller's own candidate must never override the race's winner"
+            );
+        }
+
+        #[tokio::test]
+        async fn ensure_crypto_key_refuses_a_shredded_aggregate() {
+            let key_store = Arc::new(MockCryptoKeyStore::default());
+            let id = Uuid::new_v4();
+            key_store.upsert_key(id, vec![1; 32]).await.unwrap();
+            key_store.delete_key(id).await.unwrap();
+            let store = CommitTestStore::new(SnapshotConfig::disabled())
+                .with_crypto(key_store, Arc::new(AadCheckingCryptoProvider));
+
+            let result = ensure_crypto_key(&store, id).await;
+
+            assert!(result.unwrap_err().is_key_not_found());
+        }
+
+        #[tokio::test]
+        async fn load_any_of_a_fully_encrypted_aggregate_needs_a_key_store() {
+            let store = CommitTestStore::new(SnapshotConfig::disabled());
+
+            let result =
+                load_any::<CommitTestStore, SecretThing>(&store, crate::EntityId::new()).await;
+
+            assert!(result.unwrap_err().is_invalid_state());
+        }
+
+        #[tokio::test]
+        async fn load_any_of_a_fully_encrypted_aggregate_with_no_key_is_key_not_found() {
+            let key_store = Arc::new(MockCryptoKeyStore::default());
+            let store = CommitTestStore::new(SnapshotConfig::disabled())
+                .with_crypto(key_store, Arc::new(AadCheckingCryptoProvider));
+
+            let result =
+                load_any::<CommitTestStore, SecretThing>(&store, crate::EntityId::new()).await;
+
+            assert!(result.unwrap_err().is_key_not_found());
+        }
+
+        #[tokio::test]
+        async fn load_any_of_a_field_encrypted_aggregate_with_no_store_is_not_found() {
+            let store = CommitTestStore::new(SnapshotConfig::disabled());
+
+            let result =
+                load_any::<CommitTestStore, PartialSecretThing>(&store, crate::EntityId::new())
+                    .await;
+
+            assert!(
+                result.unwrap_err().is_not_found(),
+                "no key store and no committed data must fall through to NotFound, \
+                 not surface a crypto error"
+            );
+        }
+
+        #[tokio::test]
+        async fn load_any_of_a_field_encrypted_aggregate_with_no_key_and_no_data_is_not_found() {
+            let key_store = Arc::new(MockCryptoKeyStore::default());
+            let store = CommitTestStore::new(SnapshotConfig::disabled())
+                .with_crypto(key_store, Arc::new(AadCheckingCryptoProvider));
+
+            let result =
+                load_any::<CommitTestStore, PartialSecretThing>(&store, crate::EntityId::new())
+                    .await;
+
+            assert!(result.unwrap_err().is_not_found());
+        }
+
+        #[tokio::test]
+        async fn load_any_of_a_field_encrypted_aggregate_with_committed_data_and_no_key_is_key_not_found(
+        ) {
+            let (store, key_store) = crypto_store();
+            let id = crate::EntityId::new();
+            let mut agg = AggregateRoot::<PartialSecretThing>::new(id);
+            agg.apply(PartialSecretCreated {
+                public: "visible".into(),
+                secret: "hidden".into(),
+            })
+            .unwrap();
+            store.commit(&mut agg).await.unwrap();
+            key_store.delete_key(id.as_uuid()).await.unwrap();
+
+            let result = load_any::<CommitTestStore, PartialSecretThing>(&store, id).await;
+
+            assert!(result.unwrap_err().is_key_not_found());
+        }
     }
 }
