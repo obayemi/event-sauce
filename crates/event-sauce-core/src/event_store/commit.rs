@@ -5,7 +5,8 @@ use uuid::Uuid;
 use zeroize::Zeroizing;
 
 use super::{
-    require_crypto_provider, snapshot_aad, EventStore, PreparedCommit, Snapshot, StreamCommit,
+    require_crypto_key_store, require_crypto_provider, snapshot_aad, EventStore, PreparedCommit,
+    Snapshot, StreamCommit,
 };
 use crate::commit_source::CommitSource;
 #[cfg(test)]
@@ -30,23 +31,21 @@ async fn encrypt_envelopes<S: EventStore + ?Sized, A: Aggregate>(
 where
     A::Event: serde::Serialize,
 {
-    if A::is_encrypted() {
-        let crypto_key = ensure_crypto_key(store, aggregate_id).await?;
-        let provider = require_crypto_provider(store)?;
+    if !A::is_encrypted() && !A::Event::has_any_encrypted_fields() {
+        return Ok(());
+    }
 
-        for envelope in envelopes {
-            let aad = crate::crypto::event_aad(aggregate_id, envelope.id);
+    let crypto_key = ensure_crypto_key(store, aggregate_id).await?;
+    let provider = require_crypto_provider(store)?;
+
+    for (envelope, pe) in envelopes.iter_mut().zip(pending.iter()) {
+        let aad = crate::crypto::event_aad(aggregate_id, envelope.id);
+        if A::is_encrypted() {
             envelope.event_data =
                 crate::crypto::encrypt_value(provider, &crypto_key, &envelope.event_data, &aad)?;
-        }
-    } else if A::Event::has_any_encrypted_fields() {
-        let crypto_key = ensure_crypto_key(store, aggregate_id).await?;
-        let provider = require_crypto_provider(store)?;
-
-        for (envelope, pe) in envelopes.iter_mut().zip(pending.iter()) {
+        } else {
             let fields = pe.event.encrypted_fields();
             if !fields.is_empty() {
-                let aad = crate::crypto::event_aad(aggregate_id, envelope.id);
                 crate::crypto::encrypt_fields(
                     provider,
                     &crypto_key,
@@ -256,9 +255,7 @@ async fn encrypt_snapshot_data<S: EventStore + ?Sized>(
     aggregate_id: uuid::Uuid,
     snapshot_data: &mut serde_json::Value,
 ) -> Result<()> {
-    let key_store = store.crypto_key_store().ok_or_else(|| {
-        crate::Error::invalid_state("Encrypted aggregate requires crypto_key_store")
-    })?;
+    let key_store = require_crypto_key_store(store)?;
     let provider = require_crypto_provider(store)?;
 
     let crypto_key = Zeroizing::new(
@@ -291,9 +288,7 @@ async fn ensure_crypto_key<S: EventStore + ?Sized>(
     store: &S,
     aggregate_id: Uuid,
 ) -> Result<Zeroizing<Vec<u8>>> {
-    let key_store = store.crypto_key_store().ok_or_else(|| {
-        crate::Error::invalid_state("Encrypted aggregate requires crypto_key_store")
-    })?;
+    let key_store = require_crypto_key_store(store)?;
     let provider = require_crypto_provider(store)?;
 
     if let Some(existing) = key_store.get_key(aggregate_id).await? {

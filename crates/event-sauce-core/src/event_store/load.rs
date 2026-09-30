@@ -6,7 +6,9 @@ use zeroize::Zeroizing;
 
 use futures::Stream;
 
-use super::{require_crypto_provider, snapshot_aad, EventStore, Snapshot};
+use super::{
+    require_crypto_key_store, require_crypto_provider, snapshot_aad, EventStore, Snapshot,
+};
 use crate::{
     Aggregate, AggregateRoot, AggregateVersion, DeletedAggregateRoot, DomainEvent, EntityId,
     EventEnvelope, Loaded, Result, StreamId,
@@ -81,9 +83,7 @@ async fn resolve_crypto_key<S: EventStore + ?Sized, A: Aggregate>(
     stream_id: &StreamId,
 ) -> Result<Option<Zeroizing<Vec<u8>>>> {
     if A::is_encrypted() {
-        let key_store = store.crypto_key_store().ok_or_else(|| {
-            crate::Error::invalid_state("Encrypted aggregate requires crypto_key_store")
-        })?;
+        let key_store = require_crypto_key_store(store)?;
         let key = key_store
             .get_key(uuid)
             .await?

@@ -486,6 +486,15 @@ fn require_crypto_provider<S: EventStore + ?Sized>(
         .ok_or_else(|| crate::Error::invalid_state("Encrypted aggregate requires crypto_provider"))
 }
 
+/// Unwraps the crypto key store or returns an error.
+fn require_crypto_key_store<S: EventStore + ?Sized>(
+    store: &S,
+) -> Result<&dyn crate::CryptoKeyStore> {
+    store
+        .crypto_key_store()
+        .ok_or_else(|| crate::Error::invalid_state("Encrypted aggregate requires crypto_key_store"))
+}
+
 /// Builds the AAD that binds a snapshot's ciphertext to its aggregate.
 ///
 /// A snapshot has no per-event UUID, so it is bound to `aggregate_id || "snap"`.
