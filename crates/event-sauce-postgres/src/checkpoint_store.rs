@@ -638,23 +638,7 @@ mod tests {
     impl TestDatabase {
         /// Creates a new test database with testcontainers.
         async fn new() -> Result<Self> {
-            // Start PostgreSQL container
-            let container = crate::test_support::start_postgres()
-                .await
-                .map_err(|e| Error::backend("Failed to start PostgreSQL container", e))?;
-
-            // Get connection string
-            let host = container
-                .get_host()
-                .await
-                .map_err(|e| Error::backend("Failed to get container host", e))?;
-            let port = container
-                .get_host_port_ipv4(5432)
-                .await
-                .map_err(|e| Error::backend("Failed to get container port", e))?;
-
-            let connection_string =
-                format!("postgresql://postgres:postgres@{host}:{port}/postgres");
+            let (container, connection_string) = crate::test_support::start_postgres_url().await;
 
             // Connect to database
             let pool = PgPool::connect(&connection_string)

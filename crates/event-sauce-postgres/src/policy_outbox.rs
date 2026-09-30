@@ -674,12 +674,7 @@ mod tests {
 
     impl TestDb {
         async fn new() -> Self {
-            let container = crate::test_support::start_postgres()
-                .await
-                .expect("start postgres");
-            let host = container.get_host().await.expect("get host");
-            let port = container.get_host_port_ipv4(5432).await.expect("get port");
-            let url = format!("postgresql://postgres:postgres@{host}:{port}/postgres");
+            let (container, url) = crate::test_support::start_postgres_url().await;
             let pool = PgPool::connect(&url).await.expect("connect");
             Self { pool, container }
         }

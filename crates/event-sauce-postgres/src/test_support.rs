@@ -41,3 +41,18 @@ pub(crate) async fn start_with_retry<I: Image>(
 pub(crate) async fn start_postgres() -> Result<ContainerAsync<Postgres>, TestcontainersError> {
     start_with_retry(|_attempt| Postgres::default().with_tag("16-alpine")).await
 }
+
+/// Starts a throwaway `PostgreSQL` container and returns it alongside a
+/// connection URL for the default `postgres` database.
+///
+/// The container must be kept alive for as long as the URL is used, so
+/// callers hold on to it even where they never touch it directly.
+pub(crate) async fn start_postgres_url() -> (ContainerAsync<Postgres>, String) {
+    let container = start_postgres().await.expect("start postgres");
+    let host = container.get_host().await.expect("get host");
+    let port = container.get_host_port_ipv4(5432).await.expect("get port");
+    (
+        container,
+        format!("postgresql://postgres:postgres@{host}:{port}/postgres"),
+    )
+}

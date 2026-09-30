@@ -241,23 +241,6 @@ mod tests {
         );
     }
 
-    async fn container_url() -> (
-        testcontainers_modules::testcontainers::ContainerAsync<
-            testcontainers_modules::postgres::Postgres,
-        >,
-        String,
-    ) {
-        let container = crate::test_support::start_postgres()
-            .await
-            .expect("start postgres");
-        let host = container.get_host().await.expect("get host");
-        let port = container.get_host_port_ipv4(5432).await.expect("get port");
-        (
-            container,
-            format!("postgresql://postgres:postgres@{host}:{port}/postgres"),
-        )
-    }
-
     /// Regression test for XN-7: several replicas each connecting with their
     /// own pool and setting up a fresh, non-public schema (what
     /// `PostgresBackend::setup` does internally: a checkpoint store then an
@@ -267,7 +250,7 @@ mod tests {
     /// table raced across replicas.
     #[tokio::test]
     async fn test_concurrent_replica_setup_does_not_race() {
-        let (_container, url) = container_url().await;
+        let (_container, url) = crate::test_support::start_postgres_url().await;
 
         let handles: Vec<_> = (0..6)
             .map(|_| {
@@ -307,7 +290,7 @@ mod tests {
     /// EXISTS` and the shared `aggregate_claims` table.
     #[tokio::test]
     async fn test_concurrent_migrate_across_store_kinds_on_shared_schema() {
-        let (_container, url) = container_url().await;
+        let (_container, url) = crate::test_support::start_postgres_url().await;
         let pool = PgPool::connect(&url).await.expect("connect");
 
         let event_store = PostgresEventStore::builder()
@@ -352,7 +335,7 @@ mod tests {
     /// waiting to acquire one.
     #[tokio::test]
     async fn test_migrate_succeeds_on_single_connection_pool() {
-        let (_container, url) = container_url().await;
+        let (_container, url) = crate::test_support::start_postgres_url().await;
         let pool = PgPoolOptions::new()
             .max_connections(1)
             .acquire_timeout(std::time::Duration::from_secs(5))

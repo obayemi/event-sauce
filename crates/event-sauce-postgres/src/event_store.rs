@@ -1540,23 +1540,7 @@ mod tests {
         /// hand-synced copy of its schema, so tests exercise the exact
         /// schema production gets.
         async fn new() -> Result<Self> {
-            // Start PostgreSQL container
-            let container = crate::test_support::start_postgres()
-                .await
-                .map_err(|e| Error::backend("Failed to start PostgreSQL container", e))?;
-
-            // Get connection string
-            let host = container
-                .get_host()
-                .await
-                .map_err(|e| Error::backend("Failed to get container host", e))?;
-            let port = container
-                .get_host_port_ipv4(5432)
-                .await
-                .map_err(|e| Error::backend("Failed to get container port", e))?;
-
-            let connection_string =
-                format!("postgresql://postgres:postgres@{host}:{port}/postgres");
+            let (container, connection_string) = crate::test_support::start_postgres_url().await;
 
             // Connect to database
             let pool = PgPool::connect(&connection_string)
@@ -1703,10 +1687,7 @@ mod tests {
     /// the same database concurrently.
     #[tokio::test]
     async fn test_concurrent_migrate_calls_do_not_crash() {
-        let container = crate::test_support::start_postgres().await.unwrap();
-        let host = container.get_host().await.unwrap();
-        let port = container.get_host_port_ipv4(5432).await.unwrap();
-        let url = format!("postgresql://postgres:postgres@{host}:{port}/postgres");
+        let (_container, url) = crate::test_support::start_postgres_url().await;
         let pool = PgPool::connect(&url).await.unwrap();
 
         let handles: Vec<_> = (0..8)
@@ -2701,11 +2682,7 @@ mod tests {
     #[tokio::test]
     async fn test_migrate_creates_tables() {
         // Create a fresh database without running migrations
-        let container = crate::test_support::start_postgres().await.unwrap();
-
-        let host = container.get_host().await.unwrap();
-        let port = container.get_host_port_ipv4(5432).await.unwrap();
-        let connection_string = format!("postgresql://postgres:postgres@{host}:{port}/postgres");
+        let (_container, connection_string) = crate::test_support::start_postgres_url().await;
 
         let pool = PgPool::connect(&connection_string).await.unwrap();
 
@@ -2741,11 +2718,7 @@ mod tests {
     #[tokio::test]
     async fn test_migrate_is_idempotent() {
         // Create a fresh database without running migrations
-        let container = crate::test_support::start_postgres().await.unwrap();
-
-        let host = container.get_host().await.unwrap();
-        let port = container.get_host_port_ipv4(5432).await.unwrap();
-        let connection_string = format!("postgresql://postgres:postgres@{host}:{port}/postgres");
+        let (_container, connection_string) = crate::test_support::start_postgres_url().await;
 
         let pool = PgPool::connect(&connection_string).await.unwrap();
         let store = PostgresEventStore::new(pool.clone());
@@ -2896,11 +2869,7 @@ mod tests {
     #[tokio::test]
     async fn test_builder_migrate_creates_schema() {
         // Create a fresh database
-        let container = crate::test_support::start_postgres().await.unwrap();
-
-        let host = container.get_host().await.unwrap();
-        let port = container.get_host_port_ipv4(5432).await.unwrap();
-        let connection_string = format!("postgresql://postgres:postgres@{host}:{port}/postgres");
+        let (_container, connection_string) = crate::test_support::start_postgres_url().await;
 
         let pool = PgPool::connect(&connection_string).await.unwrap();
 
@@ -2946,11 +2915,7 @@ mod tests {
     #[tokio::test]
     async fn test_builder_operations_use_custom_schema() {
         // Create a fresh database
-        let container = crate::test_support::start_postgres().await.unwrap();
-
-        let host = container.get_host().await.unwrap();
-        let port = container.get_host_port_ipv4(5432).await.unwrap();
-        let connection_string = format!("postgresql://postgres:postgres@{host}:{port}/postgres");
+        let (_container, connection_string) = crate::test_support::start_postgres_url().await;
 
         let pool = PgPool::connect(&connection_string).await.unwrap();
 

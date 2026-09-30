@@ -1090,17 +1090,7 @@ mod tests {
         String,
         testcontainers_modules::testcontainers::ContainerAsync<Postgres>,
     ) {
-        let container = crate::test_support::start_postgres()
-            .await
-            .expect("Failed to start PostgreSQL container");
-
-        let host = container.get_host().await.expect("Failed to get host");
-        let port = container
-            .get_host_port_ipv4(5432)
-            .await
-            .expect("Failed to get port");
-
-        let url = format!("postgresql://postgres:postgres@{host}:{port}/postgres");
+        let (container, url) = crate::test_support::start_postgres_url().await;
         (url, container)
     }
 
