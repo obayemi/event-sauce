@@ -42,43 +42,50 @@ impl PostgresEventLogQuery {
     pub fn new(pool: PgPool, schema: String) -> Self {
         Self { pool, schema }
     }
+
+    /// Returns the distinct values of `column` in the events table, sorted.
+    /// `column` is never user input — always a literal at the call site — so
+    /// interpolating it into the query text carries no injection risk.
+    async fn distinct(&self, column: &'static str) -> Result<Vec<String>> {
+        let events_table = crate::migrations::qualify(&self.schema, "events");
+        sqlx::query_scalar(&format!(
+            "SELECT DISTINCT {column} FROM {events_table} ORDER BY {column}"
+        ))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| {
+            event_sauce_core::Error::backend(format!("Event log distinct {column} query failed"), e)
+        })
+    }
 }
 
-/// Appends ` WHERE <cond> AND <cond> ...` for every filter `params` sets,
-/// each as its own bound parameter. `QueryBuilder` numbers the placeholders
-/// itself, so the count and data queries below can push the same filters
-/// independently without a hand-maintained placeholder index or two parallel
-/// bind chains kept in sync by hand.
+/// Appends ` WHERE TRUE AND <cond> AND <cond> ...` for every filter `params`
+/// sets, each as its own bound parameter. `QueryBuilder` numbers the
+/// placeholders itself, so the count and data queries below can push the
+/// same filters independently without a hand-maintained placeholder index
+/// or two parallel bind chains kept in sync by hand. The unconditional
+/// `TRUE` (folded away by the planner) means each filter is pushed the same
+/// way whether or not any other filter is set, with no separate "is this
+/// the first clause" bookkeeping.
 fn push_filters(qb: &mut QueryBuilder<'_, Postgres>, params: &EventLogParams) {
-    let has_filters = params.aggregate_type.is_some()
-        || params.event_type.is_some()
-        || params.aggregate_id.is_some()
-        || params.created_by.is_some()
-        || params.from_date.is_some()
-        || params.to_date.is_some();
-    if !has_filters {
-        return;
-    }
-
-    qb.push(" WHERE ");
-    let mut separated = qb.separated(" AND ");
+    qb.push(" WHERE TRUE");
     if let Some(v) = params.aggregate_type.clone() {
-        separated.push("aggregate_type = ").push_bind_unseparated(v);
+        qb.push(" AND aggregate_type = ").push_bind(v);
     }
     if let Some(v) = params.event_type.clone() {
-        separated.push("event_type = ").push_bind_unseparated(v);
+        qb.push(" AND event_type = ").push_bind(v);
     }
     if let Some(v) = params.aggregate_id {
-        separated.push("aggregate_id = ").push_bind_unseparated(v);
+        qb.push(" AND aggregate_id = ").push_bind(v);
     }
     if let Some(v) = params.created_by {
-        separated.push("created_by = ").push_bind_unseparated(v);
+        qb.push(" AND created_by = ").push_bind(v);
     }
     if let Some(v) = params.from_date {
-        separated.push("created_at >= ").push_bind_unseparated(v);
+        qb.push(" AND created_at >= ").push_bind(v);
     }
     if let Some(v) = params.to_date {
-        separated.push("created_at <= ").push_bind_unseparated(v);
+        qb.push(" AND created_at <= ").push_bind(v);
     }
 }
 
@@ -131,31 +138,11 @@ impl EventLogQuery for PostgresEventLogQuery {
     }
 
     async fn distinct_aggregate_types(&self) -> Result<Vec<String>> {
-        let events_table = crate::migrations::qualify(&self.schema, "events");
-        let rows: Vec<(String,)> = sqlx::query_as(&format!(
-            "SELECT DISTINCT aggregate_type FROM {events_table} ORDER BY aggregate_type"
-        ))
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| {
-            event_sauce_core::Error::backend("Event log distinct_aggregate_types query failed", e)
-        })?;
-
-        Ok(rows.into_iter().map(|(t,)| t).collect())
+        self.distinct("aggregate_type").await
     }
 
     async fn distinct_event_types(&self) -> Result<Vec<String>> {
-        let events_table = crate::migrations::qualify(&self.schema, "events");
-        let rows: Vec<(String,)> = sqlx::query_as(&format!(
-            "SELECT DISTINCT event_type FROM {events_table} ORDER BY event_type"
-        ))
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| {
-            event_sauce_core::Error::backend("Event log distinct_event_types query failed", e)
-        })?;
-
-        Ok(rows.into_iter().map(|(t,)| t).collect())
+        self.distinct("event_type").await
     }
 }
 
