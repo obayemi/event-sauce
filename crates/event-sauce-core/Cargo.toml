@@ -35,6 +35,5 @@ base64 = { workspace = true, optional = true }
 zeroize = { workspace = true, optional = true }
 
 [dev-dependencies]
-async-trait.workspace = true
 tokio = { workspace = true, features = ["test-util", "macros", "rt", "rt-multi-thread"] }
 proptest.workspace = true
