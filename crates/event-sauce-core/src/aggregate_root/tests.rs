@@ -796,3 +796,207 @@ fn test_aggregate_root_apply_delete_validation_succeeds() {
 
     assert_eq!(deleted.version(), AggregateVersion::new(1));
 }
+
+/// Property tests for the version/poison invariants `apply` documents:
+/// a `validate_only` refusal leaves the aggregate untouched, a `dispatch`
+/// failure always poisons it, and version/pending-event bookkeeping
+/// tracks accepted events exactly, independently of which code path
+/// (`apply` or `apply_unchecked`) produced them.
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// Entity for exercising the refusal-vs-poison split directly,
+    /// independently of any `ApplyEvent`/ `define_events!` layering.
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+    struct PropEntity {
+        id: EntityId,
+        value: i64,
+    }
+
+    impl crate::Entity for PropEntity {
+        fn new(id: EntityId) -> Self {
+            Self { id, value: 0 }
+        }
+
+        fn entity_id(&self) -> EntityId {
+            self.id
+        }
+    }
+
+    impl DefaultEntity for PropEntity {}
+
+    /// `Accept` always applies; `PreReject` is refused by `validate_only`
+    /// before any mutation; `PostReject` mutates and then fails `dispatch`,
+    /// exercising the poisoning path.
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+    enum PropEvent {
+        Accept(i64),
+        PreReject,
+        PostReject(i64),
+    }
+
+    impl DomainEvent for PropEvent {
+        type Aggregate = PropEntity;
+
+        fn event_type(&self) -> &'static str {
+            match self {
+                PropEvent::Accept(_) => "Prop.Accept",
+                PropEvent::PreReject => "Prop.PreReject",
+                PropEvent::PostReject(_) => "Prop.PostReject",
+            }
+        }
+
+        fn event_version(&self) -> crate::EventVersion {
+            crate::EventVersion::new(1)
+        }
+
+        fn occurred_at(&self) -> chrono::DateTime<Utc> {
+            Utc::now()
+        }
+    }
+
+    impl EventApplicator<PropEntity> for PropEvent {
+        fn dispatch(&self, entity: &mut PropEntity) -> Result<(), TestError> {
+            match self {
+                PropEvent::Accept(amount) => {
+                    entity.value += amount;
+                    Ok(())
+                }
+                PropEvent::PreReject => Err(TestError),
+                PropEvent::PostReject(amount) => {
+                    entity.value += amount;
+                    Err(TestError)
+                }
+            }
+        }
+
+        fn validate_only(&self, _entity: &PropEntity) -> Result<(), TestError> {
+            match self {
+                PropEvent::PreReject => Err(TestError),
+                PropEvent::Accept(_) | PropEvent::PostReject(_) => Ok(()),
+            }
+        }
+
+        fn dispatch_unchecked(&self, entity: &mut PropEntity) {
+            match self {
+                PropEvent::Accept(amount) | PropEvent::PostReject(amount) => {
+                    entity.value += amount;
+                }
+                PropEvent::PreReject => {}
+            }
+        }
+    }
+
+    impl crate::Aggregate for PropEntity {
+        type Event = PropEvent;
+        type Error = TestError;
+        type DeletedState = Self;
+    }
+
+    /// Builds the accepted prefix `amounts` on a fresh root via `apply`,
+    /// asserting nothing is poisoned along the way.
+    fn apply_accepted_prefix(amounts: &[i64]) -> AggregateRoot<PropEntity> {
+        let mut root = AggregateRoot::<PropEntity>::new(EntityId::new());
+        for amount in amounts {
+            root.apply(PropEvent::Accept(*amount)).unwrap();
+        }
+        root
+    }
+
+    proptest! {
+        /// Every event in an all-accepted sequence bumps the version by
+        /// exactly one, so the final version and pending-event count equal
+        /// the sequence length, and the value equals the sum applied.
+        #[test]
+        fn version_and_pending_count_track_accepted_events(
+            amounts in prop::collection::vec(-1_000_000i64..1_000_000, 0..20)
+        ) {
+            let root = apply_accepted_prefix(&amounts);
+
+            let expected_version = i64::try_from(amounts.len()).unwrap();
+            prop_assert_eq!(root.version(), AggregateVersion::new(expected_version));
+            prop_assert_eq!(root.pending_events().len(), amounts.len());
+            prop_assert!(!root.is_poisoned());
+            prop_assert_eq!(root.entity().value, amounts.iter().sum::<i64>());
+        }
+
+        /// Replaying the same accepted sequence through `apply_unchecked`
+        /// (the event-replay path) reproduces the exact state and version
+        /// that building it through `apply` (the command path) produced.
+        #[test]
+        fn apply_and_apply_unchecked_agree_on_accepted_sequences(
+            amounts in prop::collection::vec(-1_000_000i64..1_000_000, 0..20)
+        ) {
+            let events: Vec<PropEvent> = amounts.iter().copied().map(PropEvent::Accept).collect();
+
+            let via_apply = apply_accepted_prefix(&amounts);
+
+            let mut via_replay = AggregateRoot::<PropEntity>::new(EntityId::new());
+            for event in &events {
+                via_replay.apply_unchecked(event);
+            }
+
+            prop_assert_eq!(via_apply.entity().value, via_replay.entity().value);
+            prop_assert_eq!(via_apply.version(), via_replay.version());
+        }
+
+        /// A `validate_only` refusal — the pre-validation step `apply` runs
+        /// before `dispatch` — never poisons: the entity, version and
+        /// pending events are exactly what they were before the refused
+        /// call, whatever was already accepted beforehand. Exercised
+        /// through both `apply` and `apply_with_actor`, which run the
+        /// same refusal-vs-poison split.
+        #[test]
+        fn pre_validation_refusal_never_poisons(
+            prefix in prop::collection::vec(-1_000_000i64..1_000_000, 0..10),
+            via_actor in prop::bool::ANY,
+        ) {
+            let mut root = apply_accepted_prefix(&prefix);
+            let value_before = root.entity().value;
+            let version_before = root.version();
+            let pending_before = root.pending_events().len();
+
+            let result = if via_actor {
+                root.apply_with_actor(PropEvent::PreReject, EntityId::new())
+            } else {
+                root.apply(PropEvent::PreReject)
+            };
+
+            prop_assert!(result.is_err());
+            prop_assert!(!root.is_poisoned());
+            prop_assert_eq!(root.entity().value, value_before);
+            prop_assert_eq!(root.version(), version_before);
+            prop_assert_eq!(root.pending_events().len(), pending_before);
+        }
+
+        /// A `dispatch` failure always poisons, whatever was already
+        /// accepted beforehand and whatever amount the failing event
+        /// carried — version and pending events stay exactly as they
+        /// were (the failed event is never recorded), even though the
+        /// entity itself was already mutated by the time `dispatch`
+        /// erred. Exercised through both `apply` and `apply_with_actor`,
+        /// which poison identically on a `dispatch` failure.
+        #[test]
+        fn post_apply_failure_always_poisons(
+            prefix in prop::collection::vec(-1_000_000i64..1_000_000, 0..10),
+            amount in -1_000_000i64..1_000_000,
+            via_actor in prop::bool::ANY,
+        ) {
+            let mut root = apply_accepted_prefix(&prefix);
+            let version_before = root.version();
+            let pending_before = root.pending_events().len();
+
+            let result = if via_actor {
+                root.apply_with_actor(PropEvent::PostReject(amount), EntityId::new())
+            } else {
+                root.apply(PropEvent::PostReject(amount))
+            };
+
+            prop_assert!(result.is_err());
+            prop_assert!(root.is_poisoned());
+            prop_assert_eq!(root.version(), version_before);
+            prop_assert_eq!(root.pending_events().len(), pending_before);
+        }
+    }
+}
