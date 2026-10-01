@@ -134,7 +134,9 @@ use event_sauce::PolicyRunner;
 
 let runner = PolicyRunner::new(store, checkpoint_store)
     .with_max_cascade_depth(5)  // Default: 10
-    .with_worker_id("my-service-1")  // Default: generated, unique per instance
+    // worker_id defaults to a value already unique per process and per
+    // instance (pid + a UUID) — leave it unset unless you need lease
+    // ownership to be recognizable across this runner being recreated.
     .with_lease_duration(Duration::from_secs(30))  // Default: 30s
     .with_batch_size(500)  // Default: 500
     .register(Arc::new(KickUserPolicy))
@@ -191,10 +193,14 @@ id — or leave it at the generated default.
 
 - A lease is renewed before every matching policy's handler call — so an
   event matching several held policies in a row renews between each of
-  their handlers, not once for all of them. A **single handler call**
-  longer than roughly **two thirds of `lease_duration`** can lose the
-  lease before the next renewal lands; size `lease_duration` well above
-  your slowest expected handler call.
+  their handlers, not once for all of them — and through every
+  `OnError::Retry` backoff and before every retry attempt, in chunks no
+  longer than the renewal interval (`lease_duration / 3`). A **single
+  handler call** (one `Policy::handle`
+  invocation, with no retry backoff in between to renew from) longer than
+  roughly **two thirds of `lease_duration`** can still lose the lease
+  before the next renewal lands; size `lease_duration` well above your
+  slowest expected handler call.
 - A **cancelled `process_pending()`** (a timeout, a `select!`, a dropped
   task) does not run its cleanup: whatever leases it had acquired stay
   held under this worker until they simply expire, rather than being

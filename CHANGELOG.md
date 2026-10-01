@@ -196,9 +196,15 @@ explicitly rather than gated behind a major version bump.
   to back with no renewal in between, so a later policy's lease could
   expire — and be acquired by another worker — while the earlier policies'
   handlers, or that later policy's own handler, were still running. A
-  single handler call longer than roughly two thirds of `lease_duration`
-  can lose the lease before a renewal lands — see `docs/policies.md`'s
-  Multi-Instance Safety section.
+  handler stuck in a long `OnError::Retry` backoff no longer silently
+  outlives its lease either: held leases are renewed through every backoff
+  sleep and before every attempt, in chunks no longer than the renewal
+  interval, so `RetryLimit::Indefinite` or a `RetryLimit::MaxDuration`/`max_delay`
+  longer than `lease_duration` aborts with `Error::LeaseLost` instead of
+  letting another worker acquire the same lease and run the event
+  concurrently. A single handler call still longer than roughly two thirds
+  of `lease_duration` can lose the lease before a renewal lands — see
+  `docs/policies.md`'s Multi-Instance Safety section.
 - Postgres claim conflicts now wait instead of risking a deadlock, and a
   racing claim correctly reports `ClaimConflict` rather than a generic
   error.

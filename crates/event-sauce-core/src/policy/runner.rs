@@ -78,6 +78,70 @@ impl LeaseRenewal {
     }
 }
 
+/// Keeps a worker's held policy leases alive across a long-running handler
+/// retry, where the normal per-event renewal point in
+/// [`drain_held_policies`](PolicyRunner::drain_held_policies) is not reached
+/// again until the handler finally returns.
+///
+/// Without this, a lease whose `lease_duration` is shorter than a retry's
+/// total backoff (e.g. [`RetryLimit::Indefinite`] or [`RetryLimit::MaxDuration`]
+/// longer than the lease) expires while the node is still retrying; another
+/// worker then acquires it and runs the same event concurrently. Threading
+/// this through the retry loop closes that window: a lease lost mid-retry
+/// now aborts the attempt with [`Error::LeaseLost`](crate::Error::LeaseLost)
+/// instead of silently continuing to work under it.
+struct LeaseKeeper<'a> {
+    checkpoint_store: &'a CheckpointStoreRef,
+    worker_id: &'a str,
+    lease_duration: Duration,
+    policy_names: &'a [String],
+    renewal: &'a mut LeaseRenewal,
+}
+
+impl LeaseKeeper<'_> {
+    /// Renews every held policy's lease if at least one renewal interval has
+    /// passed since the last renewal.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::LeaseLost`](crate::Error::LeaseLost) if any held
+    /// policy's lease is no longer held by this worker.
+    async fn renew_if_due(&mut self) -> Result<()> {
+        if !self.renewal.due() {
+            return Ok(());
+        }
+        for name in self.policy_names {
+            self.checkpoint_store
+                .renew_lease(name, self.worker_id, self.lease_duration)
+                .await?;
+        }
+        self.renewal.renewed();
+        Ok(())
+    }
+
+    /// Sleeps for `delay` in chunks no longer than the renewal interval,
+    /// renewing the held leases between chunks — so a `delay` longer than
+    /// the renewal interval (e.g. a large `max_delay`) can never skip a
+    /// renewal by sleeping through it in one uninterrupted call.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::LeaseLost`](crate::Error::LeaseLost) if a renewal
+    /// between chunks finds a held policy's lease no longer held by this
+    /// worker.
+    async fn sleep_renewing(&mut self, delay: Duration) -> Result<()> {
+        let chunk = self.renewal.interval.max(Duration::from_millis(1));
+        let mut remaining = delay;
+        while remaining > chunk {
+            tokio::time::sleep(chunk).await;
+            remaining -= chunk;
+            self.renew_if_due().await?;
+        }
+        tokio::time::sleep(remaining).await;
+        Ok(())
+    }
+}
+
 /// Runs policies by routing events to matching handlers.
 ///
 /// `PolicyRunner` manages a set of policies and provides methods for
@@ -267,26 +331,6 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
         }
     }
 
-    /// Renews every held policy's lease and resets the renewal clock.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::LeaseLost`](crate::Error::LeaseLost) if any held
-    /// policy's lease is no longer held by this worker.
-    async fn renew_leases(&self, held: &[HeldPolicy<S>], renewal: &mut LeaseRenewal) -> Result<()> {
-        for held_policy in held {
-            self.checkpoint_store
-                .renew_lease(
-                    held_policy.policy.name(),
-                    &self.worker_id,
-                    self.lease_duration,
-                )
-                .await?;
-        }
-        renewal.renewed();
-        Ok(())
-    }
-
     /// Runs one policy against one event: builds its [`PolicyContext`], calls
     /// [`Policy::handle`], and — only on success — flushes the buffered
     /// commits, folding both steps into the single outcome callers react to.
@@ -309,19 +353,24 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
     /// outcome every caller (`process_event`, [`route`](Self::route)) reacts
     /// to.
     ///
+    /// `keeper` is `Some` only when called from [`drain_held_policies`](Self::drain_held_policies)
+    /// (i.e. this worker holds leases to keep alive); [`process_event`](Self::process_event)
+    /// passes `None` since it touches no checkpoints or leases at all.
+    ///
     /// # Errors
     ///
     /// Returns an error when `on_error` is [`OnError::Fail`], or when it is
     /// [`OnError::Retry`] and retries exhaust into
-    /// [`OnRetryExhausted::Fail`].
+    /// [`OnRetryExhausted::Fail`], or a lease `keeper` tracks is lost mid-retry.
     async fn run_policy(
         &self,
         policy: &Arc<dyn Policy<S>>,
         envelope: &EventEnvelope,
+        keeper: Option<&mut LeaseKeeper<'_>>,
     ) -> Result<Handled> {
         match self.handle_and_flush(policy, envelope).await {
             Ok(()) => Ok(Handled::Yes),
-            Err(e) => self.apply_on_error(policy, envelope, e).await,
+            Err(e) => self.apply_on_error(policy, envelope, e, keeper).await,
         }
     }
 
@@ -333,6 +382,7 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
         policy: &Arc<dyn Policy<S>>,
         envelope: &EventEnvelope,
         error: crate::Error,
+        keeper: Option<&mut LeaseKeeper<'_>>,
     ) -> Result<Handled> {
         match &self.on_error {
             OnError::Fail => Err(error),
@@ -345,7 +395,7 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
                 );
                 Ok(Handled::Skipped)
             }
-            OnError::Retry(config) => self.retry_handler(policy, envelope, config).await,
+            OnError::Retry(config) => self.retry_handler(policy, envelope, config, keeper).await,
         }
     }
 
@@ -388,13 +438,13 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
     /// Held leases are renewed when due before every matching policy's
     /// handler call, and a handler stuck in a long [`OnError::Retry`]
     /// backoff keeps them renewed throughout on top of that. Two limits
-    /// remain, both covered in `docs/policies.md`'s Multi-Instance Safety
-    /// section: a single `Policy::handle` call (with no retry backoff in
-    /// between to renew from) longer than roughly two thirds of
-    /// `lease_duration` can still lose the lease before the next renewal
-    /// lands; and cancelling this future (a timeout, a `select!`) skips the
-    /// cleanup that releases its held leases, which then stay held under
-    /// this worker until they simply expire.
+    /// remain, both covered in `docs/policies.md`'s
+    /// Multi-Instance Safety section: a single `Policy::handle` call (with
+    /// no retry backoff in between to renew from) longer than roughly two
+    /// thirds of `lease_duration` can still lose the lease before the next
+    /// renewal lands; and cancelling this future (a timeout, a `select!`)
+    /// skips the cleanup that releases its held leases, which then stay
+    /// held under this worker until they simply expire.
     ///
     /// # Errors
     ///
@@ -444,9 +494,17 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
             .min()
             .unwrap_or_else(Position::start);
 
+        let policy_names: Vec<String> = held.iter().map(|h| h.policy.name().to_string()).collect();
         let mut renewal = LeaseRenewal::new(self.lease_duration);
-        let mut total_processed = 0;
+        let mut keeper = LeaseKeeper {
+            checkpoint_store: &self.checkpoint_store,
+            worker_id: &self.worker_id,
+            lease_duration: self.lease_duration,
+            policy_names: &policy_names,
+            renewal: &mut renewal,
+        };
 
+        let mut total_processed = 0;
         loop {
             let batch = self.store.fetch_batch(position, self.batch_size).await?;
             if batch.is_empty() {
@@ -457,7 +515,7 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
                 position = entry.position;
 
                 match self
-                    .route(position, &entry.envelope, held, &mut renewal)
+                    .route(position, &entry.envelope, held, Some(&mut keeper))
                     .await
                 {
                     Ok(n) => total_processed += n,
@@ -492,34 +550,37 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
     /// # Errors
     ///
     /// Propagates the first [`OnError::Fail`]-dispatched error (including a
-    /// retry that exhausts into [`OnRetryExhausted::Fail`]). On an `Err`,
-    /// every policy iterated *before* the failing one already has its
-    /// checkpoint advanced in `held` — the caller persists that progress
-    /// before propagating.
+    /// retry that exhausts into [`OnRetryExhausted::Fail`], or a lease
+    /// `keeper` tracks lost mid-retry). On an `Err`, every policy iterated
+    /// *before* the failing one already has its checkpoint advanced in
+    /// `held` — the caller persists that progress before propagating.
     async fn route(
         &self,
         position: Position,
         envelope: &EventEnvelope,
         held: &mut [HeldPolicy<S>],
-        renewal: &mut LeaseRenewal,
+        mut keeper: Option<&mut LeaseKeeper<'_>>,
     ) -> Result<usize> {
         let mut processed = 0;
-        for i in 0..held.len() {
-            if position <= held[i].checkpoint {
+        for held_policy in held.iter_mut() {
+            if position <= held_policy.checkpoint {
                 continue;
             }
 
-            if held[i].policy.event_filter().matches(envelope) {
-                if renewal.due() {
-                    self.renew_leases(held, renewal).await?;
+            if held_policy.policy.event_filter().matches(envelope) {
+                if let Some(k) = keeper.as_deref_mut() {
+                    k.renew_if_due().await?;
                 }
-                match self.run_policy(&held[i].policy, envelope).await? {
+                match self
+                    .run_policy(&held_policy.policy, envelope, keeper.as_deref_mut())
+                    .await?
+                {
                     Handled::Yes => processed += 1,
                     Handled::Skipped => {}
                 }
             }
 
-            held[i].checkpoint = position;
+            held_policy.checkpoint = position;
         }
         Ok(processed)
     }
@@ -573,23 +634,32 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
     /// performs retries. A flush conflict on a retry attempt is retried
     /// exactly like a handler error, on the next loop iteration.
     ///
+    /// When `keeper` is `Some`, the held leases it tracks are renewed before
+    /// every attempt and kept alive through every backoff sleep (see
+    /// [`LeaseKeeper`]), so a retry configured with [`RetryLimit::Indefinite`]
+    /// or a long [`RetryLimit::MaxDuration`] cannot silently outlive its
+    /// lease.
+    ///
     /// # Errors
     ///
     /// Returns an error once retries are exhausted under
-    /// [`OnRetryExhausted::Fail`].
+    /// [`OnRetryExhausted::Fail`], or if `keeper` finds a held lease lost.
     async fn retry_handler(
         &self,
         policy: &Arc<dyn Policy<S>>,
         envelope: &EventEnvelope,
         config: &RetryConfig,
+        mut keeper: Option<&mut LeaseKeeper<'_>>,
     ) -> Result<Handled> {
         let started = std::time::Instant::now();
         let mut attempt = 0;
 
-        // Initial attempt already failed before this function is called.
-        // Now we do retries.
         loop {
             attempt += 1;
+
+            if let Some(keeper) = &mut keeper {
+                keeper.renew_if_due().await?;
+            }
 
             // Check limit
             let exhausted = match config.limit {
@@ -621,7 +691,10 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
                 .base_delay
                 .saturating_mul(1 << (attempt - 1).min(30))
                 .min(config.max_delay);
-            tokio::time::sleep(delay).await;
+            match &mut keeper {
+                Some(keeper) => keeper.sleep_renewing(delay).await?,
+                None => tokio::time::sleep(delay).await,
+            }
 
             match self.handle_and_flush(policy, envelope).await {
                 Ok(()) => return Ok(Handled::Yes),
@@ -656,7 +729,7 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
 
         for policy in &self.policies {
             if policy.event_filter().matches(envelope)
-                && matches!(self.run_policy(policy, envelope).await?, Handled::Yes)
+                && matches!(self.run_policy(policy, envelope, None).await?, Handled::Yes)
             {
                 handled += 1;
             }
@@ -1765,6 +1838,186 @@ mod tests {
             cp.get("lost"),
             Some(Position::start()),
             "worker-b's checkpoint must be untouched by worker-a's aborted run"
+        );
+    }
+
+    /// A handler that fails until `fail_until` has elapsed since
+    /// `started_at`, then succeeds — used to drive a long [`OnError::Retry`]
+    /// backoff deterministically by wall-clock time.
+    struct FlakyThenOkPolicy {
+        name: String,
+        fail_until: Duration,
+        started_at: std::time::Instant,
+        ok_count: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl<S: EventStore + 'static> Policy<S> for FlakyThenOkPolicy {
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        fn event_filter(&self) -> EventFilter {
+            EventFilter::all()
+        }
+
+        async fn handle(&self, _event: &EventEnvelope, _ctx: &PolicyContext<S>) -> Result<()> {
+            if self.started_at.elapsed() < self.fail_until {
+                return Err(crate::Error::custom("still flaky"));
+            }
+            self.ok_count
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    /// A handler stuck in a long [`OnError::Retry`] backoff must not lose
+    /// its lease to another worker mid-retry. Reproduces the original bug
+    /// exactly: a 300ms lease, [`RetryLimit::Indefinite`] with a 50ms base /
+    /// 100ms max delay, a handler that fails for ~900ms before succeeding,
+    /// and a second worker that tries to acquire the same lease at 500ms —
+    /// partway through worker-a's retry, and well past the original 300ms
+    /// lease duration. Before the fix the lease expired mid-retry and
+    /// worker-b acquired it and ran the event too; after the fix the
+    /// retry's chunked renewals keep the lease alive and worker-b always
+    /// sees it as busy.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_retry_backoff_keeps_the_lease_renewed_past_its_duration() {
+        let store = Arc::new(MockEventStore::new());
+        let cp = test_checkpoint_store();
+        cp.save_checkpoint("flaky", Position::start())
+            .await
+            .unwrap();
+        store.add_event(test_envelope("TestEvent", "TestAggregate"));
+
+        let ok_a = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let policy_a = Arc::new(FlakyThenOkPolicy {
+            name: "flaky".to_string(),
+            fail_until: Duration::from_millis(900),
+            started_at: std::time::Instant::now(),
+            ok_count: Arc::clone(&ok_a),
+        });
+
+        let retry = OnError::Retry(RetryConfig {
+            base_delay: Duration::from_millis(50),
+            max_delay: Duration::from_millis(100),
+            limit: RetryLimit::Indefinite,
+            on_exhausted: OnRetryExhausted::Fail,
+        });
+
+        let runner_a = PolicyRunner::new(Arc::clone(&store), Arc::clone(&cp) as CheckpointStoreRef)
+            .register(policy_a)
+            .with_worker_id("worker-a")
+            .with_lease_duration(Duration::from_millis(300))
+            .on_error(retry);
+
+        let call_a = tokio::spawn(async move { runner_a.process_pending().await });
+
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        let ok_b = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let policy_b = Arc::new(CountingPolicyNoWait {
+            name: "flaky".to_string(),
+            count: Arc::clone(&ok_b),
+        });
+        let runner_b = PolicyRunner::new(Arc::clone(&store), Arc::clone(&cp) as CheckpointStoreRef)
+            .register(policy_b)
+            .with_worker_id("worker-b")
+            .with_lease_duration(Duration::from_millis(300));
+        let outcome_b = runner_b.process_pending().await.unwrap();
+
+        let outcome_a = call_a.await.unwrap().unwrap();
+
+        assert_eq!(
+            ok_b.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "worker-b must never run the handler while worker-a's retry still holds the lease"
+        );
+        assert_eq!(
+            outcome_b, 0,
+            "worker-b must see the still-renewed lease as busy, not free"
+        );
+        assert_eq!(outcome_a, 1);
+        assert_eq!(ok_a.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    /// A handler that always fails, used to drive deterministic retry
+    /// backoff timing without depending on wall-clock success.
+    struct AlwaysFailPolicy {
+        name: String,
+    }
+
+    #[async_trait::async_trait]
+    impl<S: EventStore + 'static> Policy<S> for AlwaysFailPolicy {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn event_filter(&self) -> EventFilter {
+            EventFilter::all()
+        }
+        async fn handle(&self, _event: &EventEnvelope, _ctx: &PolicyContext<S>) -> Result<()> {
+            Err(crate::Error::custom("always fails"))
+        }
+    }
+
+    /// XN-3/M8: a *single* retry backoff sleep longer than the lease
+    /// duration must still renew the lease in chunks while sleeping through
+    /// it, not just at the top of each retry attempt. `base_delay ==
+    /// max_delay == 450ms` with a `lease_duration` of 300ms means the first
+    /// backoff sleep alone outlasts the original lease: the only way it can
+    /// still be held at 375ms (after the 300ms mark, before the next
+    /// top-of-attempt renewal at 450ms) is if `sleep_renewing` renewed mid-
+    /// sleep.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_long_single_retry_sleep_keeps_renewing_the_lease() {
+        let store = Arc::new(MockEventStore::new());
+        let cp = test_checkpoint_store();
+        cp.save_checkpoint("m8", Position::start()).await.unwrap();
+        store.add_event(test_envelope("TestEvent", "TestAggregate"));
+
+        let policy = Arc::new(AlwaysFailPolicy {
+            name: "m8".to_string(),
+        });
+        let retry = OnError::Retry(RetryConfig {
+            base_delay: Duration::from_millis(450),
+            max_delay: Duration::from_millis(450),
+            limit: RetryLimit::MaxRetries(2),
+            on_exhausted: OnRetryExhausted::Fail,
+        });
+
+        let runner_a = PolicyRunner::new(Arc::clone(&store), Arc::clone(&cp) as CheckpointStoreRef)
+            .register(policy)
+            .with_worker_id("worker-a")
+            .with_lease_duration(Duration::from_millis(300))
+            .on_error(retry);
+
+        let call_a = tokio::spawn(async move { runner_a.process_pending().await });
+
+        tokio::time::sleep(Duration::from_millis(375)).await;
+
+        let policy_b = Arc::new(CountingPolicyNoWait {
+            name: "m8".to_string(),
+            count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        });
+        let runner_b = PolicyRunner::new(Arc::clone(&store), Arc::clone(&cp) as CheckpointStoreRef)
+            .register(policy_b)
+            .with_worker_id("worker-b")
+            .with_lease_duration(Duration::from_millis(300));
+        let outcome_b = runner_b.process_pending().await.unwrap();
+
+        assert_eq!(
+            outcome_b, 0,
+            "a single retry backoff sleep longer than the lease must still \
+             keep it renewed in chunks"
+        );
+
+        let outcome_a = tokio::time::timeout(Duration::from_secs(5), call_a)
+            .await
+            .expect("worker-a must not hang")
+            .unwrap();
+        assert!(
+            outcome_a.is_err(),
+            "retries exhausted under OnRetryExhausted::Fail must propagate"
         );
     }
 }
