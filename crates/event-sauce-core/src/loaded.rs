@@ -84,6 +84,42 @@ impl<A: Aggregate> Loaded<A> {
             Self::Deleted(del) => del.version(),
         }
     }
+
+    /// Rebuilds the root a store saved: its serialized state, whether it was
+    /// deleted, its id and the version it was saved at.
+    ///
+    /// Shared by the state-store load and the event-store snapshot load.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::InvalidState` if `version` is not a
+    /// [`StoredVersion`](crate::StoredVersion), and `Error::Serialization` if
+    /// `data` no longer deserializes into `A` or `A::DeletedState`.
+    #[cfg(any(feature = "event-sourcing", feature = "state-store"))]
+    pub(crate) fn restore(
+        is_deleted: bool,
+        data: serde_json::Value,
+        aggregate_id: EntityId,
+        version: AggregateVersion,
+    ) -> crate::Result<Self>
+    where
+        A: serde::de::DeserializeOwned,
+        A::DeletedState: serde::de::DeserializeOwned,
+    {
+        let version = crate::StoredVersion::try_from(version)?;
+        Ok(if is_deleted {
+            Self::Deleted(DeletedAggregateRoot::restore(
+                serde_json::from_value(data)?,
+                aggregate_id,
+                version,
+            ))
+        } else {
+            Self::Active(AggregateRoot::restore(
+                version,
+                serde_json::from_value(data)?,
+            ))
+        })
+    }
 }
 
 #[cfg(test)]
@@ -91,6 +127,45 @@ mod tests {
     use super::*;
     use crate::test_fixtures::SimpleTestEntity;
     use crate::StoredVersion;
+
+    #[cfg(any(feature = "event-sourcing", feature = "state-store"))]
+    #[test]
+    fn test_loaded_restore_rebuilds_the_saved_lifecycle_state() {
+        for is_deleted in [false, true] {
+            let id = EntityId::new();
+            let data = serde_json::to_value(SimpleTestEntity { id, value: 7 }).unwrap();
+
+            let loaded =
+                Loaded::<SimpleTestEntity>::restore(is_deleted, data, id, AggregateVersion::new(3))
+                    .unwrap();
+
+            assert_eq!(loaded.is_deleted(), is_deleted);
+            assert_eq!(loaded.entity_id(), id);
+            assert_eq!(loaded.version(), AggregateVersion::new(3));
+        }
+    }
+
+    #[cfg(any(feature = "event-sourcing", feature = "state-store"))]
+    #[test]
+    fn test_loaded_restore_refuses_a_corrupt_version_or_state() {
+        let id = EntityId::new();
+        let valid = serde_json::to_value(SimpleTestEntity { id, value: 7 }).unwrap();
+
+        let corrupt_version =
+            Loaded::<SimpleTestEntity>::restore(false, valid, id, AggregateVersion::initial());
+        let corrupt_state = Loaded::<SimpleTestEntity>::restore(
+            true,
+            serde_json::json!({ "id": id }),
+            id,
+            AggregateVersion::new(1),
+        );
+
+        assert!(matches!(
+            corrupt_version,
+            Err(crate::Error::InvalidState(_))
+        ));
+        assert!(matches!(corrupt_state, Err(crate::Error::Serialization(_))));
+    }
 
     fn make_active() -> Loaded<SimpleTestEntity> {
         let id = EntityId::new();
