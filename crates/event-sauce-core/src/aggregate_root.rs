@@ -11,23 +11,14 @@ use crate::{
     EventApplicator, EventMetadata,
 };
 
-/// Error restoring an [`AggregateRoot`] (or a
-/// [`DeletedAggregateRoot`](crate::DeletedAggregateRoot)) from data a store
-/// already rebuilt.
+/// Error restoring an [`AggregateRoot`] from data a store already rebuilt.
 ///
-/// Returned by [`AggregateRoot::restore`]. `E` is whatever error the
-/// aggregate's `TryFrom` conversion produces — `Infallible` when restoring
-/// from the entity itself.
-///
-/// A blanket `From<RestoreError<E>> for crate::Error` is provided for any
-/// `E: std::error::Error + Send + Sync + 'static`, so callers whose
-/// functions return [`crate::Result`] can propagate it with `?`.
+/// Returned by [`AggregateRoot::restore`]. `From<RestoreError> for
+/// crate::Error` maps it to [`Error::InvalidState`](crate::Error::InvalidState),
+/// so callers whose functions return [`crate::Result`] can propagate it with
+/// `?`.
 #[derive(Debug, Error)]
-pub enum RestoreError<E> {
-    /// `stored` did not convert into the aggregate.
-    #[error("failed to convert stored data into the aggregate: {0}")]
-    Conversion(#[source] E),
-
+pub enum RestoreError {
     /// `version` cannot be a stored aggregate's version: it predates the
     /// first version applying an event can produce, so no aggregate that
     /// has gone through at least its init event can have reached it.
@@ -35,16 +26,9 @@ pub enum RestoreError<E> {
     InvalidVersion(AggregateVersion),
 }
 
-impl<E> From<RestoreError<E>> for crate::Error
-where
-    E: std::error::Error + Send + Sync + 'static,
-{
-    fn from(err: RestoreError<E>) -> Self {
-        let message = err.to_string();
-        match err {
-            RestoreError::Conversion(e) => crate::Error::backend("restoring aggregate", e),
-            RestoreError::InvalidVersion(_) => crate::Error::invalid_state(message),
-        }
+impl From<RestoreError> for crate::Error {
+    fn from(err: RestoreError) -> Self {
+        crate::Error::invalid_state(err.to_string())
     }
 }
 
@@ -432,37 +416,23 @@ impl<A: Aggregate> AggregateRoot<A> {
         self.version = self.version.next();
     }
 
-    /// Wraps data a store already rebuilt into an `AggregateRoot`, at the
-    /// version it was read at.
+    /// Wraps an entity a store already rebuilt, at the version it was read at.
     ///
     /// This is what every [`Repository`](crate::Repository) answers a load with,
     /// whichever way it stores an aggregate: a row of typed columns, a serialized
     /// blob, an event-store snapshot plus its tail. The root owes nothing — its
     /// pending list starts empty — so a load-then-save writes nothing.
     ///
-    /// `stored` is anything the aggregate can convert from via `TryFrom`.
-    /// Pass the entity itself to go through its identity conversion
-    /// (`<A as TryFrom<A>>::Error = Infallible`), or a richer row type whose
-    /// `TryFrom` impl rejects malformed data.
-    ///
     /// # Errors
     ///
-    /// Returns [`RestoreError::Conversion`] if `stored` does not convert into
-    /// `A`. Returns [`RestoreError::InvalidVersion`] if `version` predates the
+    /// Returns [`RestoreError::InvalidVersion`] if `version` predates the
     /// first version an applied event can produce — no aggregate that has
     /// gone through at least its init event can have a lower version, so a
     /// stored one reporting it is corrupt.
-    pub fn restore<R>(
-        version: AggregateVersion,
-        stored: R,
-    ) -> Result<Self, RestoreError<<A as TryFrom<R>>::Error>>
-    where
-        A: TryFrom<R>,
-    {
+    pub fn restore(version: AggregateVersion, entity: A) -> Result<Self, RestoreError> {
         if version < AggregateVersion::initial().next() {
             return Err(RestoreError::InvalidVersion(version));
         }
-        let entity = A::try_from(stored).map_err(RestoreError::Conversion)?;
         Ok(Self {
             entity,
             version,

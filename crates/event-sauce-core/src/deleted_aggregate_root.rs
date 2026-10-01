@@ -129,36 +129,27 @@ impl<A: Aggregate> DeletedAggregateRoot<A> {
         }
     }
 
-    /// Wraps data a store already rebuilt into a deleted state, or replayed
-    /// (no pending events).
+    /// Wraps a deleted state a store already rebuilt, or replayed (no
+    /// pending events).
     ///
     /// Used by `load_any()` when what came back is in a deleted state, and
     /// by `apply_delete_unchecked()` when replaying a delete event.
     ///
-    /// `stored` is anything `A::DeletedState` can convert from via
-    /// `TryFrom` — see [`AggregateRoot::restore`](crate::AggregateRoot::restore)
-    /// for the identity-conversion case.
-    ///
     /// # Errors
     ///
-    /// Returns [`RestoreError::Conversion`] if `stored` does not convert into
-    /// `A::DeletedState`. Returns [`RestoreError::InvalidVersion`] if
-    /// `version` predates the first version an applied event can produce —
-    /// a deleted aggregate has applied at least an init event and a delete
-    /// event, so no stored one can have a lower version.
+    /// Returns [`RestoreError::InvalidVersion`] if `version` predates the
+    /// first version an applied event can produce — a deleted aggregate has
+    /// applied at least an init event and a delete event, so no stored one
+    /// can have a lower version.
     #[cfg(any(test, feature = "event-sourcing", feature = "state-store"))]
-    pub(crate) fn restore<R>(
-        stored: R,
+    pub(crate) fn restore(
+        state: A::DeletedState,
         entity_id: EntityId,
         version: AggregateVersion,
-    ) -> Result<Self, RestoreError<<A::DeletedState as TryFrom<R>>::Error>>
-    where
-        A::DeletedState: TryFrom<R>,
-    {
+    ) -> Result<Self, RestoreError> {
         if version < AggregateVersion::initial().next() {
             return Err(RestoreError::InvalidVersion(version));
         }
-        let state = A::DeletedState::try_from(stored).map_err(RestoreError::Conversion)?;
         Ok(Self {
             state,
             entity_id,

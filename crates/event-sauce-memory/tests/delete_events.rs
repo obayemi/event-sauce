@@ -302,7 +302,7 @@ async fn test_delete_validation_prevents_double_delete() {
         name: "Archived".to_string(),
         archived: true,
     };
-    let agg = AggregateRoot::<Project>::restore(AggregateVersion::new(1), entity).unwrap();
+    let agg = AggregateRoot::restore(AggregateVersion::new(1), entity).unwrap();
     let result = agg.archive_project("again".to_string());
     assert!(result.is_err());
     assert_eq!(result.unwrap_err().to_string(), "Already archived");
