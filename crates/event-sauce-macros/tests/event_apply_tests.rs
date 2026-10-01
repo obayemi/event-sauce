@@ -426,39 +426,23 @@ fn test_apply_is_deterministic() {
 }
 
 #[test]
-fn test_validation_failure_via_aggregate_root() {
+fn test_refused_event_leaves_root_untouched_and_usable() {
     let mut root = AggregateRoot::<TestAgg>::new(EntityId::new());
 
-    // Set with negative value should fail validation
     let result = root.apply(ValueSetEvent {
         value: -5,
         timestamp: Utc::now(),
     });
 
     assert!(result.is_err());
-    assert_eq!(root.value, 0); // State unchanged
-    assert_eq!(root.version(), AggregateVersion::initial()); // Version unchanged
-    assert_eq!(root.pending_events().len(), 0); // No pending events
-}
-
-#[test]
-fn test_refused_derived_event_does_not_poison_root() {
-    let mut root = AggregateRoot::<TestAgg>::new(EntityId::new());
-
-    // ValueSetEvent::validate refuses a negative value before anything is
-    // mutated. The `#[derive(Event)]` generated `EventApplicator` must tell
-    // this refusal apart from a failed apply, so it must not poison the root.
-    let refused = root.apply(ValueSetEvent {
-        value: -5,
-        timestamp: Utc::now(),
-    });
-    assert!(refused.is_err());
+    assert_eq!(root.value, 0);
+    assert_eq!(root.version(), AggregateVersion::initial());
+    assert_eq!(root.pending_events().len(), 0);
     assert!(
         !root.is_poisoned(),
         "a refused command must not poison the aggregate"
     );
 
-    // The root stays usable: a later command is accepted and committed.
     root.apply(ValueSetEvent {
         value: 50,
         timestamp: Utc::now(),
