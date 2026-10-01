@@ -336,4 +336,65 @@ mod tests {
         let original = provider.decrypt(&key, &ciphertext, &aad_a).unwrap();
         assert_eq!(original, plaintext);
     }
+
+    /// Property tests for [`Aes256GcmProvider`]'s own framing of the AAD it
+    /// forwards to `aes-gcm`: a near-miss AAD — one bit flipped, or the
+    /// caller's trailing byte lost — must still fail authentication. A
+    /// wholly independent random AAD would already fail under `aes-gcm`
+    /// alone and so would never catch an adapter that silently drops part
+    /// of the caller's AAD before forwarding it.
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn arb_aad_and_bit() -> impl Strategy<Value = (Vec<u8>, usize)> {
+            prop::collection::vec(any::<u8>(), 1..64)
+                .prop_flat_map(|aad| (0..aad.len() * 8).prop_map(move |bit| (aad.clone(), bit)))
+        }
+
+        proptest! {
+            /// Flipping a single bit anywhere in the AAD defeats
+            /// authentication, so the provider must be forwarding every bit
+            /// of it to `aes-gcm`, not just a prefix or a fixed-size window.
+            #[test]
+            fn decrypt_fails_with_one_flipped_aad_bit(
+                plaintext in prop::collection::vec(any::<u8>(), 0..256),
+                (aad, bit) in arb_aad_and_bit(),
+            ) {
+                let provider = Aes256GcmProvider;
+                let key = provider.generate_key();
+                let ciphertext = provider.encrypt(&key, &plaintext, &aad).unwrap();
+
+                let mut flipped = aad.clone();
+                flipped[bit / 8] ^= 1 << (bit % 8);
+
+                prop_assert_eq!(
+                    provider.decrypt(&key, &ciphertext, &aad).unwrap(),
+                    plaintext
+                );
+                prop_assert!(provider.decrypt(&key, &ciphertext, &flipped).is_err());
+            }
+
+            /// Dropping the AAD's trailing byte defeats authentication, so
+            /// the provider must be forwarding the caller's exact AAD length
+            /// to `aes-gcm`, not truncating it to some fixed size.
+            #[test]
+            fn decrypt_fails_with_a_truncated_aad(
+                plaintext in prop::collection::vec(any::<u8>(), 0..256),
+                aad in prop::collection::vec(any::<u8>(), 1..64),
+            ) {
+                let provider = Aes256GcmProvider;
+                let key = provider.generate_key();
+                let ciphertext = provider.encrypt(&key, &plaintext, &aad).unwrap();
+
+                let truncated = &aad[..aad.len() - 1];
+
+                prop_assert_eq!(
+                    provider.decrypt(&key, &ciphertext, &aad).unwrap(),
+                    plaintext
+                );
+                prop_assert!(provider.decrypt(&key, &ciphertext, truncated).is_err());
+            }
+        }
+    }
 }
