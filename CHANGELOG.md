@@ -163,6 +163,11 @@ explicitly rather than gated behind a major version bump.
 
 ### Fixed
 
+- `PolicyRunner::process_pending` now saves each policy's checkpoint after
+  every fetched batch, not just at the end of a round (or on the
+  `OnError::Fail` path, as before) — a cancellation or a transient error
+  partway through a round now replays at most the batch in flight when it
+  happened, instead of the whole round. Delivery stays at-least-once.
 - `PolicyRunner::process_pending` now drains events in bounded
   `EventStore::fetch_batch` calls (configurable via
   `PolicyRunner::with_batch_size`, default 500) instead of holding one

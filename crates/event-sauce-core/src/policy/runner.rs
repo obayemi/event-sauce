@@ -460,6 +460,13 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
                         held[i].checkpoint = position;
                     }
                 }
+
+                // Persist progress after every batch, not just at the end of
+                // the round: a cancellation or a transient error on a later
+                // batch's fetch then replays at most the batch in flight
+                // when it happened, never the whole round. See
+                // `save_checkpoints`'s "# Cancel safety" section.
+                self.save_checkpoints(held).await?;
             }
 
             total_processed += round_processed;
@@ -484,9 +491,21 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
     ///
     /// A policy whose checkpoint has not moved since the last save is
     /// skipped, so a round that only advanced some policies doesn't write
-    /// the others' unchanged position. Called on both the success and the
-    /// `OnError::Fail` paths so that a mid-batch failure does not lose the
-    /// progress of earlier events whose side effects were already flushed.
+    /// the others' unchanged position. Called after every fetched batch, and
+    /// again on the `OnError::Fail` path, so that a mid-batch failure does
+    /// not lose the progress of earlier events whose side effects were
+    /// already flushed.
+    ///
+    /// # Cancel safety
+    ///
+    /// Because this runs after every batch rather than only once at the end
+    /// of a round, dropping the [`process_pending`](Self::process_pending)
+    /// future (a timeout, a `select!`, a process crash) or a transient error
+    /// on a later batch's fetch replays **at most the batch in flight when
+    /// it happened** — every earlier batch in the round is already
+    /// checkpointed. Delivery is still **at-least-once**: a handler whose
+    /// side effects flushed but whose batch hadn't finished checkpointing
+    /// yet re-runs on the next call. Keep handlers idempotent.
     ///
     /// # Errors
     ///
@@ -1252,6 +1271,110 @@ mod tests {
         assert!(
             calls.iter().all(|(_, limit)| *limit == 2),
             "every call must respect the configured batch size, got {calls:?}"
+        );
+    }
+
+    /// Wraps [`MockEventStore`], failing the `n`th (1-indexed) `fetch_batch`
+    /// call to simulate a transient error partway through a round — e.g. a
+    /// dropped connection on the *next* batch's fetch, after earlier
+    /// batches in the same round already ran their handlers and flushed.
+    struct FlakyEventStore {
+        inner: MockEventStore,
+        fail_on_call: usize,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl FlakyEventStore {
+        fn new(inner: MockEventStore, fail_on_call: usize) -> Self {
+            Self {
+                inner,
+                fail_on_call,
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl EventStore for FlakyEventStore {
+        async fn append(
+            &self,
+            stream_id: crate::StreamId,
+            events: Vec<EventEnvelope>,
+            expected_version: crate::AggregateVersion,
+            claims: Vec<crate::AggregateClaim>,
+            clear_claims: bool,
+        ) -> Result<()> {
+            self.inner
+                .append(stream_id, events, expected_version, claims, clear_claims)
+                .await
+        }
+
+        async fn load_stream(
+            &self,
+            stream_id: crate::StreamId,
+            from_version: crate::AggregateVersion,
+        ) -> Result<impl futures::Stream<Item = Result<EventEnvelope>> + Send> {
+            self.inner.load_stream(stream_id, from_version).await
+        }
+
+        async fn stream_all(
+            &self,
+            from_position: Position,
+        ) -> Result<impl futures::Stream<Item = Result<crate::EventLogEntry>> + Send> {
+            self.inner.stream_all(from_position).await
+        }
+
+        async fn fetch_batch(
+            &self,
+            from_position: Position,
+            limit: usize,
+        ) -> Result<Vec<crate::EventLogEntry>> {
+            let call = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            if call == self.fail_on_call {
+                return Err(crate::Error::custom("simulated transient fetch failure"));
+            }
+            self.inner.fetch_batch(from_position, limit).await
+        }
+
+        async fn get_version(&self, stream_id: crate::StreamId) -> Result<crate::AggregateVersion> {
+            self.inner.get_version(stream_id).await
+        }
+    }
+
+    /// CONC-4: a transient error on a later batch's fetch must not lose the
+    /// checkpoint progress of batches already handled and flushed earlier in
+    /// the same round. `batch_size` 2 over 6 events takes 3 `fetch_batch`
+    /// calls plus a trailing empty-batch call to end the round; failing the
+    /// 2nd means the 1st batch's 2 events were already handled and flushed.
+    #[tokio::test]
+    async fn test_checkpoint_survives_a_failure_on_a_later_batch_in_the_same_round() {
+        let inner = MockEventStore::new();
+        for _ in 0..6 {
+            inner.add_event(test_envelope("TestEvent", "TestAggregate"));
+        }
+        let store = Arc::new(FlakyEventStore::new(inner, 2));
+        let cp = test_checkpoint_store();
+        cp.save_checkpoint("test", Position::start()).await.unwrap();
+
+        let policy = Arc::new(CountingPolicyNoWait {
+            name: "test".to_string(),
+            count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        });
+        let runner = PolicyRunner::new(Arc::clone(&store), cp.clone())
+            .register(policy)
+            .with_batch_size(2);
+
+        let result = runner.process_pending().await;
+        assert!(
+            result.is_err(),
+            "the simulated fetch failure must propagate"
+        );
+
+        assert_eq!(
+            cp.get("test"),
+            Some(Position::new(2)),
+            "the first batch's progress must be checkpointed even though the \
+             second batch's fetch failed, so a re-run does not replay it"
         );
     }
 
