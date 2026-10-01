@@ -291,7 +291,87 @@ fn test_aggregate_root_restore() {
 
     let version = StoredVersion::try_from(AggregateVersion::new(5)).unwrap();
 
-    let counter = AggregateRoot::restore(version, entity);
+    let Ok(counter) = AggregateRoot::<CounterEntity>::restore(version, entity);
+
+    assert_eq!(counter.value, 42);
+    assert_eq!(counter.version(), AggregateVersion::new(5));
+    assert!(counter.pending_events().is_empty());
+    assert!(!counter.is_poisoned());
+}
+
+struct CounterRow {
+    id: EntityId,
+    value: i32,
+}
+
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+#[error("counter value cannot be negative: {0}")]
+struct NegativeCounterValue(i32);
+
+impl TryFrom<CounterRow> for CounterEntity {
+    type Error = NegativeCounterValue;
+
+    fn try_from(row: CounterRow) -> Result<Self, Self::Error> {
+        if row.value < 0 {
+            return Err(NegativeCounterValue(row.value));
+        }
+        Ok(Self {
+            id: row.id,
+            value: row.value,
+        })
+    }
+}
+
+struct CounterSnapshot {
+    id: EntityId,
+    value: i32,
+}
+
+impl From<CounterSnapshot> for CounterEntity {
+    fn from(snapshot: CounterSnapshot) -> Self {
+        Self {
+            id: snapshot.id,
+            value: snapshot.value,
+        }
+    }
+}
+
+#[test]
+fn test_aggregate_root_restore_returns_the_rows_conversion_error() {
+    let version = StoredVersion::try_from(AggregateVersion::new(5)).unwrap();
+    let row = CounterRow {
+        id: EntityId::new(),
+        value: -1,
+    };
+
+    let err = AggregateRoot::<CounterEntity>::restore(version, row).unwrap_err();
+
+    assert_eq!(err, NegativeCounterValue(-1));
+}
+
+#[test]
+fn test_aggregate_root_restore_converts_a_row_through_from() {
+    let id = EntityId::new();
+    let version = StoredVersion::try_from(AggregateVersion::new(5)).unwrap();
+    let row = CounterSnapshot { id, value: 42 };
+
+    let counter = AggregateRoot::<CounterEntity>::restore(version, row).unwrap();
+
+    assert_eq!(counter.value, 42);
+    assert_eq!(counter.version(), AggregateVersion::new(5));
+    assert!(counter.pending_events().is_empty());
+    assert!(!counter.is_poisoned());
+}
+
+#[test]
+fn test_aggregate_root_restore_from_the_entity_itself_is_infallible() {
+    let entity = CounterEntity {
+        id: EntityId::new(),
+        value: 42,
+    };
+    let version = StoredVersion::try_from(AggregateVersion::new(5)).unwrap();
+
+    let Ok(counter) = AggregateRoot::<CounterEntity>::restore(version, entity);
 
     assert_eq!(counter.value, 42);
     assert_eq!(counter.version(), AggregateVersion::new(5));

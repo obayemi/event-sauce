@@ -393,22 +393,38 @@ impl<A: Aggregate> AggregateRoot<A> {
         self.version = self.version.next();
     }
 
-    /// Wraps an entity a store already rebuilt, at the version it was read at.
+    /// Wraps a value a store rebuilt into the entity itself, at the version
+    /// it was read at.
     ///
     /// This is what every [`Repository`](crate::Repository) answers a load with,
     /// whichever way it stores an aggregate: a row of typed columns, a serialized
     /// blob, an event-store snapshot plus its tail. The root owes nothing — its
     /// pending list starts empty — so a load-then-save writes nothing.
     ///
-    /// The version read back from storage becomes a [`StoredVersion`] through
-    /// `StoredVersion::try_from`, which refuses one no stored aggregate can
-    /// have: that check happens once, where the version enters from storage.
+    /// `stored` is whatever shape the store hands back — the entity itself,
+    /// or a row it reads into first — and is converted into `A` through
+    /// `TryFrom`. The version read back from storage becomes a
+    /// [`StoredVersion`] through `StoredVersion::try_from`, which refuses
+    /// one no stored aggregate can have: that check happens once, where the
+    /// version enters from storage.
+    ///
+    /// # Errors
+    ///
+    /// Returns `<A as TryFrom<R>>::Error` as is when `stored` fails to
+    /// convert into `A`. Passing the entity itself (`R = A`) can never
+    /// fail — its error type is [`Infallible`](std::convert::Infallible),
+    /// so the result is always `Ok` and destructures irrefutably on stable:
+    /// `let Ok(root) = AggregateRoot::restore(version, entity);`.
     ///
     /// # Examples
+    ///
+    /// Restoring from a row the store reads back, whose conversion to the
+    /// entity can be refused:
     ///
     /// ```
     /// # use event_sauce_core::{Aggregate, AggregateError, AggregateRoot, AggregateVersion, DomainEvent, Entity, EntityId, EventApplicator, EventVersion, StoredVersion};
     /// # use chrono::Utc;
+    /// # use thiserror::Error;
     /// # #[derive(Debug, serde::Serialize, serde::Deserialize)]
     /// # struct Counter { id: EntityId, value: i32 }
     /// # impl Entity for Counter {
@@ -441,24 +457,49 @@ impl<A: Aggregate> AggregateRoot<A> {
     /// #     type Error = CounterError;
     /// #     type DeletedState = Self;
     /// # }
-    /// let entity = Counter { id: EntityId::new(), value: 42 };
+    /// /// A row as the store reads it back: `value` has not been checked yet.
+    /// struct CounterRow { id: EntityId, value: i32 }
+    ///
+    /// #[derive(Debug, Error)]
+    /// #[error("counter value cannot be negative: {0}")]
+    /// struct NegativeValue(i32);
+    ///
+    /// impl TryFrom<CounterRow> for Counter {
+    ///     type Error = NegativeValue;
+    ///     fn try_from(row: CounterRow) -> Result<Self, Self::Error> {
+    ///         if row.value < 0 {
+    ///             return Err(NegativeValue(row.value));
+    ///         }
+    ///         Ok(Self { id: row.id, value: row.value })
+    ///     }
+    /// }
+    ///
     /// let version = StoredVersion::try_from(AggregateVersion::new(3))?;
     ///
-    /// let counter = AggregateRoot::restore(version, entity);
-    ///
+    /// let row = CounterRow { id: EntityId::new(), value: 42 };
+    /// let counter = AggregateRoot::<Counter>::restore(version, row)?;
     /// assert_eq!(counter.value, 42);
     /// assert_eq!(counter.version(), AggregateVersion::new(3));
     /// assert!(counter.pending_events().is_empty());
-    /// # Ok::<(), event_sauce_core::Error>(())
+    ///
+    /// let bad_row = CounterRow { id: EntityId::new(), value: -1 };
+    /// assert!(AggregateRoot::<Counter>::restore(version, bad_row).is_err());
+    ///
+    /// let entity = Counter { id: EntityId::new(), value: 7 };
+    /// let Ok(counter) = AggregateRoot::<Counter>::restore(version, entity);
+    /// assert_eq!(counter.value, 7);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
-    #[must_use]
-    pub fn restore(version: StoredVersion, entity: A) -> Self {
-        Self {
-            entity,
+    pub fn restore<R>(version: StoredVersion, stored: R) -> Result<Self, <A as TryFrom<R>>::Error>
+    where
+        A: TryFrom<R>,
+    {
+        Ok(Self {
+            entity: A::try_from(stored)?,
             version: version.into(),
             pending_events: vec![],
             poisoned: false,
-        }
+        })
     }
 
     /// Starts replaying a legacy (non-init-event) aggregate from a freshly

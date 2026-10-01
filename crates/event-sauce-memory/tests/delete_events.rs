@@ -198,7 +198,8 @@ fn make_super_admin() -> AggregateRoot<Admin> {
         id: EntityId::new(),
         is_super: true,
     };
-    AggregateRoot::restore(StoredVersion::FIRST, entity)
+    let Ok(root) = AggregateRoot::<Admin>::restore(StoredVersion::FIRST, entity);
+    root
 }
 
 // ============================================================================
@@ -302,7 +303,7 @@ async fn test_delete_validation_prevents_double_delete() {
         name: "Archived".to_string(),
         archived: true,
     };
-    let agg = AggregateRoot::restore(StoredVersion::FIRST, entity);
+    let Ok(agg) = AggregateRoot::<Project>::restore(StoredVersion::FIRST, entity);
     let result = agg.archive_project("again".to_string());
     assert!(result.is_err());
     assert_eq!(result.unwrap_err().to_string(), "Already archived");

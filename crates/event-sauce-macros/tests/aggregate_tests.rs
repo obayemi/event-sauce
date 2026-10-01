@@ -210,7 +210,7 @@ fn test_restore() {
     let id = EntityId::new();
     let entity = TestCounter { id, value: 100 };
 
-    let root = AggregateRoot::<TestCounter>::restore(
+    let Ok(root) = AggregateRoot::<TestCounter>::restore(
         StoredVersion::try_from(AggregateVersion::new(5)).unwrap(),
         entity,
     );
