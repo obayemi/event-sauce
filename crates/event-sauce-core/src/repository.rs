@@ -54,7 +54,9 @@ pub trait Repository<A: Aggregate>: Send + Sync {
     /// # Errors
     ///
     /// Returns `Error::NotFound` if the aggregate doesn't exist, or an error
-    /// if the store operation or deserialization fails.
+    /// if the store operation or deserialization fails. Returns
+    /// `Error::InvalidState` if the stored state cannot be restored, for
+    /// instance a state-store row saved at a version below 1.
     async fn load_by_id(&self, id: EntityId) -> Result<AggregateRoot<A>>;
 
     /// Loads an aggregate, returning its lifecycle state.
@@ -66,7 +68,9 @@ pub trait Repository<A: Aggregate>: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns an error if the aggregate doesn't exist or deserialization fails.
+    /// Returns an error if the aggregate doesn't exist or deserialization fails,
+    /// and `Error::InvalidState` if the stored state cannot be restored, for
+    /// instance a state-store row saved at a version below 1.
     async fn load_any_by_id(&self, id: EntityId) -> Result<Loaded<A>>;
 
     /// Loads a deleted aggregate.

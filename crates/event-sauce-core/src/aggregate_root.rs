@@ -403,6 +403,54 @@ impl<A: Aggregate> AggregateRoot<A> {
     /// The version read back from storage becomes a [`StoredVersion`] through
     /// `StoredVersion::try_from`, which refuses one no stored aggregate can
     /// have: that check happens once, where the version enters from storage.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use event_sauce_core::{Aggregate, AggregateError, AggregateRoot, AggregateVersion, DomainEvent, Entity, EntityId, EventApplicator, EventVersion, StoredVersion};
+    /// # use chrono::Utc;
+    /// # #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    /// # struct Counter { id: EntityId, value: i32 }
+    /// # impl Entity for Counter {
+    /// #     fn new(id: EntityId) -> Self { Self { id, value: 0 } }
+    /// #     fn entity_id(&self) -> EntityId { self.id }
+    /// # }
+    /// # #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+    /// # enum CounterEvent { Incremented { amount: i32 } }
+    /// # impl DomainEvent for CounterEvent {
+    /// #     type Aggregate = Counter;
+    /// #     fn event_type(&self) -> &'static str { "Incremented" }
+    /// #     fn event_version(&self) -> EventVersion { EventVersion::new(1) }
+    /// #     fn occurred_at(&self) -> chrono::DateTime<Utc> { Utc::now() }
+    /// # }
+    /// # impl EventApplicator<Counter> for CounterEvent {
+    /// #     fn dispatch(&self, c: &mut Counter) -> Result<(), CounterError> {
+    /// #         match self { CounterEvent::Incremented { amount } => c.value += amount }
+    /// #         Ok(())
+    /// #     }
+    /// #     fn dispatch_unchecked(&self, c: &mut Counter) {
+    /// #         match self { CounterEvent::Incremented { amount } => c.value += amount }
+    /// #     }
+    /// # }
+    /// # #[derive(Debug, thiserror::Error)]
+    /// # #[error("Counter error")]
+    /// # struct CounterError;
+    /// # impl AggregateError for CounterError {}
+    /// # impl Aggregate for Counter {
+    /// #     type Event = CounterEvent;
+    /// #     type Error = CounterError;
+    /// #     type DeletedState = Self;
+    /// # }
+    /// let entity = Counter { id: EntityId::new(), value: 42 };
+    /// let version = StoredVersion::try_from(AggregateVersion::new(3))?;
+    ///
+    /// let counter = AggregateRoot::restore(version, entity);
+    ///
+    /// assert_eq!(counter.value, 42);
+    /// assert_eq!(counter.version(), AggregateVersion::new(3));
+    /// assert!(counter.pending_events().is_empty());
+    /// # Ok::<(), event_sauce_core::Error>(())
+    /// ```
     #[must_use]
     pub fn restore(version: StoredVersion, entity: A) -> Self {
         Self {
