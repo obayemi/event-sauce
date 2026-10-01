@@ -282,25 +282,11 @@ impl<A: Aggregate> AggregateRoot<A> {
     ///
     /// # Errors
     ///
-    /// Returns an error if validation or dispatch fails.
-    ///
-    /// A `validate_only` refusal (step 2) does **not** poison: nothing has
-    /// been mutated yet, so the aggregate stays exactly as it was and
-    /// remains usable. `define_events!` (its `@validate`/`@validate_spec`
-    /// clauses) and `#[derive(Event)]` (each variant's
-    /// `ApplyEvent::validate`) both get this refusal-vs-poison split by
-    /// generating `validate_only`.
-    ///
-    /// A `dispatch` failure (step 3) **poisons** the aggregate (see
-    /// [`is_poisoned`](Self::is_poisoned)): `dispatch` may already have
-    /// mutated the entity by the time it failed, but the version is not
-    /// bumped and the event is not recorded, leaving state that cannot be
-    /// rolled back. This is what a `post_validate` failure does, for
-    /// `define_events!` and `#[derive(Event)]` alike, and what *every*
-    /// failure does for a fully hand-written `EventApplicator` that leaves
-    /// `validate_only` at its default `Ok(())`. A poisoned aggregate is
-    /// refused by the commit path with [`crate::Error::InvalidState`];
-    /// discard it and reload.
+    /// A `validate_only` refusal (step 2) leaves the aggregate untouched and
+    /// usable; a `dispatch` failure (step 3) **poisons** it instead — see
+    /// [`is_poisoned`](Self::is_poisoned) and
+    /// [`EventApplicator::validate_only`](crate::EventApplicator::validate_only)
+    /// for which failures land in which bucket.
     ///
     /// The apply closure must be **pure and deterministic** — it must never
     /// read the clock, an RNG, or any external state. Generate any such value
