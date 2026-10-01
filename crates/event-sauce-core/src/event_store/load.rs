@@ -67,8 +67,11 @@ where
 /// version no longer matches `A`, its data can no longer be deserialized into
 /// `A` / `A::DeletedState`, or its stored `AggregateVersion` is not a
 /// [`StoredVersion`](crate::StoredVersion). On a miss the caller falls through to
-/// full event replay (snapshot is a cache, never the source of truth) and a
-/// fresh snapshot is written at the current version on the next commit.
+/// full event replay (snapshot is a cache, never the source of truth). An
+/// active aggregate gets a fresh snapshot on its next commit that takes one.
+/// A deleted aggregate never commits again, so a missed deleted snapshot stays
+/// in place: every load stays correct but replays the stream, until the
+/// snapshot is purged.
 ///
 /// The `snapshot.snapshot_data` is expected to already be decrypted (the
 /// crypto-shredding `KeyNotFound` case is handled by the caller before this is
@@ -77,8 +80,8 @@ where
 /// # Errors
 ///
 /// Returns an error only if loading the post-snapshot event stream or
-/// deserializing an event fails. A snapshot deserialization failure is a cache
-/// miss (`Ok(None)`), not an error.
+/// deserializing an event fails. A snapshot that no longer deserializes or
+/// holds an invalid version is a cache miss (`Ok(None)`), not an error.
 async fn try_load_from_snapshot<S, A>(
     store: &S,
     stream_id: StreamId,
