@@ -215,12 +215,7 @@ jobs:
       - name: Cache dependencies
         uses: Swatinem/rust-cache@v2
 
-      - name: Check event-sauce-core with features "${{ matrix.features }}"
-        run: |
-          cargo check -p event-sauce-core --no-default-features \
-            ${{ matrix.features && format('--features {0}', matrix.features) || '' }}
-
-      - name: Clippy event-sauce-core tests with features "${{ matrix.features }}"
+      - name: Clippy event-sauce-core (all targets) with features "${{ matrix.features }}"
         run: |
           cargo clippy -p event-sauce-core --no-default-features --all-targets \
             ${{ matrix.features && format('--features {0}', matrix.features) || '' }} \
