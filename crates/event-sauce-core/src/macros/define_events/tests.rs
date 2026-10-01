@@ -1807,7 +1807,7 @@ mod actor_tests {
             id: EntityId::new(),
             is_admin: true,
         };
-        AggregateRoot::restore(AggregateVersion::new(1), entity)
+        AggregateRoot::restore(AggregateVersion::new(1), entity).unwrap()
     }
 
     // --- define_events! @actor tests ---
@@ -2600,7 +2600,7 @@ mod delete_tests {
             id: EntityId::new(),
             role: role.to_string(),
         };
-        AggregateRoot::restore(AggregateVersion::new(1), entity)
+        AggregateRoot::restore(AggregateVersion::new(1), entity).unwrap()
     }
 
     // --- define_events! @delete tests ---
@@ -2866,7 +2866,7 @@ mod delete_tests {
             name: "Alice".to_string(),
             active: false,
         };
-        let agg = AggregateRoot::restore(AggregateVersion::new(1), entity);
+        let agg = AggregateRoot::<Account>::restore(AggregateVersion::new(1), entity).unwrap();
         let result = agg.deactivate_account("again".to_string());
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().to_string(), "Already deactivated");
