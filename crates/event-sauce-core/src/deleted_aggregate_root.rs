@@ -212,10 +212,12 @@ mod tests {
             id: EntityId::new(),
             value: 42,
         };
-        let deleted = DeletedAggregateRoot::<SimpleTestEntity>::from_delete_replay(
+        let deleted = DeletedAggregateRoot::<SimpleTestEntity>::from_delete_with_pending(
             entity,
             EntityId::new(),
             AggregateVersion::new(5),
+            Vec::new(),
+            false,
         );
         // Deref gives read-only access to the deleted state
         assert_eq!(deleted.value, 42);
@@ -225,10 +227,12 @@ mod tests {
     fn test_deleted_aggregate_root_entity_id() {
         let id = EntityId::new();
         let entity = SimpleTestEntity { id, value: 0 };
-        let deleted = DeletedAggregateRoot::<SimpleTestEntity>::from_delete_replay(
+        let deleted = DeletedAggregateRoot::<SimpleTestEntity>::from_delete_with_pending(
             entity,
             id,
             AggregateVersion::new(1),
+            Vec::new(),
+            false,
         );
         assert_eq!(deleted.entity_id(), id);
     }
@@ -239,10 +243,12 @@ mod tests {
             id: EntityId::new(),
             value: 0,
         };
-        let deleted = DeletedAggregateRoot::<SimpleTestEntity>::from_delete_replay(
+        let deleted = DeletedAggregateRoot::<SimpleTestEntity>::from_delete_with_pending(
             entity,
             EntityId::new(),
             AggregateVersion::new(10),
+            Vec::new(),
+            false,
         );
         assert_eq!(deleted.version(), AggregateVersion::new(10));
     }
@@ -253,24 +259,28 @@ mod tests {
             id: EntityId::new(),
             value: 99,
         };
-        let deleted = DeletedAggregateRoot::<SimpleTestEntity>::from_delete_replay(
+        let deleted = DeletedAggregateRoot::<SimpleTestEntity>::from_delete_with_pending(
             entity,
             EntityId::new(),
             AggregateVersion::new(1),
+            Vec::new(),
+            false,
         );
         assert_eq!(deleted.state().value, 99);
     }
 
     #[test]
-    fn test_deleted_aggregate_root_pending_events_empty_on_replay() {
+    fn test_deleted_aggregate_root_pending_events_empty_without_pending() {
         let entity = SimpleTestEntity {
             id: EntityId::new(),
             value: 0,
         };
-        let deleted = DeletedAggregateRoot::<SimpleTestEntity>::from_delete_replay(
+        let deleted = DeletedAggregateRoot::<SimpleTestEntity>::from_delete_with_pending(
             entity,
             EntityId::new(),
             AggregateVersion::new(1),
+            Vec::new(),
+            false,
         );
         assert!(deleted.pending_events().is_empty());
     }
@@ -297,6 +307,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any(feature = "event-sourcing", feature = "state-store"))]
     fn test_deleted_aggregate_root_carries_poison() {
         let entity = SimpleTestEntity {
             id: EntityId::new(),
@@ -313,15 +324,18 @@ mod tests {
     }
 
     #[test]
-    fn test_deleted_aggregate_root_replay_is_not_poisoned() {
+    #[cfg(any(feature = "event-sourcing", feature = "state-store"))]
+    fn test_deleted_aggregate_root_new_is_not_poisoned() {
         let entity = SimpleTestEntity {
             id: EntityId::new(),
             value: 0,
         };
-        let deleted = DeletedAggregateRoot::<SimpleTestEntity>::from_delete_replay(
+        let deleted = DeletedAggregateRoot::<SimpleTestEntity>::from_delete_with_pending(
             entity,
             EntityId::new(),
             AggregateVersion::new(1),
+            Vec::new(),
+            false,
         );
         assert!(!deleted.is_poisoned());
     }
@@ -349,6 +363,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any(feature = "event-sourcing", feature = "state-store"))]
     fn test_deleted_aggregate_root_pending_events_with_actors() {
         let entity = SimpleTestEntity {
             id: EntityId::new(),
@@ -384,10 +399,12 @@ mod tests {
             value: 42,
         };
         let id = entity.id;
-        let deleted = DeletedAggregateRoot::<SimpleTestEntity>::from_delete_replay(
+        let deleted = DeletedAggregateRoot::<SimpleTestEntity>::from_delete_with_pending(
             entity,
             id,
             AggregateVersion::new(5),
+            Vec::new(),
+            false,
         );
         let json = serde_json::to_value(&deleted).unwrap();
         assert!(json.get("state").is_some());
@@ -404,10 +421,12 @@ mod tests {
             value: 42,
         };
         let id = entity.id;
-        let deleted = DeletedAggregateRoot::<SimpleTestEntity>::from_delete_replay(
+        let deleted = DeletedAggregateRoot::<SimpleTestEntity>::from_delete_with_pending(
             entity,
             id,
             AggregateVersion::new(5),
+            Vec::new(),
+            false,
         );
         let cloned = deleted.clone();
         assert_eq!(cloned.entity_id(), deleted.entity_id());
@@ -416,6 +435,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any(feature = "event-sourcing", feature = "state-store"))]
     fn test_deleted_aggregate_root_restore() {
         let id = EntityId::new();
         let entity = SimpleTestEntity { id, value: 77 };
@@ -436,16 +456,19 @@ mod tests {
             id: EntityId::new(),
             value: 0,
         };
-        let deleted = DeletedAggregateRoot::<SimpleTestEntity>::from_delete_replay(
+        let deleted = DeletedAggregateRoot::<SimpleTestEntity>::from_delete_with_pending(
             entity,
             EntityId::new(),
             AggregateVersion::new(1),
+            Vec::new(),
+            false,
         );
         let debug = format!("{deleted:?}");
         assert!(debug.contains("DeletedAggregateRoot"));
     }
 
     #[test]
+    #[cfg(feature = "event-sourcing")]
     fn test_deleted_aggregate_root_set_pending_metadata() {
         let entity = SimpleTestEntity {
             id: EntityId::new(),
@@ -480,6 +503,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "event-sourcing")]
     fn test_deleted_aggregate_root_set_pending_metadata_does_not_overwrite() {
         let entity = SimpleTestEntity {
             id: EntityId::new(),

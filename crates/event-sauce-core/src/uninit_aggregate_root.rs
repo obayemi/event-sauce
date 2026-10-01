@@ -120,29 +120,36 @@ mod tests {
         assert!(debug.contains("UninitAggregateRoot"));
     }
 
-    // Test apply_init_with_actor using a local init event fixture
+    #[cfg(any(feature = "event-sourcing", feature = "state-store"))]
     use crate::{AggregateError, AggregateVersion, DomainEvent, EventVersion};
+    #[cfg(any(feature = "event-sourcing", feature = "state-store"))]
     use chrono::Utc;
+    #[cfg(any(feature = "event-sourcing", feature = "state-store"))]
     use serde::{Deserialize, Serialize};
 
+    #[cfg(any(feature = "event-sourcing", feature = "state-store"))]
     #[derive(Debug, thiserror::Error)]
     #[error("User error")]
     struct UserError;
 
+    #[cfg(any(feature = "event-sourcing", feature = "state-store"))]
     impl AggregateError for UserError {}
 
+    #[cfg(any(feature = "event-sourcing", feature = "state-store"))]
     #[derive(Debug, Serialize, Deserialize)]
     struct User {
         id: EntityId,
         email: String,
     }
 
+    #[cfg(any(feature = "event-sourcing", feature = "state-store"))]
     impl crate::Entity for User {
         fn entity_id(&self) -> EntityId {
             self.id
         }
     }
 
+    #[cfg(any(feature = "event-sourcing", feature = "state-store"))]
     #[derive(Debug, Clone, Serialize, Deserialize)]
     enum UserEvent {
         Created {
@@ -151,6 +158,7 @@ mod tests {
         },
     }
 
+    #[cfg(any(feature = "event-sourcing", feature = "state-store"))]
     impl DomainEvent for UserEvent {
         type Aggregate = User;
         fn event_type(&self) -> &'static str {
@@ -166,6 +174,7 @@ mod tests {
         }
     }
 
+    #[cfg(any(feature = "event-sourcing", feature = "state-store"))]
     impl crate::EventApplicator<User> for UserEvent {
         fn dispatch(&self, _user: &mut User) -> Result<(), UserError> {
             Ok(())
@@ -192,18 +201,21 @@ mod tests {
         }
     }
 
+    #[cfg(any(feature = "event-sourcing", feature = "state-store"))]
     impl crate::Aggregate for User {
         type Event = UserEvent;
         type Error = UserError;
         type DeletedState = Self;
     }
 
+    #[cfg(any(feature = "event-sourcing", feature = "state-store"))]
     #[derive(Debug, Clone)]
     struct UserCreatedEvent {
         email: String,
         timestamp: chrono::DateTime<Utc>,
     }
 
+    #[cfg(any(feature = "event-sourcing", feature = "state-store"))]
     impl From<UserCreatedEvent> for UserEvent {
         fn from(e: UserCreatedEvent) -> Self {
             UserEvent::Created {
@@ -213,6 +225,7 @@ mod tests {
         }
     }
 
+    #[cfg(any(feature = "event-sourcing", feature = "state-store"))]
     impl InitEvent<User> for UserCreatedEvent {
         fn init(&self, id: EntityId) -> User {
             User {
@@ -223,6 +236,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any(feature = "event-sourcing", feature = "state-store"))]
     fn test_apply_init_with_actor() {
         let uninit = UninitAggregateRoot::<User>::new(EntityId::new());
         let id = uninit.entity_id();

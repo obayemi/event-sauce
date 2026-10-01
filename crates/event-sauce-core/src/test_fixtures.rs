@@ -537,6 +537,7 @@ impl StateStore for MockStateStore {
 }
 
 /// A simple counter entity for testing and doc examples.
+#[cfg(feature = "event-sourcing")]
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TestCounter {
     /// The entity's ID.
@@ -545,6 +546,7 @@ pub struct TestCounter {
     pub value: i32,
 }
 
+#[cfg(feature = "event-sourcing")]
 impl crate::Entity for TestCounter {
     fn new(id: EntityId) -> Self {
         Self { id, value: 0 }
@@ -554,9 +556,11 @@ impl crate::Entity for TestCounter {
     }
 }
 
+#[cfg(feature = "event-sourcing")]
 impl crate::DefaultEntity for TestCounter {}
 
 /// Events for the test counter.
+#[cfg(feature = "event-sourcing")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TestCounterEvent {
     /// Value was incremented.
@@ -566,6 +570,7 @@ pub enum TestCounterEvent {
     },
 }
 
+#[cfg(feature = "event-sourcing")]
 impl crate::DomainEvent for TestCounterEvent {
     type Aggregate = TestCounter;
     fn event_type(&self) -> &'static str {
@@ -579,6 +584,7 @@ impl crate::DomainEvent for TestCounterEvent {
     }
 }
 
+#[cfg(feature = "event-sourcing")]
 impl EventApplicator<TestCounter> for TestCounterEvent {
     fn dispatch(&self, counter: &mut TestCounter) -> std::result::Result<(), TestCounterError> {
         match self {
@@ -594,12 +600,15 @@ impl EventApplicator<TestCounter> for TestCounterEvent {
 }
 
 /// Error type for the test counter.
+#[cfg(feature = "event-sourcing")]
 #[derive(Debug, thiserror::Error)]
 #[error("Test counter error")]
 pub struct TestCounterError;
 
+#[cfg(feature = "event-sourcing")]
 impl AggregateError for TestCounterError {}
 
+#[cfg(feature = "event-sourcing")]
 impl crate::Aggregate for TestCounter {
     type Event = TestCounterEvent;
     type Error = TestCounterError;

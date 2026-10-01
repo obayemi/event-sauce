@@ -2091,6 +2091,7 @@ mod actor_tests {
     }
 
     #[test]
+    #[cfg(any(feature = "event-sourcing", feature = "state-store"))]
     fn test_actor_cmd_tracks_actor_id() {
         let admin = make_admin();
         let admin_id = admin.entity_id();
