@@ -51,7 +51,10 @@ explicitly rather than gated behind a major version bump.
   commit/save — see
   [aggregate_root.rs](crates/event-sauce-core/src/aggregate_root.rs) for the
   precise rule (only the commit/save path checks it; further `apply*`/
-  `apply_delete*` calls do not).
+  `apply_delete*` calls do not). A derived or `define_events!` event now
+  runs `ApplyEvent::validate` twice per `apply`/`apply_with_actor` call —
+  once through `validate_only`, again inside `dispatch` — so `validate`
+  must be pure and deterministic.
 - **`dispatch_policies_to_outbox`'s checkpoint and lease move from one name
   per policy set to one name per policy**
   (`__policy_outbox_dispatcher:{policy}`). Each policy's lease is now

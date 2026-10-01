@@ -89,6 +89,13 @@ pub trait ApplyEvent<A: Aggregate> {
     /// Checks business rules and invariants without modifying state.
     /// The default implementation always succeeds.
     ///
+    /// `validate` **must be pure and deterministic**, like
+    /// [`apply`](Self::apply): with a macro-generated `EventApplicator`,
+    /// [`AggregateRoot::apply`](crate::AggregateRoot::apply) and
+    /// `apply_with_actor` call it twice per command — once through
+    /// `validate_only` so a refusal doesn't poison, and again inside
+    /// `dispatch`.
+    ///
     /// # Errors
     ///
     /// Returns an error of type `A::Error` if the event fails validation.
