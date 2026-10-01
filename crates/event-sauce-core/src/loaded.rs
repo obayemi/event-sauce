@@ -128,8 +128,7 @@ impl<A: Aggregate> Loaded<A> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_fixtures::SimpleTestEntity;
-    use crate::StoredVersion;
+    use crate::test_fixtures::{deleted_simple_entity, SimpleTestEntity};
 
     #[cfg(any(feature = "event-sourcing", feature = "state-store"))]
     #[test]
@@ -192,14 +191,7 @@ mod tests {
     }
 
     fn make_deleted() -> Loaded<SimpleTestEntity> {
-        let id = EntityId::new();
-        let entity = SimpleTestEntity { id, value: 42 };
-        let Ok(deleted) = DeletedAggregateRoot::restore(
-            entity,
-            id,
-            StoredVersion::try_from(AggregateVersion::new(5)).unwrap(),
-        );
-        Loaded::Deleted(deleted)
+        Loaded::Deleted(deleted_simple_entity(EntityId::new(), 42, 5))
     }
 
     #[test]
@@ -256,9 +248,7 @@ mod tests {
     #[test]
     fn test_loaded_entity_id_deleted() {
         let id = EntityId::new();
-        let entity = SimpleTestEntity { id, value: 0 };
-        let Ok(deleted) = DeletedAggregateRoot::restore(entity, id, StoredVersion::FIRST);
-        let loaded = Loaded::<SimpleTestEntity>::Deleted(deleted);
+        let loaded = Loaded::Deleted(deleted_simple_entity(id, 0, 1));
         assert_eq!(loaded.entity_id(), id);
     }
 

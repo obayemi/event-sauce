@@ -182,6 +182,18 @@ impl crate::Aggregate for SimpleTestEntity {
     type DeletedState = Self;
 }
 
+/// A deleted [`SimpleTestEntity`] as a store reads it back at `version`.
+pub fn deleted_simple_entity(
+    id: EntityId,
+    value: i32,
+    version: i64,
+) -> crate::DeletedAggregateRoot<SimpleTestEntity> {
+    let version = crate::StoredVersion::try_from(crate::AggregateVersion::new(version)).unwrap();
+    let Ok(deleted) =
+        crate::DeletedAggregateRoot::restore(SimpleTestEntity { id, value }, id, version);
+    deleted
+}
+
 /// HashMap-based mock event store for testing.
 ///
 /// Tracks events per-stream (for `load_stream`) and globally (for `stream_all`),
