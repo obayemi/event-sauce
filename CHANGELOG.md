@@ -10,16 +10,22 @@ explicitly rather than gated behind a major version bump.
 
 ### Breaking Changes
 
-- **`AggregateRoot::restore` replaces `from_snapshot`, and takes a
-  `StoredVersion`.** Every `Repository` answers a load with
-  `AggregateRoot::restore(version, entity)` now, whatever the backing store
-  — event-sourced snapshot-plus-tail or a state-stored row. `version` is a
-  `StoredVersion`, a version of at least 1, the least a saved aggregate can
-  have: convert the version read from storage with
-  `StoredVersion::try_from(version)?`, which refuses a lower one with
-  `InvalidStoredVersion` (it converts into `Error::InvalidState`, so `?`
-  works in a function returning `event_sauce::Result`), or pass
-  `StoredVersion::FIRST`. `restore` itself cannot fail. Callers building a
+- **`AggregateRoot::restore` replaces `from_snapshot`, takes a
+  `StoredVersion`, and can fail.** It's generic over whatever shape a store
+  hands back: `AggregateRoot::restore(version, stored)` converts `stored`
+  into the entity through `TryFrom`, returning a conversion failure as is.
+  Passing the entity itself (`stored: A`) can never fail — its error type is
+  `Infallible`, so the result destructures irrefutably on stable:
+  `let Ok(root) = AggregateRoot::restore(version, entity);` — which is what
+  every `Repository` does today, whatever the backing store — event-sourced
+  snapshot-plus-tail or a state-stored row. A turbofish
+  (`AggregateRoot::<A>::restore(...)`) is needed wherever `A` isn't pinned
+  by anything downstream. `version` is a `StoredVersion`, a version of at
+  least 1, the least a saved aggregate can have: convert the version read
+  from storage with `StoredVersion::try_from(version)?`, which refuses a
+  lower one with `InvalidStoredVersion` (it converts into
+  `Error::InvalidState`, so `?` works in a function returning
+  `event_sauce::Result`), or pass `StoredVersion::FIRST`. Callers building a
   root from a rehydrated entity switch from `from_snapshot` to `restore`.
 - **A stored version below 1 is refused on load.** A state-stored row saved
   at such a version now fails `load`/`load_any`/`load_deleted` with an

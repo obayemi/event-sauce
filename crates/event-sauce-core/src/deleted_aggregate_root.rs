@@ -128,16 +128,29 @@ impl<A: Aggregate> DeletedAggregateRoot<A> {
         }
     }
 
-    /// Wraps a deleted state a store already rebuilt (no pending events).
+    /// Wraps a value a store rebuilt into the deleted state itself (no
+    /// pending events).
     ///
     /// Used by `load_any()` when what came back is in a deleted state.
+    /// `stored` converts into `A::DeletedState` through `TryFrom`, exactly
+    /// like [`AggregateRoot::restore`](crate::AggregateRoot::restore):
+    /// passing the deleted state itself can never fail.
     #[cfg(any(test, feature = "event-sourcing", feature = "state-store"))]
-    pub(crate) fn restore(
-        state: A::DeletedState,
+    pub(crate) fn restore<R>(
+        stored: R,
         entity_id: EntityId,
         version: crate::StoredVersion,
-    ) -> Self {
-        Self::from_delete_with_pending(state, entity_id, version.into(), Vec::new(), false)
+    ) -> Result<Self, <A::DeletedState as TryFrom<R>>::Error>
+    where
+        A::DeletedState: TryFrom<R>,
+    {
+        Ok(Self::from_delete_with_pending(
+            A::DeletedState::try_from(stored)?,
+            entity_id,
+            version.into(),
+            Vec::new(),
+            false,
+        ))
     }
 
     /// Returns the aggregate type name.
@@ -190,7 +203,7 @@ mod tests {
             id: EntityId::new(),
             value: 42,
         };
-        let deleted = DeletedAggregateRoot::<SimpleTestEntity>::restore(
+        let Ok(deleted) = DeletedAggregateRoot::<SimpleTestEntity>::restore(
             entity,
             EntityId::new(),
             StoredVersion::try_from(AggregateVersion::new(5)).unwrap(),
@@ -203,7 +216,7 @@ mod tests {
     fn test_deleted_aggregate_root_entity_id() {
         let id = EntityId::new();
         let entity = SimpleTestEntity { id, value: 0 };
-        let deleted =
+        let Ok(deleted) =
             DeletedAggregateRoot::<SimpleTestEntity>::restore(entity, id, StoredVersion::FIRST);
         assert_eq!(deleted.entity_id(), id);
     }
@@ -214,7 +227,7 @@ mod tests {
             id: EntityId::new(),
             value: 0,
         };
-        let deleted = DeletedAggregateRoot::<SimpleTestEntity>::restore(
+        let Ok(deleted) = DeletedAggregateRoot::<SimpleTestEntity>::restore(
             entity,
             EntityId::new(),
             StoredVersion::try_from(AggregateVersion::new(10)).unwrap(),
@@ -228,7 +241,7 @@ mod tests {
             id: EntityId::new(),
             value: 99,
         };
-        let deleted = DeletedAggregateRoot::<SimpleTestEntity>::restore(
+        let Ok(deleted) = DeletedAggregateRoot::<SimpleTestEntity>::restore(
             entity,
             EntityId::new(),
             StoredVersion::FIRST,
@@ -331,7 +344,7 @@ mod tests {
             value: 42,
         };
         let id = entity.id;
-        let deleted = DeletedAggregateRoot::<SimpleTestEntity>::restore(
+        let Ok(deleted) = DeletedAggregateRoot::<SimpleTestEntity>::restore(
             entity,
             id,
             StoredVersion::try_from(AggregateVersion::new(5)).unwrap(),
@@ -351,7 +364,7 @@ mod tests {
             value: 42,
         };
         let id = entity.id;
-        let deleted = DeletedAggregateRoot::<SimpleTestEntity>::restore(
+        let Ok(deleted) = DeletedAggregateRoot::<SimpleTestEntity>::restore(
             entity,
             id,
             StoredVersion::try_from(AggregateVersion::new(5)).unwrap(),
@@ -366,7 +379,7 @@ mod tests {
     fn test_deleted_aggregate_root_restore() {
         let id = EntityId::new();
         let entity = SimpleTestEntity { id, value: 77 };
-        let deleted = DeletedAggregateRoot::<SimpleTestEntity>::restore(
+        let Ok(deleted) = DeletedAggregateRoot::<SimpleTestEntity>::restore(
             entity,
             id,
             StoredVersion::try_from(AggregateVersion::new(10)).unwrap(),
@@ -384,7 +397,7 @@ mod tests {
             id: EntityId::new(),
             value: 0,
         };
-        let deleted = DeletedAggregateRoot::<SimpleTestEntity>::restore(
+        let Ok(deleted) = DeletedAggregateRoot::<SimpleTestEntity>::restore(
             entity,
             EntityId::new(),
             StoredVersion::FIRST,

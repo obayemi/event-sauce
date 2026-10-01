@@ -296,7 +296,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             plan: sub2.plan.clone(),
             active: sub2.active,
         };
-        AggregateRoot::restore(StoredVersion::try_from(sub2.version())?, entity)
+        let Ok(root) = AggregateRoot::<Subscription>::restore(
+            StoredVersion::try_from(sub2.version())?,
+            entity,
+        );
+        root
     };
 
     let regular_admin = {
@@ -304,7 +308,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             id: EntityId::new(),
             role: "support".to_string(),
         };
-        AggregateRoot::restore(StoredVersion::FIRST, entity)
+        let Ok(root) = AggregateRoot::<Admin>::restore(StoredVersion::FIRST, entity);
+        root
     };
 
     println!("  Support agent tries to force-revoke...");
@@ -319,7 +324,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             id: EntityId::new(),
             role: "billing_admin".to_string(),
         };
-        AggregateRoot::restore(StoredVersion::FIRST, entity)
+        let Ok(root) = AggregateRoot::<Admin>::restore(StoredVersion::FIRST, entity);
+        root
     };
 
     println!("  Billing admin force-revokes...");

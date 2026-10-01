@@ -114,16 +114,13 @@ impl<A: Aggregate> Loaded<A> {
             ))
         })?;
         Ok(if is_deleted {
-            Self::Deleted(DeletedAggregateRoot::restore(
-                serde_json::from_value(data)?,
-                aggregate_id,
-                version,
-            ))
+            let state: A::DeletedState = serde_json::from_value(data)?;
+            let Ok(deleted) = DeletedAggregateRoot::<A>::restore(state, aggregate_id, version);
+            Self::Deleted(deleted)
         } else {
-            Self::Active(AggregateRoot::restore(
-                version,
-                serde_json::from_value(data)?,
-            ))
+            let entity: A = serde_json::from_value(data)?;
+            let Ok(active) = AggregateRoot::<A>::restore(version, entity);
+            Self::Active(active)
         })
     }
 }
@@ -197,7 +194,7 @@ mod tests {
     fn make_deleted() -> Loaded<SimpleTestEntity> {
         let id = EntityId::new();
         let entity = SimpleTestEntity { id, value: 42 };
-        let deleted = DeletedAggregateRoot::restore(
+        let Ok(deleted) = DeletedAggregateRoot::restore(
             entity,
             id,
             StoredVersion::try_from(AggregateVersion::new(5)).unwrap(),
@@ -260,7 +257,7 @@ mod tests {
     fn test_loaded_entity_id_deleted() {
         let id = EntityId::new();
         let entity = SimpleTestEntity { id, value: 0 };
-        let deleted = DeletedAggregateRoot::restore(entity, id, StoredVersion::FIRST);
+        let Ok(deleted) = DeletedAggregateRoot::restore(entity, id, StoredVersion::FIRST);
         let loaded = Loaded::<SimpleTestEntity>::Deleted(deleted);
         assert_eq!(loaded.entity_id(), id);
     }
