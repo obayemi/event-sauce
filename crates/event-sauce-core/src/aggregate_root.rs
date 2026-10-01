@@ -295,17 +295,11 @@ impl<A: Aggregate> AggregateRoot<A> {
     pub fn apply<E: Into<A::Event>>(&mut self, event: E) -> Result<(), A::Error> {
         let event = event.into();
         EventApplicator::validate_only(&event, &self.entity)?;
-        if let Err(error) = EventApplicator::dispatch(&event, &mut self.entity) {
-            self.poisoned = true;
-            return Err(error);
-        }
-        self.version = self.version.next();
-        self.pending_events.push(PendingEvent {
+        self.dispatch_and_record(PendingEvent {
             event,
             actor_id: None,
             metadata: None,
-        });
-        Ok(())
+        })
     }
 
     /// Applies an event with actor tracking.
@@ -327,17 +321,11 @@ impl<A: Aggregate> AggregateRoot<A> {
     ) -> Result<(), A::Error> {
         let event = event.into();
         EventApplicator::validate_only(&event, &self.entity)?;
-        if let Err(error) = EventApplicator::dispatch(&event, &mut self.entity) {
-            self.poisoned = true;
-            return Err(error);
-        }
-        self.version = self.version.next();
-        self.pending_events.push(PendingEvent {
+        self.dispatch_and_record(PendingEvent {
             event,
             actor_id: Some(actor_id),
             metadata: None,
-        });
-        Ok(())
+        })
     }
 
     /// Applies an event with causation metadata.
@@ -361,17 +349,25 @@ impl<A: Aggregate> AggregateRoot<A> {
         event: E,
         metadata: EventMetadata,
     ) -> Result<(), A::Error> {
-        let event = event.into();
-        if let Err(error) = EventApplicator::dispatch(&event, &mut self.entity) {
+        self.dispatch_and_record(PendingEvent {
+            event: event.into(),
+            actor_id: None,
+            metadata: Some(metadata),
+        })
+    }
+
+    /// Dispatches a pending event's inner event and, on success, records it.
+    ///
+    /// Shared by `apply`, `apply_with_actor` and `apply_with_metadata`: each
+    /// has already decided whether `validate_only` runs first, and hands
+    /// this the `PendingEvent` it wants recorded if `dispatch` succeeds.
+    fn dispatch_and_record(&mut self, pending: PendingEvent<A::Event>) -> Result<(), A::Error> {
+        if let Err(error) = EventApplicator::dispatch(&pending.event, &mut self.entity) {
             self.poisoned = true;
             return Err(error);
         }
         self.version = self.version.next();
-        self.pending_events.push(PendingEvent {
-            event,
-            actor_id: None,
-            metadata: Some(metadata),
-        });
+        self.pending_events.push(pending);
         Ok(())
     }
 
