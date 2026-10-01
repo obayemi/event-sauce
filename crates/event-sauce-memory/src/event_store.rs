@@ -1299,4 +1299,182 @@ mod tests {
         assert!(store1.checkpoint_store().is_some());
         assert!(store2.checkpoint_store().is_some());
     }
+
+    /// Model-based property test: random batches of appends (correctly or
+    /// incorrectly versioned) against a handful of streams must accept and
+    /// reject in lockstep with a trivial reference model, must leave
+    /// `load_stream`/`stream_all` reporting exactly the model's contents from
+    /// every offset (not just the start), and must assign dense, strictly
+    /// increasing global positions. Every op runs through
+    /// [`EventStore::append_batch`], whose in-memory default loops
+    /// [`EventStore::append`] and stops at the first rejected commit — a
+    /// batch of one sub-commit exercises `append` itself, and a longer batch
+    /// exercises that stop-on-first-failure (non-atomic) semantics.
+    mod proptests {
+        use super::*;
+        use event_sauce_core::StreamCommit;
+        use proptest::prelude::*;
+        use proptest::test_runner::TestCaseError;
+        use std::sync::LazyLock;
+
+        static RUNTIME: LazyLock<tokio::runtime::Runtime> =
+            LazyLock::new(|| tokio::runtime::Runtime::new().unwrap());
+
+        const NUM_STREAMS: usize = 3;
+
+        #[derive(Debug, Clone, Default)]
+        struct Model {
+            streams: Vec<Vec<Uuid>>,
+            global: Vec<Uuid>,
+        }
+
+        impl Model {
+            fn new() -> Self {
+                Self {
+                    streams: vec![Vec::new(); NUM_STREAMS],
+                    global: Vec::new(),
+                }
+            }
+
+            fn version(&self, stream: usize) -> i64 {
+                i64::try_from(self.streams[stream].len()).unwrap()
+            }
+
+            fn record(&mut self, stream: usize, ids: &[Uuid]) {
+                self.streams[stream].extend_from_slice(ids);
+                self.global.extend_from_slice(ids);
+            }
+        }
+
+        fn sub_commit_strategy() -> impl Strategy<Value = (usize, i64, u8)> {
+            (
+                0..NUM_STREAMS,
+                prop::sample::select(&[-2i64, -1, 0, 1, 2][..]),
+                1u8..=3,
+            )
+        }
+
+        fn make_envelope(aggregate_id: Uuid) -> (Uuid, EventEnvelope) {
+            let id = Uuid::new_v4();
+            let envelope = EventEnvelope::new(
+                id,
+                aggregate_id,
+                "Model".to_string(),
+                "Model.Event".to_string(),
+                event_sauce_core::EventVersion::new(1),
+                json!({}),
+            );
+            (id, envelope)
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(48))]
+
+            #[test]
+            fn matches_reference_model(
+                batches in prop::collection::vec(
+                    prop::collection::vec(sub_commit_strategy(), 1..=3),
+                    1..15,
+                )
+            ) {
+                let outcome: Result<(), TestCaseError> = RUNTIME.block_on(async {
+                    let store = InMemoryEventStore::new();
+                    let aggregate_ids: Vec<Uuid> = (0..NUM_STREAMS).map(|_| Uuid::new_v4()).collect();
+                    let stream_ids: Vec<StreamId> = aggregate_ids
+                        .iter()
+                        .map(|id| StreamId::new("Model", *id))
+                        .collect();
+                    let mut model = Model::new();
+
+                    for sub_commits in &batches {
+                        let mut tentative = model.clone();
+                        let mut rejected = false;
+                        let mut commits = Vec::new();
+
+                        for (stream, offset, count) in sub_commits {
+                            let expected = (tentative.version(*stream) + offset).max(0);
+                            let accepts = !rejected && expected == tentative.version(*stream);
+
+                            let mut ids = Vec::new();
+                            let mut events = Vec::new();
+                            for _ in 0..*count {
+                                let (id, event) = make_envelope(aggregate_ids[*stream]);
+                                ids.push(id);
+                                events.push(event);
+                            }
+                            commits.push(StreamCommit {
+                                stream_id: stream_ids[*stream].clone(),
+                                events,
+                                expected_version: AggregateVersion::new(expected),
+                                claims: vec![],
+                                clear_claims: false,
+                            });
+
+                            if accepts {
+                                tentative.record(*stream, &ids);
+                            } else {
+                                rejected = true;
+                            }
+                        }
+
+                        let result = store.append_batch(commits).await;
+                        if rejected {
+                            let Err(error) = result else {
+                                return Err(TestCaseError::fail(
+                                    "expected a concurrency conflict but the batch was accepted",
+                                ));
+                            };
+                            if !error.is_concurrency_conflict() {
+                                return Err(TestCaseError::fail(format!(
+                                    "expected a concurrency conflict, got {error:?}"
+                                )));
+                            }
+                        } else if let Err(error) = result {
+                            return Err(TestCaseError::fail(format!(
+                                "expected the batch to be accepted, got {error:?}"
+                            )));
+                        }
+                        model = tentative;
+                    }
+
+                    for (stream, stream_id) in stream_ids.iter().enumerate() {
+                        let version = store.get_version(stream_id.clone()).await.unwrap();
+                        let stream_len = model.version(stream);
+                        prop_assert_eq!(version, AggregateVersion::new(stream_len));
+
+                        for from in 0..=stream_len {
+                            let loaded = store
+                                .load_stream(stream_id.clone(), AggregateVersion::new(from))
+                                .await
+                                .unwrap();
+                            let ids: Vec<Uuid> = loaded
+                                .map(|event| event.unwrap().id)
+                                .collect::<Vec<_>>()
+                                .await;
+                            let from = usize::try_from(from).unwrap();
+                            prop_assert_eq!(ids, model.streams[stream][from..].to_vec());
+                        }
+                    }
+
+                    let global_len = i64::try_from(model.global.len()).unwrap();
+                    for from in 0..=global_len {
+                        let all = store.stream_all(Position::new(from)).await.unwrap();
+                        let entries: Vec<_> = all.map(Result::unwrap).collect().await;
+
+                        let positions: Vec<i64> =
+                            entries.iter().map(|e| e.position.as_i64()).collect();
+                        let expected_positions: Vec<i64> = (from + 1..=global_len).collect();
+                        prop_assert_eq!(positions, expected_positions);
+
+                        let ids: Vec<Uuid> = entries.iter().map(|e| e.envelope.id).collect();
+                        let from = usize::try_from(from).unwrap();
+                        prop_assert_eq!(ids, model.global[from..].to_vec());
+                    }
+
+                    Ok(())
+                });
+                outcome?;
+            }
+        }
+    }
 }
