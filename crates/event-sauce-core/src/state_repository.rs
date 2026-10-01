@@ -637,58 +637,75 @@ mod tests {
         assert!(store.recorded_commits().is_empty());
     }
 
+    fn stored(
+        id: EntityId,
+        version: AggregateVersion,
+        is_deleted: bool,
+        schema_version: u32,
+    ) -> StoredState {
+        StoredState {
+            aggregate_id: id.as_uuid(),
+            aggregate_type: SimpleTestEntity::aggregate_type(),
+            state_data: serde_json::json!({"id": id.as_uuid(), "value": 1}),
+            version,
+            is_deleted,
+            schema_version,
+        }
+    }
+
     #[tokio::test]
     async fn test_schema_version_mismatch_fails_load() {
         let (store, repo) = repo();
-
         let id = EntityId::new();
-        store.insert_raw(StoredState {
-            aggregate_id: id.as_uuid(),
-            aggregate_type: SimpleTestEntity::aggregate_type(),
-            state_data: serde_json::json!({"id": id.as_uuid(), "value": 1}),
-            version: AggregateVersion::new(1),
-            is_deleted: false,
-            schema_version: SimpleTestEntity::snapshot_version() + 1,
-        });
+        store.insert_raw(stored(
+            id,
+            AggregateVersion::new(1),
+            false,
+            SimpleTestEntity::snapshot_version() + 1,
+        ));
 
         let err = repo.load(id).await.unwrap_err();
         assert!(matches!(err, Error::InvalidState(_)));
     }
 
     #[tokio::test]
-    async fn test_corrupt_stored_version_fails_load_instead_of_panicking() {
-        let (store, repo) = repo();
+    async fn test_corrupt_stored_version_fails_load() {
+        for (version, is_deleted) in [
+            (AggregateVersion::initial(), false),
+            (AggregateVersion::new(-3), true),
+        ] {
+            let (store, repo) = repo();
+            let id = EntityId::new();
+            store.insert_raw(stored(
+                id,
+                version,
+                is_deleted,
+                SimpleTestEntity::snapshot_version(),
+            ));
 
-        let id = EntityId::new();
-        store.insert_raw(StoredState {
-            aggregate_id: id.as_uuid(),
-            aggregate_type: SimpleTestEntity::aggregate_type(),
-            state_data: serde_json::json!({"id": id.as_uuid(), "value": 1}),
-            version: AggregateVersion::new(0),
-            is_deleted: false,
-            schema_version: SimpleTestEntity::snapshot_version(),
-        });
-
-        let err = repo.load(id).await.unwrap_err();
-        assert!(matches!(err, Error::InvalidState(_)));
+            let err = repo.load_any(id).await.unwrap_err();
+            assert!(matches!(err, Error::InvalidState(_)));
+        }
     }
 
     #[tokio::test]
-    async fn test_corrupt_deleted_stored_version_fails_load_instead_of_panicking() {
-        let (store, repo) = repo();
+    async fn test_undeserializable_stored_state_fails_load() {
+        for is_deleted in [false, true] {
+            let (store, repo) = repo();
+            let id = EntityId::new();
+            store.insert_raw(StoredState {
+                state_data: serde_json::json!({"id": id.as_uuid()}),
+                ..stored(
+                    id,
+                    AggregateVersion::new(1),
+                    is_deleted,
+                    SimpleTestEntity::snapshot_version(),
+                )
+            });
 
-        let id = EntityId::new();
-        store.insert_raw(StoredState {
-            aggregate_id: id.as_uuid(),
-            aggregate_type: SimpleTestEntity::aggregate_type(),
-            state_data: serde_json::json!({"id": id.as_uuid(), "value": 1}),
-            version: AggregateVersion::new(-3),
-            is_deleted: true,
-            schema_version: SimpleTestEntity::snapshot_version(),
-        });
-
-        let err = repo.load_any(id).await.unwrap_err();
-        assert!(matches!(err, Error::InvalidState(_)));
+            let err = repo.load_any(id).await.unwrap_err();
+            assert!(matches!(err, Error::Serialization(_)));
+        }
     }
 
     #[tokio::test]
