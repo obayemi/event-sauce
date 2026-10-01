@@ -39,6 +39,16 @@ struct HeldPolicy<S: EventStore> {
     saved: Position,
 }
 
+/// Outcome of running one policy against one event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Handled {
+    /// The handler ran (on the first attempt or after a retry) and flushed.
+    Yes,
+    /// The event was skipped: a non-retrying `OnError::Skip`, or retries
+    /// exhausted under `OnRetryExhausted::Skip`.
+    Skipped,
+}
+
 /// Tracks when a held set of policy leases is next due for renewal.
 ///
 /// Mirrors the `PostgreSQL` projection runner and policy dispatcher's own
@@ -294,6 +304,51 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
         ctx.flush().await
     }
 
+    /// Runs one policy against one event and applies [`OnError`] to a
+    /// failure, folding `handle`+`flush`+error-handling into the single
+    /// outcome every caller (`process_event`, [`route`](Self::route)) reacts
+    /// to.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `on_error` is [`OnError::Fail`], or when it is
+    /// [`OnError::Retry`] and retries exhaust into
+    /// [`OnRetryExhausted::Fail`].
+    async fn run_policy(
+        &self,
+        policy: &Arc<dyn Policy<S>>,
+        envelope: &EventEnvelope,
+    ) -> Result<Handled> {
+        match self.handle_and_flush(policy, envelope).await {
+            Ok(()) => Ok(Handled::Yes),
+            Err(e) => self.apply_on_error(policy, envelope, e).await,
+        }
+    }
+
+    /// Applies `self.on_error` to a `handle`/`flush` failure: fail, log and
+    /// skip, or retry with backoff. The single place both
+    /// [`run_policy`](Self::run_policy) callers share this dispatch through.
+    async fn apply_on_error(
+        &self,
+        policy: &Arc<dyn Policy<S>>,
+        envelope: &EventEnvelope,
+        error: crate::Error,
+    ) -> Result<Handled> {
+        match &self.on_error {
+            OnError::Fail => Err(error),
+            OnError::Skip => {
+                tracing::warn!(
+                    policy = policy.name(),
+                    event_id = %envelope.id,
+                    error = %error,
+                    "Skipping event due to policy error"
+                );
+                Ok(Handled::Skipped)
+            }
+            OnError::Retry(config) => self.retry_handler(policy, envelope, config).await,
+        }
+    }
+
     /// Processes all pending events in one-shot mode with checkpoint support.
     ///
     /// For each registered policy:
@@ -363,127 +418,110 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
         result
     }
 
-    /// Drives the round/cascade loop over `held`'s policies, assuming every
-    /// one of them has an active lease held by this worker.
+    /// Fetches, routes and checkpoints `held`'s policies until the event log
+    /// is drained, assuming every one of them has an active lease held by
+    /// this worker.
+    ///
+    /// Fetches bounded batches ([`EventStore::fetch_batch`]) rather than
+    /// holding one open-ended `stream_all` stream for the whole call: no
+    /// connection or snapshot the store holds open for a fetch outlives the
+    /// handlers that run between fetches. Each batch is routed and
+    /// checkpointed before the next is fetched at the now-advanced position,
+    /// so an event a cascading handler appends mid-call is picked up by a
+    /// later fetch the same way any other pending event is — one pass
+    /// already drains everything there is to drain, including cascades,
+    /// with no separate "round" needed once a fetch comes back empty.
+    /// Checkpoints are saved after every batch, and again before an error
+    /// from [`route`](Self::route) propagates, so a re-run only ever
+    /// replays at most the batch that was in flight (at-least-once): a lease
+    /// renewal error or a cancellation mid-batch returns without saving, so
+    /// the events that batch already handled before that point are replayed
+    /// on the next call.
     async fn drain_held_policies(&self, held: &mut [HeldPolicy<S>]) -> Result<usize> {
-        let mut from_position = held
+        let mut position = held
             .iter()
             .map(|h| h.checkpoint)
             .min()
             .unwrap_or_else(Position::start);
 
-        let mut total_processed = 0;
         let mut renewal = LeaseRenewal::new(self.lease_duration);
+        let mut total_processed = 0;
 
-        // Process events in rounds to handle cascading
         loop {
-            let mut round_processed = 0;
-            let mut position = from_position;
-
-            // Fetch bounded batches rather than holding one open-ended
-            // stream_all stream for the whole round: no connection or
-            // snapshot the store holds open for a fetch outlives the
-            // handlers that run between fetches.
-            loop {
-                let batch = self.store.fetch_batch(position, self.batch_size).await?;
-                if batch.is_empty() {
-                    break;
-                }
-
-                for entry in batch {
-                    let envelope = entry.envelope;
-                    position = entry.position;
-
-                    // Route to matching held policies, respecting per-policy checkpoints
-                    for i in 0..held.len() {
-                        // Skip if this policy has already processed past this position
-                        if position.as_i64() <= held[i].checkpoint.as_i64() {
-                            continue;
-                        }
-
-                        if held[i].policy.event_filter().matches(&envelope) {
-                            if renewal.due() {
-                                self.renew_leases(held, &mut renewal).await?;
-                            }
-                            match self.handle_and_flush(&held[i].policy, &envelope).await {
-                                Ok(()) => {
-                                    round_processed += 1;
-                                }
-                                Err(e) => match &self.on_error {
-                                    OnError::Fail => {
-                                        // Persist every held policy's checkpoint up to the
-                                        // last event it fully handled *before* failing.
-                                        // This policy's checkpoint is intentionally NOT
-                                        // advanced past the failing event (the loop-end
-                                        // advance below is skipped by the early return),
-                                        // so a re-run resumes at the failing event and
-                                        // never replays the already-flushed effects of
-                                        // events 1..N-1.
-                                        self.save_checkpoints(held).await?;
-                                        return Err(e);
-                                    }
-                                    OnError::Skip => {
-                                        tracing::warn!(
-                                            policy = held[i].policy.name(),
-                                            event_id = %envelope.id,
-                                            error = %e,
-                                            "Skipping event due to policy error"
-                                        );
-                                    }
-                                    OnError::Retry(config) => {
-                                        let should_skip = match self
-                                            .retry_handler(&held[i].policy, &envelope, config)
-                                            .await
-                                        {
-                                            Ok(skip) => skip,
-                                            Err(e) => {
-                                                // Retries exhausted under
-                                                // OnRetryExhausted::Fail. This is the
-                                                // OnError::Fail path: persist progress up
-                                                // to the last fully-handled event (this
-                                                // failing event is NOT advanced) before
-                                                // failing, so a re-run resumes here and
-                                                // does not replay already-flushed effects.
-                                                self.save_checkpoints(held).await?;
-                                                return Err(e);
-                                            }
-                                        };
-                                        if !should_skip {
-                                            round_processed += 1;
-                                        }
-                                    }
-                                },
-                            }
-                        }
-
-                        // Advance this policy's checkpoint
-                        held[i].checkpoint = position;
-                    }
-                }
-
-                // Persist progress after every batch, not just at the end of
-                // the round: a cancellation or a transient error on a later
-                // batch's fetch then replays at most the batch in flight
-                // when it happened, never the whole round. See
-                // `save_checkpoints`'s "# Cancel safety" section.
-                self.save_checkpoints(held).await?;
-            }
-
-            total_processed += round_processed;
-
-            // If no events were processed this round, we're done
-            if round_processed == 0 {
+            let batch = self.store.fetch_batch(position, self.batch_size).await?;
+            if batch.is_empty() {
                 break;
             }
 
-            // Move position forward for next round (to pick up cascaded events)
-            from_position = position;
+            for entry in batch {
+                position = entry.position;
+
+                match self
+                    .route(position, &entry.envelope, held, &mut renewal)
+                    .await
+                {
+                    Ok(n) => total_processed += n,
+                    Err(e) => {
+                        self.save_checkpoints(held).await?;
+                        return Err(e);
+                    }
+                }
+            }
+
+            self.save_checkpoints(held).await?;
         }
 
-        // Save checkpoints for every held policy
-        self.save_checkpoints(held).await?;
-
         Ok(total_processed)
+    }
+
+    /// Routes one global-log entry at `position` to every held policy whose
+    /// checkpoint it is past: runs matching policies' handlers (via
+    /// [`run_policy`](Self::run_policy)) and advances each iterated policy's
+    /// checkpoint to `position` in place — including one this event didn't
+    /// match, so a non-matching gap is skipped on the next call too.
+    ///
+    /// Renews a due lease before each matching policy's handler call, not
+    /// just once per event: an event matching several held policies in a
+    /// row runs their handlers back to back, and the sum of their
+    /// durations — not any single one of them — is what the next renewal
+    /// has to arrive within.
+    ///
+    /// Returns how many policies ran their handler for this event
+    /// ([`Handled::Yes`]).
+    ///
+    /// # Errors
+    ///
+    /// Propagates the first [`OnError::Fail`]-dispatched error (including a
+    /// retry that exhausts into [`OnRetryExhausted::Fail`]). On an `Err`,
+    /// every policy iterated *before* the failing one already has its
+    /// checkpoint advanced in `held` — the caller persists that progress
+    /// before propagating.
+    async fn route(
+        &self,
+        position: Position,
+        envelope: &EventEnvelope,
+        held: &mut [HeldPolicy<S>],
+        renewal: &mut LeaseRenewal,
+    ) -> Result<usize> {
+        let mut processed = 0;
+        for i in 0..held.len() {
+            if position <= held[i].checkpoint {
+                continue;
+            }
+
+            if held[i].policy.event_filter().matches(envelope) {
+                if renewal.due() {
+                    self.renew_leases(held, renewal).await?;
+                }
+                match self.run_policy(&held[i].policy, envelope).await? {
+                    Handled::Yes => processed += 1,
+                    Handled::Skipped => {}
+                }
+            }
+
+            held[i].checkpoint = position;
+        }
+        Ok(processed)
     }
 
     /// Persists each held policy's checkpoint at its current position,
@@ -531,17 +569,20 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
 
     /// Retries a failed handler with exponential backoff.
     ///
-    /// Returns `Ok(false)` if the retry succeeded (event was processed),
-    /// `Ok(true)` if the retries were exhausted and the event was skipped,
-    /// or `Err` if the retries were exhausted and the policy is `OnRetryExhausted::Fail`.
-    /// A flush conflict on this attempt is retried exactly like a handler
-    /// error, on the next loop iteration.
+    /// The initial attempt already failed before this is called; it only
+    /// performs retries. A flush conflict on a retry attempt is retried
+    /// exactly like a handler error, on the next loop iteration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error once retries are exhausted under
+    /// [`OnRetryExhausted::Fail`].
     async fn retry_handler(
         &self,
         policy: &Arc<dyn Policy<S>>,
         envelope: &EventEnvelope,
         config: &RetryConfig,
-    ) -> Result<bool> {
+    ) -> Result<Handled> {
         let started = std::time::Instant::now();
         let mut attempt = 0;
 
@@ -570,7 +611,7 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
                             event_id = %envelope.id,
                             "Retry exhausted, skipping event"
                         );
-                        Ok(true) // skipped
+                        Ok(Handled::Skipped)
                     }
                 };
             }
@@ -583,9 +624,7 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
             tokio::time::sleep(delay).await;
 
             match self.handle_and_flush(policy, envelope).await {
-                Ok(()) => {
-                    return Ok(false); // success
-                }
+                Ok(()) => return Ok(Handled::Yes),
                 Err(e) => {
                     tracing::warn!(
                         policy = policy.name(),
@@ -616,29 +655,10 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
         let mut handled = 0;
 
         for policy in &self.policies {
-            if policy.event_filter().matches(envelope) {
-                match self.handle_and_flush(policy, envelope).await {
-                    Ok(()) => {
-                        handled += 1;
-                    }
-                    Err(e) => match &self.on_error {
-                        OnError::Fail => return Err(e),
-                        OnError::Skip => {
-                            tracing::warn!(
-                                policy = policy.name(),
-                                event_id = %envelope.id,
-                                error = %e,
-                                "Skipping event due to policy error"
-                            );
-                        }
-                        OnError::Retry(config) => {
-                            let skipped = self.retry_handler(policy, envelope, config).await?;
-                            if !skipped {
-                                handled += 1;
-                            }
-                        }
-                    },
-                }
+            if policy.event_filter().matches(envelope)
+                && matches!(self.run_policy(policy, envelope).await?, Handled::Yes)
+            {
+                handled += 1;
             }
         }
 
