@@ -302,6 +302,62 @@ fn test_without_tuple_variants_no_auto_event_applicator() {
     );
 }
 
+/// Event: `MixedEvent`'s lone tuple variant.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct MixedSetEvent {
+    value: i32,
+    timestamp: DateTime<Utc>,
+}
+
+/// Event enum mixing a tuple variant (dispatched via `ApplyEvent`) with a
+/// struct variant, which the generated `EventApplicator` cannot dispatch to
+/// and therefore no-ops on.
+#[derive(event_sauce_macros::Event, Debug, Clone, Serialize, Deserialize)]
+#[event(version = 1, type_prefix = "Mixed", aggregate = "MixedAgg")]
+enum MixedEvent {
+    Set(MixedSetEvent),
+    Noted { timestamp: DateTime<Utc> },
+}
+
+#[aggregate(event = "MixedEvent", error = "TestError")]
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct MixedAgg {
+    #[id]
+    id: EntityId,
+    value: i32,
+}
+
+impl ApplyEvent<MixedAgg> for MixedSetEvent {
+    fn apply(&self, entity: &mut MixedAgg) {
+        entity.value = self.value;
+    }
+}
+
+/// Every `EventApplicator` method no-ops on a struct variant instead of
+/// erroring, since it has no `ApplyEvent` to dispatch to.
+#[test]
+fn test_mixed_variant_struct_arm_is_noop() {
+    let mut entity = MixedAgg::new(EntityId::new());
+
+    event_sauce_core::EventApplicator::dispatch(
+        &MixedEvent::Set(MixedSetEvent {
+            value: 5,
+            timestamp: Utc::now(),
+        }),
+        &mut entity,
+    )
+    .unwrap();
+    assert_eq!(entity.value, 5);
+
+    let noted = MixedEvent::Noted {
+        timestamp: Utc::now(),
+    };
+    event_sauce_core::EventApplicator::dispatch(&noted, &mut entity).unwrap();
+    event_sauce_core::EventApplicator::validate_only(&noted, &entity).unwrap();
+    event_sauce_core::EventApplicator::dispatch_unchecked(&noted, &mut entity);
+    assert_eq!(entity.value, 5);
+}
+
 // ============================================================================
 // Test Edge Cases
 // ============================================================================
