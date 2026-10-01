@@ -880,6 +880,19 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_aad_layout_is_id_then_snap() {
+        let aggregate_id = Uuid::from_bytes([0xAA; 16]);
+
+        let aad = snapshot_aad(aggregate_id);
+
+        assert_eq!(
+            aad,
+            [aggregate_id.as_bytes().as_slice(), b"snap"].concat(),
+            "snapshot AAD is aggregate_id || \"snap\""
+        );
+    }
+
+    #[test]
     fn event_aad_is_deterministic_and_distinguishes_events() {
         let aggregate_id = Uuid::from_bytes([1; 16]);
         let event_a = Uuid::from_bytes([2; 16]);
@@ -932,5 +945,52 @@ mod tests {
             relocated.is_err(),
             "ciphertext must not decrypt under another event's AAD"
         );
+    }
+
+    /// Property tests for [`event_aad`] and [`snapshot_aad`]: both are plain
+    /// concatenations of fixed-width inputs, so distinct inputs must always
+    /// produce distinct AAD bytes — the property that makes AAD binding
+    /// actually separate one event (or aggregate) from another.
+    mod aad_injectivity_proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn arb_uuid() -> impl Strategy<Value = Uuid> {
+            any::<u128>().prop_map(Uuid::from_u128)
+        }
+
+        /// A `Uuid` together with a copy that differs in exactly one bit, so
+        /// a builder that drops any single bit of an id is caught — unlike
+        /// two independently-random ids, which already differ in most bytes.
+        fn arb_uuid_and_one_bit_flip() -> impl Strategy<Value = (Uuid, Uuid)> {
+            (any::<u128>(), 0u32..128).prop_map(|(bits, flipped_bit)| {
+                (
+                    Uuid::from_u128(bits),
+                    Uuid::from_u128(bits ^ (1u128 << flipped_bit)),
+                )
+            })
+        }
+
+        proptest! {
+            /// Flipping a single bit of the event id, or of the aggregate
+            /// id, changes `event_aad` — the real attack `event_aad` defeats
+            /// is moving a ciphertext between events of the same aggregate,
+            /// so every bit of both ids must be reflected in the AAD.
+            #[test]
+            fn event_aad_is_injective(
+                shared in arb_uuid(),
+                (x, y) in arb_uuid_and_one_bit_flip(),
+            ) {
+                prop_assert_ne!(event_aad(shared, x), event_aad(shared, y));
+                prop_assert_ne!(event_aad(x, shared), event_aad(y, shared));
+            }
+
+            /// Flipping a single bit of the aggregate id changes
+            /// `snapshot_aad`.
+            #[test]
+            fn snapshot_aad_is_injective((x, y) in arb_uuid_and_one_bit_flip()) {
+                prop_assert_ne!(snapshot_aad(x), snapshot_aad(y));
+            }
+        }
     }
 }
