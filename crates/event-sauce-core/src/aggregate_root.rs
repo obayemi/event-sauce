@@ -119,14 +119,19 @@ pub struct AggregateRoot<A: Aggregate> {
     entity: A,
     version: AggregateVersion,
     pending_events: Vec<PendingEvent<A::Event>>,
-    /// Set to `true` when an [`apply`](Self::apply) call fails.
+    /// Set to `true` when an [`apply`](Self::apply) call fails *after*
+    /// mutating the entity.
     ///
-    /// A failed `apply` (rejected by `validate` or `post_validate`) has already
-    /// mutated the entity via the apply closure, but the version is not bumped
-    /// and the event is not recorded. There is no `Clone` bound to roll the
-    /// entity back, so the aggregate is left in an inconsistent state. Rather
-    /// than let that state be reused or committed silently, the root is
-    /// *poisoned*: further `apply*`/`apply_delete*` calls and the
+    /// A pre-validation refusal (caught by `EventApplicator::validate_only`
+    /// before anything runs) never sets this: the entity is untouched, so the
+    /// aggregate stays exactly as usable as it was. A failure that strikes
+    /// once the apply closure has already run (`post_validate`, or a
+    /// hand-written `EventApplicator` that does not split pre-validation out
+    /// as `validate_only`) does: the entity is mutated, but the version is
+    /// not bumped and the event is not recorded. There is no `Clone` bound to
+    /// roll the entity back, so the aggregate is left in an inconsistent
+    /// state. Rather than let that state be reused or committed silently, the
+    /// root is *poisoned*: further `apply*`/`apply_delete*` calls and the
     /// commit-preparation path refuse it with [`crate::Error::InvalidState`],
     /// forcing the caller to discard and reload the aggregate.
     poisoned: bool,
@@ -241,12 +246,18 @@ impl<A: Aggregate> AggregateRoot<A> {
     ///
     /// # Errors
     ///
-    /// Returns an error if validation (pre or post) fails. A failed `apply`
-    /// **poisons** the aggregate (see [`is_poisoned`](Self::is_poisoned)): the
-    /// apply closure has already mutated the entity, but the version is not
-    /// bumped and the event is not recorded, leaving inconsistent state that
-    /// cannot be rolled back. A poisoned aggregate is refused by the commit
-    /// path with [`crate::Error::InvalidState`]; discard it and reload.
+    /// Returns an error if validation (pre or post) fails. A pre-validation
+    /// **refusal** mutates nothing and leaves the aggregate exactly as it
+    /// was — it is not a poisoning, and the caller may keep using and saving
+    /// it. A failure that strikes once the apply closure has already run
+    /// (`post_validate`, or any error from a hand-written `EventApplicator`
+    /// whose `dispatch` does not split pre-validation out as `validate_only`)
+    /// **poisons** the aggregate instead (see
+    /// [`is_poisoned`](Self::is_poisoned)): the entity was mutated, but the
+    /// version is not bumped and the event is not recorded, leaving
+    /// inconsistent state that cannot be rolled back. A poisoned aggregate is
+    /// refused by the commit path with [`crate::Error::InvalidState`];
+    /// discard it and reload.
     ///
     /// The apply closure must be **pure and deterministic** — it must never
     /// read the clock, an RNG, or any external state. Generate any such value

@@ -370,11 +370,32 @@ fn gen_event_applicator_impl(
         }
     });
 
+    let validate_only_arms = variants.iter().map(|variant| {
+        let variant_name = &variant.ident;
+        if matches!(&variant.fields, Fields::Unnamed(_)) {
+            quote! {
+                #name::#variant_name(e) => {
+                    use #core::ApplyEvent;
+                    e.validate(aggregate)?;
+                },
+            }
+        } else {
+            quote! { #name::#variant_name { .. } => {}, }
+        }
+    });
+
     quote! {
         impl #core::EventApplicator<#aggregate_type> for #name {
             fn dispatch(&self, aggregate: &mut #aggregate_type) -> std::result::Result<(), <#aggregate_type as #core::Aggregate>::Error> {
                 match self {
                     #(#dispatch_arms)*
+                }
+                Ok(())
+            }
+
+            fn validate_only(&self, aggregate: &#aggregate_type) -> std::result::Result<(), <#aggregate_type as #core::Aggregate>::Error> {
+                match self {
+                    #(#validate_only_arms)*
                 }
                 Ok(())
             }

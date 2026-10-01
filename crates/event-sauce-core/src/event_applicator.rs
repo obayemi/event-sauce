@@ -66,8 +66,11 @@ pub trait EventApplicator<A: Aggregate> {
     /// which of the two happened, because both come back as one `A::Error`.
     ///
     /// The default answers `Ok(())`, which is the conservative reading for a
-    /// hand-written impl: every failure then looks like a failed apply and poisons,
-    /// as it did before this existed. `define_events!` overrides it.
+    /// fully hand-written impl: every failure then looks like a failed apply
+    /// and poisons, as it did before this existed. `define_events!` and
+    /// `#[derive(Event)]` both override it, forwarding to each variant's
+    /// `ApplyEvent::validate` — they generate `dispatch` too, so they know
+    /// exactly where the pre-validation step sits in it.
     ///
     /// # Errors
     ///
