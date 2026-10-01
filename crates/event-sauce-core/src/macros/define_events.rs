@@ -978,8 +978,9 @@ macro_rules! define_events {
     };
 
     // =========================================================================
-    // Helper: dispatch arm — called from within pastey::paste! so $evt_type
-    // is already resolved (e.g. CreatedEvent). No inner pastey needed.
+    // Helpers: per-variant EventApplicator arms (validate_only, dispatch,
+    // init, delete) — called from within pastey::paste! so $evt_type is
+    // already resolved (e.g. CreatedEvent). No inner pastey needed.
     //
     // Every dispatch family below matches its one real kind, then falls back
     // to a single catch-all that covers both other kinds: actor-ness never
