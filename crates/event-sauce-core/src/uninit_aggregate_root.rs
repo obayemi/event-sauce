@@ -62,10 +62,7 @@ impl<A: Aggregate> UninitAggregateRoot<A> {
         self,
         event: E,
     ) -> Result<AggregateRoot<A>, A::Error> {
-        event.validate_init()?;
-        let entity = event.init(self.id);
-        event.post_validate_init(&entity)?;
-        Ok(AggregateRoot::from_init(entity, event.into()))
+        self.init_as(event, None)
     }
 
     /// Applies an init event with actor tracking.
@@ -82,14 +79,18 @@ impl<A: Aggregate> UninitAggregateRoot<A> {
         event: E,
         actor_id: EntityId,
     ) -> Result<AggregateRoot<A>, A::Error> {
+        self.init_as(event, Some(actor_id))
+    }
+
+    fn init_as<E: InitEvent<A> + Into<A::Event>>(
+        self,
+        event: E,
+        actor_id: Option<EntityId>,
+    ) -> Result<AggregateRoot<A>, A::Error> {
         event.validate_init()?;
         let entity = event.init(self.id);
         event.post_validate_init(&entity)?;
-        Ok(AggregateRoot::from_init_with_actor(
-            entity,
-            event.into(),
-            actor_id,
-        ))
+        Ok(AggregateRoot::from_init(entity, event.into(), actor_id))
     }
 
     /// Replays an init event without validation. Used by `load()`.

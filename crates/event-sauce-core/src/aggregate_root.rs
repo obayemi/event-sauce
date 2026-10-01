@@ -409,32 +409,17 @@ impl<A: Aggregate> AggregateRoot<A> {
         }
     }
 
-    /// Creates an aggregate root from an init event (includes the pending event).
+    /// Creates an aggregate root from an init event, recorded as its one
+    /// pending event at version 1.
     ///
-    /// Used by `UninitAggregateRoot::apply_init()`.
-    pub(crate) fn from_init(entity: A, event: A::Event) -> Self {
+    /// Used by `UninitAggregateRoot::apply_init()`/`apply_init_with_actor()`.
+    pub(crate) fn from_init(entity: A, event: A::Event, actor_id: Option<EntityId>) -> Self {
         Self {
             entity,
             version: AggregateVersion::new(1),
             pending_events: vec![PendingEvent {
                 event,
-                actor_id: None,
-                metadata: None,
-            }],
-            poisoned: false,
-        }
-    }
-
-    /// Creates an aggregate root from an init event with actor tracking.
-    ///
-    /// Used by `UninitAggregateRoot::apply_init_with_actor()`.
-    pub(crate) fn from_init_with_actor(entity: A, event: A::Event, actor_id: EntityId) -> Self {
-        Self {
-            entity,
-            version: AggregateVersion::new(1),
-            pending_events: vec![PendingEvent {
-                event,
-                actor_id: Some(actor_id),
+                actor_id,
                 metadata: None,
             }],
             poisoned: false,
@@ -456,24 +441,10 @@ impl<A: Aggregate> AggregateRoot<A> {
     ///
     /// Returns an error if validation (pre or post) fails.
     pub fn apply_delete<E: DeleteEvent<A> + Into<A::Event>>(
-        mut self,
+        self,
         event: E,
     ) -> Result<DeletedAggregateRoot<A>, A::Error> {
-        let poisoned = self.poisoned;
-        event.validate_delete(&self.entity)?;
-        let entity_id = self.entity.entity_id();
-        let state = event.delete(self.entity);
-        event.post_validate_delete(&state)?;
-        let version = self.version.next();
-        let mut pending = std::mem::take(&mut self.pending_events);
-        pending.push(PendingEvent {
-            event: event.into(),
-            actor_id: None,
-            metadata: None,
-        });
-        Ok(DeletedAggregateRoot::from_delete_with_pending(
-            state, entity_id, version, pending, poisoned,
-        ))
+        self.delete_as(event, None)
     }
 
     /// Applies a delete event with actor tracking.
@@ -486,9 +457,17 @@ impl<A: Aggregate> AggregateRoot<A> {
     ///
     /// Returns an error if validation (pre or post) fails.
     pub fn apply_delete_with_actor<E: DeleteEvent<A> + Into<A::Event>>(
-        mut self,
+        self,
         event: E,
         actor_id: EntityId,
+    ) -> Result<DeletedAggregateRoot<A>, A::Error> {
+        self.delete_as(event, Some(actor_id))
+    }
+
+    fn delete_as<E: DeleteEvent<A> + Into<A::Event>>(
+        mut self,
+        event: E,
+        actor_id: Option<EntityId>,
     ) -> Result<DeletedAggregateRoot<A>, A::Error> {
         let poisoned = self.poisoned;
         event.validate_delete(&self.entity)?;
@@ -499,7 +478,7 @@ impl<A: Aggregate> AggregateRoot<A> {
         let mut pending = std::mem::take(&mut self.pending_events);
         pending.push(PendingEvent {
             event: event.into(),
-            actor_id: Some(actor_id),
+            actor_id,
             metadata: None,
         });
         Ok(DeletedAggregateRoot::from_delete_with_pending(
