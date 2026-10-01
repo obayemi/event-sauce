@@ -340,48 +340,35 @@ fn gen_event_applicator_impl(
     };
     let aggregate_type = Ident::new(aggregate_type_str, proc_macro2::Span::call_site());
 
-    let dispatch_arms = variants.iter().map(|variant| {
-        let variant_name = &variant.ident;
-        if matches!(&variant.fields, Fields::Unnamed(_)) {
-            quote! {
-                #name::#variant_name(e) => {
-                    use #core::ApplyEvent;
-                    e.validate(aggregate)?;
-                    e.apply(aggregate);
-                    e.post_validate(aggregate)?;
-                },
-            }
-        } else {
-            quote! { #name::#variant_name { .. } => {}, }
-        }
-    });
+    let arms_with_body = |body: proc_macro2::TokenStream| -> Vec<proc_macro2::TokenStream> {
+        variants
+            .iter()
+            .map(|variant| {
+                let variant_name = &variant.ident;
+                if matches!(&variant.fields, Fields::Unnamed(_)) {
+                    quote! {
+                        #name::#variant_name(e) => {
+                            use #core::ApplyEvent;
+                            #body
+                        },
+                    }
+                } else {
+                    quote! { #name::#variant_name { .. } => {}, }
+                }
+            })
+            .collect()
+    };
 
-    let dispatch_unchecked_arms = variants.iter().map(|variant| {
-        let variant_name = &variant.ident;
-        if matches!(&variant.fields, Fields::Unnamed(_)) {
-            quote! {
-                #name::#variant_name(e) => {
-                    use #core::ApplyEvent;
-                    e.apply(aggregate);
-                },
-            }
-        } else {
-            quote! { #name::#variant_name { .. } => {}, }
-        }
+    let dispatch_arms = arms_with_body(quote! {
+        e.validate(aggregate)?;
+        e.apply(aggregate);
+        e.post_validate(aggregate)?;
     });
-
-    let validate_only_arms = variants.iter().map(|variant| {
-        let variant_name = &variant.ident;
-        if matches!(&variant.fields, Fields::Unnamed(_)) {
-            quote! {
-                #name::#variant_name(e) => {
-                    use #core::ApplyEvent;
-                    e.validate(aggregate)?;
-                },
-            }
-        } else {
-            quote! { #name::#variant_name { .. } => {}, }
-        }
+    let dispatch_unchecked_arms = arms_with_body(quote! {
+        e.apply(aggregate);
+    });
+    let validate_only_arms = arms_with_body(quote! {
+        e.validate(aggregate)?;
     });
 
     quote! {
