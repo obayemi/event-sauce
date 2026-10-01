@@ -459,33 +459,6 @@ impl<A: Aggregate> AggregateRoot<A> {
         }
     }
 
-    /// Creates an aggregate root from an init event replay (no pending events).
-    ///
-    /// Used by `UninitAggregateRoot::apply_init_unchecked()`.
-    #[cfg(feature = "event-sourcing")]
-    pub(crate) fn from_init_replay(entity: A) -> Self {
-        Self {
-            entity,
-            version: AggregateVersion::new(1),
-            pending_events: vec![],
-            poisoned: false,
-        }
-    }
-
-    /// Creates an aggregate root for replay using `Entity::new(id)`.
-    ///
-    /// Used by `load()` for legacy aggregates. For init-event aggregates,
-    /// the first event is always an init event, so this path is never reached.
-    #[cfg(feature = "event-sourcing")]
-    pub(crate) fn new_for_replay(id: EntityId) -> Self {
-        Self {
-            entity: A::new(id),
-            version: AggregateVersion::initial(),
-            pending_events: Vec::new(),
-            poisoned: false,
-        }
-    }
-
     /// Returns the aggregate type name.
     #[must_use]
     pub fn aggregate_type() -> crate::AggregateType {

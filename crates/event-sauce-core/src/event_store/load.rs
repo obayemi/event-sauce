@@ -260,7 +260,7 @@ where
         UninitAggregateRoot::<A>::new(id).apply_init_unchecked(&first_event)
     } else {
         // Legacy aggregate: Entity::new(id) + apply first event
-        let mut agg = AggregateRoot::<A>::new_for_replay(id);
+        let mut agg = AggregateRoot::<A>::restore(AggregateVersion::initial(), A::new(id));
         agg.apply_unchecked(&first_event);
         agg
     };
