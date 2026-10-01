@@ -283,7 +283,7 @@ fn test_aggregate_root_replay() {
 }
 
 #[test]
-fn test_aggregate_root_restore() {
+fn test_aggregate_root_restore_wraps_the_entity_at_its_stored_version() {
     let entity = CounterEntity {
         id: EntityId::new(),
         value: 42,
@@ -356,22 +356,6 @@ fn test_aggregate_root_restore_converts_a_row_through_from() {
     let row = CounterSnapshot { id, value: 42 };
 
     let counter = AggregateRoot::<CounterEntity>::restore(version, row).unwrap();
-
-    assert_eq!(counter.value, 42);
-    assert_eq!(counter.version(), AggregateVersion::new(5));
-    assert!(counter.pending_events().is_empty());
-    assert!(!counter.is_poisoned());
-}
-
-#[test]
-fn test_aggregate_root_restore_from_the_entity_itself_is_infallible() {
-    let entity = CounterEntity {
-        id: EntityId::new(),
-        value: 42,
-    };
-    let version = StoredVersion::try_from(AggregateVersion::new(5)).unwrap();
-
-    let Ok(counter) = AggregateRoot::<CounterEntity>::restore(version, entity);
 
     assert_eq!(counter.value, 42);
     assert_eq!(counter.version(), AggregateVersion::new(5));
