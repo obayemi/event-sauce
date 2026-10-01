@@ -561,7 +561,7 @@ impl<A: Aggregate> AggregateRoot<A> {
         let entity_id = self.entity.entity_id();
         let version = self.version.next();
         let state = EventApplicator::dispatch_delete_unchecked(event, self.entity);
-        DeletedAggregateRoot::from_delete_replay(state, entity_id, version)
+        DeletedAggregateRoot::restore(state, entity_id, version)
     }
 }
 
