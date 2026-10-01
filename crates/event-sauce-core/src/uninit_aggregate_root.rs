@@ -142,4 +142,20 @@ mod tests {
         let pending = agg.pending_events_with_actors();
         assert_eq!(pending[0].actor_id, Some(actor_id));
     }
+
+    #[cfg(feature = "event-sourcing")]
+    #[test]
+    fn test_apply_init_unchecked_replays_the_init_event_at_the_first_version() {
+        use crate::test_fixtures::SimpleTestEvent;
+        use crate::AggregateVersion;
+
+        let id = EntityId::new();
+        let agg = UninitAggregateRoot::<SimpleTestEntity>::new(id)
+            .apply_init_unchecked(&SimpleTestEvent::Created { value: 7 });
+
+        assert_eq!(agg.entity_id(), id);
+        assert_eq!(agg.value, 7);
+        assert_eq!(agg.version(), AggregateVersion::new(1));
+        assert!(agg.pending_events().is_empty());
+    }
 }

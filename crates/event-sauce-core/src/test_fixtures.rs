@@ -116,6 +116,12 @@ impl EventApplicator<SimpleTestEntity> for SimpleTestEvent {
         self.apply(entity);
     }
 
+    fn dispatch_init_unchecked(&self, id: EntityId) -> SimpleTestEntity {
+        let mut entity = SimpleTestEntity { id, value: 0 };
+        self.apply(&mut entity);
+        entity
+    }
+
     fn is_delete(&self) -> bool {
         matches!(self, Self::Deleted)
     }
