@@ -152,6 +152,12 @@ hands the store a `StateCommit`. `save_deleted` writes a tombstone row
 lifecycle (`load_any`, `load_deleted`, `modify_deleted`) behaves exactly as
 in the event-sourced mode.
 
+A row whose `version` is below 1, which no saved aggregate can have, fails
+`load` with `Error::InvalidState` naming the aggregate type and id. Unlike an
+event-store snapshot, which is only a cache and is discarded and replayed, the
+row is the source of truth: there is nothing to replay, so it has to be
+repaired in place.
+
 Note that events are in the `save` signature **from day one**, even with no
 projection or outbox registered. They are the hook point — but they live
 only for the duration of the transaction.

@@ -480,7 +480,9 @@ hold:
 
 1. its `aggregate_type` no longer matches the type being loaded;
 2. its `snapshot_schema_version` no longer matches `A::snapshot_version()`;
-3. its data can no longer be deserialized into the current aggregate shape.
+3. its data can no longer be deserialized into the current aggregate shape;
+4. its stored version is one no aggregate can have reached (below 1, i.e.
+   before any event was applied).
 
 Each aggregate declares a snapshot schema version via the
 `Aggregate::snapshot_version()` method (default `0`). Bump it whenever you make
