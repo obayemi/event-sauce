@@ -63,7 +63,7 @@ impl<A: Aggregate> DeletedAggregateRoot<A> {
     ///
     /// A poisoned deleted root holds inconsistent state and is refused by the
     /// commit path with [`crate::Error::InvalidState`].
-    #[cfg(any(feature = "event-sourcing", feature = "state-store"))]
+    #[cfg(any(test, feature = "event-sourcing", feature = "state-store"))]
     pub(crate) fn is_poisoned(&self) -> bool {
         self.poisoned
     }
@@ -81,7 +81,7 @@ impl<A: Aggregate> DeletedAggregateRoot<A> {
     }
 
     /// Returns uncommitted events with actor information (for commit).
-    #[cfg(any(feature = "event-sourcing", feature = "state-store"))]
+    #[cfg(any(test, feature = "event-sourcing", feature = "state-store"))]
     pub(crate) fn pending_events_with_actors(&self) -> &[PendingEvent<A::Event>] {
         &self.pending_events
     }
@@ -97,7 +97,7 @@ impl<A: Aggregate> DeletedAggregateRoot<A> {
     ///
     /// Used by `PolicyContext::commit_deleted()` to inject causation tracking
     /// into pending events before delegating to the event store.
-    #[cfg(feature = "event-sourcing")]
+    #[cfg(any(test, feature = "event-sourcing"))]
     pub(crate) fn set_pending_metadata(&mut self, metadata: &crate::EventMetadata) {
         for pe in &mut self.pending_events {
             if pe.metadata.is_none() {
@@ -148,7 +148,7 @@ impl<A: Aggregate> DeletedAggregateRoot<A> {
     /// Wraps a deleted state a store already rebuilt (no pending events).
     ///
     /// Used by `load_any()` when what came back is in a deleted state.
-    #[cfg(any(feature = "event-sourcing", feature = "state-store"))]
+    #[cfg(any(test, feature = "event-sourcing", feature = "state-store"))]
     pub(crate) fn restore(
         state: A::DeletedState,
         entity_id: EntityId,
@@ -307,7 +307,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(any(feature = "event-sourcing", feature = "state-store"))]
     fn test_deleted_aggregate_root_carries_poison() {
         let entity = SimpleTestEntity {
             id: EntityId::new(),
@@ -324,7 +323,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(any(feature = "event-sourcing", feature = "state-store"))]
     fn test_deleted_aggregate_root_new_is_not_poisoned() {
         let entity = SimpleTestEntity {
             id: EntityId::new(),
@@ -363,7 +361,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(any(feature = "event-sourcing", feature = "state-store"))]
     fn test_deleted_aggregate_root_pending_events_with_actors() {
         let entity = SimpleTestEntity {
             id: EntityId::new(),
@@ -435,7 +432,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(any(feature = "event-sourcing", feature = "state-store"))]
     fn test_deleted_aggregate_root_restore() {
         let id = EntityId::new();
         let entity = SimpleTestEntity { id, value: 77 };
@@ -468,7 +464,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "event-sourcing")]
     fn test_deleted_aggregate_root_set_pending_metadata() {
         let entity = SimpleTestEntity {
             id: EntityId::new(),
@@ -503,7 +498,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "event-sourcing")]
     fn test_deleted_aggregate_root_set_pending_metadata_does_not_overwrite() {
         let entity = SimpleTestEntity {
             id: EntityId::new(),

@@ -242,7 +242,7 @@ impl<A: Aggregate> AggregateRoot<A> {
     }
 
     /// Returns uncommitted events with actor information (for commit).
-    #[cfg(any(feature = "event-sourcing", feature = "state-store"))]
+    #[cfg(any(test, feature = "event-sourcing", feature = "state-store"))]
     pub(crate) fn pending_events_with_actors(&self) -> &[PendingEvent<A::Event>] {
         &self.pending_events
     }
@@ -393,7 +393,7 @@ impl<A: Aggregate> AggregateRoot<A> {
     ///
     /// Used by `PolicyContext::commit()` to inject causation tracking
     /// into pending events before delegating to the event store.
-    #[cfg(feature = "event-sourcing")]
+    #[cfg(any(test, feature = "event-sourcing"))]
     pub(crate) fn set_pending_metadata(&mut self, metadata: &EventMetadata) {
         for pe in &mut self.pending_events {
             if pe.metadata.is_none() {
@@ -944,7 +944,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(any(feature = "event-sourcing", feature = "state-store"))]
     fn test_aggregate_root_apply_with_actor() {
         let mut counter = AggregateRoot::<CounterEntity>::new(EntityId::new());
         let actor_id = EntityId::new();
@@ -969,7 +968,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(any(feature = "event-sourcing", feature = "state-store"))]
     fn test_apply_without_actor_has_none_actor_id() {
         let mut counter = AggregateRoot::<CounterEntity>::new(EntityId::new());
 
@@ -980,7 +978,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(any(feature = "event-sourcing", feature = "state-store"))]
     fn test_mixed_actor_and_non_actor_events() {
         let mut counter = AggregateRoot::<CounterEntity>::new(EntityId::new());
         let actor_id = EntityId::new();
@@ -1007,7 +1004,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(any(feature = "event-sourcing", feature = "state-store"))]
     fn test_aggregate_root_apply_with_metadata() {
         let mut counter = AggregateRoot::<CounterEntity>::new(EntityId::new());
         let metadata = crate::EventMetadata::new()
@@ -1032,7 +1028,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "event-sourcing")]
     fn test_set_pending_metadata() {
         let mut counter = AggregateRoot::<CounterEntity>::new(EntityId::new());
 
@@ -1050,7 +1045,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "event-sourcing")]
     fn test_set_pending_metadata_does_not_overwrite_existing() {
         let mut counter = AggregateRoot::<CounterEntity>::new(EntityId::new());
         let existing_metadata = crate::EventMetadata::new().with_causation_id(uuid::Uuid::new_v4());
@@ -1291,7 +1285,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(any(feature = "event-sourcing", feature = "state-store"))]
     fn test_aggregate_root_apply_delete_with_actor() {
         let mut counter = AggregateRoot::<CounterEntity>::new(EntityId::new());
         counter.increment(10).unwrap();
