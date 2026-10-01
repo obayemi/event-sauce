@@ -90,6 +90,7 @@ impl<A: Aggregate> Loaded<A> {
 mod tests {
     use super::*;
     use crate::test_fixtures::SimpleTestEntity;
+    use crate::StoredVersion;
 
     fn make_active() -> Loaded<SimpleTestEntity> {
         let id = EntityId::new();
@@ -100,7 +101,11 @@ mod tests {
     fn make_deleted() -> Loaded<SimpleTestEntity> {
         let id = EntityId::new();
         let entity = SimpleTestEntity { id, value: 42 };
-        let deleted = DeletedAggregateRoot::restore(entity, id, AggregateVersion::new(5)).unwrap();
+        let deleted = DeletedAggregateRoot::restore(
+            entity,
+            id,
+            StoredVersion::try_from(AggregateVersion::new(5)).unwrap(),
+        );
         Loaded::Deleted(deleted)
     }
 
@@ -159,7 +164,7 @@ mod tests {
     fn test_loaded_entity_id_deleted() {
         let id = EntityId::new();
         let entity = SimpleTestEntity { id, value: 0 };
-        let deleted = DeletedAggregateRoot::restore(entity, id, AggregateVersion::new(1)).unwrap();
+        let deleted = DeletedAggregateRoot::restore(entity, id, StoredVersion::FIRST);
         let loaded = Loaded::<SimpleTestEntity>::Deleted(deleted);
         assert_eq!(loaded.entity_id(), id);
     }

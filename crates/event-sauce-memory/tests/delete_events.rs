@@ -8,8 +8,8 @@
 //! - Repository `save_deleted()`, `load_any()`, `load_deleted()`
 
 use event_sauce_core::{
-    command_handler, define_events, Aggregate, AggregateError, AggregateRoot, AggregateVersion,
-    DomainEvent, Entity, EntityId, EventApplicator, EventStore, Repository, SnapshotConfig,
+    command_handler, define_events, Aggregate, AggregateError, AggregateRoot, DomainEvent, Entity,
+    EntityId, EventApplicator, EventStore, Repository, SnapshotConfig, StoredVersion,
 };
 use event_sauce_memory::InMemoryEventStore;
 use serde::{Deserialize, Serialize};
@@ -198,7 +198,7 @@ fn make_super_admin() -> AggregateRoot<Admin> {
         id: EntityId::new(),
         is_super: true,
     };
-    AggregateRoot::restore(AggregateVersion::new(1), entity).unwrap()
+    AggregateRoot::restore(StoredVersion::FIRST, entity)
 }
 
 // ============================================================================
@@ -302,7 +302,7 @@ async fn test_delete_validation_prevents_double_delete() {
         name: "Archived".to_string(),
         archived: true,
     };
-    let agg = AggregateRoot::restore(AggregateVersion::new(1), entity).unwrap();
+    let agg = AggregateRoot::restore(StoredVersion::FIRST, entity);
     let result = agg.archive_project("again".to_string());
     assert!(result.is_err());
     assert_eq!(result.unwrap_err().to_string(), "Already archived");

@@ -111,6 +111,66 @@ impl From<AggregateVersion> for i64 {
     }
 }
 
+/// An [`AggregateVersion`] a stored aggregate can have.
+///
+/// Every save carries at least one pending event, so a stored aggregate has
+/// applied at least one event — for a deleted one, that event can be its
+/// delete event alone — and its version is at least 1. A lower version read
+/// back from storage means the stored row is corrupt; converting it with
+/// `try_from` refuses it with [`InvalidStoredVersion`].
+///
+/// # Examples
+///
+/// ```
+/// use event_sauce_core::{AggregateVersion, StoredVersion};
+///
+/// let stored = StoredVersion::try_from(AggregateVersion::new(3))?;
+/// assert_eq!(AggregateVersion::from(stored), AggregateVersion::new(3));
+///
+/// assert!(StoredVersion::try_from(AggregateVersion::initial()).is_err());
+/// # Ok::<(), event_sauce_core::InvalidStoredVersion>(())
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct StoredVersion(AggregateVersion);
+
+impl StoredVersion {
+    /// The version of an aggregate that has applied exactly one event.
+    pub const FIRST: Self = Self(AggregateVersion::new(1));
+}
+
+impl TryFrom<AggregateVersion> for StoredVersion {
+    type Error = InvalidStoredVersion;
+
+    fn try_from(version: AggregateVersion) -> Result<Self, Self::Error> {
+        if version < Self::FIRST.0 {
+            return Err(InvalidStoredVersion(version));
+        }
+        Ok(Self(version))
+    }
+}
+
+impl From<StoredVersion> for AggregateVersion {
+    fn from(version: StoredVersion) -> Self {
+        version.0
+    }
+}
+
+/// An [`AggregateVersion`] no stored aggregate can have: it is below
+/// [`StoredVersion::FIRST`].
+///
+/// Converts into [`Error::InvalidState`](crate::Error::InvalidState), so
+/// callers whose functions return [`crate::Result`] can propagate it with
+/// `?`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("{0} cannot be a stored aggregate's version: it has not applied an event yet")]
+pub struct InvalidStoredVersion(pub AggregateVersion);
+
+impl From<InvalidStoredVersion> for crate::Error {
+    fn from(err: InvalidStoredVersion) -> Self {
+        Self::invalid_state(err.to_string())
+    }
+}
+
 /// Version number for event schema versioning.
 ///
 /// Represents which schema version an event type uses,
@@ -185,6 +245,35 @@ impl From<EventVersion> for i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_stored_version_refuses_versions_before_the_first_event() {
+        for version in [AggregateVersion::initial(), AggregateVersion::new(-7)] {
+            assert_eq!(
+                StoredVersion::try_from(version),
+                Err(InvalidStoredVersion(version))
+            );
+        }
+    }
+
+    #[test]
+    fn test_stored_version_keeps_versions_from_the_first_event_on() {
+        for version in [AggregateVersion::new(1), AggregateVersion::new(5)] {
+            let stored = StoredVersion::try_from(version).unwrap();
+            assert_eq!(AggregateVersion::from(stored), version);
+        }
+        assert_eq!(
+            StoredVersion::try_from(AggregateVersion::new(1)),
+            Ok(StoredVersion::FIRST)
+        );
+    }
+
+    #[test]
+    fn test_invalid_stored_version_becomes_invalid_state() {
+        let err = crate::Error::from(InvalidStoredVersion(AggregateVersion::initial()));
+
+        assert!(matches!(&err, crate::Error::InvalidState(message) if message.contains("v0")));
+    }
 
     // === AggregateVersion tests ===
 

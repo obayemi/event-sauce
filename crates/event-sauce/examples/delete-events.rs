@@ -26,8 +26,8 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use event_sauce::memory::InMemoryEventStore;
 use event_sauce::{
-    command_handler, define_events, Aggregate, AggregateError, AggregateRoot, AggregateVersion,
-    DefaultEntity, DomainEvent, Entity, EntityId, EventApplicator, EventStore, Repository,
+    command_handler, define_events, Aggregate, AggregateError, AggregateRoot, DefaultEntity,
+    DomainEvent, Entity, EntityId, EventApplicator, EventStore, Repository, StoredVersion,
 };
 use serde::{Deserialize, Serialize};
 
@@ -296,7 +296,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             plan: sub2.plan.clone(),
             active: sub2.active,
         };
-        AggregateRoot::restore(sub2.version(), entity)?
+        AggregateRoot::restore(StoredVersion::try_from(sub2.version())?, entity)
     };
 
     let regular_admin = {
@@ -304,7 +304,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             id: EntityId::new(),
             role: "support".to_string(),
         };
-        AggregateRoot::restore(AggregateVersion::new(1), entity)?
+        AggregateRoot::restore(StoredVersion::FIRST, entity)
     };
 
     println!("  Support agent tries to force-revoke...");
@@ -319,7 +319,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             id: EntityId::new(),
             role: "billing_admin".to_string(),
         };
-        AggregateRoot::restore(AggregateVersion::new(1), entity)?
+        AggregateRoot::restore(StoredVersion::FIRST, entity)
     };
 
     println!("  Billing admin force-revokes...");

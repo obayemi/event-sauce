@@ -4,33 +4,10 @@
 //! for any type implementing `Aggregate`. Access entity fields via `Deref`
 //! (read-only); state changes must go through `apply()`.
 
-use thiserror::Error;
-
 use crate::{
     Aggregate, AggregateVersion, DefaultEntity, DeleteEvent, DeletedAggregateRoot, EntityId,
-    EventApplicator, EventMetadata,
+    EventApplicator, EventMetadata, StoredVersion,
 };
-
-/// Error restoring an [`AggregateRoot`] from data a store already rebuilt.
-///
-/// Returned by [`AggregateRoot::restore`]. `From<RestoreError> for
-/// crate::Error` maps it to [`Error::InvalidState`](crate::Error::InvalidState),
-/// so callers whose functions return [`crate::Result`] can propagate it with
-/// `?`.
-#[derive(Debug, Error)]
-pub enum RestoreError {
-    /// `version` cannot be a stored aggregate's version: it predates the
-    /// first version applying an event can produce, so no aggregate that
-    /// has gone through at least its init event can have reached it.
-    #[error("{0} cannot be a stored aggregate's version: it has not applied an event yet")]
-    InvalidVersion(AggregateVersion),
-}
-
-impl From<RestoreError> for crate::Error {
-    fn from(err: RestoreError) -> Self {
-        crate::Error::invalid_state(err.to_string())
-    }
-}
 
 /// A pending event with optional actor and metadata information.
 ///
@@ -423,22 +400,17 @@ impl<A: Aggregate> AggregateRoot<A> {
     /// blob, an event-store snapshot plus its tail. The root owes nothing — its
     /// pending list starts empty — so a load-then-save writes nothing.
     ///
-    /// # Errors
-    ///
-    /// Returns [`RestoreError::InvalidVersion`] if `version` predates the
-    /// first version an applied event can produce — no aggregate that has
-    /// gone through at least its init event can have a lower version, so a
-    /// stored one reporting it is corrupt.
-    pub fn restore(version: AggregateVersion, entity: A) -> Result<Self, RestoreError> {
-        if version < AggregateVersion::initial().next() {
-            return Err(RestoreError::InvalidVersion(version));
-        }
-        Ok(Self {
+    /// The version read back from storage becomes a [`StoredVersion`] through
+    /// `StoredVersion::try_from`, which refuses one no stored aggregate can
+    /// have: that check happens once, where the version enters from storage.
+    #[must_use]
+    pub fn restore(version: StoredVersion, entity: A) -> Self {
+        Self {
             entity,
-            version,
+            version: version.into(),
             pending_events: vec![],
             poisoned: false,
-        })
+        }
     }
 
     /// Starts replaying a legacy (non-init-event) aggregate from a freshly

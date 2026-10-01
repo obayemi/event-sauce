@@ -97,8 +97,7 @@ impl<A: Aggregate> UninitAggregateRoot<A> {
     #[cfg(feature = "event-sourcing")]
     pub(crate) fn apply_init_unchecked(self, event: &A::Event) -> AggregateRoot<A> {
         let entity = EventApplicator::dispatch_init_unchecked(event, self.id);
-        AggregateRoot::restore(crate::AggregateVersion::new(1), entity)
-            .expect("a freshly dispatched init event always yields version 1")
+        AggregateRoot::restore(crate::StoredVersion::FIRST, entity)
     }
 }
 

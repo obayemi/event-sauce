@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use crate::{
     aggregate_root::envelopes_from_pending, state_store::StateCommit, Aggregate, AggregateRoot,
     AggregateVersion, DeletedAggregateRoot, DomainEvent, EntityId, Error, Loaded, Repository,
-    Result, StateStore, StoredState, StreamId,
+    Result, StateStore, StoredState, StoredVersion, StreamId,
 };
 
 /// State-store-backed [`Repository`] implementation.
@@ -144,20 +144,18 @@ where
                 Error::not_found(A::aggregate_type().to_string(), id.as_uuid().to_string())
             })?;
         Self::check_schema_version(&state)?;
+        let version = StoredVersion::try_from(state.version)?;
 
         if state.is_deleted {
             let deleted_state: A::DeletedState = serde_json::from_value(state.state_data)?;
             Ok(Loaded::Deleted(DeletedAggregateRoot::restore(
                 deleted_state,
                 EntityId::from(state.aggregate_id),
-                state.version,
-            )?))
+                version,
+            )))
         } else {
             let entity: A = serde_json::from_value(state.state_data)?;
-            Ok(Loaded::Active(AggregateRoot::restore(
-                state.version,
-                entity,
-            )?))
+            Ok(Loaded::Active(AggregateRoot::restore(version, entity)))
         }
     }
 

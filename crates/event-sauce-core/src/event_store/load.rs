@@ -9,7 +9,7 @@ use super::encryption::{decrypt_event_data, resolve_crypto_key};
 use super::{EventStore, Snapshot};
 use crate::{
     Aggregate, AggregateRoot, AggregateVersion, DeletedAggregateRoot, DomainEvent, EntityId,
-    EventEnvelope, Loaded, Result, StreamId,
+    EventEnvelope, Loaded, Result, StoredVersion, StreamId,
 };
 
 /// Decrypts (if needed) and deserializes one event envelope.
@@ -65,8 +65,8 @@ where
 /// Returns `Ok(Some(loaded))` when the snapshot is a usable cache entry, and
 /// `Ok(None)` when it is a CACHE MISS — i.e. the snapshot's type tag or schema
 /// version no longer matches `A`, its data can no longer be deserialized into
-/// `A` / `A::DeletedState`, or its stored `AggregateVersion` is one
-/// [`AggregateRoot::restore`] refuses. On a miss the caller falls through to
+/// `A` / `A::DeletedState`, or its stored `AggregateVersion` is not a
+/// [`StoredVersion`]. On a miss the caller falls through to
 /// full event replay (snapshot is a cache, never the source of truth) and a
 /// fresh snapshot is written at the current version on the next commit.
 ///
@@ -116,8 +116,16 @@ where
         return Ok(None);
     }
 
-    let snapshot_version = snapshot.snapshot_version;
     let aggregate_id = snapshot.aggregate_id;
+    let Ok(snapshot_version) = StoredVersion::try_from(snapshot.snapshot_version) else {
+        tracing::warn!(
+            aggregate_type = %A::aggregate_type(),
+            aggregate_id = %aggregate_id,
+            snapshot_version = %snapshot.snapshot_version,
+            "Snapshot has an invalid version; discarding stale snapshot and replaying events"
+        );
+        return Ok(None);
+    };
 
     // Deleted snapshot: deserialize as DeletedState and return immediately.
     if snapshot.is_deleted {
@@ -132,19 +140,11 @@ where
             );
             return Ok(None);
         };
-        let entity_id = EntityId::from(aggregate_id);
-        // (iv) Invalid version on the deleted state: cache miss, replay.
-        let Ok(deleted) = DeletedAggregateRoot::restore(deleted_state, entity_id, snapshot_version)
-        else {
-            tracing::warn!(
-                aggregate_type = %A::aggregate_type(),
-                aggregate_id = %aggregate_id,
-                "Deleted snapshot has an invalid version; \
-                 discarding stale snapshot and replaying events"
-            );
-            return Ok(None);
-        };
-        return Ok(Some(Loaded::Deleted(deleted)));
+        return Ok(Some(Loaded::Deleted(DeletedAggregateRoot::restore(
+            deleted_state,
+            EntityId::from(aggregate_id),
+            snapshot_version,
+        ))));
     }
 
     // (iii) Active snapshot: a deserialization failure is a cache miss, NOT a
@@ -159,18 +159,11 @@ where
         return Ok(None);
     };
 
-    // (iv) Invalid version: cache miss, replay.
-    let Ok(aggregate) = AggregateRoot::restore(snapshot_version, entity) else {
-        tracing::warn!(
-            aggregate_type = %A::aggregate_type(),
-            aggregate_id = %aggregate_id,
-            "Snapshot has an invalid version; \
-             discarding stale snapshot and replaying events"
-        );
-        return Ok(None);
-    };
+    let aggregate = AggregateRoot::restore(snapshot_version, entity);
 
-    let event_stream = store.load_stream(stream_id, snapshot_version).await?;
+    let event_stream = store
+        .load_stream(stream_id, snapshot_version.into())
+        .await?;
     futures::pin_mut!(event_stream);
 
     replay_onto(store, event_stream, crypto_key, aggregate)

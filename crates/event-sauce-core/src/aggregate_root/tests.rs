@@ -289,59 +289,14 @@ fn test_aggregate_root_restore() {
         value: 42,
     };
 
-    let counter = AggregateRoot::<CounterEntity>::restore(AggregateVersion::new(5), entity)
-        .expect("a valid version and the entity itself always restore");
+    let version = StoredVersion::try_from(AggregateVersion::new(5)).unwrap();
+
+    let counter = AggregateRoot::restore(version, entity);
 
     assert_eq!(counter.value, 42);
     assert_eq!(counter.version(), AggregateVersion::new(5));
     assert!(counter.pending_events().is_empty());
     assert!(!counter.is_poisoned());
-}
-
-#[test]
-fn test_aggregate_root_restore_rejects_version_zero() {
-    let entity = CounterEntity {
-        id: EntityId::new(),
-        value: 0,
-    };
-
-    let err =
-        AggregateRoot::<CounterEntity>::restore(AggregateVersion::initial(), entity).unwrap_err();
-
-    assert!(matches!(
-        err,
-        RestoreError::InvalidVersion(v) if v == AggregateVersion::initial()
-    ));
-}
-
-#[test]
-fn test_aggregate_root_restore_rejects_negative_version() {
-    let entity = CounterEntity {
-        id: EntityId::new(),
-        value: 0,
-    };
-
-    let err =
-        AggregateRoot::<CounterEntity>::restore(AggregateVersion::new(-7), entity).unwrap_err();
-
-    assert!(matches!(
-        err,
-        RestoreError::InvalidVersion(v) if v == AggregateVersion::new(-7)
-    ));
-}
-
-#[test]
-fn test_invalid_restore_version_becomes_invalid_state() {
-    let entity = CounterEntity {
-        id: EntityId::new(),
-        value: 0,
-    };
-    let restore_error =
-        AggregateRoot::<CounterEntity>::restore(AggregateVersion::initial(), entity).unwrap_err();
-
-    let err = crate::Error::from(restore_error);
-
-    assert!(matches!(&err, crate::Error::InvalidState(message) if message.contains("v0")));
 }
 
 #[test]

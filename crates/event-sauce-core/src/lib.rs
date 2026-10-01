@@ -120,7 +120,7 @@ pub use actor_event::{ActorDeleteEvent, ActorEvent, ActorInitEvent};
 pub use aggregate::Aggregate;
 pub use aggregate_error::AggregateError;
 pub use aggregate_id::{AggregateId, EntityIdFor};
-pub use aggregate_root::{AggregateRoot, RestoreError};
+pub use aggregate_root::AggregateRoot;
 pub use aggregate_type::AggregateType;
 pub use apply_event::ApplyEvent;
 #[cfg(feature = "event-sourcing")]
@@ -170,4 +170,4 @@ pub use state_store::{StateCommit, StateStore, StoredState};
 pub use types::{CheckpointStoreRef, CryptoKeyStoreRef, CryptoProviderRef};
 pub use types::{Position, StreamId};
 pub use uninit_aggregate_root::UninitAggregateRoot;
-pub use version::{AggregateVersion, EventVersion};
+pub use version::{AggregateVersion, EventVersion, InvalidStoredVersion, StoredVersion};
