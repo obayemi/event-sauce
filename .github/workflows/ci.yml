@@ -209,6 +209,8 @@ jobs:
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
 
       - name: Cache dependencies
         uses: Swatinem/rust-cache@v2
@@ -217,6 +219,12 @@ jobs:
         run: |
           cargo check -p event-sauce-core --no-default-features \
             ${{ matrix.features && format('--features {0}', matrix.features) || '' }}
+
+      - name: Clippy event-sauce-core tests with features "${{ matrix.features }}"
+        run: |
+          cargo clippy -p event-sauce-core --no-default-features --all-targets \
+            ${{ matrix.features && format('--features {0}', matrix.features) || '' }} \
+            -- -D warnings
 
   feature-matrix-memory-facade:
     name: Memory/Facade Feature Combinations
