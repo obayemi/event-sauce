@@ -650,6 +650,13 @@ mod tests {
     }
 
     impl ApplyEvent<CounterEntity> for IncrementedEvent {
+        fn validate(&self, _entity: &CounterEntity) -> Result<(), TestError> {
+            if self.amount < 0 {
+                return Err(TestError);
+            }
+            Ok(())
+        }
+
         fn apply(&self, entity: &mut CounterEntity) {
             entity.value += self.amount;
         }
@@ -694,6 +701,14 @@ mod tests {
                 }
             }
             Ok(())
+        }
+
+        fn validate_only(&self, entity: &CounterEntity) -> Result<(), TestError> {
+            match self {
+                CounterEvent::Incremented(e) => e.validate(entity),
+                CounterEvent::Reset(e) => e.validate(entity),
+                CounterEvent::Capped(e) => e.validate(entity),
+            }
         }
 
         fn dispatch_unchecked(&self, entity: &mut CounterEntity) {
@@ -1138,6 +1153,45 @@ mod tests {
             CappedEvent {
                 amount: 25,
                 max_value: 20,
+                timestamp: Utc::now(),
+            },
+            crate::EventMetadata::new(),
+        );
+
+        assert!(result.is_err());
+        assert!(counter.is_poisoned());
+    }
+
+    /// A pre-validation refusal through `apply_with_actor` leaves the
+    /// aggregate untouched and unpoisoned.
+    #[test]
+    fn test_refused_apply_with_actor_does_not_poison() {
+        let mut counter = AggregateRoot::<CounterEntity>::new(EntityId::new());
+
+        let result = counter.apply_with_actor(
+            IncrementedEvent {
+                amount: -5,
+                timestamp: Utc::now(),
+            },
+            EntityId::new(),
+        );
+
+        assert!(result.is_err());
+        assert!(!counter.is_poisoned());
+        assert_eq!(counter.value, 0);
+        assert_eq!(counter.version(), AggregateVersion::initial());
+        assert_eq!(counter.pending_events().len(), 0);
+    }
+
+    /// `apply_with_metadata` skips `validate_only`, so even a
+    /// pre-validation refusal poisons the aggregate.
+    #[test]
+    fn test_apply_with_metadata_poisons_on_pre_validation_refusal() {
+        let mut counter = AggregateRoot::<CounterEntity>::new(EntityId::new());
+
+        let result = counter.apply_with_metadata(
+            IncrementedEvent {
+                amount: -5,
                 timestamp: Utc::now(),
             },
             crate::EventMetadata::new(),
