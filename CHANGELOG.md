@@ -143,9 +143,14 @@ explicitly rather than gated behind a major version bump.
 
 ### Added
 
-- `PolicyRunner::with_worker_id`/`with_lease_duration` — configure the
-  identity and lease duration `process_pending` uses to acquire each
-  policy's lease (sensible defaults: a generated per-instance id, 30s).
+- `EventStore::fetch_batch` — fetches up to `limit` events after a
+  position and drops the underlying stream before returning, for
+  consumers (like `PolicyRunner`) that need a bounded, already-materialized
+  batch rather than an open-ended stream.
+- `PolicyRunner::with_worker_id`/`with_lease_duration`/`with_batch_size` —
+  configure the identity, lease duration, and fetch batch size
+  `process_pending` uses (sensible defaults: a generated per-instance id,
+  30s, 500 events).
 - `PostgresBackend::run_sticky_projection` — a leased projection runner that
   holds its lease across idle ticks (renewing and re-draining in a loop)
   instead of releasing and reacquiring it on every call, removing the
@@ -158,6 +163,16 @@ explicitly rather than gated behind a major version bump.
 
 ### Fixed
 
+- `PolicyRunner::process_pending` now drains events in bounded
+  `EventStore::fetch_batch` calls (configurable via
+  `PolicyRunner::with_batch_size`, default 500) instead of holding one
+  open-ended `stream_all` stream for the whole round — a connection or
+  MVCC snapshot the store holds for a fetch no longer outlives the
+  handlers that run between fetches, so a slow handler no longer pins a
+  pooled connection or the vacuum horizon for the length of a whole catch-up
+  run. `PostgresEventStore` overrides the new `EventStore::fetch_batch`
+  (default: `stream_all` bounded by `limit`) with its existing
+  `fetch_events_batch`.
 - `PolicyRunner::process_pending` now takes a per-policy lease through the
   configured `CheckpointStore` (`try_acquire_lease`/`renew_lease`, mirroring
   the `PostgreSQL` projection runners) instead of running unleased: two

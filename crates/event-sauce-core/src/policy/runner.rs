@@ -13,6 +13,10 @@ use crate::{CheckpointStoreRef, EventEnvelope, EventStore, Position, Result};
 /// pending events (see [`PolicyRunner::with_lease_duration`]).
 const DEFAULT_LEASE_DURATION: Duration = Duration::from_secs(30);
 
+/// Default number of events [`PolicyRunner`] fetches per
+/// [`EventStore::fetch_batch`] call (see [`PolicyRunner::with_batch_size`]).
+const DEFAULT_BATCH_SIZE: usize = 500;
+
 /// Generates a process- and run-unique worker id for a [`PolicyRunner`] that
 /// was not given one explicitly via [`PolicyRunner::with_worker_id`].
 fn default_worker_id() -> String {
@@ -86,6 +90,7 @@ pub struct PolicyRunner<S: EventStore> {
     on_error: OnError,
     worker_id: String,
     lease_duration: Duration,
+    batch_size: usize,
     /// Serializes `process_pending` calls on this runner instance.
     ///
     /// A per-policy lease alone does not stop two concurrent calls on the
@@ -116,6 +121,7 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
             on_error: OnError::Fail,
             worker_id: default_worker_id(),
             lease_duration: DEFAULT_LEASE_DURATION,
+            batch_size: DEFAULT_BATCH_SIZE,
             run_lock: tokio::sync::Mutex::new(()),
         }
     }
@@ -157,6 +163,21 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
     #[must_use]
     pub fn with_lease_duration(mut self, lease_duration: Duration) -> Self {
         self.lease_duration = lease_duration;
+        self
+    }
+
+    /// Sets how many events [`process_pending`](Self::process_pending) fetches
+    /// per [`EventStore::fetch_batch`] call (default: 500).
+    ///
+    /// Each batch is fully handled before the next is fetched, so no
+    /// connection or snapshot the underlying store holds for a fetch stays
+    /// open while handlers run — only the current batch's worth of events
+    /// is ever in flight. A larger batch means fewer round-trips to the
+    /// store at the cost of more events to replay if this run is
+    /// interrupted mid-batch.
+    #[must_use]
+    pub fn with_batch_size(mut self, batch_size: usize) -> Self {
+        self.batch_size = batch_size.max(1);
         self
     }
 
@@ -345,8 +366,6 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
     /// Drives the round/cascade loop over `held`'s policies, assuming every
     /// one of them has an active lease held by this worker.
     async fn drain_held_policies(&self, held: &mut [HeldPolicy<S>]) -> Result<usize> {
-        use futures::StreamExt;
-
         let mut from_position = held
             .iter()
             .map(|h| h.checkpoint)
@@ -358,83 +377,88 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
 
         // Process events in rounds to handle cascading
         loop {
-            let event_stream = self.store.stream_all(from_position).await?;
-            futures::pin_mut!(event_stream);
-
             let mut round_processed = 0;
-            let mut last_position = from_position;
+            let mut position = from_position;
 
-            while let Some(entry_result) = event_stream.next().await {
-                let entry = entry_result?;
-                let envelope = entry.envelope;
+            // Fetch bounded batches rather than holding one open-ended
+            // stream_all stream for the whole round: no connection or
+            // snapshot the store holds open for a fetch outlives the
+            // handlers that run between fetches.
+            loop {
+                let batch = self.store.fetch_batch(position, self.batch_size).await?;
+                if batch.is_empty() {
+                    break;
+                }
 
-                // Track position for next round
-                last_position = entry.position;
+                for entry in batch {
+                    let envelope = entry.envelope;
+                    position = entry.position;
 
-                // Route to matching held policies, respecting per-policy checkpoints
-                for i in 0..held.len() {
-                    // Skip if this policy has already processed past this position
-                    if last_position.as_i64() <= held[i].checkpoint.as_i64() {
-                        continue;
-                    }
-
-                    if held[i].policy.event_filter().matches(&envelope) {
-                        if renewal.due() {
-                            self.renew_leases(held, &mut renewal).await?;
+                    // Route to matching held policies, respecting per-policy checkpoints
+                    for i in 0..held.len() {
+                        // Skip if this policy has already processed past this position
+                        if position.as_i64() <= held[i].checkpoint.as_i64() {
+                            continue;
                         }
-                        match self.handle_and_flush(&held[i].policy, &envelope).await {
-                            Ok(()) => {
-                                round_processed += 1;
+
+                        if held[i].policy.event_filter().matches(&envelope) {
+                            if renewal.due() {
+                                self.renew_leases(held, &mut renewal).await?;
                             }
-                            Err(e) => match &self.on_error {
-                                OnError::Fail => {
-                                    // Persist every held policy's checkpoint up to the
-                                    // last event it fully handled *before* failing.
-                                    // This policy's checkpoint is intentionally NOT
-                                    // advanced past the failing event (the loop-end
-                                    // advance below is skipped by the early return),
-                                    // so a re-run resumes at the failing event and
-                                    // never replays the already-flushed effects of
-                                    // events 1..N-1.
-                                    self.save_checkpoints(held).await?;
-                                    return Err(e);
+                            match self.handle_and_flush(&held[i].policy, &envelope).await {
+                                Ok(()) => {
+                                    round_processed += 1;
                                 }
-                                OnError::Skip => {
-                                    tracing::warn!(
-                                        policy = held[i].policy.name(),
-                                        event_id = %envelope.id,
-                                        error = %e,
-                                        "Skipping event due to policy error"
-                                    );
-                                }
-                                OnError::Retry(config) => {
-                                    let should_skip = match self
-                                        .retry_handler(&held[i].policy, &envelope, config)
-                                        .await
-                                    {
-                                        Ok(skip) => skip,
-                                        Err(e) => {
-                                            // Retries exhausted under
-                                            // OnRetryExhausted::Fail. This is the
-                                            // OnError::Fail path: persist progress up
-                                            // to the last fully-handled event (this
-                                            // failing event is NOT advanced) before
-                                            // failing, so a re-run resumes here and
-                                            // does not replay already-flushed effects.
-                                            self.save_checkpoints(held).await?;
-                                            return Err(e);
-                                        }
-                                    };
-                                    if !should_skip {
-                                        round_processed += 1;
+                                Err(e) => match &self.on_error {
+                                    OnError::Fail => {
+                                        // Persist every held policy's checkpoint up to the
+                                        // last event it fully handled *before* failing.
+                                        // This policy's checkpoint is intentionally NOT
+                                        // advanced past the failing event (the loop-end
+                                        // advance below is skipped by the early return),
+                                        // so a re-run resumes at the failing event and
+                                        // never replays the already-flushed effects of
+                                        // events 1..N-1.
+                                        self.save_checkpoints(held).await?;
+                                        return Err(e);
                                     }
-                                }
-                            },
+                                    OnError::Skip => {
+                                        tracing::warn!(
+                                            policy = held[i].policy.name(),
+                                            event_id = %envelope.id,
+                                            error = %e,
+                                            "Skipping event due to policy error"
+                                        );
+                                    }
+                                    OnError::Retry(config) => {
+                                        let should_skip = match self
+                                            .retry_handler(&held[i].policy, &envelope, config)
+                                            .await
+                                        {
+                                            Ok(skip) => skip,
+                                            Err(e) => {
+                                                // Retries exhausted under
+                                                // OnRetryExhausted::Fail. This is the
+                                                // OnError::Fail path: persist progress up
+                                                // to the last fully-handled event (this
+                                                // failing event is NOT advanced) before
+                                                // failing, so a re-run resumes here and
+                                                // does not replay already-flushed effects.
+                                                self.save_checkpoints(held).await?;
+                                                return Err(e);
+                                            }
+                                        };
+                                        if !should_skip {
+                                            round_processed += 1;
+                                        }
+                                    }
+                                },
+                            }
                         }
-                    }
 
-                    // Advance this policy's checkpoint
-                    held[i].checkpoint = last_position;
+                        // Advance this policy's checkpoint
+                        held[i].checkpoint = position;
+                    }
                 }
             }
 
@@ -446,7 +470,7 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
             }
 
             // Move position forward for next round (to pick up cascaded events)
-            from_position = last_position;
+            from_position = position;
         }
 
         // Save checkpoints for every held policy
@@ -611,6 +635,7 @@ impl<S: EventStore + 'static> std::fmt::Debug for PolicyRunner<S> {
             .field("max_cascade_depth", &self.max_cascade_depth)
             .field("worker_id", &self.worker_id)
             .field("lease_duration", &self.lease_duration)
+            .field("batch_size", &self.batch_size)
             .finish_non_exhaustive()
     }
 }
@@ -694,6 +719,33 @@ mod tests {
             PolicyRunner::new(store, cp).with_lease_duration(std::time::Duration::from_secs(5));
 
         assert_eq!(runner.lease_duration, std::time::Duration::from_secs(5));
+    }
+
+    #[test]
+    fn test_policy_runner_default_batch_size() {
+        let store = Arc::new(MockEventStore::new());
+        let cp = test_checkpoint_store();
+        let runner = PolicyRunner::new(store, cp);
+
+        assert_eq!(runner.batch_size, DEFAULT_BATCH_SIZE);
+    }
+
+    #[test]
+    fn test_policy_runner_with_batch_size_builder() {
+        let store = Arc::new(MockEventStore::new());
+        let cp = test_checkpoint_store();
+        let runner = PolicyRunner::new(store, cp).with_batch_size(7);
+
+        assert_eq!(runner.batch_size, 7);
+    }
+
+    #[test]
+    fn test_policy_runner_with_batch_size_floors_at_one() {
+        let store = Arc::new(MockEventStore::new());
+        let cp = test_checkpoint_store();
+        let runner = PolicyRunner::new(store, cp).with_batch_size(0);
+
+        assert_eq!(runner.batch_size, 1);
     }
 
     struct CountingPolicy {
@@ -1082,6 +1134,125 @@ mod tests {
         assert_eq!(outcome_a.unwrap(), 1);
         assert_eq!(outcome_b.unwrap(), 0);
         assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_process_pending_spans_multiple_batches() {
+        let store = Arc::new(MockEventStore::new());
+        let cp = test_checkpoint_store();
+        cp.save_checkpoint("test", Position::start()).await.unwrap();
+        for _ in 0..5 {
+            store.add_event(test_envelope("TestEvent", "TestAggregate"));
+        }
+
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let policy = Arc::new(CountingPolicyNoWait {
+            name: "test".to_string(),
+            count: Arc::clone(&count),
+        });
+        let runner = PolicyRunner::new(store, cp)
+            .register(policy)
+            .with_batch_size(2);
+
+        let processed = runner.process_pending().await.unwrap();
+
+        assert_eq!(
+            processed, 5,
+            "every event must still be processed across several small batches"
+        );
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 5);
+    }
+
+    /// Wraps [`MockEventStore`], recording each `fetch_batch` call's
+    /// `(from_position, limit)` arguments, to pin that `PolicyRunner` drives
+    /// its round through bounded [`EventStore::fetch_batch`] calls rather
+    /// than one unbounded `stream_all` held open for the whole round.
+    struct BatchRecordingStore {
+        inner: MockEventStore,
+        calls: std::sync::Mutex<Vec<(Position, usize)>>,
+    }
+
+    impl BatchRecordingStore {
+        fn new(inner: MockEventStore) -> Self {
+            Self {
+                inner,
+                calls: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl EventStore for BatchRecordingStore {
+        async fn append(
+            &self,
+            stream_id: crate::StreamId,
+            events: Vec<EventEnvelope>,
+            expected_version: crate::AggregateVersion,
+            claims: Vec<crate::AggregateClaim>,
+            clear_claims: bool,
+        ) -> Result<()> {
+            self.inner
+                .append(stream_id, events, expected_version, claims, clear_claims)
+                .await
+        }
+
+        async fn load_stream(
+            &self,
+            stream_id: crate::StreamId,
+            from_version: crate::AggregateVersion,
+        ) -> Result<impl futures::Stream<Item = Result<EventEnvelope>> + Send> {
+            self.inner.load_stream(stream_id, from_version).await
+        }
+
+        async fn stream_all(
+            &self,
+            from_position: Position,
+        ) -> Result<impl futures::Stream<Item = Result<crate::EventLogEntry>> + Send> {
+            self.inner.stream_all(from_position).await
+        }
+
+        async fn fetch_batch(
+            &self,
+            from_position: Position,
+            limit: usize,
+        ) -> Result<Vec<crate::EventLogEntry>> {
+            self.calls.lock().unwrap().push((from_position, limit));
+            self.inner.fetch_batch(from_position, limit).await
+        }
+
+        async fn get_version(&self, stream_id: crate::StreamId) -> Result<crate::AggregateVersion> {
+            self.inner.get_version(stream_id).await
+        }
+    }
+
+    #[tokio::test]
+    async fn test_process_pending_fetches_bounded_batches_not_one_open_stream() {
+        let inner = MockEventStore::new();
+        for _ in 0..5 {
+            inner.add_event(test_envelope("TestEvent", "TestAggregate"));
+        }
+        let store = Arc::new(BatchRecordingStore::new(inner));
+        let cp = test_checkpoint_store();
+        cp.save_checkpoint("test", Position::start()).await.unwrap();
+
+        let policy = Arc::new(CountingPolicyNoWait {
+            name: "test".to_string(),
+            count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        });
+        let runner = PolicyRunner::new(Arc::clone(&store), cp)
+            .register(policy)
+            .with_batch_size(2);
+        runner.process_pending().await.unwrap();
+
+        let calls = store.calls.lock().unwrap();
+        assert!(
+            calls.len() >= 3,
+            "5 events at batch_size 2 must take at least 3 bounded fetch_batch calls, got {calls:?}"
+        );
+        assert!(
+            calls.iter().all(|(_, limit)| *limit == 2),
+            "every call must respect the configured batch size, got {calls:?}"
+        );
     }
 
     #[test]

@@ -136,6 +136,7 @@ let runner = PolicyRunner::new(store, checkpoint_store)
     .with_max_cascade_depth(5)  // Default: 10
     .with_worker_id("my-service-1")  // Default: generated, unique per instance
     .with_lease_duration(Duration::from_secs(30))  // Default: 30s
+    .with_batch_size(500)  // Default: 500
     .register(Arc::new(KickUserPolicy))
     .register(Arc::new(NotifyOnRemovalPolicy));
 

@@ -163,6 +163,47 @@ pub trait EventStore: Send + Sync {
         from_position: Position,
     ) -> Result<impl Stream<Item = Result<EventLogEntry>> + Send>;
 
+    /// Fetches up to `limit` events strictly after `from_position`, in
+    /// ascending position order, then drops the underlying stream before
+    /// returning.
+    ///
+    /// Unlike [`stream_all`](Self::stream_all), which a caller can hold open
+    /// for an arbitrarily long time while it processes each event, this
+    /// returns a bounded, already-materialized batch — no connection or
+    /// snapshot stays checked out past this call, so a slow consumer (one
+    /// that calls out to handlers between batches) never holds back the
+    /// backend's vacuum horizon or starves its connection pool.
+    ///
+    /// The default implementation takes `limit` items from
+    /// [`stream_all`](Self::stream_all) and collects them; backends that can
+    /// answer with a single bounded query (e.g. `SELECT ... LIMIT`) should
+    /// override it to avoid opening a stream at all.
+    ///
+    /// Returns an empty `Vec` once the log is exhausted at `from_position`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying store fails.
+    async fn fetch_batch(
+        &self,
+        from_position: Position,
+        limit: usize,
+    ) -> Result<Vec<EventLogEntry>> {
+        use futures::StreamExt;
+
+        let stream = self.stream_all(from_position).await?;
+        futures::pin_mut!(stream);
+
+        let mut batch = Vec::with_capacity(limit.min(1024));
+        while batch.len() < limit {
+            match stream.next().await {
+                Some(entry) => batch.push(entry?),
+                None => break,
+            }
+        }
+        Ok(batch)
+    }
+
     /// Returns the highest position currently in the global event log, or
     /// [`Position::start`] if the log is empty.
     ///
@@ -517,5 +558,47 @@ mod tests {
         repo.save(&mut aggregate).await.unwrap();
         let loaded = repo.load(test_id).await.unwrap();
         assert_eq!(loaded.value, 42);
+    }
+
+    #[tokio::test]
+    async fn test_fetch_batch_default_bounds_to_limit() {
+        use crate::test_fixtures::{create_test_envelope, MockEventStore};
+
+        let store = MockEventStore::new();
+        for _ in 0..5 {
+            store.add_event(create_test_envelope("Thing.Happened", "Thing"));
+        }
+
+        let batch = store.fetch_batch(Position::start(), 2).await.unwrap();
+
+        assert_eq!(batch.len(), 2);
+        assert_eq!(batch[0].position, Position::new(1));
+        assert_eq!(batch[1].position, Position::new(2));
+    }
+
+    #[tokio::test]
+    async fn test_fetch_batch_default_resumes_from_position() {
+        use crate::test_fixtures::{create_test_envelope, MockEventStore};
+
+        let store = MockEventStore::new();
+        for _ in 0..5 {
+            store.add_event(create_test_envelope("Thing.Happened", "Thing"));
+        }
+
+        let batch = store.fetch_batch(Position::new(2), 10).await.unwrap();
+
+        assert_eq!(batch.len(), 3);
+        assert_eq!(batch[0].position, Position::new(3));
+    }
+
+    #[tokio::test]
+    async fn test_fetch_batch_default_returns_empty_past_the_end() {
+        use crate::test_fixtures::MockEventStore;
+
+        let store = MockEventStore::new();
+
+        let batch = store.fetch_batch(Position::start(), 10).await.unwrap();
+
+        assert!(batch.is_empty());
     }
 }

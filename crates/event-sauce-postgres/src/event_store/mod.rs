@@ -496,6 +496,15 @@ impl EventStore for PostgresEventStore {
         }))
     }
 
+    async fn fetch_batch(
+        &self,
+        from_position: Position,
+        limit: usize,
+    ) -> Result<Vec<event_sauce_core::EventLogEntry>> {
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        self.fetch_events_batch(from_position, limit).await
+    }
+
     async fn max_position(&self) -> Result<Position> {
         let events_table = self.qualify_table("events");
         let query = format!("SELECT COALESCE(MAX(id), 0) FROM {events_table}");
@@ -2407,6 +2416,105 @@ mod tests {
             first_count, 0,
             "no events for the first aggregate may survive a failed multi-aggregate reaction"
         );
+    }
+
+    /// Policy whose handler itself needs a pool connection (to commit a
+    /// fresh `Acct` aggregate keyed off the triggering event's id, so
+    /// concurrent reactions never conflict with each other).
+    struct CreditOnTriggerPolicy;
+
+    #[async_trait]
+    impl<S: EventStore + 'static> Policy<S> for CreditOnTriggerPolicy {
+        fn name(&self) -> &'static str {
+            "CreditOnTriggerPolicy"
+        }
+        fn event_filter(&self) -> EventFilter {
+            EventFilter::by_event_type("Trigger.Fired")
+        }
+        async fn handle(
+            &self,
+            event: &EventEnvelope,
+            ctx: &PolicyContext<S>,
+        ) -> event_sauce_core::Result<()> {
+            let mut acct = AggregateRoot::<Acct>::new(EntityId::from(event.id));
+            acct.apply(AcctEvent::Credited { amount: 1 }).unwrap();
+            ctx.commit(&mut acct).await?;
+            Ok(())
+        }
+    }
+
+    /// CONC-3/XN-9 regression: `process_pending` must not hold a pooled
+    /// connection (or an open `stream_all` cursor) while a handler runs its
+    /// own, separate pool-borrowing work. Before the fix, `process_pending`
+    /// kept `stream_all`'s stream pinned for the whole round while each
+    /// matched handler's `ctx.flush()` separately called `pool.begin()` —
+    /// which deadlocks a pool that can only ever check out ONE connection:
+    /// the open stream holds it, and the handler's own append then waits
+    /// forever for a connection the stream never releases.
+    #[tokio::test]
+    async fn test_process_pending_does_not_hold_a_connection_while_handlers_run() {
+        let (_container, url) = crate::test_support::start_postgres_url().await;
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(std::time::Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("connect");
+
+        let cp = std::sync::Arc::new(
+            crate::PostgresCheckpointStore::builder()
+                .pool(pool.clone())
+                .schema("single_conn_policy")
+                .build()
+                .expect("pool was set"),
+        );
+        cp.migrate().await.unwrap();
+
+        let store = std::sync::Arc::new(
+            PostgresEventStore::builder()
+                .pool(pool)
+                .schema("single_conn_policy")
+                .checkpoint_store(cp.clone())
+                .build()
+                .expect("pool was set"),
+        );
+        store.migrate().await.unwrap();
+
+        cp.save_checkpoint("CreditOnTriggerPolicy", Position::start())
+            .await
+            .unwrap();
+
+        for _ in 0..3 {
+            store
+                .append(
+                    StreamId::new("Trigger", Uuid::new_v4()),
+                    vec![create_test_envelope_with_type(
+                        "Trigger.Fired",
+                        "Trigger",
+                        Uuid::new_v4(),
+                    )],
+                    AggregateVersion::initial(),
+                    vec![],
+                    false,
+                )
+                .await
+                .unwrap();
+        }
+
+        let runner = PolicyRunner::new(std::sync::Arc::clone(&store), cp)
+            .with_batch_size(1)
+            .register(std::sync::Arc::new(CreditOnTriggerPolicy));
+
+        let processed =
+            tokio::time::timeout(std::time::Duration::from_secs(10), runner.process_pending())
+                .await
+                .expect(
+                    "process_pending must not deadlock on a single-connection pool: \
+             a fetch's connection must be released before a handler runs",
+                )
+                .unwrap();
+
+        assert_eq!(processed, 3);
     }
 
     /// RED (compile-gap + atomicity proof): the new `append_batch` primitive
