@@ -536,85 +536,6 @@ impl StateStore for MockStateStore {
     }
 }
 
-/// A simple counter entity for testing and doc examples.
-#[cfg(feature = "event-sourcing")]
-#[derive(Debug, Serialize, Deserialize)]
-pub struct TestCounter {
-    /// The entity's ID.
-    pub id: EntityId,
-    /// The counter value.
-    pub value: i32,
-}
-
-#[cfg(feature = "event-sourcing")]
-impl crate::Entity for TestCounter {
-    fn new(id: EntityId) -> Self {
-        Self { id, value: 0 }
-    }
-    fn entity_id(&self) -> EntityId {
-        self.id
-    }
-}
-
-#[cfg(feature = "event-sourcing")]
-impl crate::DefaultEntity for TestCounter {}
-
-/// Events for the test counter.
-#[cfg(feature = "event-sourcing")]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum TestCounterEvent {
-    /// Value was incremented.
-    Incremented {
-        /// Amount to increment by.
-        amount: i32,
-    },
-}
-
-#[cfg(feature = "event-sourcing")]
-impl crate::DomainEvent for TestCounterEvent {
-    type Aggregate = TestCounter;
-    fn event_type(&self) -> &'static str {
-        "TestCounter.Incremented"
-    }
-    fn event_version(&self) -> EventVersion {
-        EventVersion::new(1)
-    }
-    fn occurred_at(&self) -> chrono::DateTime<Utc> {
-        Utc::now()
-    }
-}
-
-#[cfg(feature = "event-sourcing")]
-impl EventApplicator<TestCounter> for TestCounterEvent {
-    fn dispatch(&self, counter: &mut TestCounter) -> std::result::Result<(), TestCounterError> {
-        match self {
-            TestCounterEvent::Incremented { amount } => counter.value += amount,
-        }
-        Ok(())
-    }
-    fn dispatch_unchecked(&self, counter: &mut TestCounter) {
-        match self {
-            TestCounterEvent::Incremented { amount } => counter.value += amount,
-        }
-    }
-}
-
-/// Error type for the test counter.
-#[cfg(feature = "event-sourcing")]
-#[derive(Debug, thiserror::Error)]
-#[error("Test counter error")]
-pub struct TestCounterError;
-
-#[cfg(feature = "event-sourcing")]
-impl AggregateError for TestCounterError {}
-
-#[cfg(feature = "event-sourcing")]
-impl crate::Aggregate for TestCounter {
-    type Event = TestCounterEvent;
-    type Error = TestCounterError;
-    type DeletedState = Self;
-}
-
 /// Deterministic [`crate::CryptoProvider`] that binds ciphertext to its AAD by
 /// prefixing it, so a wrong AAD on decrypt is detected instead of silently
 /// accepted (unlike a bare XOR mock).
@@ -666,10 +587,7 @@ impl crate::CryptoProvider for AadCheckingCryptoProvider {
 #[cfg(all(test, feature = "event-sourcing"))]
 mod tests {
     use super::*;
-    use crate::{
-        AggregateRoot, CheckpointStore, DefaultEntity, DomainEvent, Entity, EventApplicator,
-        EventStore, Position, StreamId,
-    };
+    use crate::{CheckpointStore, Entity, EventApplicator, EventStore, Position, StreamId};
     use futures::StreamExt;
 
     // --- MockEventStore Default ---
@@ -842,71 +760,7 @@ mod tests {
         assert_eq!(err.to_string(), "test error");
     }
 
-    // --- TestCounter ---
-
-    #[test]
-    fn test_counter_entity_new() {
-        let id = EntityId::new();
-        let counter = TestCounter::new(id);
-        assert_eq!(counter.entity_id(), id);
-        assert_eq!(counter.value, 0);
-    }
-
-    #[test]
-    fn test_counter_default_entity() {
-        // Verify TestCounter implements DefaultEntity (compile-time check exercised at runtime)
-        fn assert_default_entity<T: DefaultEntity>() {}
-        assert_default_entity::<TestCounter>();
-    }
-
-    // --- TestCounterEvent ---
-
-    #[test]
-    fn test_counter_event_type() {
-        let event = TestCounterEvent::Incremented { amount: 1 };
-        assert_eq!(event.event_type(), "TestCounter.Incremented");
-    }
-
-    #[test]
-    fn test_counter_event_version() {
-        let event = TestCounterEvent::Incremented { amount: 1 };
-        assert_eq!(event.event_version(), EventVersion::new(1));
-    }
-
-    #[test]
-    fn test_counter_event_occurred_at() {
-        let before = Utc::now();
-        let event = TestCounterEvent::Incremented { amount: 1 };
-        let at = event.occurred_at();
-        let after = Utc::now();
-        assert!(at >= before && at <= after);
-    }
-
-    #[test]
-    fn test_counter_event_dispatch() {
-        let mut counter = TestCounter::new(EntityId::new());
-        let event = TestCounterEvent::Incremented { amount: 7 };
-        EventApplicator::dispatch(&event, &mut counter).unwrap();
-        assert_eq!(counter.value, 7);
-    }
-
-    #[test]
-    fn test_counter_event_dispatch_unchecked() {
-        let mut counter = TestCounter::new(EntityId::new());
-        let event = TestCounterEvent::Incremented { amount: 3 };
-        EventApplicator::dispatch_unchecked(&event, &mut counter);
-        assert_eq!(counter.value, 3);
-    }
-
-    // --- TestCounterError ---
-
-    #[test]
-    fn test_counter_error_display() {
-        let err = TestCounterError;
-        assert_eq!(err.to_string(), "Test counter error");
-    }
-
-    // --- TestCounter as Aggregate ---
+    // --- MockCheckpointStore::renew_lease ---
 
     #[tokio::test]
     async fn test_mock_checkpoint_store_renew_reports_lease_lost() {
@@ -916,14 +770,5 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.is_lease_lost());
-    }
-
-    #[test]
-    fn test_counter_aggregate_apply() {
-        let id = EntityId::new();
-        let mut agg = AggregateRoot::<TestCounter>::new(id);
-        agg.apply(TestCounterEvent::Incremented { amount: 5 })
-            .unwrap();
-        assert_eq!(agg.entity().value, 5);
     }
 }
