@@ -198,7 +198,7 @@ fn make_super_admin() -> AggregateRoot<Admin> {
         id: EntityId::new(),
         is_super: true,
     };
-    let Ok(root) = AggregateRoot::<Admin>::restore(StoredVersion::FIRST, entity);
+    let Ok(root) = AggregateRoot::restore(StoredVersion::FIRST, entity);
     root
 }
 
