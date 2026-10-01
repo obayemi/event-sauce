@@ -194,58 +194,30 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_fixtures::{SimpleTestEntity, SimpleTestEvent};
-    use crate::StoredVersion;
+    use crate::test_fixtures::{deleted_simple_entity, SimpleTestEntity, SimpleTestEvent};
 
     #[test]
     fn test_deleted_aggregate_root_deref() {
-        let entity = SimpleTestEntity {
-            id: EntityId::new(),
-            value: 42,
-        };
-        let Ok(deleted) = DeletedAggregateRoot::<SimpleTestEntity>::restore(
-            entity,
-            EntityId::new(),
-            StoredVersion::try_from(AggregateVersion::new(5)).unwrap(),
-        );
-        // Deref gives read-only access to the deleted state
+        let deleted = deleted_simple_entity(EntityId::new(), 42, 5);
         assert_eq!(deleted.value, 42);
     }
 
     #[test]
     fn test_deleted_aggregate_root_entity_id() {
         let id = EntityId::new();
-        let entity = SimpleTestEntity { id, value: 0 };
-        let Ok(deleted) =
-            DeletedAggregateRoot::<SimpleTestEntity>::restore(entity, id, StoredVersion::FIRST);
+        let deleted = deleted_simple_entity(id, 0, 1);
         assert_eq!(deleted.entity_id(), id);
     }
 
     #[test]
     fn test_deleted_aggregate_root_version() {
-        let entity = SimpleTestEntity {
-            id: EntityId::new(),
-            value: 0,
-        };
-        let Ok(deleted) = DeletedAggregateRoot::<SimpleTestEntity>::restore(
-            entity,
-            EntityId::new(),
-            StoredVersion::try_from(AggregateVersion::new(10)).unwrap(),
-        );
+        let deleted = deleted_simple_entity(EntityId::new(), 0, 10);
         assert_eq!(deleted.version(), AggregateVersion::new(10));
     }
 
     #[test]
     fn test_deleted_aggregate_root_state() {
-        let entity = SimpleTestEntity {
-            id: EntityId::new(),
-            value: 99,
-        };
-        let Ok(deleted) = DeletedAggregateRoot::<SimpleTestEntity>::restore(
-            entity,
-            EntityId::new(),
-            StoredVersion::FIRST,
-        );
+        let deleted = deleted_simple_entity(EntityId::new(), 99, 1);
         assert_eq!(deleted.state().value, 99);
     }
 
@@ -339,16 +311,7 @@ mod tests {
 
     #[test]
     fn test_deleted_aggregate_root_serialize() {
-        let entity = SimpleTestEntity {
-            id: EntityId::new(),
-            value: 42,
-        };
-        let id = entity.id;
-        let Ok(deleted) = DeletedAggregateRoot::<SimpleTestEntity>::restore(
-            entity,
-            id,
-            StoredVersion::try_from(AggregateVersion::new(5)).unwrap(),
-        );
+        let deleted = deleted_simple_entity(EntityId::new(), 42, 5);
         let json = serde_json::to_value(&deleted).unwrap();
         assert!(json.get("state").is_some());
         assert!(json.get("entity_id").is_some());
@@ -359,16 +322,7 @@ mod tests {
 
     #[test]
     fn test_deleted_aggregate_root_clone() {
-        let entity = SimpleTestEntity {
-            id: EntityId::new(),
-            value: 42,
-        };
-        let id = entity.id;
-        let Ok(deleted) = DeletedAggregateRoot::<SimpleTestEntity>::restore(
-            entity,
-            id,
-            StoredVersion::try_from(AggregateVersion::new(5)).unwrap(),
-        );
+        let deleted = deleted_simple_entity(EntityId::new(), 42, 5);
         let cloned = deleted.clone();
         assert_eq!(cloned.entity_id(), deleted.entity_id());
         assert_eq!(cloned.version(), deleted.version());
@@ -378,12 +332,7 @@ mod tests {
     #[test]
     fn test_deleted_aggregate_root_restore() {
         let id = EntityId::new();
-        let entity = SimpleTestEntity { id, value: 77 };
-        let Ok(deleted) = DeletedAggregateRoot::<SimpleTestEntity>::restore(
-            entity,
-            id,
-            StoredVersion::try_from(AggregateVersion::new(10)).unwrap(),
-        );
+        let deleted = deleted_simple_entity(id, 77, 10);
         assert_eq!(deleted.entity_id(), id);
         assert_eq!(deleted.version(), AggregateVersion::new(10));
         assert_eq!(deleted.state().value, 77);
@@ -393,15 +342,7 @@ mod tests {
 
     #[test]
     fn test_deleted_aggregate_root_debug() {
-        let entity = SimpleTestEntity {
-            id: EntityId::new(),
-            value: 0,
-        };
-        let Ok(deleted) = DeletedAggregateRoot::<SimpleTestEntity>::restore(
-            entity,
-            EntityId::new(),
-            StoredVersion::FIRST,
-        );
+        let deleted = deleted_simple_entity(EntityId::new(), 0, 1);
         let debug = format!("{deleted:?}");
         assert!(debug.contains("DeletedAggregateRoot"));
     }
