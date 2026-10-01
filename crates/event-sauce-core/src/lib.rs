@@ -150,7 +150,8 @@ pub use loaded::Loaded;
 pub use modify_error::ModifyError;
 #[cfg(feature = "event-sourcing")]
 pub use policy::{
-    OnError, OnRetryExhausted, Policy, PolicyContext, PolicyRunner, RetryConfig, RetryLimit,
+    OnError, OnRetryExhausted, Policy, PolicyContext, PolicyRunOutcome, PolicyRunner, RetryConfig,
+    RetryLimit,
 };
 #[cfg(feature = "event-sourcing")]
 pub use repository::EventSourcedRepository;

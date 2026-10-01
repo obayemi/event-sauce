@@ -51,7 +51,7 @@ mod test_support;
 
 pub use context::PolicyContext;
 pub use on_error::{OnError, OnRetryExhausted, RetryConfig, RetryLimit};
-pub use runner::PolicyRunner;
+pub use runner::{PolicyRunOutcome, PolicyRunner};
 
 use crate::{EventEnvelope, EventFilter, EventStore, Result};
 

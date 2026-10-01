@@ -2512,7 +2512,8 @@ mod tests {
                     "process_pending must not deadlock on a single-connection pool: \
              a fetch's connection must be released before a handler runs",
                 )
-                .unwrap();
+                .unwrap()
+                .processed();
 
         assert_eq!(processed, 3);
     }

@@ -143,7 +143,8 @@ let runner = PolicyRunner::new(store, checkpoint_store)
     .register(Arc::new(NotifyOnRemovalPolicy));
 
 // One-shot: process all pending events (useful for testing)
-let processed = runner.process_pending().await?;
+let outcome = runner.process_pending().await?;
+let processed = outcome.processed(); // 0 also when outcome.is_busy()
 
 // Single event: route to matching policies
 let handled = runner.process_event(&envelope).await?;
@@ -170,6 +171,10 @@ call acquires the lease of every policy it can, processes only those, renews
 leases as it goes, and releases them before returning. A policy whose lease
 is already held by another worker is simply left out of that call — its
 events are picked up next time by whichever worker holds it, not duplicated.
+If *every* registered policy's lease is held elsewhere, the call returns
+`PolicyRunOutcome::Busy` rather than an empty `Completed(0)`, so a caller
+or a metrics dashboard can tell a standby sitting out a held lease apart
+from a node that is simply idle.
 
 A per-policy lease does **not** stop two concurrent `process_pending()`
 calls on the *same* `PolicyRunner` instance (same worker id) from both

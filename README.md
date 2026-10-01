@@ -306,7 +306,7 @@ let runner = PolicyRunner::new(store, checkpoint_store)
     .with_max_cascade_depth(5)  // prevent infinite loops
     .on_error(OnError::Retry(RetryConfig::default()))  // retry transient failures
     .register(Arc::new(KickUserPolicy));
-let processed = runner.process_pending().await?;
+let processed = runner.process_pending().await?.processed();
 ```
 
 Cascading reactions are supported — a policy's output events can trigger further policies, with configurable depth limits. Checkpoint-based resumption prevents duplicate processing on restart.

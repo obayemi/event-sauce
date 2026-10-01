@@ -49,6 +49,37 @@ enum Handled {
     Skipped,
 }
 
+/// Outcome of one [`PolicyRunner::process_pending`] call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PolicyRunOutcome {
+    /// This call held the lease for at least one registered policy (even if
+    /// zero events ultimately matched any of them).
+    Completed(usize),
+    /// Every registered policy's lease is currently held by another worker:
+    /// this call processed nothing and held no lease. Distinguishes a
+    /// standby node sitting out a lease it does not hold from one that is
+    /// simply idle because nothing is pending.
+    Busy,
+}
+
+impl PolicyRunOutcome {
+    /// The number of events processed, or `0` for [`PolicyRunOutcome::Busy`].
+    #[must_use]
+    pub fn processed(&self) -> usize {
+        match self {
+            Self::Completed(n) => *n,
+            Self::Busy => 0,
+        }
+    }
+
+    /// Whether every registered policy's lease was held by another worker
+    /// for the whole call.
+    #[must_use]
+    pub fn is_busy(&self) -> bool {
+        matches!(self, Self::Busy)
+    }
+}
+
 /// Tracks when a held set of policy leases is next due for renewal.
 ///
 /// Mirrors the `PostgreSQL` projection runner and policy dispatcher's own
@@ -410,10 +441,15 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
     /// 4. Handles cascading reactions until no new events are produced
     /// 5. Saves updated checkpoints and releases every lease acquired
     ///
-    /// Returns the total number of events processed by policies this call
-    /// held the lease for. A policy whose lease is held by another worker
-    /// is skipped entirely for this call (its events are left for whichever
-    /// worker holds it).
+    /// Returns [`PolicyRunOutcome::Completed`] with the total number of
+    /// events processed by policies this call held the lease for — even
+    /// when that number is `0` because nothing was pending. A policy whose
+    /// lease is held by another worker is skipped entirely for this call
+    /// (its events are left for whichever worker holds it); if *every*
+    /// registered policy's lease is held elsewhere, this call held no lease
+    /// at all and returns [`PolicyRunOutcome::Busy`] instead, so a caller
+    /// can tell a busy standby apart from one that is idle because nothing
+    /// is pending.
     ///
     /// A flush conflict is treated exactly like a handler error: both go
     /// through the same [`OnError`] policy, so `Retry` retries the flush and
@@ -452,21 +488,21 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
     /// Returns an error if event loading, policy handling, or committing fails
     /// (depending on the [`OnError`] configuration), or if a held policy's
     /// lease is lost mid-run.
-    pub async fn process_pending(&self) -> Result<usize> {
+    pub async fn process_pending(&self) -> Result<PolicyRunOutcome> {
         let _run_guard = self.run_lock.lock().await;
 
         if self.policies.is_empty() {
-            return Ok(0);
+            return Ok(PolicyRunOutcome::Completed(0));
         }
 
         let mut held = self.acquire_policy_leases().await?;
         if held.is_empty() {
-            return Ok(0);
+            return Ok(PolicyRunOutcome::Busy);
         }
 
         let result = self.drain_held_policies(&mut held).await;
         self.release_leases(&held).await;
-        result
+        result.map(PolicyRunOutcome::Completed)
     }
 
     /// Fetches, routes and checkpoints `held`'s policies until the event log
@@ -959,7 +995,7 @@ mod tests {
         let runner: PolicyRunner<MockEventStore> = PolicyRunner::new(store, cp);
 
         let processed = runner.process_pending().await.unwrap();
-        assert_eq!(processed, 0);
+        assert_eq!(processed, PolicyRunOutcome::Completed(0));
     }
 
     #[tokio::test]
@@ -985,7 +1021,7 @@ mod tests {
         let processed = runner.process_pending().await.unwrap();
 
         // 2 matching events out of 3 total
-        assert_eq!(processed, 2);
+        assert_eq!(processed, PolicyRunOutcome::Completed(2));
         assert_eq!(*count.lock().unwrap(), 2);
     }
 
@@ -1008,13 +1044,21 @@ mod tests {
             .register(policy);
         let processed = runner.process_pending().await.unwrap();
 
-        assert_eq!(processed, 0, "a new policy must skip existing history");
+        assert_eq!(
+            processed,
+            PolicyRunOutcome::Completed(0),
+            "a new policy must skip existing history"
+        );
         assert_eq!(*count.lock().unwrap(), 0);
         assert_eq!(cp.get("fresh"), Some(Position::new(2)));
 
         store.add_event(test_envelope("TestEvent", "TestAggregate"));
         let processed = runner.process_pending().await.unwrap();
-        assert_eq!(processed, 1, "a subsequent event is processed normally");
+        assert_eq!(
+            processed,
+            PolicyRunOutcome::Completed(1),
+            "a subsequent event is processed normally"
+        );
     }
 
     #[tokio::test]
@@ -1151,8 +1195,8 @@ mod tests {
             .with_worker_id("worker-mine");
         let processed = runner.process_pending().await.unwrap();
 
-        assert_eq!(
-            processed, 0,
+        assert!(
+            processed.is_busy(),
             "a policy whose lease is held elsewhere must be skipped, not processed"
         );
         assert_eq!(*count.lock().unwrap(), 0);
@@ -1236,13 +1280,12 @@ mod tests {
         };
         let (processed_a, processed_b) = futures::join!(run_a, run_b);
 
-        assert_eq!(
-            processed_b.unwrap(),
-            0,
+        assert!(
+            processed_b.unwrap().is_busy(),
             "worker B must see the lease as busy while worker A holds it"
         );
         assert_eq!(count2.load(std::sync::atomic::Ordering::SeqCst), 0);
-        assert_eq!(processed_a.unwrap(), 1);
+        assert_eq!(processed_a.unwrap(), PolicyRunOutcome::Completed(1));
         assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
@@ -1327,8 +1370,8 @@ mod tests {
         };
         let (outcome_a, outcome_b) = futures::join!(call_a, run_b);
 
-        assert_eq!(outcome_a.unwrap(), 1);
-        assert_eq!(outcome_b.unwrap(), 0);
+        assert_eq!(outcome_a.unwrap(), PolicyRunOutcome::Completed(1));
+        assert_eq!(outcome_b.unwrap(), PolicyRunOutcome::Completed(0));
         assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
@@ -1399,7 +1442,8 @@ mod tests {
         let processed = runner.process_pending().await.unwrap();
 
         assert_eq!(
-            processed, 5,
+            processed,
+            PolicyRunOutcome::Completed(5),
             "every event must still be processed across several small batches"
         );
         assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 5);
@@ -1786,7 +1830,7 @@ mod tests {
         .await
         .expect("worker-a must not hang");
 
-        assert_eq!(outcome.unwrap(), 10);
+        assert_eq!(outcome.unwrap(), PolicyRunOutcome::Completed(10));
         assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 10);
     }
 
@@ -1847,14 +1891,13 @@ mod tests {
         .await
         .expect("both workers must not hang");
 
-        assert_eq!(
-            outcome_b.unwrap(),
-            0,
+        assert!(
+            outcome_b.unwrap().is_busy(),
             "p3's lease must still be renewed (and so held by worker-a) at \
              320ms, while worker-a is still inside p3's handler"
         );
         assert_eq!(count_b.load(std::sync::atomic::Ordering::SeqCst), 0);
-        assert_eq!(outcome_a.unwrap(), 3);
+        assert_eq!(outcome_a.unwrap(), PolicyRunOutcome::Completed(3));
     }
 
     /// Losing a held lease partway through a batch must stop that worker
@@ -2017,11 +2060,11 @@ mod tests {
             0,
             "worker-b must never run the handler while worker-a's retry still holds the lease"
         );
-        assert_eq!(
-            outcome_b, 0,
+        assert!(
+            outcome_b.is_busy(),
             "worker-b must see the still-renewed lease as busy, not free"
         );
-        assert_eq!(outcome_a, 1);
+        assert_eq!(outcome_a, PolicyRunOutcome::Completed(1));
         assert_eq!(ok_a.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
@@ -2089,8 +2132,8 @@ mod tests {
             .with_lease_duration(Duration::from_millis(300));
         let outcome_b = runner_b.process_pending().await.unwrap();
 
-        assert_eq!(
-            outcome_b, 0,
+        assert!(
+            outcome_b.is_busy(),
             "a single retry backoff sleep longer than the lease must still \
              keep it renewed in chunks"
         );

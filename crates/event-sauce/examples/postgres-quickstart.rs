@@ -651,7 +651,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .policy_runner()?
         .register(Arc::new(OrderCompletedPolicy));
 
-    let processed = runner.process_pending().await?;
+    let processed = runner.process_pending().await?.processed();
     println!("  Processed {processed} event-policy matches");
 
     // ========================================================================

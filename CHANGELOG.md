@@ -10,6 +10,17 @@ explicitly rather than gated behind a major version bump.
 
 ### Breaking Changes
 
+- **`PolicyRunner::process_pending` returns `PolicyRunOutcome`, not
+  `usize`.** It previously reported `Ok(0)` both when nothing was pending
+  and when every registered policy's lease was held by another worker,
+  which looked identical to a caller or a scheduler — a standby node was
+  indistinguishable from an idle one. `PolicyRunOutcome::Completed(usize)`
+  carries the old count; `PolicyRunOutcome::Busy` is returned exactly when
+  policies are registered but none of their leases could be acquired.
+  Replace `let n = runner.process_pending().await?;` with
+  `let n = runner.process_pending().await?.processed();` to keep the old
+  count-only behavior, or match on the outcome to tell a busy standby apart
+  from an idle one.
 - **`AggregateRoot::restore` replaces `from_snapshot`.** Every `Repository`
   answers a load with `AggregateRoot::restore(version, entity)` now, whatever
   the backing store — event-sourced snapshot-plus-tail, a state-stored row,

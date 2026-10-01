@@ -284,7 +284,7 @@ async fn test_basic_policy_cross_aggregate_reaction() {
     // Run the policy
     let runner = PolicyRunner::new(Arc::clone(&store), cp).register(Arc::new(KickUserPolicy));
 
-    let processed = runner.process_pending().await.unwrap();
+    let processed = runner.process_pending().await.unwrap().processed();
     assert!(processed > 0);
 
     // Verify the group no longer has the member
@@ -575,9 +575,48 @@ async fn test_process_pending_one_shot() {
     let runner =
         PolicyRunner::new(Arc::clone(&store), cp).register(Arc::new(OneShot(Arc::clone(&count))));
 
-    let processed = runner.process_pending().await.unwrap();
+    let processed = runner.process_pending().await.unwrap().processed();
     assert_eq!(processed, 5);
     assert_eq!(*count.lock().unwrap(), 5);
+}
+
+/// `PolicyRunOutcome` must be nameable from outside `event-sauce-core` — it
+/// is the public return type of `process_pending`, and the CHANGELOG's
+/// migration note tells callers to match on it directly rather than only
+/// through `.processed()`/`.is_busy()`.
+#[tokio::test]
+async fn test_policy_run_outcome_is_part_of_the_public_api() {
+    let store = create_store();
+    let cp = checkpoint_store(&store);
+    seed_checkpoint(&cp, "OutcomeNamed").await;
+
+    let mut user = AggregateRoot::<User>::new(EntityId::new());
+    user.register("Namer".to_string()).unwrap();
+    store.commit(&mut user).await.unwrap();
+
+    struct NoOp;
+
+    #[async_trait::async_trait]
+    impl<S: EventStore + 'static> event_sauce_core::Policy<S> for NoOp {
+        fn name(&self) -> &'static str {
+            "OutcomeNamed"
+        }
+        fn event_filter(&self) -> EventFilter {
+            EventFilter::by_event_type("User.Registered")
+        }
+        async fn handle(
+            &self,
+            _event: &EventEnvelope,
+            _ctx: &PolicyContext<S>,
+        ) -> event_sauce_core::Result<()> {
+            Ok(())
+        }
+    }
+
+    let runner = PolicyRunner::new(Arc::clone(&store), cp).register(Arc::new(NoOp));
+
+    let outcome = runner.process_pending().await.unwrap();
+    assert_eq!(outcome, event_sauce_core::PolicyRunOutcome::Completed(1));
 }
 
 #[tokio::test]
@@ -602,7 +641,7 @@ async fn test_no_matching_events() {
 
     let runner = PolicyRunner::new(Arc::clone(&store), cp).register(Arc::new(GroupOnlyPolicy));
 
-    let processed = runner.process_pending().await.unwrap();
+    let processed = runner.process_pending().await.unwrap().processed();
     assert_eq!(processed, 0);
 }
 
@@ -820,14 +859,14 @@ async fn test_policy_runner_resumes_from_checkpoint() {
     // First run
     let runner =
         PolicyRunner::new(Arc::clone(&store), Arc::clone(&cp)).register(Arc::clone(&policy));
-    let processed = runner.process_pending().await.unwrap();
+    let processed = runner.process_pending().await.unwrap().processed();
     assert!(processed > 0);
 
     let count_after_first = *count.lock().unwrap();
 
     // Second run — should process 0 events (checkpoint skips old ones)
     let runner2 = PolicyRunner::new(Arc::clone(&store), Arc::clone(&cp)).register(policy);
-    let processed2 = runner2.process_pending().await.unwrap();
+    let processed2 = runner2.process_pending().await.unwrap().processed();
     assert_eq!(processed2, 0, "Second run should process no events");
     assert_eq!(
         *count.lock().unwrap(),
@@ -859,7 +898,7 @@ async fn test_policy_runner_no_duplicate_cascades_on_restart() {
     // First run — produces cascade events
     let runner =
         PolicyRunner::new(Arc::clone(&store), Arc::clone(&cp)).register(Arc::new(KickUserPolicy));
-    let processed1 = runner.process_pending().await.unwrap();
+    let processed1 = runner.process_pending().await.unwrap().processed();
     assert!(processed1 > 0);
 
     // Count MemberRemoved events
@@ -885,7 +924,7 @@ async fn test_policy_runner_no_duplicate_cascades_on_restart() {
     // Second run — should NOT produce duplicate cascade events
     let runner2 =
         PolicyRunner::new(Arc::clone(&store), Arc::clone(&cp)).register(Arc::new(KickUserPolicy));
-    let processed2 = runner2.process_pending().await.unwrap();
+    let processed2 = runner2.process_pending().await.unwrap().processed();
     assert_eq!(processed2, 0, "Second run should process no events");
 
     let count_after = count_member_removed(&store).await;
@@ -933,7 +972,7 @@ async fn test_new_policy_skips_existing_events() {
     let runner = PolicyRunner::new(Arc::clone(&store), Arc::clone(&cp))
         .register(Arc::new(NewPolicy(Arc::clone(&count))));
 
-    let processed = runner.process_pending().await.unwrap();
+    let processed = runner.process_pending().await.unwrap().processed();
     assert_eq!(processed, 0, "New policy should skip existing events");
     assert_eq!(*count.lock().unwrap(), 0, "Handler should not be called");
 
@@ -945,7 +984,7 @@ async fn test_new_policy_skips_existing_events() {
     let runner2 =
         PolicyRunner::new(Arc::clone(&store), cp).register(Arc::new(NewPolicy(Arc::clone(&count))));
 
-    let processed2 = runner2.process_pending().await.unwrap();
+    let processed2 = runner2.process_pending().await.unwrap().processed();
     assert_eq!(processed2, 1, "Should process only the new event");
     assert_eq!(*count.lock().unwrap(), 1);
 }
@@ -989,7 +1028,7 @@ async fn test_cascade_with_checkpoints() {
         .register(Arc::new(KickUserPolicy))
         .register(Arc::new(CascadeNotifyCP));
 
-    let processed = runner.process_pending().await.unwrap();
+    let processed = runner.process_pending().await.unwrap().processed();
     assert!(
         processed >= 2,
         "Both kick→remove and remove→notify should fire"
@@ -1000,7 +1039,7 @@ async fn test_cascade_with_checkpoints() {
         .register(Arc::new(KickUserPolicy))
         .register(Arc::new(CascadeNotifyCP));
 
-    let processed2 = runner2.process_pending().await.unwrap();
+    let processed2 = runner2.process_pending().await.unwrap().processed();
     assert_eq!(processed2, 0);
 }
 
@@ -1962,7 +2001,7 @@ async fn test_all_success_advances_checkpoint_to_last_position() {
 
     let runner = PolicyRunner::new(Arc::clone(&store), Arc::clone(&cp))
         .register(Arc::new(AllSuccessPolicy(Arc::clone(&count))));
-    let processed = runner.process_pending().await.unwrap();
+    let processed = runner.process_pending().await.unwrap().processed();
     assert_eq!(processed, 3);
     assert_eq!(*count.lock().unwrap(), 3);
 
@@ -1976,7 +2015,7 @@ async fn test_all_success_advances_checkpoint_to_last_position() {
     // Re-run processes nothing.
     let runner2 = PolicyRunner::new(Arc::clone(&store), cp)
         .register(Arc::new(AllSuccessPolicy(Arc::clone(&count))));
-    let processed2 = runner2.process_pending().await.unwrap();
+    let processed2 = runner2.process_pending().await.unwrap().processed();
     assert_eq!(
         processed2, 0,
         "re-run after full success should process nothing"
