@@ -1808,7 +1808,7 @@ mod actor_tests {
             id: EntityId::new(),
             is_admin: true,
         };
-        let Ok(root) = AggregateRoot::<Operator>::restore(StoredVersion::FIRST, entity);
+        let Ok(root) = AggregateRoot::restore(StoredVersion::FIRST, entity);
         root
     }
 
@@ -2602,7 +2602,7 @@ mod delete_tests {
             id: EntityId::new(),
             role: role.to_string(),
         };
-        let Ok(root) = AggregateRoot::<Admin>::restore(StoredVersion::FIRST, entity);
+        let Ok(root) = AggregateRoot::restore(StoredVersion::FIRST, entity);
         root
     }
 
