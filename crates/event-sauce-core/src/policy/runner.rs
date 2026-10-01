@@ -274,18 +274,16 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
     /// checkpoint. Called before the lease is acquired for this policy, so
     /// a fresh row exists for [`try_acquire_lease`](crate::CheckpointStore::try_acquire_lease)
     /// to return rather than defaulting to [`Position::start`].
+    ///
+    /// Uses [`CheckpointStore::seed_checkpoint`](crate::CheckpointStore::seed_checkpoint),
+    /// which backends implement as an atomic insert-if-absent — unlike a
+    /// plain load-then-save, two workers racing to seed the same new policy
+    /// can never have the slower one overwrite progress the faster one (now
+    /// holding the lease) already made.
     async fn seed_new_policy_checkpoint(&self, policy_name: &str) -> Result<()> {
-        if self
-            .checkpoint_store
-            .load_checkpoint(policy_name)
-            .await?
-            .is_some()
-        {
-            return Ok(());
-        }
         let max = self.store.max_position().await?;
         self.checkpoint_store
-            .save_checkpoint(policy_name, max)
+            .seed_checkpoint(policy_name, max)
             .await
     }
 
@@ -293,13 +291,16 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
     ///
     /// A policy whose lease is held by another worker is left out of the
     /// returned set entirely — it sits out this call without blocking the
-    /// rest. If acquiring a later policy's lease errors, every lease
-    /// acquired so far in this call is released before the error
+    /// rest. If seeding or acquiring a later policy's lease errors, every
+    /// lease acquired so far in this call is released before the error
     /// propagates.
     async fn acquire_policy_leases(&self) -> Result<Vec<HeldPolicy<S>>> {
         let mut held = Vec::with_capacity(self.policies.len());
         for policy in &self.policies {
-            self.seed_new_policy_checkpoint(policy.name()).await?;
+            if let Err(e) = self.seed_new_policy_checkpoint(policy.name()).await {
+                self.release_leases(&held).await;
+                return Err(e);
+            }
             match self
                 .checkpoint_store
                 .try_acquire_lease(policy.name(), &self.worker_id, self.lease_duration)
@@ -756,7 +757,7 @@ impl<S: EventStore + 'static> std::fmt::Debug for PolicyRunner<S> {
 mod tests {
     use super::super::test_support::{test_checkpoint_store, test_envelope};
     use super::*;
-    use crate::test_fixtures::MockEventStore;
+    use crate::test_fixtures::{MockCheckpointStore, MockEventStore};
     use crate::{CheckpointStore, EventFilter};
 
     #[test]
@@ -1041,6 +1042,89 @@ mod tests {
         assert!(
             acquired.is_some(),
             "the lease must be released once process_pending returns"
+        );
+    }
+
+    /// Wraps [`MockCheckpointStore`], failing `seed_checkpoint` for one
+    /// chosen subscription name — simulating a never-before-seen policy
+    /// whose seed errors (e.g. a transient backend failure) after an earlier
+    /// policy in the same call already seeded and acquired its lease.
+    struct FailingSeedCheckpointStore {
+        inner: Arc<MockCheckpointStore>,
+        fail_for: String,
+    }
+
+    #[async_trait::async_trait]
+    impl CheckpointStore for FailingSeedCheckpointStore {
+        async fn save_checkpoint(&self, name: &str, position: Position) -> Result<()> {
+            self.inner.save_checkpoint(name, position).await
+        }
+        async fn load_checkpoint(&self, name: &str) -> Result<Option<Position>> {
+            self.inner.load_checkpoint(name).await
+        }
+        async fn delete_checkpoint(&self, name: &str) -> Result<()> {
+            self.inner.delete_checkpoint(name).await
+        }
+        async fn try_acquire_lease(
+            &self,
+            name: &str,
+            worker_id: &str,
+            dur: Duration,
+        ) -> Result<Option<Position>> {
+            self.inner.try_acquire_lease(name, worker_id, dur).await
+        }
+        async fn renew_lease(&self, name: &str, worker_id: &str, dur: Duration) -> Result<()> {
+            self.inner.renew_lease(name, worker_id, dur).await
+        }
+        async fn release_lease(&self, name: &str, worker_id: &str) -> Result<()> {
+            self.inner.release_lease(name, worker_id).await
+        }
+        async fn seed_checkpoint(&self, name: &str, position: Position) -> Result<()> {
+            if name == self.fail_for {
+                return Err(crate::Error::custom("seed boom"));
+            }
+            self.inner.seed_checkpoint(name, position).await
+        }
+    }
+
+    /// When a later policy's seed fails, every lease this call already
+    /// acquired for an earlier policy must be released, not left dangling
+    /// until it expires — the same guarantee a `try_acquire_lease` error
+    /// already got.
+    #[tokio::test]
+    async fn test_acquire_policy_leases_releases_earlier_leases_when_a_later_seed_fails() {
+        let store = Arc::new(MockEventStore::new());
+        let inner = Arc::new(MockCheckpointStore::new());
+        let cp: CheckpointStoreRef = Arc::new(FailingSeedCheckpointStore {
+            inner: Arc::clone(&inner),
+            fail_for: "second".to_string(),
+        });
+
+        let policy1 = Arc::new(CountingPolicyNoWait {
+            name: "first".to_string(),
+            count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        });
+        let policy2 = Arc::new(CountingPolicyNoWait {
+            name: "second".to_string(),
+            count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        });
+
+        let runner = PolicyRunner::new(store, cp)
+            .register(policy1)
+            .register(policy2)
+            .with_worker_id("worker-a");
+
+        let result = runner.process_pending().await;
+        assert!(result.is_err(), "a seed failure must propagate");
+
+        let acquired = inner
+            .try_acquire_lease("first", "worker-b", Duration::from_secs(60))
+            .await
+            .unwrap();
+        assert!(
+            acquired.is_some(),
+            "an earlier policy's lease acquired in the same call must be \
+             released when a later policy's seed fails"
         );
     }
 

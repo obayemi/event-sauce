@@ -161,6 +161,18 @@ impl PostgresCheckpointStore {
         )
     }
 
+    /// Builds the insert-if-absent SQL [`seed_checkpoint`](Self::seed_checkpoint)
+    /// uses: unlike [`checkpoint_upsert_sql`](Self::checkpoint_upsert_sql), a
+    /// conflict leaves the existing row untouched.
+    fn checkpoint_seed_sql(&self) -> String {
+        let checkpoints_table = self.qualify_table("checkpoints");
+        format!(
+            "INSERT INTO {checkpoints_table} (subscription_name, position, updated_at)
+             VALUES ($1, $2, NOW())
+             ON CONFLICT (subscription_name) DO NOTHING"
+        )
+    }
+
     /// Saves a checkpoint inside an existing transaction.
     ///
     /// This is the building block used by transactional projection runners that
@@ -506,6 +518,17 @@ impl CheckpointStore for PostgresCheckpointStore {
         Ok(())
     }
 
+    async fn seed_checkpoint(&self, subscription_name: &str, position: Position) -> Result<()> {
+        let query = self.checkpoint_seed_sql();
+        sqlx::query(&query)
+            .bind(subscription_name)
+            .bind(position.as_i64())
+            .execute(&self.pool)
+            .await
+            .map_err(|e| Error::backend("Failed to seed checkpoint", e))?;
+        Ok(())
+    }
+
     async fn load_checkpoint(&self, subscription_name: &str) -> Result<Option<Position>> {
         let checkpoints_table = self.qualify_table("checkpoints");
         let query =
@@ -794,6 +817,47 @@ mod tests {
         // Verify it's gone
         let position = store.load_checkpoint("test-subscription").await.unwrap();
         assert_eq!(position, None);
+    }
+
+    #[tokio::test]
+    async fn test_seed_checkpoint_sets_position_when_absent() {
+        let db = TestDatabase::new().await.unwrap();
+        let store = PostgresCheckpointStore::new(db.pool().clone());
+        store.migrate().await.unwrap();
+
+        store
+            .seed_checkpoint("fresh-sub", Position::new(7))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            store.load_checkpoint("fresh-sub").await.unwrap(),
+            Some(Position::new(7))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_seed_checkpoint_never_overwrites_an_existing_row() {
+        let db = TestDatabase::new().await.unwrap();
+        let store = PostgresCheckpointStore::new(db.pool().clone());
+        store.migrate().await.unwrap();
+
+        store
+            .save_checkpoint("busy-sub", Position::new(3))
+            .await
+            .unwrap();
+
+        store
+            .seed_checkpoint("busy-sub", Position::new(99))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            store.load_checkpoint("busy-sub").await.unwrap(),
+            Some(Position::new(3)),
+            "seeding an atomic INSERT ... ON CONFLICT DO NOTHING must never \
+             regress a position another worker already advanced"
+        );
     }
 
     #[tokio::test]

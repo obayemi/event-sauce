@@ -195,6 +195,18 @@ impl CheckpointStore for InMemoryCheckpointStore {
             _ => Err(Error::lease_lost(subscription_name, worker_id)),
         }
     }
+
+    async fn seed_checkpoint(&self, subscription_name: &str, position: Position) -> Result<()> {
+        self.inner
+            .write()
+            .await
+            .entry(subscription_name.to_string())
+            .or_insert_with(|| Entry {
+                position,
+                lease: None,
+            });
+        Ok(())
+    }
 }
 
 #[cfg(test)]

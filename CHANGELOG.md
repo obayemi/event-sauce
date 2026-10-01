@@ -151,6 +151,15 @@ explicitly rather than gated behind a major version bump.
   configure the identity, lease duration, and fetch batch size
   `process_pending` uses (sensible defaults: a generated per-instance id,
   30s, 500 events).
+- `CheckpointStore::seed_checkpoint` — seeds a subscription at a position if
+  it has none yet, without overwriting one that does. The provided default
+  is load-then-save (racy under concurrent seeders); `InMemoryCheckpointStore`
+  and `PostgresCheckpointStore` override it with a single atomic
+  insert-if-absent (`entry().or_insert`, `INSERT ... ON CONFLICT DO
+  NOTHING`). `PolicyRunner` uses this to seed a never-before-seen policy
+  instead of a manual load-then-save, closing a window where a slower
+  worker's seed could regress progress a faster one already made under its
+  lease.
 - `PostgresBackend::run_sticky_projection` — a leased projection runner that
   holds its lease across idle ticks (renewing and re-draining in a loop)
   instead of releasing and reacquiring it on every call, removing the
@@ -205,6 +214,14 @@ explicitly rather than gated behind a major version bump.
   concurrently. A single handler call still longer than roughly two thirds
   of `lease_duration` can lose the lease before a renewal lands — see
   `docs/policies.md`'s Multi-Instance Safety section.
+- Seeding a never-before-seen policy's checkpoint
+  (`PolicyRunner::process_pending`) no longer races another worker doing
+  the same: it now goes through `CheckpointStore::seed_checkpoint`'s atomic
+  insert-if-absent instead of a plain load-then-save, so a slower worker's
+  seed can no longer overwrite progress a faster worker already made under
+  its lease. A seed failure also now releases every lease already acquired
+  earlier in that same call, instead of leaving them held until they
+  expire.
 - Postgres claim conflicts now wait instead of risking a deadlock, and a
   racing claim correctly reports `ClaimConflict` rather than a generic
   error.

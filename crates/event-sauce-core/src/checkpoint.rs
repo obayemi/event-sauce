@@ -109,6 +109,33 @@ pub trait CheckpointStore: Send + Sync {
             .await?;
         self.save_checkpoint(subscription_name, position).await
     }
+
+    /// Seeds `subscription_name` at `position` if it has no checkpoint yet; a
+    /// no-op if one already exists.
+    ///
+    /// For a brand-new consumer this sets its starting point (e.g. the event
+    /// store's current max position, so it skips existing history) without
+    /// disturbing a consumer that has already made progress.
+    ///
+    /// The default implementation is load-then-save and **leaves a race
+    /// window**: two concurrent seeders for the same `subscription_name` can
+    /// both observe no existing checkpoint and both write, the second
+    /// silently overwriting the first (and, if the first had since advanced
+    /// the checkpoint under a lease, regressing it). Backends that can
+    /// insert-if-absent in one atomic statement (e.g. `PostgreSQL`'s `INSERT
+    /// ... ON CONFLICT DO NOTHING`, or an in-memory store's
+    /// `entry().or_insert`) should override this method to close that
+    /// window.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error the backend's load/save produces.
+    async fn seed_checkpoint(&self, subscription_name: &str, position: Position) -> Result<()> {
+        if self.load_checkpoint(subscription_name).await?.is_some() {
+            return Ok(());
+        }
+        self.save_checkpoint(subscription_name, position).await
+    }
 }
 
 /// Blocks until a subscription's checkpoint reaches `target` (read-your-writes).
@@ -198,6 +225,38 @@ mod tests {
             .unwrap();
 
         assert_eq!(store.get("sub"), Some(Position::new(5)));
+    }
+
+    #[tokio::test]
+    async fn seed_checkpoint_sets_position_when_absent() {
+        let store = MockCheckpointStore::new();
+
+        store
+            .seed_checkpoint("sub", Position::new(7))
+            .await
+            .unwrap();
+
+        assert_eq!(store.get("sub"), Some(Position::new(7)));
+    }
+
+    #[tokio::test]
+    async fn seed_checkpoint_is_a_noop_when_already_present() {
+        let store = MockCheckpointStore::new();
+        store
+            .save_checkpoint("sub", Position::new(3))
+            .await
+            .unwrap();
+
+        store
+            .seed_checkpoint("sub", Position::new(99))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            store.get("sub"),
+            Some(Position::new(3)),
+            "seeding must never overwrite an existing checkpoint"
+        );
     }
 
     #[tokio::test]
