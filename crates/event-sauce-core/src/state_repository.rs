@@ -39,7 +39,9 @@ use crate::{
 /// A stored row whose schema version differs from
 /// [`Aggregate::snapshot_version()`] fails to load with
 /// `Error::InvalidState`: without an event log there is nothing to replay,
-/// so state rows must be migrated in place.
+/// so state rows must be migrated in place. So does a row whose version is
+/// below 1, which no saved aggregate can have: the error names the aggregate
+/// type and id of the row to repair.
 #[derive(Debug)]
 pub struct StateStoredRepository<S, A> {
     store: Arc<S>,

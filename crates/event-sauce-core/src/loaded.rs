@@ -92,8 +92,9 @@ impl<A: Aggregate> Loaded<A> {
     ///
     /// # Errors
     ///
-    /// Returns `Error::InvalidState` if `version` is not a
-    /// [`StoredVersion`](crate::StoredVersion), and `Error::Serialization` if
+    /// Returns `Error::InvalidState`, naming the aggregate type and id, if
+    /// `version` is not a [`StoredVersion`](crate::StoredVersion), and
+    /// `Error::Serialization` if
     /// `data` no longer deserializes into `A` or `A::DeletedState`.
     #[cfg(any(feature = "event-sourcing", feature = "state-store"))]
     pub(crate) fn restore(
@@ -106,7 +107,12 @@ impl<A: Aggregate> Loaded<A> {
         A: serde::de::DeserializeOwned,
         A::DeletedState: serde::de::DeserializeOwned,
     {
-        let version = crate::StoredVersion::try_from(version)?;
+        let version = crate::StoredVersion::try_from(version).map_err(|err| {
+            crate::Error::invalid_state(format!(
+                "stored state for {} {aggregate_id}: {err}",
+                A::aggregate_type()
+            ))
+        })?;
         Ok(if is_deleted {
             Self::Deleted(DeletedAggregateRoot::restore(
                 serde_json::from_value(data)?,
@@ -165,6 +171,21 @@ mod tests {
             Err(crate::Error::InvalidState(_))
         ));
         assert!(matches!(corrupt_state, Err(crate::Error::Serialization(_))));
+    }
+
+    #[cfg(any(feature = "event-sourcing", feature = "state-store"))]
+    #[test]
+    fn test_loaded_restore_names_the_row_whose_version_is_corrupt() {
+        let id = EntityId::new();
+        let data = serde_json::to_value(SimpleTestEntity { id, value: 7 }).unwrap();
+
+        let err = Loaded::<SimpleTestEntity>::restore(false, data, id, AggregateVersion::initial())
+            .unwrap_err();
+
+        let message = err.to_string();
+        assert!(message.contains("SimpleTestEntity"), "{message}");
+        assert!(message.contains(&id.to_string()), "{message}");
+        assert!(message.contains("v0"), "{message}");
     }
 
     fn make_active() -> Loaded<SimpleTestEntity> {
