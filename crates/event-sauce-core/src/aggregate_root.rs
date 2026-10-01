@@ -119,14 +119,19 @@ pub struct AggregateRoot<A: Aggregate> {
     entity: A,
     version: AggregateVersion,
     pending_events: Vec<PendingEvent<A::Event>>,
-    /// Set to `true` when an [`apply`](Self::apply) call fails.
+    /// Set to `true` when an [`apply`](Self::apply) call fails *after*
+    /// mutating the entity.
     ///
-    /// A failed `apply` (rejected by `validate` or `post_validate`) has already
-    /// mutated the entity via the apply closure, but the version is not bumped
-    /// and the event is not recorded. There is no `Clone` bound to roll the
-    /// entity back, so the aggregate is left in an inconsistent state. Rather
-    /// than let that state be reused or committed silently, the root is
-    /// *poisoned*: further `apply*`/`apply_delete*` calls and the
+    /// A pre-validation refusal (caught by `EventApplicator::validate_only`
+    /// before anything runs) never sets this: the entity is untouched, so the
+    /// aggregate stays exactly as usable as it was. A failure that strikes
+    /// once the apply closure has already run (`post_validate`, or a
+    /// hand-written `EventApplicator` that does not split pre-validation out
+    /// as `validate_only`) does: the entity is mutated, but the version is
+    /// not bumped and the event is not recorded. There is no `Clone` bound to
+    /// roll the entity back, so the aggregate is left in an inconsistent
+    /// state. Rather than let that state be reused or committed silently, the
+    /// root is *poisoned*: further `apply*`/`apply_delete*` calls and the
     /// commit-preparation path refuse it with [`crate::Error::InvalidState`],
     /// forcing the caller to discard and reload the aggregate.
     poisoned: bool,
@@ -221,6 +226,16 @@ impl<A: Aggregate> AggregateRoot<A> {
         &self.entity
     }
 
+    /// Consumes the root and returns the entity it holds.
+    ///
+    /// For a caller that wanted the aggregate and not the bookkeeping — a read model
+    /// assembling a payload, say. Any pending events are dropped with the root, so
+    /// call it only where nothing is owed: after a save, or on a freshly loaded root.
+    #[must_use]
+    pub fn into_entity(self) -> A {
+        self.entity
+    }
+
     /// Applies an event to update the entity's state and records it.
     ///
     /// This method:
@@ -231,12 +246,18 @@ impl<A: Aggregate> AggregateRoot<A> {
     ///
     /// # Errors
     ///
-    /// Returns an error if validation (pre or post) fails. A failed `apply`
-    /// **poisons** the aggregate (see [`is_poisoned`](Self::is_poisoned)): the
-    /// apply closure has already mutated the entity, but the version is not
-    /// bumped and the event is not recorded, leaving inconsistent state that
-    /// cannot be rolled back. A poisoned aggregate is refused by the commit
-    /// path with [`crate::Error::InvalidState`]; discard it and reload.
+    /// Returns an error if validation (pre or post) fails. A pre-validation
+    /// **refusal** mutates nothing and leaves the aggregate exactly as it
+    /// was — it is not a poisoning, and the caller may keep using and saving
+    /// it. A failure that strikes once the apply closure has already run
+    /// (`post_validate`, or any error from a hand-written `EventApplicator`
+    /// whose `dispatch` does not split pre-validation out as `validate_only`)
+    /// **poisons** the aggregate instead (see
+    /// [`is_poisoned`](Self::is_poisoned)): the entity was mutated, but the
+    /// version is not bumped and the event is not recorded, leaving
+    /// inconsistent state that cannot be rolled back. A poisoned aggregate is
+    /// refused by the commit path with [`crate::Error::InvalidState`];
+    /// discard it and reload.
     ///
     /// The apply closure must be **pure and deterministic** — it must never
     /// read the clock, an RNG, or any external state. Generate any such value
@@ -244,6 +265,12 @@ impl<A: Aggregate> AggregateRoot<A> {
     /// the stored event always reproduces the same state.
     pub fn apply<E: Into<A::Event>>(&mut self, event: E) -> Result<(), A::Error> {
         let event = event.into();
+        // A REFUSAL is not a poisoning. Pre-validation runs before anything is
+        // mutated, so an aggregate that refused a command is exactly as it was and
+        // stays usable — which is the whole point of a typed refusal: a caller that
+        // expects one (`let _ = incident.raise_severity(..)`) must still be able to
+        // save what it did change.
+        EventApplicator::validate_only(&event, &self.entity)?;
         if let Err(error) = EventApplicator::dispatch(&event, &mut self.entity) {
             self.poisoned = true;
             return Err(error);
@@ -273,6 +300,7 @@ impl<A: Aggregate> AggregateRoot<A> {
         actor_id: EntityId,
     ) -> Result<(), A::Error> {
         let event = event.into();
+        EventApplicator::validate_only(&event, &self.entity)?;
         if let Err(error) = EventApplicator::dispatch(&event, &mut self.entity) {
             self.poisoned = true;
             return Err(error);
@@ -337,11 +365,14 @@ impl<A: Aggregate> AggregateRoot<A> {
         self.version = self.version.next();
     }
 
-    /// Reconstructs an aggregate root from a snapshot.
+    /// Wraps an entity a store already rebuilt, at the version it was read at.
     ///
-    /// Used when loading from the event store with snapshot support.
+    /// This is what every [`Repository`](crate::Repository) answers a load with,
+    /// whichever way it stores an aggregate: a row of typed columns, a serialized
+    /// blob, an event-store snapshot plus its tail. The root owes nothing — its
+    /// pending list starts empty — so a load-then-save writes nothing.
     #[must_use]
-    pub fn from_snapshot(version: AggregateVersion, entity: A) -> Self {
+    pub fn restore(version: AggregateVersion, entity: A) -> Self {
         Self {
             entity,
             version,
@@ -801,14 +832,13 @@ mod tests {
     }
 
     #[test]
-    fn test_aggregate_root_from_snapshot() {
+    fn test_aggregate_root_restore() {
         let entity = CounterEntity {
             id: EntityId::new(),
             value: 42,
         };
 
-        let counter =
-            AggregateRoot::<CounterEntity>::from_snapshot(AggregateVersion::new(5), entity);
+        let counter = AggregateRoot::<CounterEntity>::restore(AggregateVersion::new(5), entity);
 
         assert_eq!(counter.value, 42);
         assert_eq!(counter.version(), AggregateVersion::new(5));

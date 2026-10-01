@@ -384,3 +384,32 @@ fn test_validation_failure_via_aggregate_root() {
     assert_eq!(root.version(), AggregateVersion::initial()); // Version unchanged
     assert_eq!(root.pending_events().len(), 0); // No pending events
 }
+
+#[test]
+fn test_refused_derived_event_does_not_poison_root() {
+    let mut root = AggregateRoot::<TestAgg>::new(EntityId::new());
+
+    // ValueSetEvent::validate refuses a negative value before anything is
+    // mutated. The `#[derive(Event)]` generated `EventApplicator` must tell
+    // this refusal apart from a failed apply, so it must not poison the root.
+    let refused = root.apply(ValueSetEvent {
+        value: -5,
+        timestamp: Utc::now(),
+    });
+    assert!(refused.is_err());
+    assert!(
+        !root.is_poisoned(),
+        "a refused command must not poison the aggregate"
+    );
+
+    // The root stays usable: a later command is accepted and committed.
+    root.apply(ValueSetEvent {
+        value: 50,
+        timestamp: Utc::now(),
+    })
+    .expect("a non-poisoned root accepts further commands");
+
+    assert_eq!(root.value, 50);
+    assert_eq!(root.version(), AggregateVersion::new(1));
+    assert_eq!(root.pending_events().len(), 1);
+}

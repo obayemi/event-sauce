@@ -62,8 +62,8 @@ define_events! {
 
 command_handler! {
     impl Account {
-        @init fn open(opening_balance: i64) -> OpenedEvent { opening_balance };
-        fn adjust(delta: i64) -> AdjustedEvent { delta };
+        @clock @init fn open(opening_balance: i64) -> OpenedEvent { opening_balance };
+        @clock fn adjust(delta: i64) -> AdjustedEvent { delta };
     }
 }
 

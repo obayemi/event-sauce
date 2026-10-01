@@ -73,10 +73,10 @@ struct Ledger {
 command_handler! {
     impl Ledger {
         /// Open a ledger for an owner.
-        @init fn open(owner: String) -> OpenedEvent { owner };
+        @clock @init fn open(owner: String) -> OpenedEvent { owner };
 
         /// Credit the ledger.
-        fn credit(amount: i64) -> CreditedEvent { amount };
+        @clock fn credit(amount: i64) -> CreditedEvent { amount };
     }
 }
 
@@ -148,4 +148,88 @@ fn the_bundled_provider_shares_a_module_with_the_crypto_traits() {
         Aes256GcmProvider.decrypt(&key, &sealed, &[]).unwrap(),
         b"ledger"
     );
+}
+
+/// The read graph, reached the way a service reaches it: through the facade.
+///
+/// `event-sauce-core` has its own exhaustive suite for this registry. What is
+/// under test here is narrower and is the facade's alone — that a service
+/// declaring a graph names `event_sauce` and nothing else, macro and all.
+#[cfg(feature = "dependencies")]
+mod dependency_graph {
+    use async_trait::async_trait;
+    use event_sauce::dependencies::{
+        erased_affected, inventory, Affected, Dependency, Node, NodeRef, Trigger,
+    };
+    use event_sauce::{declare_dependencies, EntityId, Result};
+    use uuid::Uuid;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    struct MeterId(u8);
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    struct TariffId(u8);
+
+    #[derive(Debug, Clone)]
+    struct Meter;
+    impl Node for Meter {
+        const NAME: &'static str = "Meter";
+        type Key = MeterId;
+    }
+
+    #[derive(Debug, Clone)]
+    struct Tariff;
+    impl Node for Tariff {
+        const NAME: &'static str = "Tariff";
+        type Key = TariffId;
+    }
+
+    struct BillingContext {
+        meters_on_tariff: Vec<u8>,
+    }
+
+    declare_dependencies!(BillingContext);
+
+    struct BillView;
+
+    #[async_trait]
+    impl Affected<BillingContext, Tariff> for BillView {
+        async fn affected(ctx: &BillingContext, _key: &TariffId) -> Result<Vec<EntityId>> {
+            Ok(ctx
+                .meters_on_tariff
+                .iter()
+                .map(|meter| EntityId::from(Uuid::from_u128(u128::from(*meter))))
+                .collect())
+        }
+    }
+
+    static BILL_DEPENDS: &[NodeRef] = &[NodeRef::of::<Tariff>()];
+    static BILL_TRIGGERS: &[Trigger<BillingContext>] = &[Trigger {
+        node: NodeRef::of::<Tariff>(),
+        affected: erased_affected::<BillingContext, BillView, Tariff>,
+    }];
+
+    inventory::submit! {
+        DependencyEntry(Dependency {
+            name: "billing.v1.Bill",
+            root: NodeRef::of::<Meter>(),
+            depends: BILL_DEPENDS,
+            consults: &[],
+            triggers: BILL_TRIGGERS,
+        })
+    }
+
+    #[tokio::test]
+    async fn a_changed_node_names_the_roots_to_rebuild() {
+        let ctx = BillingContext {
+            meters_on_tariff: vec![7, 9],
+        };
+
+        let stale = stale_roots::<Tariff>(&ctx, &TariffId(1)).await.unwrap();
+
+        assert_eq!(stale.len(), 2);
+        assert!(stale
+            .iter()
+            .all(|entry| entry.consumer == "billing.v1.Bill"));
+    }
 }

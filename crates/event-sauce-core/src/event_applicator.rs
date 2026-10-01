@@ -58,6 +58,28 @@ pub trait EventApplicator<A: Aggregate> {
     /// Returns an error if pre-validation or post-validation fails.
     fn dispatch(&self, aggregate: &mut A) -> Result<(), A::Error>;
 
+    /// Runs ONLY the pre-validation of the event, mutating nothing.
+    ///
+    /// [`AggregateRoot::apply`](crate::AggregateRoot::apply) calls this first so a
+    /// REFUSAL can be told apart from a failed apply. A refusal leaves the aggregate
+    /// exactly as it was, so it must not poison it — `dispatch` alone cannot say
+    /// which of the two happened, because both come back as one `A::Error`.
+    ///
+    /// The default answers `Ok(())`, which is the conservative reading for a
+    /// fully hand-written impl: every failure then looks like a failed apply
+    /// and poisons, as it did before this existed. `define_events!` and
+    /// `#[derive(Event)]` both override it, forwarding to each variant's
+    /// `ApplyEvent::validate` — they generate `dispatch` too, so they know
+    /// exactly where the pre-validation step sits in it.
+    ///
+    /// # Errors
+    ///
+    /// Returns the aggregate's error if pre-validation refuses the event.
+    fn validate_only(&self, aggregate: &A) -> Result<(), A::Error> {
+        let _ = aggregate;
+        Ok(())
+    }
+
     /// Dispatches the event to the entity without validation.
     ///
     /// Only applies state changes, skipping validation. Used for event replay

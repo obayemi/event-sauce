@@ -787,7 +787,7 @@ impl<S: EventStore> SnapshotStore<S> {
             self.snapshots.get(&aggregate_id.to_uuid())
         {
             let entity: A = bincode::deserialize(snapshot_data)?;
-            let mut aggregate = AggregateRoot::from_snapshot(entity, *snapshot_version);
+            let mut aggregate = AggregateRoot::restore(entity, *snapshot_version);
 
             // Load only events after snapshot
             let stream_id = StreamId::new(

@@ -7,8 +7,8 @@ use async_trait::async_trait;
 
 use crate::{
     aggregate_root::envelopes_from_pending, state_store::StateCommit, Aggregate, AggregateRoot,
-    AggregateVersion, DeletedAggregateRoot, DomainEvent, EntityId, EntityIdFor, Error, Loaded,
-    Repository, Result, StateStore, StoredState, StreamId,
+    AggregateVersion, DeletedAggregateRoot, DomainEvent, EntityId, Error, Loaded, Repository,
+    Result, StateStore, StoredState, StreamId,
 };
 
 /// State-store-backed [`Repository`] implementation.
@@ -173,12 +173,11 @@ where
     A::DeletedState: serde::Serialize + serde::de::DeserializeOwned,
     A::Event: serde::Serialize + serde::de::DeserializeOwned,
 {
-    async fn load<I: EntityIdFor<A> + Send>(&self, id: I) -> Result<AggregateRoot<A>> {
-        self.load_any(id).await?.into_active()
+    async fn load_by_id(&self, id: EntityId) -> Result<AggregateRoot<A>> {
+        self.load_any_by_id(id).await?.into_active()
     }
 
-    async fn load_any<I: EntityIdFor<A> + Send>(&self, id: I) -> Result<Loaded<A>> {
-        let id = id.entity_id();
+    async fn load_any_by_id(&self, id: EntityId) -> Result<Loaded<A>> {
         let state = self
             .store
             .load(Self::stream_id_for(id))
@@ -190,25 +189,22 @@ where
 
         if state.is_deleted {
             let deleted_state: A::DeletedState = serde_json::from_value(state.state_data)?;
-            Ok(Loaded::Deleted(DeletedAggregateRoot::from_snapshot(
+            Ok(Loaded::Deleted(DeletedAggregateRoot::restore(
                 deleted_state,
                 EntityId::from(state.aggregate_id),
                 state.version,
             )))
         } else {
             let entity: A = serde_json::from_value(state.state_data)?;
-            Ok(Loaded::Active(AggregateRoot::from_snapshot(
+            Ok(Loaded::Active(AggregateRoot::restore(
                 state.version,
                 entity,
             )))
         }
     }
 
-    async fn load_deleted<I: EntityIdFor<A> + Send>(
-        &self,
-        id: I,
-    ) -> Result<DeletedAggregateRoot<A>> {
-        self.load_any(id).await?.into_deleted()
+    async fn load_deleted_by_id(&self, id: EntityId) -> Result<DeletedAggregateRoot<A>> {
+        self.load_any_by_id(id).await?.into_deleted()
     }
 
     async fn save(&self, aggregate: &mut AggregateRoot<A>) -> Result<()> {
@@ -243,14 +239,12 @@ where
         Ok(())
     }
 
-    async fn exists<I: EntityIdFor<A> + Send>(&self, id: I) -> Result<bool> {
-        self.store.exists(Self::stream_id_for(id.entity_id())).await
+    async fn exists_by_id(&self, id: EntityId) -> Result<bool> {
+        self.store.exists(Self::stream_id_for(id)).await
     }
 
-    async fn get_version<I: EntityIdFor<A> + Send>(&self, id: I) -> Result<AggregateVersion> {
-        self.store
-            .get_version(Self::stream_id_for(id.entity_id()))
-            .await
+    async fn version_by_id(&self, id: EntityId) -> Result<AggregateVersion> {
+        self.store.get_version(Self::stream_id_for(id)).await
     }
 }
 

@@ -81,8 +81,8 @@ define_events! {
 
 command_handler! {
     impl User {
-        fn register(name: String) -> RegisteredEvent { name };
-        fn kick(group_id: EntityId, reason: String) -> KickedEvent { group_id, reason };
+        @clock fn register(name: String) -> RegisteredEvent { name };
+        @clock fn kick(group_id: EntityId, reason: String) -> KickedEvent { group_id, reason };
     }
 }
 
@@ -158,9 +158,9 @@ define_events! {
 
 command_handler! {
     impl Group {
-        fn create(name: String) -> CreatedEvent { name };
-        fn add_member(member_id: EntityId) -> MemberAddedEvent { member_id };
-        fn remove_member(member_id: EntityId, reason: String)
+        @clock fn create(name: String) -> CreatedEvent { name };
+        @clock fn add_member(member_id: EntityId) -> MemberAddedEvent { member_id };
+        @clock fn remove_member(member_id: EntityId, reason: String)
             -> MemberRemovedEvent { member_id, reason };
     }
 }
@@ -213,7 +213,7 @@ define_events! {
 
 command_handler! {
     impl Notification {
-        fn send_notification(message: String) -> SentEvent { message };
+        @clock fn send_notification(message: String) -> SentEvent { message };
     }
 }
 

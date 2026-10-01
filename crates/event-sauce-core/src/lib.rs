@@ -51,6 +51,9 @@ pub mod claims;
 pub mod crypto;
 mod delete_event;
 mod deleted_aggregate_root;
+/// The dependency graph between published payloads and the aggregates they read.
+#[cfg(feature = "dependencies")]
+pub mod dependencies;
 mod domain_event;
 mod entity;
 mod entity_id;
@@ -104,6 +107,10 @@ pub use claims::AggregateClaim;
 pub use crypto::{CryptoKeyStore, CryptoProvider};
 pub use delete_event::DeleteEvent;
 pub use deleted_aggregate_root::DeletedAggregateRoot;
+#[cfg(feature = "dependencies")]
+pub use dependencies::{
+    conflicting_triggers, Affected, Dependency, KeyClash, Node, NodeRef, Source, Stale, Trigger,
+};
 pub use domain_event::{DomainEvent, EventType};
 pub use entity::{DefaultEntity, Entity};
 pub use entity_id::EntityId;

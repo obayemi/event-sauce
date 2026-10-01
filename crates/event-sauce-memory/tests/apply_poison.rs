@@ -72,6 +72,21 @@ define_events! {
             account.balance += event.delta;
         },
 
+        // Refused BEFORE anything is touched. The counterpart of `Adjusted`: this
+        // one leaves the account exactly as it was.
+        Frozen {
+            note: String,
+        }
+        @validate |account, _event| {
+            if account.balance > 0 {
+                return Err(AccountError::Overdrawn);
+            }
+            Ok(())
+        }
+        => |account, event| {
+            account.balance -= event.note.len() as i64;
+        },
+
         Closed {
             reason: String,
         }
@@ -84,9 +99,10 @@ define_events! {
 
 command_handler! {
     impl Account {
-        @init fn open(opening_balance: i64) -> OpenedEvent { opening_balance };
-        fn adjust(delta: i64) -> AdjustedEvent { delta };
-        @delete fn close(reason: String) -> ClosedEvent { reason };
+        @clock @init fn open(opening_balance: i64) -> OpenedEvent { opening_balance };
+        @clock fn adjust(delta: i64) -> AdjustedEvent { delta };
+        @clock fn freeze(note: String) -> FrozenEvent { note };
+        @clock @delete fn close(reason: String) -> ClosedEvent { reason };
     }
 }
 
@@ -193,4 +209,38 @@ async fn test_clean_aggregate_can_be_deleted() {
     repo.save_deleted(&mut deleted).await.unwrap();
 
     assert!(repo.load(id).await.is_err());
+}
+
+/// A REFUSAL is not a poisoning.
+///
+/// `validate` runs before anything is mutated, so an aggregate that refused a command
+/// is exactly as it was and must stay usable. This is the ordinary shape of a caller
+/// that EXPECTS a refusal — `let _ = incident.raise_severity(..)`, where a member that
+/// does not raise the grade is a no-op — and it must still be able to save what it
+/// did change.
+///
+/// Before this, `apply` poisoned on any error from `dispatch`, which cannot tell a
+/// refusal apart from a failed apply. The next save then failed with "poisoned", and
+/// the work the caller HAD done was lost.
+#[tokio::test]
+async fn a_refused_command_leaves_the_aggregate_usable() {
+    let store = Arc::new(InMemoryEventStore::new());
+    let repo = store.repository::<Account>();
+
+    let mut account = Account::open(100).expect("opening is refused by nothing");
+    repo.save(&mut account).await.expect("save the opening");
+
+    // Refused by `validate`, which runs before `apply` touches anything.
+    assert!(matches!(
+        account.freeze("cold".to_owned()),
+        Err(AccountError::Overdrawn)
+    ));
+    assert_eq!(account.entity().balance, 100, "a refusal changes nothing");
+
+    // And the account still works: the refusal did not take the aggregate with it.
+    account.adjust(-40).expect("a legal adjustment");
+    assert_eq!(account.entity().balance, 60);
+    repo.save(&mut account)
+        .await
+        .expect("a root that refused a command is still committable");
 }

@@ -31,7 +31,19 @@ crypto = [
 ]
 event-sourcing = ["event-sauce-core/event-sourcing"]
 state-store = ["event-sauce-core/state-store"]
-full = ["macros", "memory", "postgres", "crypto", "event-sourcing", "state-store"]
+# The read graph between published payloads and the aggregates they read.
+# `event_sauce::dependencies`, and its items at the root, come through the core
+# re-export; the flag is all the facade adds.
+dependencies = ["event-sauce-core/dependencies"]
+full = [
+    "macros",
+    "memory",
+    "postgres",
+    "crypto",
+    "event-sourcing",
+    "state-store",
+    "dependencies",
+]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt", "test-util"] }

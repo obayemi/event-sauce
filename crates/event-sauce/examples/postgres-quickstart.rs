@@ -137,12 +137,12 @@ struct User {
 command_handler! {
     impl User {
         /// Create a new user (init command)
-        @init fn create_user(email: String, name: String, role: UserRole) -> CreatedEvent {
+        @clock @init fn create_user(email: String, name: String, role: UserRole) -> CreatedEvent {
             email, name, role
         };
 
         /// Change user's email address
-        fn change_email(new_email: String) -> EmailChangedEvent { new_email };
+        @clock fn change_email(new_email: String) -> EmailChangedEvent { new_email };
     }
 }
 
@@ -288,21 +288,21 @@ struct Order {
 command_handler! {
     impl Order {
         /// Create a new order (requires authenticated user)
-        @init @actor(User)
+        @clock @init @actor(User)
         fn create_order(user_id: UserId) -> PlacedEvent { user_id };
 
         /// Add an item to the order (requires order owner)
-        @actor(User)
+        @clock @actor(User)
         fn add_item(product_id: String, quantity: u32, price: i64) -> ItemAddedEvent {
             product_id, quantity, price
         };
 
         /// Complete the order (requires order owner)
-        @actor(User)
+        @clock @actor(User)
         fn complete() -> CompletedEvent { };
 
         /// Cancel the order (requires order owner, delete transition)
-        @delete @actor(User)
+        @clock @delete @actor(User)
         fn cancel_order(reason: String) -> CancelledEvent { reason };
     }
 }
@@ -335,7 +335,7 @@ define_events! {
 
 command_handler! {
     impl Notification {
-        fn send_notification(message: String) -> SentEvent { message };
+        @clock fn send_notification(message: String) -> SentEvent { message };
     }
 }
 

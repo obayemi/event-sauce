@@ -145,11 +145,11 @@ impl<A: Aggregate> DeletedAggregateRoot<A> {
         }
     }
 
-    /// Creates a deleted aggregate root from a snapshot (no pending events).
+    /// Wraps a deleted state a store already rebuilt (no pending events).
     ///
-    /// Used by `load_any()` when loading a snapshot with `is_deleted = true`.
+    /// Used by `load_any()` when what came back is in a deleted state.
     #[cfg(any(feature = "event-sourcing", feature = "state-store"))]
-    pub(crate) fn from_snapshot(
+    pub(crate) fn restore(
         state: A::DeletedState,
         entity_id: EntityId,
         version: AggregateVersion,
@@ -416,10 +416,10 @@ mod tests {
     }
 
     #[test]
-    fn test_deleted_aggregate_root_from_snapshot() {
+    fn test_deleted_aggregate_root_restore() {
         let id = EntityId::new();
         let entity = SimpleTestEntity { id, value: 77 };
-        let deleted = DeletedAggregateRoot::<SimpleTestEntity>::from_snapshot(
+        let deleted = DeletedAggregateRoot::<SimpleTestEntity>::restore(
             entity,
             id,
             AggregateVersion::new(10),

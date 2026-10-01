@@ -169,10 +169,10 @@ define_events! {
 
 command_handler! {
     impl Project {
-        @init fn create_project(name: String) -> CreatedEvent { name };
-        fn rename_project(new_name: String) -> RenamedEvent { new_name };
-        @delete fn archive_project(reason: String) -> ArchivedEvent { reason };
-        @delete @actor(Admin)
+        @clock @init fn create_project(name: String) -> CreatedEvent { name };
+        @clock fn rename_project(new_name: String) -> RenamedEvent { new_name };
+        @clock @delete fn archive_project(reason: String) -> ArchivedEvent { reason };
+        @clock @delete @actor(Admin)
         fn force_delete_project(reason: String) -> ForceDeletedEvent { reason };
     }
 }
@@ -198,7 +198,7 @@ fn make_super_admin() -> AggregateRoot<Admin> {
         id: EntityId::new(),
         is_super: true,
     };
-    AggregateRoot::from_snapshot(AggregateVersion::new(1), entity)
+    AggregateRoot::restore(AggregateVersion::new(1), entity)
 }
 
 // ============================================================================
@@ -302,7 +302,7 @@ async fn test_delete_validation_prevents_double_delete() {
         name: "Archived".to_string(),
         archived: true,
     };
-    let agg = AggregateRoot::from_snapshot(AggregateVersion::new(1), entity);
+    let agg = AggregateRoot::restore(AggregateVersion::new(1), entity);
     let result = agg.archive_project("again".to_string());
     assert!(result.is_err());
     assert_eq!(result.unwrap_err().to_string(), "Already archived");

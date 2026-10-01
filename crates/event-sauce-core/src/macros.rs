@@ -40,7 +40,9 @@
 ///
 /// 1. **Event helper function** on entity: `<command>_event(&self, params) -> EventStruct`
 ///    - Creates the event struct with provided parameters
-///    - Adds `timestamp: chrono::Utc::now()` automatically
+///    - Takes every field of the event as a parameter, instants included. A
+///      command marked `@clock` gets a `timestamp` stamped from the wall clock
+///      instead — see below
 ///    - Returns the event **without applying it**
 ///
 /// 2. **Commands trait + impl on `AggregateRoot`**:
@@ -86,6 +88,47 @@
 /// - Type-safe command parameters
 /// - Commands operate through `AggregateRoot` (events are the only mutation path)
 /// - Init creation functions provide ergonomic aggregate construction
+///
+/// # `@clock`, for a command that means "whenever this ran"
+///
+/// By default a command takes every field of its event as a parameter, instants
+/// included, and the generated body reads no clock. That is the form that cannot be
+/// wrong: an event is usually ABOUT an instant, and stamping it with the moment the
+/// command happened to execute is right only when those coincide.
+///
+/// It is also what lets a DOMAIN crate compile `chrono` without the `clock` feature,
+/// so `Utc::now()` does not compile there and the purity is enforced rather than
+/// agreed; and what lets a producer whose facts carry two clocks — the time the world
+/// did something, and the time this service found out — name both, where a single
+/// injected `timestamp` could only be one of them and would read as either.
+///
+/// So the default is:
+///
+/// ```text
+/// command_handler! {
+///     impl Sensor {
+///         fn measure(
+///             measured_at: DateTime<Utc>,
+///             received_at: DateTime<Utc>,
+///             celsius: i32,
+///         ) -> MeasuredEvent { measured_at, received_at, celsius };
+///     }
+/// }
+/// ```
+///
+/// `@clock` is the opt-in for the other case:
+///
+/// ```text
+/// command_handler! {
+///     impl Session {
+///         @clock fn touch() -> TouchedEvent { };
+///     }
+/// }
+/// ```
+///
+/// which stamps a `timestamp` field from `Utc::now()`. Pair the default with
+/// [`define_events!`](crate::define_events)'s `@occurred_at`, which names the instant
+/// the event declares.
 #[macro_export]
 macro_rules! command_handler {
     // Single entry point — always delegates to TT muncher.
@@ -104,6 +147,28 @@ macro_rules! command_handler {
             delete_commands: []
             actor_delete_commands: []
             $($rest)*
+        }
+    };
+}
+/// The event literal a command builds, with or without a clock read.
+///
+/// `clock: [now]` is what `@clock` selects: the generated event carries a
+/// `timestamp` and the command fills it from the wall clock.
+///
+/// `clock: [none]` is the default. The command lists every field of the event,
+/// instants included, and nothing here reads a clock.
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __command_handler_event {
+    (clock: [now] $evt:ident { $($field:ident: $value:expr,)* }) => {
+        $evt {
+            $($field: $value,)*
+            timestamp: ::chrono::Utc::now(),
+        }
+    };
+    (clock: [none] $evt:ident { $($field:ident: $value:expr,)* }) => {
+        $evt {
+            $($field: $value,)*
         }
     };
 }
@@ -151,6 +216,7 @@ macro_rules! __command_handler_init_internal {
         actor_delete_commands: [ $($ad_acc:tt)* ]
 
         $(#[$attr:meta])*
+        @clock
         @init
         @actor($actor_type:ty)
         fn $command:ident($($param:ident: $param_ty:ty),* $(,)?)
@@ -162,7 +228,34 @@ macro_rules! __command_handler_init_internal {
             init_commands: [ $($i_acc)* ]
             regular_commands: [ $($r_acc)* ]
             actor_commands: [ $($a_acc)* ]
-            actor_init_commands: [ $($ai_acc)* { attrs: [$($attr),*] cmd: $command ($($param: $param_ty),*) -> $event_struct { $($field),* } actor: $actor_type } ]
+            actor_init_commands: [ $($ai_acc)* { attrs: [$($attr),*] cmd: $command ($($param: $param_ty),*) -> $event_struct { $($field),* } clock: [now] actor: $actor_type } ]
+            delete_commands: [ $($d_acc)* ]
+            actor_delete_commands: [ $($ad_acc)* ]
+            $($($rest)*)?
+        }
+    };
+    (
+        @munch [$aggregate:ty]
+        init_commands: [ $($i_acc:tt)* ]
+        regular_commands: [ $($r_acc:tt)* ]
+        actor_commands: [ $($a_acc:tt)* ]
+        actor_init_commands: [ $($ai_acc:tt)* ]
+        delete_commands: [ $($d_acc:tt)* ]
+        actor_delete_commands: [ $($ad_acc:tt)* ]
+
+        $(#[$attr:meta])*
+        @init
+        @actor($actor_type:ty)
+        fn $command:ident($($param:ident: $param_ty:ty),* $(,)?)
+            -> $event_struct:ident { $($field:ident),* $(,)? }
+        $(; $($rest:tt)*)?
+    ) => {
+        $crate::__command_handler_init_internal! {
+            @munch [$aggregate]
+            init_commands: [ $($i_acc)* ]
+            regular_commands: [ $($r_acc)* ]
+            actor_commands: [ $($a_acc)* ]
+            actor_init_commands: [ $($ai_acc)* { attrs: [$($attr),*] cmd: $command ($($param: $param_ty),*) -> $event_struct { $($field),* } clock: [none] actor: $actor_type } ]
             delete_commands: [ $($d_acc)* ]
             actor_delete_commands: [ $($ad_acc)* ]
             $($($rest)*)?
@@ -180,6 +273,7 @@ macro_rules! __command_handler_init_internal {
         actor_delete_commands: [ $($ad_acc:tt)* ]
 
         $(#[$attr:meta])*
+        @clock
         @init
         fn $command:ident($($param:ident: $param_ty:ty),* $(,)?)
             -> $event_struct:ident { $($field:ident),* $(,)? }
@@ -187,7 +281,33 @@ macro_rules! __command_handler_init_internal {
     ) => {
         $crate::__command_handler_init_internal! {
             @munch [$aggregate]
-            init_commands: [ $($i_acc)* { attrs: [$($attr),*] cmd: $command ($($param: $param_ty),*) -> $event_struct { $($field),* } } ]
+            init_commands: [ $($i_acc)* { attrs: [$($attr),*] cmd: $command ($($param: $param_ty),*) -> $event_struct { $($field),* } clock: [now] } ]
+            regular_commands: [ $($r_acc)* ]
+            actor_commands: [ $($a_acc)* ]
+            actor_init_commands: [ $($ai_acc)* ]
+            delete_commands: [ $($d_acc)* ]
+            actor_delete_commands: [ $($ad_acc)* ]
+            $($($rest)*)?
+        }
+    };
+    (
+        @munch [$aggregate:ty]
+        init_commands: [ $($i_acc:tt)* ]
+        regular_commands: [ $($r_acc:tt)* ]
+        actor_commands: [ $($a_acc:tt)* ]
+        actor_init_commands: [ $($ai_acc:tt)* ]
+        delete_commands: [ $($d_acc:tt)* ]
+        actor_delete_commands: [ $($ad_acc:tt)* ]
+
+        $(#[$attr:meta])*
+        @init
+        fn $command:ident($($param:ident: $param_ty:ty),* $(,)?)
+            -> $event_struct:ident { $($field:ident),* $(,)? }
+        $(; $($rest:tt)*)?
+    ) => {
+        $crate::__command_handler_init_internal! {
+            @munch [$aggregate]
+            init_commands: [ $($i_acc)* { attrs: [$($attr),*] cmd: $command ($($param: $param_ty),*) -> $event_struct { $($field),* } clock: [none] } ]
             regular_commands: [ $($r_acc)* ]
             actor_commands: [ $($a_acc)* ]
             actor_init_commands: [ $($ai_acc)* ]
@@ -208,6 +328,7 @@ macro_rules! __command_handler_init_internal {
         actor_delete_commands: [ $($ad_acc:tt)* ]
 
         $(#[$attr:meta])*
+        @clock
         @delete
         @actor($actor_type:ty)
         fn $command:ident($($param:ident: $param_ty:ty),* $(,)?)
@@ -221,12 +342,66 @@ macro_rules! __command_handler_init_internal {
             actor_commands: [ $($a_acc)* ]
             actor_init_commands: [ $($ai_acc)* ]
             delete_commands: [ $($d_acc)* ]
-            actor_delete_commands: [ $($ad_acc)* { attrs: [$($attr),*] cmd: $command ($($param: $param_ty),*) -> $event_struct { $($field),* } actor: $actor_type } ]
+            actor_delete_commands: [ $($ad_acc)* { attrs: [$($attr),*] cmd: $command ($($param: $param_ty),*) -> $event_struct { $($field),* } clock: [now] actor: $actor_type } ]
+            $($($rest)*)?
+        }
+    };
+    (
+        @munch [$aggregate:ty]
+        init_commands: [ $($i_acc:tt)* ]
+        regular_commands: [ $($r_acc:tt)* ]
+        actor_commands: [ $($a_acc:tt)* ]
+        actor_init_commands: [ $($ai_acc:tt)* ]
+        delete_commands: [ $($d_acc:tt)* ]
+        actor_delete_commands: [ $($ad_acc:tt)* ]
+
+        $(#[$attr:meta])*
+        @delete
+        @actor($actor_type:ty)
+        fn $command:ident($($param:ident: $param_ty:ty),* $(,)?)
+            -> $event_struct:ident { $($field:ident),* $(,)? }
+        $(; $($rest:tt)*)?
+    ) => {
+        $crate::__command_handler_init_internal! {
+            @munch [$aggregate]
+            init_commands: [ $($i_acc)* ]
+            regular_commands: [ $($r_acc)* ]
+            actor_commands: [ $($a_acc)* ]
+            actor_init_commands: [ $($ai_acc)* ]
+            delete_commands: [ $($d_acc)* ]
+            actor_delete_commands: [ $($ad_acc)* { attrs: [$($attr),*] cmd: $command ($($param: $param_ty),*) -> $event_struct { $($field),* } clock: [none] actor: $actor_type } ]
             $($($rest)*)?
         }
     };
 
     // ---- TT muncher: parse @delete command (no actor) ----
+    (
+        @munch [$aggregate:ty]
+        init_commands: [ $($i_acc:tt)* ]
+        regular_commands: [ $($r_acc:tt)* ]
+        actor_commands: [ $($a_acc:tt)* ]
+        actor_init_commands: [ $($ai_acc:tt)* ]
+        delete_commands: [ $($d_acc:tt)* ]
+        actor_delete_commands: [ $($ad_acc:tt)* ]
+
+        $(#[$attr:meta])*
+        @clock
+        @delete
+        fn $command:ident($($param:ident: $param_ty:ty),* $(,)?)
+            -> $event_struct:ident { $($field:ident),* $(,)? }
+        $(; $($rest:tt)*)?
+    ) => {
+        $crate::__command_handler_init_internal! {
+            @munch [$aggregate]
+            init_commands: [ $($i_acc)* ]
+            regular_commands: [ $($r_acc)* ]
+            actor_commands: [ $($a_acc)* ]
+            actor_init_commands: [ $($ai_acc)* ]
+            delete_commands: [ $($d_acc)* { attrs: [$($attr),*] cmd: $command ($($param: $param_ty),*) -> $event_struct { $($field),* } clock: [now] } ]
+            actor_delete_commands: [ $($ad_acc)* ]
+            $($($rest)*)?
+        }
+    };
     (
         @munch [$aggregate:ty]
         init_commands: [ $($i_acc:tt)* ]
@@ -248,7 +423,7 @@ macro_rules! __command_handler_init_internal {
             regular_commands: [ $($r_acc)* ]
             actor_commands: [ $($a_acc)* ]
             actor_init_commands: [ $($ai_acc)* ]
-            delete_commands: [ $($d_acc)* { attrs: [$($attr),*] cmd: $command ($($param: $param_ty),*) -> $event_struct { $($field),* } } ]
+            delete_commands: [ $($d_acc)* { attrs: [$($attr),*] cmd: $command ($($param: $param_ty),*) -> $event_struct { $($field),* } clock: [none] } ]
             actor_delete_commands: [ $($ad_acc)* ]
             $($($rest)*)?
         }
@@ -265,6 +440,7 @@ macro_rules! __command_handler_init_internal {
         actor_delete_commands: [ $($ad_acc:tt)* ]
 
         $(#[$attr:meta])*
+        @clock
         @actor($actor_type:ty)
         fn $command:ident($($param:ident: $param_ty:ty),* $(,)?)
             -> $event_struct:ident { $($field:ident),* $(,)? }
@@ -274,7 +450,33 @@ macro_rules! __command_handler_init_internal {
             @munch [$aggregate]
             init_commands: [ $($i_acc)* ]
             regular_commands: [ $($r_acc)* ]
-            actor_commands: [ $($a_acc)* { attrs: [$($attr),*] cmd: $command ($($param: $param_ty),*) -> $event_struct { $($field),* } actor: $actor_type } ]
+            actor_commands: [ $($a_acc)* { attrs: [$($attr),*] cmd: $command ($($param: $param_ty),*) -> $event_struct { $($field),* } clock: [now] actor: $actor_type } ]
+            actor_init_commands: [ $($ai_acc)* ]
+            delete_commands: [ $($d_acc)* ]
+            actor_delete_commands: [ $($ad_acc)* ]
+            $($($rest)*)?
+        }
+    };
+    (
+        @munch [$aggregate:ty]
+        init_commands: [ $($i_acc:tt)* ]
+        regular_commands: [ $($r_acc:tt)* ]
+        actor_commands: [ $($a_acc:tt)* ]
+        actor_init_commands: [ $($ai_acc:tt)* ]
+        delete_commands: [ $($d_acc:tt)* ]
+        actor_delete_commands: [ $($ad_acc:tt)* ]
+
+        $(#[$attr:meta])*
+        @actor($actor_type:ty)
+        fn $command:ident($($param:ident: $param_ty:ty),* $(,)?)
+            -> $event_struct:ident { $($field:ident),* $(,)? }
+        $(; $($rest:tt)*)?
+    ) => {
+        $crate::__command_handler_init_internal! {
+            @munch [$aggregate]
+            init_commands: [ $($i_acc)* ]
+            regular_commands: [ $($r_acc)* ]
+            actor_commands: [ $($a_acc)* { attrs: [$($attr),*] cmd: $command ($($param: $param_ty),*) -> $event_struct { $($field),* } clock: [none] actor: $actor_type } ]
             actor_init_commands: [ $($ai_acc)* ]
             delete_commands: [ $($d_acc)* ]
             actor_delete_commands: [ $($ad_acc)* ]
@@ -293,6 +495,7 @@ macro_rules! __command_handler_init_internal {
         actor_delete_commands: [ $($ad_acc:tt)* ]
 
         $(#[$attr:meta])*
+        @clock
         fn $command:ident($($param:ident: $param_ty:ty),* $(,)?)
             -> $event_struct:ident { $($field:ident),* $(,)? }
         $(; $($rest:tt)*)?
@@ -300,7 +503,32 @@ macro_rules! __command_handler_init_internal {
         $crate::__command_handler_init_internal! {
             @munch [$aggregate]
             init_commands: [ $($i_acc)* ]
-            regular_commands: [ $($r_acc)* { attrs: [$($attr),*] cmd: $command ($($param: $param_ty),*) -> $event_struct { $($field),* } } ]
+            regular_commands: [ $($r_acc)* { attrs: [$($attr),*] cmd: $command ($($param: $param_ty),*) -> $event_struct { $($field),* } clock: [now] } ]
+            actor_commands: [ $($a_acc)* ]
+            actor_init_commands: [ $($ai_acc)* ]
+            delete_commands: [ $($d_acc)* ]
+            actor_delete_commands: [ $($ad_acc)* ]
+            $($($rest)*)?
+        }
+    };
+    (
+        @munch [$aggregate:ty]
+        init_commands: [ $($i_acc:tt)* ]
+        regular_commands: [ $($r_acc:tt)* ]
+        actor_commands: [ $($a_acc:tt)* ]
+        actor_init_commands: [ $($ai_acc:tt)* ]
+        delete_commands: [ $($d_acc:tt)* ]
+        actor_delete_commands: [ $($ad_acc:tt)* ]
+
+        $(#[$attr:meta])*
+        fn $command:ident($($param:ident: $param_ty:ty),* $(,)?)
+            -> $event_struct:ident { $($field:ident),* $(,)? }
+        $(; $($rest:tt)*)?
+    ) => {
+        $crate::__command_handler_init_internal! {
+            @munch [$aggregate]
+            init_commands: [ $($i_acc)* ]
+            regular_commands: [ $($r_acc)* { attrs: [$($attr),*] cmd: $command ($($param: $param_ty),*) -> $event_struct { $($field),* } clock: [none] } ]
             actor_commands: [ $($a_acc)* ]
             actor_init_commands: [ $($ai_acc)* ]
             delete_commands: [ $($d_acc)* ]
@@ -312,12 +540,12 @@ macro_rules! __command_handler_init_internal {
     // ---- Base case: all commands parsed, emit code ----
     (
         @munch [$aggregate:ty]
-        init_commands: [ $({ attrs: [$($i_attr:meta),*] cmd: $i_cmd:ident ($($i_param:ident: $i_param_ty:ty),*) -> $i_evt:ident { $($i_field:ident),* } })* ]
-        regular_commands: [ $({ attrs: [$($r_attr:meta),*] cmd: $r_cmd:ident ($($r_param:ident: $r_param_ty:ty),*) -> $r_evt:ident { $($r_field:ident),* } })* ]
-        actor_commands: [ $({ attrs: [$($a_attr:meta),*] cmd: $a_cmd:ident ($($a_param:ident: $a_param_ty:ty),*) -> $a_evt:ident { $($a_field:ident),* } actor: $a_actor:ty })* ]
-        actor_init_commands: [ $({ attrs: [$($ai_attr:meta),*] cmd: $ai_cmd:ident ($($ai_param:ident: $ai_param_ty:ty),*) -> $ai_evt:ident { $($ai_field:ident),* } actor: $ai_actor:ty })* ]
-        delete_commands: [ $({ attrs: [$($d_attr:meta),*] cmd: $d_cmd:ident ($($d_param:ident: $d_param_ty:ty),*) -> $d_evt:ident { $($d_field:ident),* } })* ]
-        actor_delete_commands: [ $({ attrs: [$($ad_attr:meta),*] cmd: $ad_cmd:ident ($($ad_param:ident: $ad_param_ty:ty),*) -> $ad_evt:ident { $($ad_field:ident),* } actor: $ad_actor:ty })* ]
+        init_commands: [ $({ attrs: [$($i_attr:meta),*] cmd: $i_cmd:ident ($($i_param:ident: $i_param_ty:ty),*) -> $i_evt:ident { $($i_field:ident),* } clock: [$i_clock:ident] })* ]
+        regular_commands: [ $({ attrs: [$($r_attr:meta),*] cmd: $r_cmd:ident ($($r_param:ident: $r_param_ty:ty),*) -> $r_evt:ident { $($r_field:ident),* } clock: [$r_clock:ident] })* ]
+        actor_commands: [ $({ attrs: [$($a_attr:meta),*] cmd: $a_cmd:ident ($($a_param:ident: $a_param_ty:ty),*) -> $a_evt:ident { $($a_field:ident),* } clock: [$a_clock:ident] actor: $a_actor:ty })* ]
+        actor_init_commands: [ $({ attrs: [$($ai_attr:meta),*] cmd: $ai_cmd:ident ($($ai_param:ident: $ai_param_ty:ty),*) -> $ai_evt:ident { $($ai_field:ident),* } clock: [$ai_clock:ident] actor: $ai_actor:ty })* ]
+        delete_commands: [ $({ attrs: [$($d_attr:meta),*] cmd: $d_cmd:ident ($($d_param:ident: $d_param_ty:ty),*) -> $d_evt:ident { $($d_field:ident),* } clock: [$d_clock:ident] })* ]
+        actor_delete_commands: [ $({ attrs: [$($ad_attr:meta),*] cmd: $ad_cmd:ident ($($ad_param:ident: $ad_param_ty:ty),*) -> $ad_evt:ident { $($ad_field:ident),* } clock: [$ad_clock:ident] actor: $ad_actor:ty })* ]
     ) => {
         // --- Init event helpers: associated functions (no &self) ---
         impl $aggregate {
@@ -326,10 +554,9 @@ macro_rules! __command_handler_init_internal {
                     $(#[$i_attr])*
                     #[allow(missing_docs)]
                     pub fn [<$i_cmd _event>]($($i_param: $i_param_ty),*) -> $i_evt {
-                        $i_evt {
-                            $($i_field: $i_param,)*
-                            timestamp: ::chrono::Utc::now(),
-                        }
+                        $crate::__command_handler_event! {
+                            clock: [$i_clock] $i_evt { $($i_field: $i_param,)* }
+                            }
                     }
                 }
             )*
@@ -342,10 +569,9 @@ macro_rules! __command_handler_init_internal {
                     $(#[$ai_attr])*
                     #[allow(missing_docs)]
                     pub fn [<$ai_cmd _event>]($($ai_param: $ai_param_ty),*) -> $ai_evt {
-                        $ai_evt {
-                            $($ai_field: $ai_param,)*
-                            timestamp: ::chrono::Utc::now(),
-                        }
+                        $crate::__command_handler_event! {
+                            clock: [$ai_clock] $ai_evt { $($ai_field: $ai_param,)* }
+                            }
                     }
                 }
             )*
@@ -358,10 +584,9 @@ macro_rules! __command_handler_init_internal {
                     $(#[$r_attr])*
                     #[allow(missing_docs)]
                     pub fn [<$r_cmd _event>](&self, $($r_param: $r_param_ty),*) -> $r_evt {
-                        $r_evt {
-                            $($r_field: $r_param,)*
-                            timestamp: ::chrono::Utc::now(),
-                        }
+                        $crate::__command_handler_event! {
+                            clock: [$r_clock] $r_evt { $($r_field: $r_param,)* }
+                            }
                     }
                 }
             )*
@@ -374,10 +599,9 @@ macro_rules! __command_handler_init_internal {
                     $(#[$a_attr])*
                     #[allow(missing_docs)]
                     pub fn [<$a_cmd _event>](&self, $($a_param: $a_param_ty),*) -> $a_evt {
-                        $a_evt {
-                            $($a_field: $a_param,)*
-                            timestamp: ::chrono::Utc::now(),
-                        }
+                        $crate::__command_handler_event! {
+                            clock: [$a_clock] $a_evt { $($a_field: $a_param,)* }
+                            }
                     }
                 }
             )*
@@ -536,10 +760,9 @@ macro_rules! __command_handler_init_internal {
                     $(#[$d_attr])*
                     #[allow(missing_docs)]
                     pub fn [<$d_cmd _event>](&self, $($d_param: $d_param_ty),*) -> $d_evt {
-                        $d_evt {
-                            $($d_field: $d_param,)*
-                            timestamp: ::chrono::Utc::now(),
-                        }
+                        $crate::__command_handler_event! {
+                            clock: [$d_clock] $d_evt { $($d_field: $d_param,)* }
+                            }
                     }
                 }
             )*
@@ -552,10 +775,9 @@ macro_rules! __command_handler_init_internal {
                     $(#[$ad_attr])*
                     #[allow(missing_docs)]
                     pub fn [<$ad_cmd _event>](&self, $($ad_param: $ad_param_ty),*) -> $ad_evt {
-                        $ad_evt {
-                            $($ad_field: $ad_param,)*
-                            timestamp: ::chrono::Utc::now(),
-                        }
+                        $crate::__command_handler_event! {
+                            clock: [$ad_clock] $ad_evt { $($ad_field: $ad_param,)* }
+                            }
                     }
                 }
             )*
@@ -838,6 +1060,39 @@ macro_rules! __check_spec_init_actor {
 // The duplication between arms within each phase is necessary in
 // macro_rules! — converting to a proc-macro would let the kind-tag drive
 // emission via runtime data, but that's a larger change than this commit.
+///
+/// # `@occurred_at`, and the fact that carries two clocks
+///
+/// By default each generated event gets a `timestamp` field, and
+/// [`DomainEvent::occurred_at`](crate::DomainEvent::occurred_at) answers with it.
+///
+/// A producer whose facts carry more than one instant cannot use that. "When the
+/// world did the thing" and "when this service found out" are different questions,
+/// and a field that holds one of them under a name that says neither answers neither
+/// — which is what happens when a scheduler writes its own `now()` and a reader
+/// writes a producer's stamp into the same column.
+///
+/// `@occurred_at(field)` names the generated instant instead. The variant declares
+/// its other clocks as ordinary fields:
+///
+/// ```text
+/// define_events! {
+///     enum SensorEvent for Sensor {
+///         Measured {
+///             received_at: DateTime<Utc>,   // DETECTION time — an ordinary field
+///             celsius: i32,
+///         }
+///         @occurred_at(measured_at)         // DATA time — names the instant
+///         => |sensor, event| { … },
+///     }
+/// }
+/// ```
+///
+/// `occurred_at()` then answers with `measured_at`, and no field is called
+/// `timestamp`. A variant with no marker is unchanged.
+///
+/// The commands over it take that instant as a parameter, which is
+/// [`command_handler!`](crate::command_handler)'s default.
 #[macro_export]
 macro_rules! define_events {
     // =========================================================================
@@ -887,6 +1142,7 @@ macro_rules! define_events {
             }
             @actor($actor_type:ty)
             $(@version($version:literal))?
+            @occurred_at($ts_field:ident)
             $(@validate |$($val_args:ident),+| $val_body:block)?
             $(@validate_spec($($val_spec:tt)*))?
             $(@post_validate |$post_val_agg:ident, $post_val_evt:ident| $post_val_body:block)?
@@ -907,6 +1163,53 @@ macro_rules! define_events {
                     variant: $variant,
                     fields: { $($(#[$field_attr])* $field: $field_ty),* },
                     kind: actor,
+                    clock: [$ts_field],
+                    actor_type: [$actor_type],
+                    version: [$([$version])?],
+                    validate: [$([|$($val_args),+| $val_body])?],
+                    validate_spec: [$([$($val_spec)*])?],
+                    post_validate: [$([$post_val_agg, $post_val_evt, $post_val_body])?],
+                    post_validate_spec: [$([$($post_val_spec)*])?],
+                    encrypted_fields: [$([$($enc_field),+])?],
+                    aliases: [$([$($alias),+])?],
+                    apply: $apply,
+                }
+            ]
+            rest: [$($rest)*]
+        }
+    };
+    (
+        @munch
+        [$vis:vis] [$event_enum:ident] [$aggregate:ty]
+        upcast: [$($upcast:tt)*]
+        accumulated: [$($acc:tt)*]
+        rest: [
+            $variant:ident {
+                $($(#[$field_attr:meta])* $field:ident: $field_ty:ty),* $(,)?
+            }
+            @actor($actor_type:ty)
+            $(@version($version:literal))?
+            $(@validate |$($val_args:ident),+| $val_body:block)?
+            $(@validate_spec($($val_spec:tt)*))?
+            $(@post_validate |$post_val_agg:ident, $post_val_evt:ident| $post_val_body:block)?
+            $(@post_validate_spec($($post_val_spec:tt)*))?
+            $(@encrypted_fields($($enc_field:ident),+ $(,)?))?
+            $(@aliases($($alias:literal),+ $(,)?))?
+            => $apply:expr,
+            $($rest:tt)*
+        ]
+    ) => {
+        define_events! {
+            @munch
+            [$vis] [$event_enum] [$aggregate]
+            upcast: [$($upcast)*]
+            accumulated: [
+                $($acc)*
+                {
+                    variant: $variant,
+                    fields: { $($(#[$field_attr])* $field: $field_ty),* },
+                    kind: actor,
+                    clock: [timestamp],
                     actor_type: [$actor_type],
                     version: [$([$version])?],
                     validate: [$([|$($val_args),+| $val_body])?],
@@ -925,6 +1228,54 @@ macro_rules! define_events {
     // =========================================================================
     // TT muncher: parse one ACTOR INIT variant (@init @actor(Type))
     // =========================================================================
+    (
+        @munch
+        [$vis:vis] [$event_enum:ident] [$aggregate:ty]
+        upcast: [$($upcast:tt)*]
+        accumulated: [$($acc:tt)*]
+        rest: [
+            $variant:ident {
+                $($(#[$field_attr:meta])* $field:ident: $field_ty:ty),* $(,)?
+            }
+            @init
+            @actor($actor_type:ty)
+            $(@version($version:literal))?
+            @occurred_at($ts_field:ident)
+            $(@validate |$($val_args:ident),+| $val_body:block)?
+            $(@validate_spec($($val_spec:tt)*))?
+            $(@post_validate |$post_val_agg:ident, $post_val_evt:ident| $post_val_body:block)?
+            $(@post_validate_spec($($post_val_spec:tt)*))?
+            $(@encrypted_fields($($enc_field:ident),+ $(,)?))?
+            $(@aliases($($alias:literal),+ $(,)?))?
+            => $apply:expr,
+            $($rest:tt)*
+        ]
+    ) => {
+        define_events! {
+            @munch
+            [$vis] [$event_enum] [$aggregate]
+            upcast: [$($upcast)*]
+            accumulated: [
+                $($acc)*
+                {
+                    variant: $variant,
+                    fields: { $($(#[$field_attr])* $field: $field_ty),* },
+                    kind: actor_init,
+                    clock: [$ts_field],
+                    actor_type: [$actor_type],
+                    version: [$([$version])?],
+                    validate: [$([|$($val_args),+| $val_body])?],
+                    validate_spec: [$([$($val_spec)*])?],
+                    post_validate: [$([$post_val_agg, $post_val_evt, $post_val_body])?],
+                    post_validate_spec: [$([$($post_val_spec)*])?],
+                    encrypted_fields: [$([$($enc_field),+])?],
+                    aliases: [$([$($alias),+])?],
+                    apply: $apply,
+                }
+            ]
+            rest: [$($rest)*]
+        }
+    };
     (
         @munch
         [$vis:vis] [$event_enum:ident] [$aggregate:ty]
@@ -957,6 +1308,7 @@ macro_rules! define_events {
                     variant: $variant,
                     fields: { $($(#[$field_attr])* $field: $field_ty),* },
                     kind: actor_init,
+                    clock: [timestamp],
                     actor_type: [$actor_type],
                     version: [$([$version])?],
                     validate: [$([|$($val_args),+| $val_body])?],
@@ -975,6 +1327,54 @@ macro_rules! define_events {
     // =========================================================================
     // TT muncher: parse one DELETE ACTOR variant (@delete @actor(Type))
     // =========================================================================
+    (
+        @munch
+        [$vis:vis] [$event_enum:ident] [$aggregate:ty]
+        upcast: [$($upcast:tt)*]
+        accumulated: [$($acc:tt)*]
+        rest: [
+            $variant:ident {
+                $($(#[$field_attr:meta])* $field:ident: $field_ty:ty),* $(,)?
+            }
+            @delete
+            @actor($actor_type:ty)
+            $(@version($version:literal))?
+            @occurred_at($ts_field:ident)
+            $(@validate |$($val_args:ident),+| $val_body:block)?
+            $(@validate_spec($($val_spec:tt)*))?
+            $(@post_validate |$post_val_agg:ident, $post_val_evt:ident| $post_val_body:block)?
+            $(@post_validate_spec($($post_val_spec:tt)*))?
+            $(@encrypted_fields($($enc_field:ident),+ $(,)?))?
+            $(@aliases($($alias:literal),+ $(,)?))?
+            => $apply:expr,
+            $($rest:tt)*
+        ]
+    ) => {
+        define_events! {
+            @munch
+            [$vis] [$event_enum] [$aggregate]
+            upcast: [$($upcast)*]
+            accumulated: [
+                $($acc)*
+                {
+                    variant: $variant,
+                    fields: { $($(#[$field_attr])* $field: $field_ty),* },
+                    kind: actor_delete,
+                    clock: [$ts_field],
+                    actor_type: [$actor_type],
+                    version: [$([$version])?],
+                    validate: [$([|$($val_args),+| $val_body])?],
+                    validate_spec: [$([$($val_spec)*])?],
+                    post_validate: [$([$post_val_agg, $post_val_evt, $post_val_body])?],
+                    post_validate_spec: [$([$($post_val_spec)*])?],
+                    encrypted_fields: [$([$($enc_field),+])?],
+                    aliases: [$([$($alias),+])?],
+                    apply: $apply,
+                }
+            ]
+            rest: [$($rest)*]
+        }
+    };
     (
         @munch
         [$vis:vis] [$event_enum:ident] [$aggregate:ty]
@@ -1007,6 +1407,7 @@ macro_rules! define_events {
                     variant: $variant,
                     fields: { $($(#[$field_attr])* $field: $field_ty),* },
                     kind: actor_delete,
+                    clock: [timestamp],
                     actor_type: [$actor_type],
                     version: [$([$version])?],
                     validate: [$([|$($val_args),+| $val_body])?],
@@ -1025,6 +1426,53 @@ macro_rules! define_events {
     // =========================================================================
     // TT muncher: parse one DELETE variant (@delete, no @actor)
     // =========================================================================
+    (
+        @munch
+        [$vis:vis] [$event_enum:ident] [$aggregate:ty]
+        upcast: [$($upcast:tt)*]
+        accumulated: [$($acc:tt)*]
+        rest: [
+            $variant:ident {
+                $($(#[$field_attr:meta])* $field:ident: $field_ty:ty),* $(,)?
+            }
+            @delete
+            $(@version($version:literal))?
+            @occurred_at($ts_field:ident)
+            $(@validate |$($val_args:ident),+| $val_body:block)?
+            $(@validate_spec($($val_spec:tt)*))?
+            $(@post_validate |$post_val_agg:ident, $post_val_evt:ident| $post_val_body:block)?
+            $(@post_validate_spec($($post_val_spec:tt)*))?
+            $(@encrypted_fields($($enc_field:ident),+ $(,)?))?
+            $(@aliases($($alias:literal),+ $(,)?))?
+            => $apply:expr,
+            $($rest:tt)*
+        ]
+    ) => {
+        define_events! {
+            @munch
+            [$vis] [$event_enum] [$aggregate]
+            upcast: [$($upcast)*]
+            accumulated: [
+                $($acc)*
+                {
+                    variant: $variant,
+                    fields: { $($(#[$field_attr])* $field: $field_ty),* },
+                    kind: delete,
+                    clock: [$ts_field],
+                    actor_type: [],
+                    version: [$([$version])?],
+                    validate: [$([|$($val_args),+| $val_body])?],
+                    validate_spec: [$([$($val_spec)*])?],
+                    post_validate: [$([$post_val_agg, $post_val_evt, $post_val_body])?],
+                    post_validate_spec: [$([$($post_val_spec)*])?],
+                    encrypted_fields: [$([$($enc_field),+])?],
+                    aliases: [$([$($alias),+])?],
+                    apply: $apply,
+                }
+            ]
+            rest: [$($rest)*]
+        }
+    };
     (
         @munch
         [$vis:vis] [$event_enum:ident] [$aggregate:ty]
@@ -1056,6 +1504,7 @@ macro_rules! define_events {
                     variant: $variant,
                     fields: { $($(#[$field_attr])* $field: $field_ty),* },
                     kind: delete,
+                    clock: [timestamp],
                     actor_type: [],
                     version: [$([$version])?],
                     validate: [$([|$($val_args),+| $val_body])?],
@@ -1074,6 +1523,52 @@ macro_rules! define_events {
     // =========================================================================
     // TT muncher: parse one REGULAR variant (no @init after fields)
     // =========================================================================
+    (
+        @munch
+        [$vis:vis] [$event_enum:ident] [$aggregate:ty]
+        upcast: [$($upcast:tt)*]
+        accumulated: [$($acc:tt)*]
+        rest: [
+            $variant:ident {
+                $($(#[$field_attr:meta])* $field:ident: $field_ty:ty),* $(,)?
+            }
+            $(@version($version:literal))?
+            @occurred_at($ts_field:ident)
+            $(@validate |$($val_args:ident),+| $val_body:block)?
+            $(@validate_spec($($val_spec:tt)*))?
+            $(@post_validate |$post_val_agg:ident, $post_val_evt:ident| $post_val_body:block)?
+            $(@post_validate_spec($($post_val_spec:tt)*))?
+            $(@encrypted_fields($($enc_field:ident),+ $(,)?))?
+            $(@aliases($($alias:literal),+ $(,)?))?
+            => $apply:expr,
+            $($rest:tt)*
+        ]
+    ) => {
+        define_events! {
+            @munch
+            [$vis] [$event_enum] [$aggregate]
+            upcast: [$($upcast)*]
+            accumulated: [
+                $($acc)*
+                {
+                    variant: $variant,
+                    fields: { $($(#[$field_attr])* $field: $field_ty),* },
+                    kind: regular,
+                    clock: [$ts_field],
+                    actor_type: [],
+                    version: [$([$version])?],
+                    validate: [$([|$($val_args),+| $val_body])?],
+                    validate_spec: [$([$($val_spec)*])?],
+                    post_validate: [$([$post_val_agg, $post_val_evt, $post_val_body])?],
+                    post_validate_spec: [$([$($post_val_spec)*])?],
+                    encrypted_fields: [$([$($enc_field),+])?],
+                    aliases: [$([$($alias),+])?],
+                    apply: $apply,
+                }
+            ]
+            rest: [$($rest)*]
+        }
+    };
     (
         @munch
         [$vis:vis] [$event_enum:ident] [$aggregate:ty]
@@ -1104,6 +1599,7 @@ macro_rules! define_events {
                     variant: $variant,
                     fields: { $($(#[$field_attr])* $field: $field_ty),* },
                     kind: regular,
+                    clock: [timestamp],
                     actor_type: [],
                     version: [$([$version])?],
                     validate: [$([|$($val_args),+| $val_body])?],
@@ -1122,6 +1618,53 @@ macro_rules! define_events {
     // =========================================================================
     // TT muncher: parse one INIT variant (@init after fields)
     // =========================================================================
+    (
+        @munch
+        [$vis:vis] [$event_enum:ident] [$aggregate:ty]
+        upcast: [$($upcast:tt)*]
+        accumulated: [$($acc:tt)*]
+        rest: [
+            $variant:ident {
+                $($(#[$field_attr:meta])* $field:ident: $field_ty:ty),* $(,)?
+            }
+            @init
+            $(@version($version:literal))?
+            @occurred_at($ts_field:ident)
+            $(@validate |$($val_args:ident),+| $val_body:block)?
+            $(@validate_spec($($val_spec:tt)*))?
+            $(@post_validate |$post_val_agg:ident, $post_val_evt:ident| $post_val_body:block)?
+            $(@post_validate_spec($($post_val_spec:tt)*))?
+            $(@encrypted_fields($($enc_field:ident),+ $(,)?))?
+            $(@aliases($($alias:literal),+ $(,)?))?
+            => $apply:expr,
+            $($rest:tt)*
+        ]
+    ) => {
+        define_events! {
+            @munch
+            [$vis] [$event_enum] [$aggregate]
+            upcast: [$($upcast)*]
+            accumulated: [
+                $($acc)*
+                {
+                    variant: $variant,
+                    fields: { $($(#[$field_attr])* $field: $field_ty),* },
+                    kind: init,
+                    clock: [$ts_field],
+                    actor_type: [],
+                    version: [$([$version])?],
+                    validate: [$([|$($val_args),+| $val_body])?],
+                    validate_spec: [$([$($val_spec)*])?],
+                    post_validate: [$([$post_val_agg, $post_val_evt, $post_val_body])?],
+                    post_validate_spec: [$([$($post_val_spec)*])?],
+                    encrypted_fields: [$([$($enc_field),+])?],
+                    aliases: [$([$($alias),+])?],
+                    apply: $apply,
+                }
+            ]
+            rest: [$($rest)*]
+        }
+    };
     (
         @munch
         [$vis:vis] [$event_enum:ident] [$aggregate:ty]
@@ -1153,6 +1696,7 @@ macro_rules! define_events {
                     variant: $variant,
                     fields: { $($(#[$field_attr])* $field: $field_ty),* },
                     kind: init,
+                    clock: [timestamp],
                     actor_type: [],
                     version: [$([$version])?],
                     validate: [$([|$($val_args),+| $val_body])?],
@@ -1199,6 +1743,7 @@ macro_rules! define_events {
                     variant: $variant:ident,
                     fields: { $($(#[$field_attr:meta])* $field:ident: $field_ty:ty),* },
                     kind: $kind:ident,
+                    clock: [$clock:ident],
                     actor_type: [$($actor_type:ty)?],
                     version: [$($version:tt)*],
                     validate: [$($validate:tt)*],
@@ -1215,17 +1760,17 @@ macro_rules! define_events {
         // ---- Per-variant: struct, From, EventType, trait impl ----
         $(
             paste::paste! {
-                #[derive(Debug, Clone, ::serde::Serialize, ::serde::Deserialize)]
+                #[derive(Debug, Clone, PartialEq, ::serde::Serialize, ::serde::Deserialize)]
                 $vis struct [<$variant Event>] {
                     $($(#[$field_attr])* pub $field: $field_ty,)*
-                    pub timestamp: ::chrono::DateTime<::chrono::Utc>,
+                    pub $clock: ::chrono::DateTime<::chrono::Utc>,
                 }
 
                 impl ::std::convert::From<[<$variant Event>]> for $event_enum {
                     fn from(event: [<$variant Event>]) -> Self {
                         $event_enum::$variant {
                             $($field: event.$field,)*
-                            timestamp: event.timestamp,
+                            $clock: event.$clock,
                         }
                     }
                 }
@@ -1255,12 +1800,12 @@ macro_rules! define_events {
         )*
 
         // ---- Shared: event enum ----
-        #[derive(Debug, Clone, ::serde::Serialize, ::serde::Deserialize)]
+        #[derive(Debug, Clone, PartialEq, ::serde::Serialize, ::serde::Deserialize)]
         $vis enum $event_enum {
             $(
                 $variant {
                     $($(#[$field_attr])* $field: $field_ty,)*
-                    timestamp: ::chrono::DateTime<::chrono::Utc>,
+                    $clock: ::chrono::DateTime<::chrono::Utc>,
                 }
             ),*
         }
@@ -1295,7 +1840,7 @@ macro_rules! define_events {
                 fn occurred_at(&self) -> ::chrono::DateTime<::chrono::Utc> {
                     match self {
                         $(
-                            $event_enum::$variant { timestamp, .. } => *timestamp
+                            $event_enum::$variant { $clock, .. } => *$clock
                         ),*
                     }
                 }
@@ -1303,10 +1848,10 @@ macro_rules! define_events {
                 fn to_envelope(&self, aggregate_id: ::uuid::Uuid) -> $crate::Result<$crate::EventEnvelope> {
                     let event_data = match self {
                         $(
-                            $event_enum::$variant { $($field,)* timestamp } => {
+                            $event_enum::$variant { $($field,)* $clock } => {
                                 ::serde_json::to_value(&[<$variant Event>] {
                                     $($field: $field.clone(),)*
-                                    timestamp: *timestamp,
+                                    $clock: *$clock,
                                 })
                             }
                         ),*
@@ -1338,7 +1883,7 @@ macro_rules! define_events {
                                 .map_err(|e| $crate::Error::custom(format!("Failed to deserialize event: {e}")))?;
                             return Ok($event_enum::$variant {
                                 $($field: event.$field,)*
-                                timestamp: event.timestamp,
+                                $clock: event.$clock,
                             });
                         }
                     )*
@@ -1371,8 +1916,19 @@ macro_rules! define_events {
                 fn dispatch(&self, aggregate: &mut $aggregate) -> ::std::result::Result<(), <$aggregate as $crate::Aggregate>::Error> {
                     match self {
                         $(
-                            $event_enum::$variant { $($field,)* timestamp } => {
-                                define_events!(@dispatch_arm $kind [$aggregate] [[<$variant Event>]] [$($field),*] [timestamp] [aggregate])
+                            $event_enum::$variant { $($field,)* $clock } => {
+                                define_events!(@dispatch_arm $kind [$aggregate] [[<$variant Event>]] [$($field),*] [$clock] [aggregate])
+                            }
+                        ),*
+                    }
+                    ::std::result::Result::Ok(())
+                }
+
+                fn validate_only(&self, aggregate: &$aggregate) -> ::std::result::Result<(), <$aggregate as $crate::Aggregate>::Error> {
+                    match self {
+                        $(
+                            $event_enum::$variant { $($field,)* $clock } => {
+                                define_events!(@validate_only_arm $kind [$aggregate] [[<$variant Event>]] [$($field),*] [$clock] [aggregate])
                             }
                         ),*
                     }
@@ -1382,8 +1938,8 @@ macro_rules! define_events {
                 fn dispatch_unchecked(&self, aggregate: &mut $aggregate) {
                     match self {
                         $(
-                            $event_enum::$variant { $($field,)* timestamp } => {
-                                define_events!(@dispatch_unchecked_arm $kind [$aggregate] [[<$variant Event>]] [$($field),*] [timestamp] [aggregate])
+                            $event_enum::$variant { $($field,)* $clock } => {
+                                define_events!(@dispatch_unchecked_arm $kind [$aggregate] [[<$variant Event>]] [$($field),*] [$clock] [aggregate])
                             }
                         ),*
                     }
@@ -1402,8 +1958,8 @@ macro_rules! define_events {
                 fn dispatch_init(&self, id: $crate::EntityId) -> ::std::result::Result<$aggregate, <$aggregate as $crate::Aggregate>::Error> {
                     match self {
                         $(
-                            $event_enum::$variant { $($field,)* timestamp } => {
-                                define_events!(@dispatch_init_arm $kind [$aggregate] [[<$variant Event>]] [$($field),*] [timestamp] [id])
+                            $event_enum::$variant { $($field,)* $clock } => {
+                                define_events!(@dispatch_init_arm $kind [$aggregate] [[<$variant Event>]] [$($field),*] [$clock] [id])
                             }
                         ),*
                     }
@@ -1412,8 +1968,8 @@ macro_rules! define_events {
                 fn dispatch_init_unchecked(&self, id: $crate::EntityId) -> $aggregate {
                     match self {
                         $(
-                            $event_enum::$variant { $($field,)* timestamp } => {
-                                define_events!(@dispatch_init_unchecked_arm $kind [$aggregate] [[<$variant Event>]] [$($field),*] [timestamp] [id])
+                            $event_enum::$variant { $($field,)* $clock } => {
+                                define_events!(@dispatch_init_unchecked_arm $kind [$aggregate] [[<$variant Event>]] [$($field),*] [$clock] [id])
                             }
                         ),*
                     }
@@ -1432,8 +1988,8 @@ macro_rules! define_events {
                 fn dispatch_delete(&self, aggregate: $aggregate) -> ::std::result::Result<<$aggregate as $crate::Aggregate>::DeletedState, <$aggregate as $crate::Aggregate>::Error> {
                     match self {
                         $(
-                            $event_enum::$variant { $($field,)* timestamp } => {
-                                define_events!(@dispatch_delete_arm $kind [$aggregate] [[<$variant Event>]] [$($field),*] [timestamp] [aggregate])
+                            $event_enum::$variant { $($field,)* $clock } => {
+                                define_events!(@dispatch_delete_arm $kind [$aggregate] [[<$variant Event>]] [$($field),*] [$clock] [aggregate])
                             }
                         ),*
                     }
@@ -1442,8 +1998,8 @@ macro_rules! define_events {
                 fn dispatch_delete_unchecked(&self, aggregate: $aggregate) -> <$aggregate as $crate::Aggregate>::DeletedState {
                     match self {
                         $(
-                            $event_enum::$variant { $($field,)* timestamp } => {
-                                define_events!(@dispatch_delete_unchecked_arm $kind [$aggregate] [[<$variant Event>]] [$($field),*] [timestamp] [aggregate])
+                            $event_enum::$variant { $($field,)* $clock } => {
+                                define_events!(@dispatch_delete_unchecked_arm $kind [$aggregate] [[<$variant Event>]] [$($field),*] [$clock] [aggregate])
                             }
                         ),*
                     }
@@ -1812,6 +2368,42 @@ macro_rules! define_events {
     // Helper: dispatch arm — called from within paste::paste! so $evt_type
     // is already resolved (e.g. CreatedEvent). No inner paste needed.
     // =========================================================================
+    (@validate_only_arm regular [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
+        {
+            use $crate::ApplyEvent;
+            let evt = $evt_type {
+                $($field: $field.clone(),)*
+                $timestamp: *$timestamp,
+            };
+            evt.validate($aggregate_var)?;
+        }
+    };
+    (@validate_only_arm actor [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
+        {
+            use $crate::ApplyEvent;
+            let evt = $evt_type {
+                $($field: $field.clone(),)*
+                $timestamp: *$timestamp,
+            };
+            evt.validate($aggregate_var)?;
+        }
+    };
+    (@validate_only_arm init [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
+        // An init fact has no aggregate to validate against yet; the post-validate
+        // that guards it runs inside `dispatch_init`.
+        {}
+    };
+    (@validate_only_arm delete [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
+        // A delete fact never reaches `dispatch`; `dispatch_delete` runs its guard.
+        {}
+    };
+    (@validate_only_arm actor_delete [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
+        // A delete fact never reaches `dispatch`; `dispatch_delete` runs its guard.
+        {}
+    };
+    (@validate_only_arm actor_init [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
+        {}
+    };
     (@dispatch_arm regular [$aggregate:ty] [$evt_type:ident] [$($field:ident),*] [$timestamp:ident] [$aggregate_var:ident]) => {
         {
             use $crate::ApplyEvent;
@@ -2565,9 +3157,9 @@ mod tests {
     // This is the test for the command_handler! macro
     command_handler! {
         impl TestAggregate {
-            fn increment(amount: i32) -> IncrementedEvent { amount };
-            fn decrement(amount: i32) -> DecrementedEvent { amount };
-            fn reset() -> ResetEvent { };
+            @clock fn increment(amount: i32) -> IncrementedEvent { amount };
+            @clock fn decrement(amount: i32) -> DecrementedEvent { amount };
+            @clock fn reset() -> ResetEvent { };
         }
     }
 
@@ -4118,11 +4710,11 @@ mod tests {
 
     command_handler! {
         impl Account {
-            @init fn open_account(name: String, initial_balance: i64)
+            @clock @init fn open_account(name: String, initial_balance: i64)
                 -> AccountOpenedEvent { name, initial_balance };
-            fn deposit(amount: i64)
+            @clock fn deposit(amount: i64)
                 -> DepositedEvent { amount };
-            fn withdraw(amount: i64)
+            @clock fn withdraw(amount: i64)
                 -> WithdrawnEvent { amount };
         }
     }
@@ -4418,11 +5010,11 @@ mod tests {
 
     command_handler! {
         impl Member {
-            @init fn create_admin(email: String, name: String)
+            @clock @init fn create_admin(email: String, name: String)
                 -> AdminCreatedEvent { email, name };
-            @init fn create_by_invite(email: String, name: String, invite_code: String)
+            @clock @init fn create_by_invite(email: String, name: String, invite_code: String)
                 -> CreatedByInviteEvent { email, name, invite_code };
-            fn verify() -> VerifiedEvent { };
+            @clock fn verify() -> VerifiedEvent { };
         }
     }
 
@@ -4890,11 +5482,11 @@ mod tests {
 
         command_handler! {
             impl Ticket {
-                @init @actor(Operator)
+                @clock @init @actor(Operator)
                 fn open_ticket(title: String) -> TicketOpenedEvent { title };
-                @actor(Operator)
+                @clock @actor(Operator)
                 fn assign_ticket(assignee: String) -> TicketAssignedEvent { assignee };
-                fn close_ticket(reason: String) -> TicketClosedEvent { reason };
+                @clock fn close_ticket(reason: String) -> TicketClosedEvent { reason };
             }
         }
 
@@ -4903,7 +5495,7 @@ mod tests {
                 id: EntityId::new(),
                 is_admin: true,
             };
-            AggregateRoot::from_snapshot(AggregateVersion::new(1), entity)
+            AggregateRoot::restore(AggregateVersion::new(1), entity)
         }
 
         // --- define_events! @actor tests ---
@@ -5683,10 +6275,10 @@ mod tests {
 
         command_handler! {
             impl Account {
-                @init fn create_account(name: String) -> AccountCreatedEvent { name };
-                fn update_account(name: String) -> AccountUpdatedEvent { name };
-                @delete fn deactivate_account(reason: String) -> AccountDeactivatedEvent { reason };
-                @delete @actor(Admin)
+                @clock @init fn create_account(name: String) -> AccountCreatedEvent { name };
+                @clock fn update_account(name: String) -> AccountUpdatedEvent { name };
+                @clock @delete fn deactivate_account(reason: String) -> AccountDeactivatedEvent { reason };
+                @clock @delete @actor(Admin)
                 fn admin_delete_account(reason: String) -> AccountAdminDeletedEvent { reason };
             }
         }
@@ -5696,7 +6288,7 @@ mod tests {
                 id: EntityId::new(),
                 role: role.to_string(),
             };
-            AggregateRoot::from_snapshot(AggregateVersion::new(1), entity)
+            AggregateRoot::restore(AggregateVersion::new(1), entity)
         }
 
         // --- define_events! @delete tests ---
@@ -5962,7 +6554,7 @@ mod tests {
                 name: "Alice".to_string(),
                 active: false,
             };
-            let agg = AggregateRoot::from_snapshot(AggregateVersion::new(1), entity);
+            let agg = AggregateRoot::restore(AggregateVersion::new(1), entity);
             let result = agg.deactivate_account("again".to_string());
             assert!(result.is_err());
             assert_eq!(result.unwrap_err().to_string(), "Already deactivated");
