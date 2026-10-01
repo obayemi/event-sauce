@@ -944,6 +944,23 @@ mod tests {
         assert_eq!(deleted.entity_id(), id);
     }
 
+    #[test]
+    fn test_replaying_a_delete_yields_a_settled_deleted_root_one_version_later() {
+        let id = crate::EntityId::new();
+        let mut agg = AggregateRoot::<DeletableEntity>::new(id);
+        agg.apply_unchecked(&DeletableEvent::Created { value: 10 });
+
+        let deleted = agg.apply_delete_unchecked(&DeletableEvent::Deleted {
+            reason: "test".to_string(),
+        });
+
+        assert_eq!(deleted.entity_id(), id);
+        assert_eq!(deleted.version(), AggregateVersion::new(2));
+        assert_eq!(deleted.state().value, -1);
+        assert!(deleted.pending_events().is_empty());
+        assert!(!deleted.is_poisoned());
+    }
+
     #[tokio::test]
     async fn test_load_errors_on_deleted_aggregate() {
         let store = CommitTestStore::new(SnapshotConfig::disabled());
