@@ -1155,6 +1155,52 @@ mod tests {
         assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
+    /// The per-policy skip guard must be strict (`position <= checkpoint`
+    /// skips, so only a position *past* the checkpoint is new): a policy
+    /// whose checkpoint sits exactly on a position must not re-run that
+    /// position's event. `behind` starts at [`Position::start`] and sees
+    /// every one of 3 events; `ahead` starts at [`Position::new`]`(2)` and
+    /// must see only the 3rd, not re-run the 2nd (the one its checkpoint
+    /// already sits on).
+    #[tokio::test]
+    async fn test_per_policy_checkpoint_skip_guard_is_strict() {
+        let store = Arc::new(MockEventStore::new());
+        let cp = test_checkpoint_store();
+        cp.save_checkpoint("behind", Position::start())
+            .await
+            .unwrap();
+        cp.save_checkpoint("ahead", Position::new(2)).await.unwrap();
+        for _ in 0..3 {
+            store.add_event(test_envelope("TestEvent", "TestAggregate"));
+        }
+
+        let behind_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let ahead_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let runner = PolicyRunner::new(store, cp)
+            .register(Arc::new(CountingPolicyNoWait {
+                name: "behind".to_string(),
+                count: Arc::clone(&behind_count),
+            }))
+            .register(Arc::new(CountingPolicyNoWait {
+                name: "ahead".to_string(),
+                count: Arc::clone(&ahead_count),
+            }));
+
+        runner.process_pending().await.unwrap();
+
+        assert_eq!(
+            behind_count.load(std::sync::atomic::Ordering::SeqCst),
+            3,
+            "a policy starting at Position::start() must see every event"
+        );
+        assert_eq!(
+            ahead_count.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "a policy whose checkpoint already sits on position 2 must not \
+             re-run that event, only the one after it"
+        );
+    }
+
     #[tokio::test]
     async fn test_process_pending_spans_multiple_batches() {
         let store = Arc::new(MockEventStore::new());
