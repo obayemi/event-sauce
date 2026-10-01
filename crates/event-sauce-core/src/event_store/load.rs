@@ -357,6 +357,28 @@ mod tests {
 
     // -- load() tests --
 
+    fn simple_envelope(id: crate::EntityId, event: &SimpleTestEvent) -> EventEnvelope {
+        EventEnvelope::new(
+            Uuid::new_v4(),
+            id.as_uuid(),
+            "SimpleTestEntity".to_string(),
+            "SimpleTestEntity.Updated".to_string(),
+            crate::EventVersion::new(1),
+            serde_json::to_value(event).unwrap(),
+        )
+    }
+
+    async fn commit_created_then_deleted(store: &CommitTestStore, id: crate::EntityId) {
+        let mut agg = AggregateRoot::<DeletableEntity>::new(id);
+        agg.apply(DeletableEvent::Created { value: 42 }).unwrap();
+        let mut deleted = agg
+            .apply_delete(DeletableEvent::Deleted {
+                reason: "done".to_string(),
+            })
+            .unwrap();
+        store.commit_deleted(&mut deleted).await.unwrap();
+    }
+
     #[tokio::test]
     async fn test_load_with_no_snapshot_replays_from_beginning() {
         let store = CommitTestStore::new(SnapshotConfig::disabled());
@@ -521,124 +543,45 @@ mod tests {
     // -- M4: snapshot self-heals on an undeserializable / stale snapshot --
 
     #[tokio::test]
-    async fn test_load_falls_through_to_replay_when_snapshot_does_not_deserialize() {
-        // M4 (TERMINAL -> REPLAY): a persisted snapshot whose `snapshot_data`
-        // can no longer be deserialized into the current aggregate shape (here:
-        // the required `value` field is absent — `SimpleTestEntity` has no
-        // `#[serde(default)]`) must be treated as a CACHE MISS. The store should
-        // fall through to full-event replay and rebuild the correct state,
-        // NOT return an opaque "Failed to deserialize snapshot entity" error.
-        //
-        // TODAY: `serde_json::from_value::<SimpleTestEntity>` fails and
-        // `load_any` propagates `Error::custom("Failed to deserialize snapshot
-        // entity: ...")`, taking the aggregate offline even though the full
-        // correct state is derivable from the events.
-        let config = SnapshotConfig::always();
-        let store = CommitTestStore::new(config);
+    async fn test_load_falls_through_to_replay_when_snapshot_is_unusable() {
         let id = crate::EntityId::new();
-        let stream_id = StreamId::new("SimpleTestEntity", id.as_uuid());
-
-        // Seed an incompatible snapshot at version 1: object lacks `value`.
-        let bad_snapshot = Snapshot::new(
-            id.as_uuid(),
-            "SimpleTestEntity".to_string(),
-            AggregateVersion::new(1),
-            serde_json::json!({ "id": id }), // missing required `value`
-        );
-        store
-            .snapshots
-            .lock()
-            .unwrap()
-            .insert(stream_id.clone(), bad_snapshot);
-
-        // Seed the full event stream that produces the real state (value = 30).
-        let make_env = |event: &SimpleTestEvent| {
-            EventEnvelope::new(
-                Uuid::new_v4(),
+        let cases = [
+            (AggregateVersion::new(1), serde_json::json!({ "id": id })),
+            (
+                AggregateVersion::initial(),
+                serde_json::to_value(SimpleTestEntity { id, value: 999 }).unwrap(),
+            ),
+        ];
+        for (snapshot_version, snapshot_data) in cases {
+            let store = CommitTestStore::new(SnapshotConfig::always());
+            let stream_id = StreamId::new("SimpleTestEntity", id.as_uuid());
+            let snapshot = Snapshot::new(
                 id.as_uuid(),
                 "SimpleTestEntity".to_string(),
-                "SimpleTestEntity.Updated".to_string(),
-                crate::EventVersion::new(1),
-                serde_json::to_value(event).unwrap(),
-            )
-        };
-        store.streams.lock().unwrap().insert(
-            stream_id,
-            vec![
-                make_env(&SimpleTestEvent::Created { value: 10 }),
-                make_env(&SimpleTestEvent::Updated { value: 20 }),
-                make_env(&SimpleTestEvent::Updated { value: 30 }),
-            ],
-        );
+                snapshot_version,
+                snapshot_data,
+            );
+            store
+                .snapshots
+                .lock()
+                .unwrap()
+                .insert(stream_id.clone(), snapshot);
+            store.streams.lock().unwrap().insert(
+                stream_id,
+                vec![
+                    simple_envelope(id, &SimpleTestEvent::Created { value: 10 }),
+                    simple_envelope(id, &SimpleTestEvent::Updated { value: 20 }),
+                    simple_envelope(id, &SimpleTestEvent::Updated { value: 30 }),
+                ],
+            );
 
-        let result: Result<AggregateRoot<SimpleTestEntity>> = load(&store, id).await;
+            let loaded: AggregateRoot<SimpleTestEntity> = load(&store, id)
+                .await
+                .expect("an unusable snapshot falls back to replay instead of failing the load");
 
-        let loaded = result.expect(
-            "an undeserializable snapshot must self-heal via replay, not hard-fail \
-             (snapshot is a cache, never the source of truth)",
-        );
-        assert_eq!(
-            loaded.value, 30,
-            "state must be rebuilt from full event replay"
-        );
-        assert_eq!(
-            loaded.version(),
-            AggregateVersion::new(3),
-            "version must reflect all replayed events, not the stale snapshot"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_load_falls_through_to_replay_when_snapshot_version_is_invalid() {
-        // A corrupt snapshot version (here: 0, which no stored aggregate can
-        // have reached — it has not applied an event yet) gets the same
-        // self-healing treatment as an undeserializable snapshot: discard and
-        // replay, not a hard failure.
-        let config = SnapshotConfig::always();
-        let store = CommitTestStore::new(config);
-        let id = crate::EntityId::new();
-        let stream_id = StreamId::new("SimpleTestEntity", id.as_uuid());
-
-        let snapshot_entity = SimpleTestEntity { id, value: 999 };
-        let bad_snapshot = Snapshot::new(
-            id.as_uuid(),
-            "SimpleTestEntity".to_string(),
-            AggregateVersion::new(0),
-            serde_json::to_value(&snapshot_entity).unwrap(),
-        );
-        store
-            .snapshots
-            .lock()
-            .unwrap()
-            .insert(stream_id.clone(), bad_snapshot);
-
-        let make_env = |event: &SimpleTestEvent| {
-            EventEnvelope::new(
-                Uuid::new_v4(),
-                id.as_uuid(),
-                "SimpleTestEntity".to_string(),
-                "SimpleTestEntity.Updated".to_string(),
-                crate::EventVersion::new(1),
-                serde_json::to_value(event).unwrap(),
-            )
-        };
-        store.streams.lock().unwrap().insert(
-            stream_id,
-            vec![
-                make_env(&SimpleTestEvent::Created { value: 10 }),
-                make_env(&SimpleTestEvent::Updated { value: 20 }),
-            ],
-        );
-
-        let result: Result<AggregateRoot<SimpleTestEntity>> = load(&store, id).await;
-
-        let loaded = result
-            .expect("a snapshot with an invalid version must self-heal via replay, not hard-fail");
-        assert_eq!(
-            loaded.value, 20,
-            "state must be rebuilt from full event replay, not the corrupt snapshot"
-        );
-        assert_eq!(loaded.version(), AggregateVersion::new(2));
+            assert_eq!(loaded.value, 30, "state must come from full event replay");
+            assert_eq!(loaded.version(), AggregateVersion::new(3));
+        }
     }
 
     #[tokio::test]
@@ -668,24 +611,14 @@ mod tests {
             .unwrap()
             .insert(stream_id.clone(), snapshot);
 
-        let make_env = |event: &SimpleTestEvent| {
-            EventEnvelope::new(
-                Uuid::new_v4(),
-                id.as_uuid(),
-                "SimpleTestEntity".to_string(),
-                "SimpleTestEntity.Updated".to_string(),
-                crate::EventVersion::new(1),
-                serde_json::to_value(event).unwrap(),
-            )
-        };
         // Four events; snapshot is at version 2 so only events at index 2,3 apply.
         store.streams.lock().unwrap().insert(
             stream_id,
             vec![
-                make_env(&SimpleTestEvent::Created { value: 10 }),
-                make_env(&SimpleTestEvent::Updated { value: 20 }),
-                make_env(&SimpleTestEvent::Updated { value: 30 }),
-                make_env(&SimpleTestEvent::Updated { value: 40 }),
+                simple_envelope(id, &SimpleTestEvent::Created { value: 10 }),
+                simple_envelope(id, &SimpleTestEvent::Updated { value: 20 }),
+                simple_envelope(id, &SimpleTestEvent::Updated { value: 30 }),
+                simple_envelope(id, &SimpleTestEvent::Updated { value: 40 }),
             ],
         );
 
@@ -1097,17 +1030,7 @@ mod tests {
         let store = CommitTestStore::new(SnapshotConfig::always());
         let id = crate::EntityId::new();
 
-        // Create, then delete
-        let mut agg = AggregateRoot::<DeletableEntity>::new(id);
-        agg.apply(DeletableEvent::Created { value: 42 }).unwrap();
-
-        let mut deleted = agg
-            .apply_delete(DeletableEvent::Deleted {
-                reason: "done".to_string(),
-            })
-            .unwrap();
-
-        store.commit_deleted(&mut deleted).await.unwrap();
+        commit_created_then_deleted(&store, id).await;
 
         // Verify snapshot was saved as deleted
         let stream_id = StreamId::new("DeletableEntity", id.as_uuid());
@@ -1126,36 +1049,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_load_any_falls_through_to_replay_when_deleted_snapshot_version_is_invalid() {
-        let store = CommitTestStore::new(SnapshotConfig::always());
+    async fn test_load_any_falls_through_to_replay_when_deleted_snapshot_is_unusable() {
         let id = crate::EntityId::new();
+        let corruptions: [fn(&mut Snapshot); 2] = [
+            |snapshot| snapshot.snapshot_version = AggregateVersion::initial(),
+            |snapshot| snapshot.snapshot_data = serde_json::json!({ "id": snapshot.aggregate_id }),
+        ];
+        for corrupt in corruptions {
+            let store = CommitTestStore::new(SnapshotConfig::always());
+            commit_created_then_deleted(&store, id).await;
+            corrupt(
+                store
+                    .snapshots
+                    .lock()
+                    .unwrap()
+                    .get_mut(&StreamId::new("DeletableEntity", id.as_uuid()))
+                    .expect("snapshot should exist"),
+            );
 
-        let mut agg = AggregateRoot::<DeletableEntity>::new(id);
-        agg.apply(DeletableEvent::Created { value: 42 }).unwrap();
-        let mut deleted = agg
-            .apply_delete(DeletableEvent::Deleted {
-                reason: "done".to_string(),
-            })
-            .unwrap();
-        store.commit_deleted(&mut deleted).await.unwrap();
+            let loaded = load_any::<_, DeletableEntity>(&store, id)
+                .await
+                .expect("an unusable deleted snapshot falls back to replay");
 
-        // Corrupt the saved snapshot's version in place.
-        let stream_id = StreamId::new("DeletableEntity", id.as_uuid());
-        store
-            .snapshots
-            .lock()
-            .unwrap()
-            .get_mut(&stream_id)
-            .expect("snapshot should exist")
-            .snapshot_version = AggregateVersion::new(0);
-
-        let loaded = load_any::<_, DeletableEntity>(&store, id)
-            .await
-            .expect("a deleted snapshot with an invalid version must self-heal via replay");
-        assert!(loaded.is_deleted());
-        let loaded_deleted = loaded.into_deleted().unwrap();
-        assert_eq!(loaded_deleted.state().value, -1);
-        assert_eq!(loaded_deleted.version(), AggregateVersion::new(2));
+            let deleted = loaded.into_deleted().unwrap();
+            assert_eq!(deleted.state().value, -1);
+            assert_eq!(deleted.version(), AggregateVersion::new(2));
+        }
     }
 
     #[tokio::test]
