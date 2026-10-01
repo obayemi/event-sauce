@@ -4,10 +4,49 @@
 //! for any type implementing `Aggregate`. Access entity fields via `Deref`
 //! (read-only); state changes must go through `apply()`.
 
+use thiserror::Error;
+
 use crate::{
     Aggregate, AggregateVersion, DefaultEntity, DeleteEvent, DeletedAggregateRoot, EntityId,
     EventApplicator, EventMetadata,
 };
+
+/// Error restoring an [`AggregateRoot`] (or a
+/// [`DeletedAggregateRoot`](crate::DeletedAggregateRoot)) from data a store
+/// already rebuilt.
+///
+/// Returned by [`AggregateRoot::restore`]. `E` is whatever error the
+/// aggregate's `TryFrom` conversion produces — `Infallible` when restoring
+/// from the entity itself.
+///
+/// A blanket `From<RestoreError<E>> for crate::Error` is provided for any
+/// `E: std::error::Error + Send + Sync + 'static`, so callers whose
+/// functions return [`crate::Result`] can propagate it with `?`.
+#[derive(Debug, Error)]
+pub enum RestoreError<E> {
+    /// `stored` did not convert into the aggregate.
+    #[error("failed to convert stored data into the aggregate: {0}")]
+    Conversion(#[source] E),
+
+    /// `version` cannot be a stored aggregate's version: it predates the
+    /// first version applying an event can produce, so no aggregate that
+    /// has gone through at least its init event can have reached it.
+    #[error("{0} cannot be a stored aggregate's version: it has not applied an event yet")]
+    InvalidVersion(AggregateVersion),
+}
+
+impl<E> From<RestoreError<E>> for crate::Error
+where
+    E: std::error::Error + Send + Sync + 'static,
+{
+    fn from(err: RestoreError<E>) -> Self {
+        let message = err.to_string();
+        match err {
+            RestoreError::Conversion(e) => crate::Error::backend("restoring aggregate", e),
+            RestoreError::InvalidVersion(_) => crate::Error::invalid_state(message),
+        }
+    }
+}
 
 /// A pending event with optional actor and metadata information.
 ///
@@ -393,17 +432,58 @@ impl<A: Aggregate> AggregateRoot<A> {
         self.version = self.version.next();
     }
 
-    /// Wraps an entity a store already rebuilt, at the version it was read at.
+    /// Wraps data a store already rebuilt into an `AggregateRoot`, at the
+    /// version it was read at.
     ///
     /// This is what every [`Repository`](crate::Repository) answers a load with,
     /// whichever way it stores an aggregate: a row of typed columns, a serialized
     /// blob, an event-store snapshot plus its tail. The root owes nothing — its
     /// pending list starts empty — so a load-then-save writes nothing.
-    #[must_use]
-    pub fn restore(version: AggregateVersion, entity: A) -> Self {
-        Self {
+    ///
+    /// `stored` is anything the aggregate can convert from via `TryFrom`.
+    /// Pass the entity itself to go through its identity conversion
+    /// (`<A as TryFrom<A>>::Error = Infallible`), or a richer row type whose
+    /// `TryFrom` impl rejects malformed data.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RestoreError::Conversion`] if `stored` does not convert into
+    /// `A`. Returns [`RestoreError::InvalidVersion`] if `version` predates the
+    /// first version an applied event can produce — no aggregate that has
+    /// gone through at least its init event can have a lower version, so a
+    /// stored one reporting it is corrupt.
+    pub fn restore<R>(
+        version: AggregateVersion,
+        stored: R,
+    ) -> Result<Self, RestoreError<<A as TryFrom<R>>::Error>>
+    where
+        A: TryFrom<R>,
+    {
+        if version < AggregateVersion::initial().next() {
+            return Err(RestoreError::InvalidVersion(version));
+        }
+        let entity = A::try_from(stored).map_err(RestoreError::Conversion)?;
+        Ok(Self {
             entity,
             version,
+            pending_events: vec![],
+            poisoned: false,
+        })
+    }
+
+    /// Starts replaying a legacy (non-init-event) aggregate from a freshly
+    /// constructed entity, at version 0, with no pending events.
+    ///
+    /// Unlike [`restore`](Self::restore), this is not reconstructing
+    /// previously-stored state — the version genuinely starts at 0 because no
+    /// event has been applied yet; the caller immediately replays the event
+    /// stream onto it with [`apply_unchecked`](Self::apply_unchecked). Used
+    /// by `load_any()`.
+    #[cfg(feature = "event-sourcing")]
+    pub(crate) fn start_replay(entity: A) -> Self {
+        Self {
+            entity,
+            version: AggregateVersion::initial(),
             pending_events: vec![],
             poisoned: false,
         }
@@ -496,6 +576,7 @@ impl<A: Aggregate> AggregateRoot<A> {
         let version = self.version.next();
         let state = EventApplicator::dispatch_delete_unchecked(event, self.entity);
         DeletedAggregateRoot::restore(state, entity_id, version)
+            .expect("a version derived from .next() is always >= 1")
     }
 }
 

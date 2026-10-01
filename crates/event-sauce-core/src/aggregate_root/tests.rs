@@ -289,10 +289,108 @@ fn test_aggregate_root_restore() {
         value: 42,
     };
 
-    let counter = AggregateRoot::<CounterEntity>::restore(AggregateVersion::new(5), entity);
+    let counter = AggregateRoot::<CounterEntity>::restore(AggregateVersion::new(5), entity)
+        .expect("a valid version and the entity itself always restore");
 
     assert_eq!(counter.value, 42);
     assert_eq!(counter.version(), AggregateVersion::new(5));
+    assert!(counter.pending_events().is_empty());
+    assert!(!counter.is_poisoned());
+}
+
+#[test]
+fn test_aggregate_root_restore_rejects_version_zero() {
+    let entity = CounterEntity {
+        id: EntityId::new(),
+        value: 0,
+    };
+
+    let err =
+        AggregateRoot::<CounterEntity>::restore(AggregateVersion::initial(), entity).unwrap_err();
+
+    assert!(matches!(
+        err,
+        RestoreError::InvalidVersion(v) if v == AggregateVersion::initial()
+    ));
+}
+
+#[test]
+fn test_aggregate_root_restore_rejects_negative_version() {
+    let entity = CounterEntity {
+        id: EntityId::new(),
+        value: 0,
+    };
+
+    let err =
+        AggregateRoot::<CounterEntity>::restore(AggregateVersion::new(-7), entity).unwrap_err();
+
+    assert!(matches!(
+        err,
+        RestoreError::InvalidVersion(v) if v == AggregateVersion::new(-7)
+    ));
+}
+
+/// A richer "stored row" distinct from `CounterEntity`, letting `restore`
+/// exercise a real `TryFrom` conversion instead of the identity one.
+struct CounterRow {
+    id: EntityId,
+    value: i32,
+}
+
+impl From<CounterRow> for CounterEntity {
+    fn from(row: CounterRow) -> Self {
+        Self {
+            id: row.id,
+            value: row.value,
+        }
+    }
+}
+
+#[test]
+fn test_aggregate_root_restore_converts_via_from() {
+    let row = CounterRow {
+        id: EntityId::new(),
+        value: 7,
+    };
+
+    let counter = AggregateRoot::<CounterEntity>::restore(AggregateVersion::new(1), row)
+        .expect("a row with a valid From impl always restores");
+
+    assert_eq!(counter.value, 7);
+    assert_eq!(counter.version(), AggregateVersion::new(1));
+}
+
+/// A "stored row" whose conversion into `CounterEntity` can fail, used to
+/// exercise `RestoreError::Conversion`.
+struct CorruptRow {
+    value: i32,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("row value {0} is negative")]
+struct CorruptRowError(i32);
+
+impl TryFrom<CorruptRow> for CounterEntity {
+    type Error = CorruptRowError;
+
+    fn try_from(row: CorruptRow) -> Result<Self, Self::Error> {
+        if row.value < 0 {
+            return Err(CorruptRowError(row.value));
+        }
+        Ok(Self {
+            id: EntityId::new(),
+            value: row.value,
+        })
+    }
+}
+
+#[test]
+fn test_aggregate_root_restore_surfaces_conversion_error() {
+    let row = CorruptRow { value: -1 };
+
+    let err = AggregateRoot::<CounterEntity>::restore(AggregateVersion::new(1), row).unwrap_err();
+
+    assert!(matches!(err, RestoreError::Conversion(CorruptRowError(-1))));
 }
 
 #[test]

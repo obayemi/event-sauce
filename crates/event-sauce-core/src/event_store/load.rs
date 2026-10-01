@@ -64,10 +64,11 @@ where
 ///
 /// Returns `Ok(Some(loaded))` when the snapshot is a usable cache entry, and
 /// `Ok(None)` when it is a CACHE MISS — i.e. the snapshot's type tag or schema
-/// version no longer matches `A`, or its data can no longer be deserialized
-/// into `A` / `A::DeletedState`. On a miss the caller falls through to full
-/// event replay (snapshot is a cache, never the source of truth) and a fresh
-/// snapshot is written at the current version on the next commit.
+/// version no longer matches `A`, its data can no longer be deserialized into
+/// `A` / `A::DeletedState`, or its stored `AggregateVersion` is one
+/// [`AggregateRoot::restore`] refuses. On a miss the caller falls through to
+/// full event replay (snapshot is a cache, never the source of truth) and a
+/// fresh snapshot is written at the current version on the next commit.
 ///
 /// The `snapshot.snapshot_data` is expected to already be decrypted (the
 /// crypto-shredding `KeyNotFound` case is handled by the caller before this is
@@ -132,11 +133,18 @@ where
             return Ok(None);
         };
         let entity_id = EntityId::from(aggregate_id);
-        return Ok(Some(Loaded::Deleted(DeletedAggregateRoot::restore(
-            deleted_state,
-            entity_id,
-            snapshot_version,
-        ))));
+        // (iv) Invalid version on the deleted state: cache miss, replay.
+        let Ok(deleted) = DeletedAggregateRoot::restore(deleted_state, entity_id, snapshot_version)
+        else {
+            tracing::warn!(
+                aggregate_type = %A::aggregate_type(),
+                aggregate_id = %aggregate_id,
+                "Deleted snapshot has an invalid version; \
+                 discarding stale snapshot and replaying events"
+            );
+            return Ok(None);
+        };
+        return Ok(Some(Loaded::Deleted(deleted)));
     }
 
     // (iii) Active snapshot: a deserialization failure is a cache miss, NOT a
@@ -151,7 +159,16 @@ where
         return Ok(None);
     };
 
-    let aggregate = AggregateRoot::restore(snapshot_version, entity);
+    // (iv) Invalid version: cache miss, replay.
+    let Ok(aggregate) = AggregateRoot::restore(snapshot_version, entity) else {
+        tracing::warn!(
+            aggregate_type = %A::aggregate_type(),
+            aggregate_id = %aggregate_id,
+            "Snapshot has an invalid version; \
+             discarding stale snapshot and replaying events"
+        );
+        return Ok(None);
+    };
 
     let event_stream = store.load_stream(stream_id, snapshot_version).await?;
     futures::pin_mut!(event_stream);
@@ -260,7 +277,7 @@ where
         UninitAggregateRoot::<A>::new(id).apply_init_unchecked(&first_event)
     } else {
         // Legacy aggregate: Entity::new(id) + apply first event
-        let mut agg = AggregateRoot::<A>::restore(AggregateVersion::initial(), A::new(id));
+        let mut agg = AggregateRoot::<A>::start_replay(A::new(id));
         agg.apply_unchecked(&first_event);
         agg
     };
@@ -576,6 +593,59 @@ mod tests {
             AggregateVersion::new(3),
             "version must reflect all replayed events, not the stale snapshot"
         );
+    }
+
+    #[tokio::test]
+    async fn test_load_falls_through_to_replay_when_snapshot_version_is_invalid() {
+        // A corrupt snapshot version (here: 0, which no stored aggregate can
+        // have reached — it has not applied an event yet) gets the same
+        // self-healing treatment as an undeserializable snapshot: discard and
+        // replay, not a hard failure.
+        let config = SnapshotConfig::always();
+        let store = CommitTestStore::new(config);
+        let id = crate::EntityId::new();
+        let stream_id = StreamId::new("SimpleTestEntity", id.as_uuid());
+
+        let snapshot_entity = SimpleTestEntity { id, value: 999 };
+        let bad_snapshot = Snapshot::new(
+            id.as_uuid(),
+            "SimpleTestEntity".to_string(),
+            AggregateVersion::new(0),
+            serde_json::to_value(&snapshot_entity).unwrap(),
+        );
+        store
+            .snapshots
+            .lock()
+            .unwrap()
+            .insert(stream_id.clone(), bad_snapshot);
+
+        let make_env = |event: &SimpleTestEvent| {
+            EventEnvelope::new(
+                Uuid::new_v4(),
+                id.as_uuid(),
+                "SimpleTestEntity".to_string(),
+                "SimpleTestEntity.Updated".to_string(),
+                crate::EventVersion::new(1),
+                serde_json::to_value(event).unwrap(),
+            )
+        };
+        store.streams.lock().unwrap().insert(
+            stream_id,
+            vec![
+                make_env(&SimpleTestEvent::Created { value: 10 }),
+                make_env(&SimpleTestEvent::Updated { value: 20 }),
+            ],
+        );
+
+        let result: Result<AggregateRoot<SimpleTestEntity>> = load(&store, id).await;
+
+        let loaded = result
+            .expect("a snapshot with an invalid version must self-heal via replay, not hard-fail");
+        assert_eq!(
+            loaded.value, 20,
+            "state must be rebuilt from full event replay, not the corrupt snapshot"
+        );
+        assert_eq!(loaded.version(), AggregateVersion::new(2));
     }
 
     #[tokio::test]
@@ -1039,6 +1109,39 @@ mod tests {
 
         // Load — should come from deleted snapshot
         let loaded = load_any::<_, DeletableEntity>(&store, id).await.unwrap();
+        assert!(loaded.is_deleted());
+        let loaded_deleted = loaded.into_deleted().unwrap();
+        assert_eq!(loaded_deleted.state().value, -1);
+        assert_eq!(loaded_deleted.version(), AggregateVersion::new(2));
+    }
+
+    #[tokio::test]
+    async fn test_load_any_falls_through_to_replay_when_deleted_snapshot_version_is_invalid() {
+        let store = CommitTestStore::new(SnapshotConfig::always());
+        let id = crate::EntityId::new();
+
+        let mut agg = AggregateRoot::<DeletableEntity>::new(id);
+        agg.apply(DeletableEvent::Created { value: 42 }).unwrap();
+        let mut deleted = agg
+            .apply_delete(DeletableEvent::Deleted {
+                reason: "done".to_string(),
+            })
+            .unwrap();
+        store.commit_deleted(&mut deleted).await.unwrap();
+
+        // Corrupt the saved snapshot's version in place.
+        let stream_id = StreamId::new("DeletableEntity", id.as_uuid());
+        store
+            .snapshots
+            .lock()
+            .unwrap()
+            .get_mut(&stream_id)
+            .expect("snapshot should exist")
+            .snapshot_version = AggregateVersion::new(0);
+
+        let loaded = load_any::<_, DeletableEntity>(&store, id)
+            .await
+            .expect("a deleted snapshot with an invalid version must self-heal via replay");
         assert!(loaded.is_deleted());
         let loaded_deleted = loaded.into_deleted().unwrap();
         assert_eq!(loaded_deleted.state().value, -1);
