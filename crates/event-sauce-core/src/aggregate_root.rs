@@ -545,8 +545,7 @@ impl<A: Aggregate> AggregateRoot<A> {
         let entity_id = self.entity.entity_id();
         let version = self.version.next();
         let state = EventApplicator::dispatch_delete_unchecked(event, self.entity);
-        DeletedAggregateRoot::restore(state, entity_id, version)
-            .expect("a version derived from .next() is always >= 1")
+        DeletedAggregateRoot::from_delete_with_pending(state, entity_id, version, Vec::new(), false)
     }
 }
 
