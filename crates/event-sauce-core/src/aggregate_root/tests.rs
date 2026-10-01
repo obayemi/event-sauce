@@ -330,6 +330,20 @@ fn test_aggregate_root_restore_rejects_negative_version() {
     ));
 }
 
+#[test]
+fn test_invalid_restore_version_becomes_invalid_state() {
+    let entity = CounterEntity {
+        id: EntityId::new(),
+        value: 0,
+    };
+    let restore_error =
+        AggregateRoot::<CounterEntity>::restore(AggregateVersion::initial(), entity).unwrap_err();
+
+    let err = crate::Error::from(restore_error);
+
+    assert!(matches!(&err, crate::Error::InvalidState(message) if message.contains("v0")));
+}
+
 /// A richer "stored row" distinct from `CounterEntity`, letting `restore`
 /// exercise a real `TryFrom` conversion instead of the identity one.
 struct CounterRow {
