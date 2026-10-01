@@ -128,8 +128,8 @@ impl<A: Aggregate> DeletedAggregateRoot<A> {
         }
     }
 
-    /// Wraps a value a store rebuilt into the deleted state itself (no
-    /// pending events).
+    /// Converts what a store read back into the deleted state and wraps it
+    /// in a deleted root (no pending events).
     ///
     /// Used by `load_any()` when what came back is in a deleted state.
     /// `stored` converts into `A::DeletedState` through `TryFrom`, exactly

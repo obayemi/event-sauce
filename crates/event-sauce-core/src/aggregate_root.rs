@@ -393,8 +393,8 @@ impl<A: Aggregate> AggregateRoot<A> {
         self.version = self.version.next();
     }
 
-    /// Wraps a value a store rebuilt into the entity itself, at the version
-    /// it was read at.
+    /// Converts what a store read back into the entity and wraps it in a
+    /// root, at the version it was read at.
     ///
     /// This is what every [`Repository`](crate::Repository) answers a load with,
     /// whichever way it stores an aggregate: a row of typed columns, a serialized
