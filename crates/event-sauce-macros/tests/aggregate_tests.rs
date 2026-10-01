@@ -6,7 +6,7 @@
 use chrono::{DateTime, Utc};
 use event_sauce_core::{
     Aggregate, AggregateError, AggregateRoot, AggregateType, AggregateVersion, ApplyEvent,
-    DomainEvent, Entity, EntityId, EventApplicator,
+    DomainEvent, Entity, EntityId, EventApplicator, StoredVersion,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -210,7 +210,10 @@ fn test_restore() {
     let id = EntityId::new();
     let entity = TestCounter { id, value: 100 };
 
-    let root = AggregateRoot::<TestCounter>::restore(AggregateVersion::new(5), entity).unwrap();
+    let root = AggregateRoot::<TestCounter>::restore(
+        StoredVersion::try_from(AggregateVersion::new(5)).unwrap(),
+        entity,
+    );
 
     assert_eq!(root.value, 100);
     assert_eq!(root.version(), AggregateVersion::new(5));

@@ -5,8 +5,6 @@
 //! by the absence of any `apply()` method.
 
 use crate::aggregate_root::PendingEvent;
-#[cfg(any(test, feature = "event-sourcing", feature = "state-store"))]
-use crate::aggregate_root::RestoreError;
 use crate::{Aggregate, AggregateVersion, EntityId};
 
 /// Terminal state wrapper for a deleted aggregate.
@@ -133,29 +131,13 @@ impl<A: Aggregate> DeletedAggregateRoot<A> {
     /// Wraps a deleted state a store already rebuilt (no pending events).
     ///
     /// Used by `load_any()` when what came back is in a deleted state.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`RestoreError::InvalidVersion`] if `version` predates the
-    /// first version an applied event can produce — a deleted aggregate has
-    /// applied at least an init event and a delete event, so no stored one
-    /// can have a lower version.
     #[cfg(any(test, feature = "event-sourcing", feature = "state-store"))]
     pub(crate) fn restore(
         state: A::DeletedState,
         entity_id: EntityId,
-        version: AggregateVersion,
-    ) -> Result<Self, RestoreError> {
-        if version < AggregateVersion::initial().next() {
-            return Err(RestoreError::InvalidVersion(version));
-        }
-        Ok(Self {
-            state,
-            entity_id,
-            version,
-            pending_events: Vec::new(),
-            poisoned: false,
-        })
+        version: crate::StoredVersion,
+    ) -> Self {
+        Self::from_delete_with_pending(state, entity_id, version.into(), Vec::new(), false)
     }
 
     /// Returns the aggregate type name.
@@ -200,6 +182,7 @@ where
 mod tests {
     use super::*;
     use crate::test_fixtures::{SimpleTestEntity, SimpleTestEvent};
+    use crate::StoredVersion;
 
     #[test]
     fn test_deleted_aggregate_root_deref() {
@@ -210,9 +193,8 @@ mod tests {
         let deleted = DeletedAggregateRoot::<SimpleTestEntity>::restore(
             entity,
             EntityId::new(),
-            AggregateVersion::new(5),
-        )
-        .unwrap();
+            StoredVersion::try_from(AggregateVersion::new(5)).unwrap(),
+        );
         // Deref gives read-only access to the deleted state
         assert_eq!(deleted.value, 42);
     }
@@ -222,8 +204,7 @@ mod tests {
         let id = EntityId::new();
         let entity = SimpleTestEntity { id, value: 0 };
         let deleted =
-            DeletedAggregateRoot::<SimpleTestEntity>::restore(entity, id, AggregateVersion::new(1))
-                .unwrap();
+            DeletedAggregateRoot::<SimpleTestEntity>::restore(entity, id, StoredVersion::FIRST);
         assert_eq!(deleted.entity_id(), id);
     }
 
@@ -236,9 +217,8 @@ mod tests {
         let deleted = DeletedAggregateRoot::<SimpleTestEntity>::restore(
             entity,
             EntityId::new(),
-            AggregateVersion::new(10),
-        )
-        .unwrap();
+            StoredVersion::try_from(AggregateVersion::new(10)).unwrap(),
+        );
         assert_eq!(deleted.version(), AggregateVersion::new(10));
     }
 
@@ -251,9 +231,8 @@ mod tests {
         let deleted = DeletedAggregateRoot::<SimpleTestEntity>::restore(
             entity,
             EntityId::new(),
-            AggregateVersion::new(1),
-        )
-        .unwrap();
+            StoredVersion::FIRST,
+        );
         assert_eq!(deleted.state().value, 99);
     }
 
@@ -352,9 +331,11 @@ mod tests {
             value: 42,
         };
         let id = entity.id;
-        let deleted =
-            DeletedAggregateRoot::<SimpleTestEntity>::restore(entity, id, AggregateVersion::new(5))
-                .unwrap();
+        let deleted = DeletedAggregateRoot::<SimpleTestEntity>::restore(
+            entity,
+            id,
+            StoredVersion::try_from(AggregateVersion::new(5)).unwrap(),
+        );
         let json = serde_json::to_value(&deleted).unwrap();
         assert!(json.get("state").is_some());
         assert!(json.get("entity_id").is_some());
@@ -370,9 +351,11 @@ mod tests {
             value: 42,
         };
         let id = entity.id;
-        let deleted =
-            DeletedAggregateRoot::<SimpleTestEntity>::restore(entity, id, AggregateVersion::new(5))
-                .unwrap();
+        let deleted = DeletedAggregateRoot::<SimpleTestEntity>::restore(
+            entity,
+            id,
+            StoredVersion::try_from(AggregateVersion::new(5)).unwrap(),
+        );
         let cloned = deleted.clone();
         assert_eq!(cloned.entity_id(), deleted.entity_id());
         assert_eq!(cloned.version(), deleted.version());
@@ -386,50 +369,13 @@ mod tests {
         let deleted = DeletedAggregateRoot::<SimpleTestEntity>::restore(
             entity,
             id,
-            AggregateVersion::new(10),
-        )
-        .unwrap();
+            StoredVersion::try_from(AggregateVersion::new(10)).unwrap(),
+        );
         assert_eq!(deleted.entity_id(), id);
         assert_eq!(deleted.version(), AggregateVersion::new(10));
         assert_eq!(deleted.state().value, 77);
         assert!(deleted.pending_events().is_empty());
         assert!(!deleted.is_poisoned());
-    }
-
-    #[test]
-    fn test_deleted_aggregate_root_restore_rejects_version_zero() {
-        let entity = SimpleTestEntity {
-            id: EntityId::new(),
-            value: 0,
-        };
-        let err = DeletedAggregateRoot::<SimpleTestEntity>::restore(
-            entity,
-            EntityId::new(),
-            AggregateVersion::initial(),
-        )
-        .unwrap_err();
-        assert!(matches!(
-            err,
-            RestoreError::InvalidVersion(v) if v == AggregateVersion::initial()
-        ));
-    }
-
-    #[test]
-    fn test_deleted_aggregate_root_restore_rejects_negative_version() {
-        let entity = SimpleTestEntity {
-            id: EntityId::new(),
-            value: 0,
-        };
-        let err = DeletedAggregateRoot::<SimpleTestEntity>::restore(
-            entity,
-            EntityId::new(),
-            AggregateVersion::new(-1),
-        )
-        .unwrap_err();
-        assert!(matches!(
-            err,
-            RestoreError::InvalidVersion(v) if v == AggregateVersion::new(-1)
-        ));
     }
 
     #[test]
@@ -441,9 +387,8 @@ mod tests {
         let deleted = DeletedAggregateRoot::<SimpleTestEntity>::restore(
             entity,
             EntityId::new(),
-            AggregateVersion::new(1),
-        )
-        .unwrap();
+            StoredVersion::FIRST,
+        );
         let debug = format!("{deleted:?}");
         assert!(debug.contains("DeletedAggregateRoot"));
     }

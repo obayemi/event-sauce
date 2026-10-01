@@ -1650,6 +1650,7 @@ fn test_multi_init_envelope_roundtrip_invite() {
 #[allow(clippy::too_many_lines)]
 mod actor_tests {
     use super::*;
+    use crate::StoredVersion;
 
     // --- Actor entity for tests ---
 
@@ -1807,7 +1808,7 @@ mod actor_tests {
             id: EntityId::new(),
             is_admin: true,
         };
-        AggregateRoot::restore(AggregateVersion::new(1), entity).unwrap()
+        AggregateRoot::restore(StoredVersion::FIRST, entity)
     }
 
     // --- define_events! @actor tests ---
@@ -2433,8 +2434,8 @@ mod encrypted_fields_tests {
 mod delete_tests {
     use super::*;
     use crate::{
-        ActorDeleteEvent, AggregateRoot, AggregateVersion, DeleteEvent, DeletedAggregateRoot,
-        EventApplicator,
+        ActorDeleteEvent, AggregateRoot, DeleteEvent, DeletedAggregateRoot, EventApplicator,
+        StoredVersion,
     };
 
     // --- Operator entity (actor) ---
@@ -2600,7 +2601,7 @@ mod delete_tests {
             id: EntityId::new(),
             role: role.to_string(),
         };
-        AggregateRoot::restore(AggregateVersion::new(1), entity).unwrap()
+        AggregateRoot::restore(StoredVersion::FIRST, entity)
     }
 
     // --- define_events! @delete tests ---
@@ -2866,7 +2867,7 @@ mod delete_tests {
             name: "Alice".to_string(),
             active: false,
         };
-        let agg = AggregateRoot::restore(AggregateVersion::new(1), entity).unwrap();
+        let agg = AggregateRoot::restore(StoredVersion::FIRST, entity);
         let result = agg.deactivate_account("again".to_string());
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().to_string(), "Already deactivated");
