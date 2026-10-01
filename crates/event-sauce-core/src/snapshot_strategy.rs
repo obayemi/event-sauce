@@ -460,4 +460,95 @@ mod tests {
         let never = NeverSnapshot;
         assert!(!never.should_snapshot_range(AggregateVersion::new(3), AggregateVersion::new(4)));
     }
+
+    /// Property tests for [`EveryNEvents`] over arbitrary intervals and
+    /// versions, generalizing the fixed-interval examples above.
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        /// Builds `(interval, k, r)` where `k` is deliberately steered onto
+        /// `0` (the version-0 edge `should_snapshot` guards explicitly) as
+        /// well as drawn elsewhere, and `r` is steered onto a boundary
+        /// (`0`), just past one (`interval - 1`), or anywhere else in
+        /// `[0, interval)` — rather than drawing a version independently of
+        /// the interval, which almost never lands on a multiple.
+        fn arb_interval_and_remainder(max_interval: u32) -> impl Strategy<Value = (u32, i64, i64)> {
+            (1u32..=max_interval).prop_flat_map(|interval| {
+                let span = i64::from(interval);
+                (
+                    Just(interval),
+                    prop_oneof![Just(0i64), 1i64..50],
+                    prop_oneof![Just(0i64), Just(span - 1), 0..span],
+                )
+            })
+        }
+
+        /// Extends [`arb_interval_and_remainder`] with an `advance` steered
+        /// onto the exact distance to the next interval boundary from
+        /// `previous = k * interval + r`, one short of it, and one past
+        /// it — rather than drawing it independently, which rarely lands on
+        /// the single `advance` value that makes a crossing turn into a
+        /// non-crossing (or vice versa). Candidates are clamped back into
+        /// the original `0..=50` range so the commit span stays small.
+        fn arb_interval_remainder_and_advance(
+            max_interval: u32,
+        ) -> impl Strategy<Value = (u32, i64, i64, i64)> {
+            arb_interval_and_remainder(max_interval).prop_flat_map(|(interval, k, r)| {
+                let span = i64::from(interval);
+                let to_next_boundary = span - r;
+                (
+                    Just(interval),
+                    Just(k),
+                    Just(r),
+                    prop_oneof![
+                        Just(to_next_boundary.clamp(0, 50)),
+                        Just((to_next_boundary - 1).clamp(0, 50)),
+                        Just((to_next_boundary + 1).clamp(0, 50)),
+                        0i64..=50,
+                    ],
+                )
+            })
+        }
+
+        proptest! {
+            /// `should_snapshot` fires exactly at (strictly positive)
+            /// multiples of the interval, for any interval and any version,
+            /// with versions steered onto and around interval boundaries.
+            #[test]
+            fn fires_exactly_at_multiples((interval, k, r) in arb_interval_and_remainder(10_000)) {
+                let strategy = EveryNEvents::try_new(interval).unwrap();
+                let version = k * i64::from(interval) + r;
+                let is_multiple = k > 0 && r == 0;
+
+                prop_assert_eq!(
+                    strategy.should_snapshot(AggregateVersion::new(version)),
+                    is_multiple
+                );
+            }
+
+            /// `should_snapshot_range` fires exactly when the commit's
+            /// version span crosses at least one interval boundary: checked
+            /// against an exhaustive scan of every version the commit passes
+            /// through, not against the division formula under test.
+            #[test]
+            fn range_fires_exactly_on_boundary_crossings(
+                (interval, k, r, advance) in arb_interval_remainder_and_advance(1_000),
+            ) {
+                let strategy = EveryNEvents::try_new(interval).unwrap();
+                let previous = k * i64::from(interval) + r;
+                let current = previous + advance;
+                let expected = (previous + 1..=current)
+                    .any(|v| strategy.should_snapshot(AggregateVersion::new(v)));
+
+                prop_assert_eq!(
+                    strategy.should_snapshot_range(
+                        AggregateVersion::new(previous),
+                        AggregateVersion::new(current),
+                    ),
+                    expected
+                );
+            }
+        }
+    }
 }
