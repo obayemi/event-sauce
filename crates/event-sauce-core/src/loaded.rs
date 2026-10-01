@@ -115,11 +115,11 @@ impl<A: Aggregate> Loaded<A> {
         })?;
         Ok(if is_deleted {
             let state: A::DeletedState = serde_json::from_value(data)?;
-            let Ok(deleted) = DeletedAggregateRoot::<A>::restore(state, aggregate_id, version);
+            let Ok(deleted) = DeletedAggregateRoot::restore(state, aggregate_id, version);
             Self::Deleted(deleted)
         } else {
             let entity: A = serde_json::from_value(data)?;
-            let Ok(active) = AggregateRoot::<A>::restore(version, entity);
+            let Ok(active) = AggregateRoot::restore(version, entity);
             Self::Active(active)
         })
     }
