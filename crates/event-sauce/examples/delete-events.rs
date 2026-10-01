@@ -296,7 +296,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             plan: sub2.plan.clone(),
             active: sub2.active,
         };
-        AggregateRoot::<Subscription>::restore(sub2.version(), entity)?
+        AggregateRoot::restore(sub2.version(), entity)?
     };
 
     let regular_admin = {

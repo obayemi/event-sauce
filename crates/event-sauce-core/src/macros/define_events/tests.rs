@@ -2866,7 +2866,7 @@ mod delete_tests {
             name: "Alice".to_string(),
             active: false,
         };
-        let agg = AggregateRoot::<Account>::restore(AggregateVersion::new(1), entity).unwrap();
+        let agg = AggregateRoot::restore(AggregateVersion::new(1), entity).unwrap();
         let result = agg.deactivate_account("again".to_string());
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().to_string(), "Already deactivated");
