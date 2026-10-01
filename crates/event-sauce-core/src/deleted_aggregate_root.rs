@@ -134,7 +134,8 @@ impl<A: Aggregate> DeletedAggregateRoot<A> {
     /// Used by `load_any()` when what came back is in a deleted state.
     /// `stored` converts into `A::DeletedState` through `TryFrom`, exactly
     /// like [`AggregateRoot::restore`](crate::AggregateRoot::restore):
-    /// passing the deleted state itself can never fail.
+    /// passing the deleted state itself, or any type it implements `From`
+    /// for, can never fail.
     #[cfg(any(test, feature = "event-sourcing", feature = "state-store"))]
     pub(crate) fn restore<R>(
         stored: R,

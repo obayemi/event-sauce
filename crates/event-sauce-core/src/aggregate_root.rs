@@ -411,10 +411,13 @@ impl<A: Aggregate> AggregateRoot<A> {
     /// # Errors
     ///
     /// Returns `<A as TryFrom<R>>::Error` as is when `stored` fails to
-    /// convert into `A`. Passing the entity itself (`R = A`) can never
-    /// fail — its error type is [`Infallible`](std::convert::Infallible),
-    /// so the result is always `Ok` and destructures irrefutably on stable:
-    /// `let Ok(root) = AggregateRoot::restore(version, entity);`.
+    /// convert into `A`. Passing the entity itself, or any type `A`
+    /// implements `From` for, can never fail — its error type is
+    /// [`Infallible`](std::convert::Infallible), so the result is always
+    /// `Ok` and destructures irrefutably on stable:
+    /// `let Ok(root) = AggregateRoot::<A>::restore(version, entity);`.
+    /// The turbofish can go only where something downstream already fixes
+    /// `A`, such as the return type of the enclosing function.
     ///
     /// # Examples
     ///
