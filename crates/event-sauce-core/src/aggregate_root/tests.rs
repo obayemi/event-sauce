@@ -322,20 +322,6 @@ impl TryFrom<CounterRow> for CounterEntity {
     }
 }
 
-struct CounterSnapshot {
-    id: EntityId,
-    value: i32,
-}
-
-impl From<CounterSnapshot> for CounterEntity {
-    fn from(snapshot: CounterSnapshot) -> Self {
-        Self {
-            id: snapshot.id,
-            value: snapshot.value,
-        }
-    }
-}
-
 #[test]
 fn test_aggregate_root_restore_returns_the_rows_conversion_error() {
     let version = StoredVersion::try_from(AggregateVersion::new(5)).unwrap();
@@ -350,12 +336,14 @@ fn test_aggregate_root_restore_returns_the_rows_conversion_error() {
 }
 
 #[test]
-fn test_aggregate_root_restore_converts_a_row_through_from() {
+fn test_aggregate_root_restore_converts_a_valid_row() {
     let id = EntityId::new();
     let version = StoredVersion::try_from(AggregateVersion::new(5)).unwrap();
-    let row = CounterSnapshot { id, value: 42 };
+    let row = CounterRow { id, value: 42 };
 
     let counter = AggregateRoot::<CounterEntity>::restore(version, row).unwrap();
+
+    assert_eq!(counter.entity_id(), id);
 
     assert_eq!(counter.value, 42);
     assert_eq!(counter.version(), AggregateVersion::new(5));
