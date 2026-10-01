@@ -647,7 +647,7 @@ horizontally:
 | State outbox (`run_once` / `mark_done` / `mark_failed`) | ✅ Yes | Same `FOR UPDATE SKIP LOCKED` claim plus `locked_by`-fenced acks as the policy outbox; backoff is computed from the row's `failures` count, not from an attempt count passed in. |
 | `store.migrate()` (any store) | ✅ Yes, even behind PgBouncer transaction mode | Guarded by a transaction-scoped `pg_advisory_xact_lock`; safe to call from every instance on every startup. |
 | `run_postgres_projection` (unleased) | ❌ No | Explicitly documented as **not** taking a lease — two instances race on the checkpoint and double-apply events. Use `run_leased_projection` instead whenever more than one instance might run the same projection. |
-| `PolicyRunner::process_pending` | ❌ No | Resolves and advances policy checkpoints with no lease of its own. Run it from exactly one instance (a dedicated worker, a leader-elected pod, or a single cron-triggered job), not from every app replica. |
+| `PolicyRunner::process_pending` | ✅ Yes | Each registered policy is its own lease (`try_acquire_lease`/`renew_lease`/fenced checkpoint save), the same machinery the projection runners use — a worker only processes the policies it holds the lease for. An in-process lock also serializes concurrent calls on the same `PolicyRunner` instance, since the lease alone doesn't stop a worker from racing itself. |
 | `listen_for_events` behind a transaction-mode PgBouncer | ❌ No (silently) | See above — the session-level `LISTEN` doesn't survive transaction-mode pooling. Safe once pointed at a session-mode connection. |
 
 ### Kubernetes Deployment

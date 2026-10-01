@@ -134,6 +134,8 @@ use event_sauce::PolicyRunner;
 
 let runner = PolicyRunner::new(store, checkpoint_store)
     .with_max_cascade_depth(5)  // Default: 10
+    .with_worker_id("my-service-1")  // Default: generated, unique per instance
+    .with_lease_duration(Duration::from_secs(30))  // Default: 30s
     .register(Arc::new(KickUserPolicy))
     .register(Arc::new(NotifyOnRemovalPolicy));
 
@@ -154,6 +156,49 @@ let handled = runner.process_event(&envelope).await?;
 - **Resume at the failing event on `Fail`**: If a handler fails mid-batch under `OnError::Fail`, each policy's checkpoint is persisted up to the **last event it fully handled** before the error — never past the failing event. A subsequent `process_pending()` resumes at the failing event and does **not** re-run the already-flushed handlers of earlier events in the batch.
 
 > **At-least-once on the consume side.** The in-process `PolicyRunner` advances the per-policy checkpoint *after* a handler's buffered commits are flushed, in a separate write. These are not a single transaction, so a crash between the flush and the checkpoint save can re-deliver the last handled event on restart. Keep handlers idempotent. The Postgres outbox dispatcher (see [Two ways to dispatch](#two-ways-to-dispatch-in-process-runner-vs-queue)) adds per-event retry and a DLQ, but its delivery is **also** at-least-once — it does not make handlers exactly-once.
+
+### Multi-Instance Safety
+
+Every registered policy is its own lease, acquired through the configured
+`CheckpointStore` (the same `try_acquire_lease`/`renew_lease`/`release_lease`
+machinery the Postgres projection runners use). This makes
+`process_pending()` **safe to call from more than one process or pod**: each
+call acquires the lease of every policy it can, processes only those, renews
+leases as it goes, and releases them before returning. A policy whose lease
+is already held by another worker is simply left out of that call — its
+events are picked up next time by whichever worker holds it, not duplicated.
+
+A per-policy lease does **not** stop two concurrent `process_pending()`
+calls on the *same* `PolicyRunner` instance (same worker id) from both
+succeeding — a worker can always renew its own lease. `process_pending()`
+therefore also serializes internally: a second concurrent call on the same
+instance waits for the first to finish rather than racing it. If you need
+concurrent policy processing within one process, run separate
+`PolicyRunner` instances (each with their own `worker_id`) rather than
+calling the same instance from multiple tasks.
+
+**A `worker_id` must be unique per running instance.** Two live runners that
+share one `worker_id` (for example, a fixed string hard-coded across every
+replica) are indistinguishable to `try_acquire_lease`: it treats a matching
+`worker_id` as the *same* holder renewing its own lease, so every such
+replica acquires every policy's lease at once and all of them run the same
+reactions, with the fence accepting every one of their saves. Derive it from
+something unique to the process — a hostname or pod name plus the process
+id — or leave it at the generated default.
+
+**Two known limits**, from how the lease is kept alive:
+
+- A lease is renewed before every matching policy's handler call — so an
+  event matching several held policies in a row renews between each of
+  their handlers, not once for all of them. A **single handler call**
+  longer than roughly **two thirds of `lease_duration`** can lose the
+  lease before the next renewal lands; size `lease_duration` well above
+  your slowest expected handler call.
+- A **cancelled `process_pending()`** (a timeout, a `select!`, a dropped
+  task) does not run its cleanup: whatever leases it had acquired stay
+  held under this worker until they simply expire, rather than being
+  released immediately. Another worker only picks up those policies once
+  `lease_duration` has elapsed.
 
 ### Cascade Depth Limits
 
@@ -231,8 +276,9 @@ a checkpoint and calls each registered handler directly. That's the right
 shape for **same-aggregate orchestration** — emitting follow-up events into
 event-sauce itself, with strict cascade depth tracking and causation
 propagation. It is *not* the right shape for fanning side-effects out to
-many parallel workers, because every policy shares one checkpoint and one
-process; a hung handler stalls everyone behind it.
+many parallel workers: each policy has its own checkpoint and lease, but
+they all run in the same runner instance, so a hung handler stalls every
+policy that runner holds the lease for.
 
 For side-effects (email, payment APIs, webhooks — anything where per-event
 retry and a DLQ matter more than ordering) event-sauce provides a
@@ -258,7 +304,7 @@ queue-shaped alternative built on `FOR UPDATE SKIP LOCKED`:
 | Source of work | Event log directly | Outbox table populated from log |
 | Ordering | Strict | Per-claim only (workers parallelize) |
 | Per-event retry / DLQ | No (whole policy stalls on failure) | Yes (`status='failed'`, `failures` vs `max_attempts`, `last_error`) |
-| Scale-out | One active runner per process | N parallel workers per policy |
+| Scale-out | Lease-safe across instances, but one policy is handled serially by whichever instance holds its lease | N parallel workers per policy |
 | Replay | Reset checkpoint | Reset checkpoint + truncate outbox |
 | Best for | Cascading domain logic | External side effects |
 

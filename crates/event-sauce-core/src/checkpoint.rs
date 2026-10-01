@@ -73,6 +73,42 @@ pub trait CheckpointStore: Send + Sync {
     /// Idempotent: releasing a lease we no longer hold (because it expired
     /// and was taken by another worker) is not an error.
     async fn release_lease(&self, subscription_name: &str, worker_id: &str) -> Result<()>;
+
+    /// Saves a checkpoint fenced on continued lease ownership.
+    ///
+    /// A long-running holder of the lease for `subscription_name` calls this
+    /// instead of plain [`save_checkpoint`](Self::save_checkpoint) so that a
+    /// worker which stalled past `leased_until` and lost the lease to another
+    /// worker cannot keep advancing the checkpoint underneath it.
+    ///
+    /// The default implementation calls
+    /// [`renew_lease`](Self::renew_lease) (which fails with
+    /// [`Error::LeaseLost`](crate::Error::LeaseLost) if `worker_id` no longer
+    /// holds the lease) and then [`save_checkpoint`](Self::save_checkpoint).
+    /// **This leaves a small race window** between the two calls in which
+    /// another worker could acquire the lease and this save would still land
+    /// — it is best-effort ownership checking, not a single atomic fence.
+    /// Backends that can check-and-write in one atomic operation (e.g.
+    /// `PostgreSQL` with a single conditional `UPDATE`, or an in-memory store
+    /// behind one locked region) should override this method to close that
+    /// window.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::LeaseLost`](crate::Error::LeaseLost) if `worker_id`
+    /// does not hold the lease, or any error the backend's save/renew
+    /// produces.
+    async fn save_checkpoint_fenced(
+        &self,
+        subscription_name: &str,
+        worker_id: &str,
+        lease_duration: Duration,
+        position: Position,
+    ) -> Result<()> {
+        self.renew_lease(subscription_name, worker_id, lease_duration)
+            .await?;
+        self.save_checkpoint(subscription_name, position).await
+    }
 }
 
 /// Blocks until a subscription's checkpoint reaches `target` (read-your-writes).
@@ -140,5 +176,50 @@ pub async fn wait_for_checkpoint(
             return Ok(false);
         }
         tokio::time::sleep(poll_interval).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_fixtures::MockCheckpointStore;
+
+    #[tokio::test]
+    async fn save_checkpoint_fenced_lands_while_lease_is_held() {
+        let store = MockCheckpointStore::new();
+        store
+            .try_acquire_lease("sub", "worker-a", Duration::from_secs(60))
+            .await
+            .unwrap();
+
+        store
+            .save_checkpoint_fenced("sub", "worker-a", Duration::from_secs(60), Position::new(5))
+            .await
+            .unwrap();
+
+        assert_eq!(store.get("sub"), Some(Position::new(5)));
+    }
+
+    #[tokio::test]
+    async fn save_checkpoint_fenced_rejects_a_worker_without_the_lease() {
+        let store = MockCheckpointStore::new();
+        store
+            .try_acquire_lease("sub", "worker-a", Duration::from_secs(60))
+            .await
+            .unwrap();
+
+        let result = store
+            .save_checkpoint_fenced("sub", "worker-b", Duration::from_secs(60), Position::new(5))
+            .await;
+
+        assert!(
+            result.unwrap_err().is_lease_lost(),
+            "a worker that never held the lease must not be able to advance the checkpoint"
+        );
+        assert_eq!(
+            store.get("sub"),
+            Some(Position::start()),
+            "the rejected save must not have landed"
+        );
     }
 }

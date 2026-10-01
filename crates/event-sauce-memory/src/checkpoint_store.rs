@@ -170,6 +170,31 @@ impl CheckpointStore for InMemoryCheckpointStore {
         }
         Ok(())
     }
+
+    async fn save_checkpoint_fenced(
+        &self,
+        subscription_name: &str,
+        worker_id: &str,
+        lease_duration: Duration,
+        position: Position,
+    ) -> Result<()> {
+        let mut guard = self.inner.write().await;
+        let now = Instant::now();
+        let Some(entry) = guard.get_mut(subscription_name) else {
+            return Err(Error::lease_lost(subscription_name, worker_id));
+        };
+        match &entry.lease {
+            Some(lease) if lease.worker_id == worker_id && lease.expires_at > now => {
+                entry.lease = Some(Lease {
+                    worker_id: worker_id.to_string(),
+                    expires_at: now + lease_duration,
+                });
+                entry.position = position;
+                Ok(())
+            }
+            _ => Err(Error::lease_lost(subscription_name, worker_id)),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -472,6 +497,45 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(pos, Some(Position::new(100)));
+    }
+
+    #[tokio::test]
+    async fn test_save_checkpoint_fenced_lands_while_lease_is_held() {
+        let store = InMemoryCheckpointStore::new();
+        store
+            .try_acquire_lease("sub", "worker-a", Duration::from_secs(60))
+            .await
+            .unwrap();
+
+        store
+            .save_checkpoint_fenced("sub", "worker-a", Duration::from_secs(60), Position::new(7))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            store.load_checkpoint("sub").await.unwrap(),
+            Some(Position::new(7))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_save_checkpoint_fenced_rejects_a_worker_without_the_lease() {
+        let store = InMemoryCheckpointStore::new();
+        store
+            .try_acquire_lease("sub", "worker-a", Duration::from_secs(60))
+            .await
+            .unwrap();
+
+        let result = store
+            .save_checkpoint_fenced("sub", "worker-b", Duration::from_secs(60), Position::new(7))
+            .await;
+
+        assert!(result.unwrap_err().is_lease_lost());
+        assert_eq!(
+            store.load_checkpoint("sub").await.unwrap(),
+            Some(Position::start()),
+            "a rejected fenced save must not move the checkpoint"
+        );
     }
 
     #[tokio::test]

@@ -143,6 +143,9 @@ explicitly rather than gated behind a major version bump.
 
 ### Added
 
+- `PolicyRunner::with_worker_id`/`with_lease_duration` — configure the
+  identity and lease duration `process_pending` uses to acquire each
+  policy's lease (sensible defaults: a generated per-instance id, 30s).
 - `PostgresBackend::run_sticky_projection` — a leased projection runner that
   holds its lease across idle ticks (renewing and re-draining in a loop)
   instead of releasing and reacquiring it on every call, removing the
@@ -155,6 +158,27 @@ explicitly rather than gated behind a major version bump.
 
 ### Fixed
 
+- `PolicyRunner::process_pending` now takes a per-policy lease through the
+  configured `CheckpointStore` (`try_acquire_lease`/`renew_lease`, mirroring
+  the `PostgreSQL` projection runners) instead of running unleased: two
+  instances calling it concurrently no longer double-run a policy's
+  reactions or regress each other's checkpoint. A new
+  `CheckpointStore::save_checkpoint_fenced` provided method backs this for
+  every backend; `InMemoryCheckpointStore` and `PostgresCheckpointStore`
+  override it with a single atomic check-and-write. A per-policy lease
+  alone doesn't stop two concurrent calls *on the same runner instance*
+  (same worker id) from both acquiring it, so `process_pending` also
+  serializes internally — a second concurrent call on the same instance
+  waits for the first rather than racing it.
+- `PolicyRunner::process_pending` now renews a due lease before every
+  matching policy's handler call, not just once per event: an event
+  matching several held policies in a row used to run their handlers back
+  to back with no renewal in between, so a later policy's lease could
+  expire — and be acquired by another worker — while the earlier policies'
+  handlers, or that later policy's own handler, were still running. A
+  single handler call longer than roughly two thirds of `lease_duration`
+  can lose the lease before a renewal lands — see `docs/policies.md`'s
+  Multi-Instance Safety section.
 - Postgres claim conflicts now wait instead of risking a deadlock, and a
   racing claim correctly reports `ClaimConflict` rather than a generic
   error.

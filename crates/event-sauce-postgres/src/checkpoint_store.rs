@@ -619,6 +619,50 @@ impl CheckpointStore for PostgresCheckpointStore {
             .map_err(|e| Error::backend("Failed to release lease", e))?;
         Ok(())
     }
+
+    /// Atomic single-statement override: the ownership check and the lease
+    /// renewal happen in the one conditional `UPDATE`, so unlike the
+    /// trait's default there is no window between checking the lease and
+    /// writing the position. Callers are expected to only ever call this
+    /// with a strictly advancing `position` (as
+    /// [`PolicyRunner`](event_sauce_core::PolicyRunner) does) — this does
+    /// not re-check monotonicity itself, so it is not a defense against a
+    /// caller that passes a regressing position while still holding its own
+    /// lease.
+    async fn save_checkpoint_fenced(
+        &self,
+        subscription_name: &str,
+        worker_id: &str,
+        lease_duration: Duration,
+        position: Position,
+    ) -> Result<()> {
+        let checkpoints_table = self.qualify_table("checkpoints");
+        let query = format!(
+            "UPDATE {checkpoints_table}
+             SET position = $2,
+                 leased_until = NOW() + make_interval(secs => $4::float8),
+                 heartbeat_at = NOW(),
+                 updated_at = NOW()
+             WHERE subscription_name = $1
+               AND worker_id = $3
+               AND leased_until > NOW()
+             RETURNING position"
+        );
+
+        let landed: Option<i64> = sqlx::query_scalar(&query)
+            .bind(subscription_name)
+            .bind(position.as_i64())
+            .bind(worker_id)
+            .bind(lease_duration.as_secs_f64())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| Error::backend("Failed to save fenced checkpoint", e))?;
+
+        if landed.is_none() {
+            return Err(Error::lease_lost(subscription_name, worker_id));
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -1256,6 +1300,72 @@ mod tests {
         assert_eq!(
             store.load_checkpoint("fenced-sub").await.unwrap(),
             Some(Position::new(10))
+        );
+    }
+
+    /// A worker holding the lease can keep renewing it through further
+    /// fenced saves.
+    #[tokio::test]
+    async fn test_save_checkpoint_fenced_persists_and_renews_while_held() {
+        let db = TestDatabase::new().await.unwrap();
+        let store = PostgresCheckpointStore::new(db.pool().clone());
+        store.migrate().await.unwrap();
+
+        let lease_dur = std::time::Duration::from_secs(60);
+        store
+            .try_acquire_lease("sub", "worker-1", lease_dur)
+            .await
+            .unwrap();
+
+        store
+            .save_checkpoint_fenced("sub", "worker-1", lease_dur, Position::new(10))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            store.load_checkpoint("sub").await.unwrap(),
+            Some(Position::new(10))
+        );
+        store
+            .save_checkpoint_fenced("sub", "worker-1", lease_dur, Position::new(20))
+            .await
+            .unwrap();
+        assert_eq!(
+            store.load_checkpoint("sub").await.unwrap(),
+            Some(Position::new(20))
+        );
+    }
+
+    /// worker-2 steals the lease once worker-1 releases it.
+    #[tokio::test]
+    async fn test_save_checkpoint_fenced_rejects_a_worker_that_lost_the_lease() {
+        let db = TestDatabase::new().await.unwrap();
+        let store = PostgresCheckpointStore::new(db.pool().clone());
+        store.migrate().await.unwrap();
+
+        let lease_dur = std::time::Duration::from_secs(60);
+        store
+            .try_acquire_lease("sub", "worker-1", lease_dur)
+            .await
+            .unwrap();
+        store.release_lease("sub", "worker-1").await.unwrap();
+        store
+            .try_acquire_lease("sub", "worker-2", lease_dur)
+            .await
+            .unwrap();
+
+        let result = store
+            .save_checkpoint_fenced("sub", "worker-1", lease_dur, Position::new(10))
+            .await;
+
+        assert!(
+            result.unwrap_err().is_lease_lost(),
+            "a worker that no longer holds the lease must not be able to advance the checkpoint"
+        );
+        assert_eq!(
+            store.load_checkpoint("sub").await.unwrap(),
+            Some(Position::start()),
+            "the rejected save must not have landed"
         );
     }
 
