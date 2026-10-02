@@ -1188,6 +1188,88 @@ mod tests {
         );
     }
 
+    /// Wraps [`MockCheckpointStore`], failing `try_acquire_lease` for one
+    /// chosen subscription name — simulating a transient backend failure
+    /// acquiring a later policy's lease after an earlier one in the same
+    /// call already acquired its own.
+    struct FailingAcquireCheckpointStore {
+        inner: Arc<MockCheckpointStore>,
+        fail_for: String,
+    }
+
+    #[async_trait::async_trait]
+    impl CheckpointStore for FailingAcquireCheckpointStore {
+        async fn save_checkpoint(&self, name: &str, position: Position) -> Result<()> {
+            self.inner.save_checkpoint(name, position).await
+        }
+        async fn load_checkpoint(&self, name: &str) -> Result<Option<Position>> {
+            self.inner.load_checkpoint(name).await
+        }
+        async fn delete_checkpoint(&self, name: &str) -> Result<()> {
+            self.inner.delete_checkpoint(name).await
+        }
+        async fn try_acquire_lease(
+            &self,
+            name: &str,
+            worker_id: &str,
+            dur: Duration,
+        ) -> Result<Option<Position>> {
+            if name == self.fail_for {
+                return Err(crate::Error::custom("acquire boom"));
+            }
+            self.inner.try_acquire_lease(name, worker_id, dur).await
+        }
+        async fn renew_lease(&self, name: &str, worker_id: &str, dur: Duration) -> Result<()> {
+            self.inner.renew_lease(name, worker_id, dur).await
+        }
+        async fn release_lease(&self, name: &str, worker_id: &str) -> Result<()> {
+            self.inner.release_lease(name, worker_id).await
+        }
+        async fn seed_checkpoint(&self, name: &str, position: Position) -> Result<()> {
+            self.inner.seed_checkpoint(name, position).await
+        }
+    }
+
+    /// When a later policy's `try_acquire_lease` itself fails (as opposed to
+    /// its seed), every lease this call already acquired for an earlier
+    /// policy must still be released, not left dangling until it expires.
+    #[tokio::test]
+    async fn test_acquire_policy_leases_releases_earlier_leases_when_a_later_acquire_fails() {
+        let store = Arc::new(MockEventStore::new());
+        let inner = Arc::new(MockCheckpointStore::new());
+        let cp: CheckpointStoreRef = Arc::new(FailingAcquireCheckpointStore {
+            inner: Arc::clone(&inner),
+            fail_for: "second".to_string(),
+        });
+
+        let policy1 = Arc::new(CountingPolicyNoWait {
+            name: "first".to_string(),
+            count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        });
+        let policy2 = Arc::new(CountingPolicyNoWait {
+            name: "second".to_string(),
+            count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        });
+
+        let runner = PolicyRunner::new(store, cp)
+            .register(policy1)
+            .register(policy2)
+            .with_worker_id("worker-a");
+
+        let result = runner.process_pending().await;
+        assert!(result.is_err(), "an acquire failure must propagate");
+
+        let acquired = inner
+            .try_acquire_lease("first", "worker-b", Duration::from_secs(60))
+            .await
+            .unwrap();
+        assert!(
+            acquired.is_some(),
+            "an earlier policy's lease acquired in the same call must be \
+             released when a later policy's try_acquire_lease fails"
+        );
+    }
+
     #[tokio::test]
     async fn test_policy_runner_process_pending_skips_a_policy_whose_lease_is_held_elsewhere() {
         let store = Arc::new(MockEventStore::new());
