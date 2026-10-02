@@ -196,11 +196,14 @@ id — or leave it at the generated default.
 
 **Two known limits**, from how the lease is kept alive:
 
-- A lease is renewed before every matching policy's handler call — so an
-  event matching several held policies in a row renews between each of
-  their handlers, not once for all of them — and through every
-  `OnError::Retry` backoff and before every retry attempt, in chunks no
-  longer than the renewal interval (`lease_duration / 3`). A **single
+- A lease is renewed once for every fetched event — matched or not — and
+  again before every matching policy's handler call, so an event matching
+  several held policies in a row renews between each of their handlers,
+  not once for all of them; and through every `OnError::Retry` backoff and
+  before every retry attempt, in chunks no longer than the renewal
+  interval (`lease_duration / 3`). A held policy with no matching event in
+  a long stretch the runner scans (e.g. a checkpoint reset for a replay)
+  is covered by the same per-event check, not left to starve. A **single
   handler call** (one `Policy::handle`
   invocation, with no retry backoff in between to renew from) longer than
   roughly **two thirds of `lease_duration`** can still lose the lease

@@ -111,8 +111,8 @@ impl LeaseRenewal {
 
 /// Keeps a worker's held policy leases alive across a long-running handler
 /// retry, where the normal per-event renewal point in
-/// [`drain_held_policies`](PolicyRunner::drain_held_policies) is not reached
-/// again until the handler finally returns.
+/// [`route`](PolicyRunner::route) is not reached again until the handler
+/// finally returns.
 ///
 /// Without this, a lease whose `lease_duration` is shorter than a retry's
 /// total backoff (e.g. [`RetryLimit::Indefinite`] or [`RetryLimit::MaxDuration`]
@@ -472,9 +472,12 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
     /// on an internal lock: a second concurrent call on the same `PolicyRunner`
     /// waits for the first to finish rather than racing it.
     ///
-    /// Held leases are renewed when due before every matching policy's
-    /// handler call, and a handler stuck in a long [`OnError::Retry`]
-    /// backoff keeps them renewed throughout on top of that. Two limits
+    /// Held leases are renewed when due on every fetched event — matched or
+    /// not — and again before every matching policy's handler call, so a
+    /// held policy with nothing to process can never starve for renewal
+    /// while the scan passes it by. A handler stuck in a long
+    /// [`OnError::Retry`] backoff keeps them renewed throughout on top of
+    /// that. Two limits
     /// remain, both covered in `docs/policies.md`'s
     /// Multi-Instance Safety section: a single `Policy::handle` call (with
     /// no retry backoff in between to renew from) longer than roughly two
@@ -575,11 +578,15 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
     /// checkpoint to `position` in place — including one this event didn't
     /// match, so a non-matching gap is skipped on the next call too.
     ///
-    /// Renews a due lease before each matching policy's handler call, not
-    /// just once per event: an event matching several held policies in a
-    /// row runs their handlers back to back, and the sum of their
-    /// durations — not any single one of them — is what the next renewal
-    /// has to arrive within.
+    /// Renews a due lease once up front for this event, whether or not it
+    /// matches any held policy — a policy sitting ahead of the scan
+    /// position, with no event of its own to match and no checkpoint of its
+    /// own moving, would otherwise never reach a renewal check and starve
+    /// its lease out from under it. On top of that, renews again before
+    /// each matching policy's handler call, not just once per event: an
+    /// event matching several held policies in a row runs their handlers
+    /// back to back, and the sum of their durations — not any single one of
+    /// them — is what the next renewal has to arrive within.
     ///
     /// Returns how many policies ran their handler for this event
     /// ([`Handled::Yes`]).
@@ -598,6 +605,10 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
         held: &mut [HeldPolicy<S>],
         mut keeper: Option<&mut LeaseKeeper<'_>>,
     ) -> Result<usize> {
+        if let Some(k) = keeper.as_deref_mut() {
+            k.renew_if_due().await?;
+        }
+
         let mut processed = 0;
         for held_policy in held.iter_mut() {
             if position <= held_policy.checkpoint {
@@ -1832,6 +1843,124 @@ mod tests {
 
         assert_eq!(outcome.unwrap(), PolicyRunOutcome::Completed(10));
         assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 10);
+    }
+
+    /// Wraps [`MockEventStore`], sleeping `delay` before every `fetch_batch`
+    /// call — stretches a scan over many events to longer than a lease
+    /// duration, so a renewal gap on a held policy with nothing matching in
+    /// that stretch shows up deterministically.
+    struct SlowFetchStore {
+        inner: MockEventStore,
+        delay: Duration,
+    }
+
+    #[async_trait::async_trait]
+    impl EventStore for SlowFetchStore {
+        async fn append(
+            &self,
+            stream_id: crate::StreamId,
+            events: Vec<EventEnvelope>,
+            expected_version: crate::AggregateVersion,
+            claims: Vec<crate::AggregateClaim>,
+            clear_claims: bool,
+        ) -> Result<()> {
+            self.inner
+                .append(stream_id, events, expected_version, claims, clear_claims)
+                .await
+        }
+
+        async fn load_stream(
+            &self,
+            stream_id: crate::StreamId,
+            from_version: crate::AggregateVersion,
+        ) -> Result<impl futures::Stream<Item = Result<EventEnvelope>> + Send> {
+            self.inner.load_stream(stream_id, from_version).await
+        }
+
+        async fn stream_all(
+            &self,
+            from_position: Position,
+        ) -> Result<impl futures::Stream<Item = Result<crate::EventLogEntry>> + Send> {
+            self.inner.stream_all(from_position).await
+        }
+
+        async fn fetch_batch(
+            &self,
+            from_position: Position,
+            limit: usize,
+        ) -> Result<Vec<crate::EventLogEntry>> {
+            tokio::time::sleep(self.delay).await;
+            self.inner.fetch_batch(from_position, limit).await
+        }
+
+        async fn get_version(&self, stream_id: crate::StreamId) -> Result<crate::AggregateVersion> {
+            self.inner.get_version(stream_id).await
+        }
+    }
+
+    /// A held policy sitting ahead of the scan position (its checkpoint past
+    /// every event about to be scanned) matches nothing for a long stretch,
+    /// so the per-handler renewal check in [`PolicyRunner::route`] never
+    /// fires for it, and its checkpoint never moves either, so the implicit
+    /// renewal that rides along `save_checkpoint_fenced` never fires for it
+    /// either. `ahead`'s lease must still survive the scan on the per-event
+    /// check alone: `replay` matches nothing ever (so its own per-handler
+    /// renewal never fires either), but its checkpoint *does* advance on
+    /// every event, keeping its lease alive as a side effect of
+    /// `save_checkpoint_fenced` — isolating the gap to `ahead`, the policy
+    /// with no matching event and no checkpoint movement of its own, with
+    /// `batch_size(1)` so a save follows every single event.
+    #[tokio::test]
+    async fn test_per_event_renewal_covers_a_held_policy_sitting_ahead_of_the_scan() {
+        let store = Arc::new(SlowFetchStore {
+            inner: MockEventStore::new(),
+            delay: Duration::from_millis(60),
+        });
+        for _ in 0..10 {
+            store
+                .inner
+                .add_event(test_envelope("Other", "TestAggregate"));
+        }
+        store
+            .inner
+            .add_event(test_envelope("Target", "TestAggregate"));
+
+        let cp = test_checkpoint_store();
+        cp.save_checkpoint("replay", Position::start())
+            .await
+            .unwrap();
+        cp.save_checkpoint("ahead", Position::new(10))
+            .await
+            .unwrap();
+
+        let ahead_count = Arc::new(std::sync::Mutex::new(0));
+        let runner = PolicyRunner::new(Arc::clone(&store), Arc::clone(&cp) as CheckpointStoreRef)
+            .register(Arc::new(CountingPolicy {
+                name: "replay".to_string(),
+                filter: EventFilter::by_event_type("NeverMatches"),
+                count: Arc::new(std::sync::Mutex::new(0)),
+            }))
+            .register(Arc::new(CountingPolicy {
+                name: "ahead".to_string(),
+                filter: EventFilter::by_event_type("Target"),
+                count: Arc::clone(&ahead_count),
+            }))
+            .with_worker_id("solo")
+            .with_lease_duration(Duration::from_millis(200))
+            .with_batch_size(1);
+
+        let outcome = tokio::time::timeout(Duration::from_secs(10), runner.process_pending())
+            .await
+            .expect("must not hang");
+
+        assert_eq!(
+            outcome.unwrap(),
+            PolicyRunOutcome::Completed(1),
+            "a held policy sitting ahead of the scan position must keep its \
+             lease renewed by the per-event check alone, with no matching \
+             event or checkpoint movement of its own to trigger a renewal"
+        );
+        assert_eq!(*ahead_count.lock().unwrap(), 1);
     }
 
     /// `route` must renew a due lease before *every* matching policy's

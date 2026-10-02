@@ -210,21 +210,26 @@ explicitly rather than gated behind a major version bump.
   (same worker id) from both acquiring it, so `process_pending` also
   serializes internally — a second concurrent call on the same instance
   waits for the first rather than racing it.
-- `PolicyRunner::process_pending` now renews a due lease before every
-  matching policy's handler call, not just once per event: an event
-  matching several held policies in a row used to run their handlers back
-  to back with no renewal in between, so a later policy's lease could
-  expire — and be acquired by another worker — while the earlier policies'
-  handlers, or that later policy's own handler, were still running. A
-  handler stuck in a long `OnError::Retry` backoff no longer silently
-  outlives its lease either: held leases are renewed through every backoff
-  sleep and before every attempt, in chunks no longer than the renewal
-  interval, so `RetryLimit::Indefinite` or a `RetryLimit::MaxDuration`/`max_delay`
-  longer than `lease_duration` aborts with `Error::LeaseLost` instead of
-  letting another worker acquire the same lease and run the event
-  concurrently. A single handler call still longer than roughly two thirds
-  of `lease_duration` can lose the lease before a renewal lands — see
-  `docs/policies.md`'s Multi-Instance Safety section.
+- `PolicyRunner::process_pending` now renews a due lease once for every
+  fetched event — matched or not — and again before every matching
+  policy's handler call. A held policy sitting ahead of the scan position
+  (e.g. a checkpoint reset for a replay) used to reach no renewal check at
+  all while the scan passed it by on events it never matched, and could
+  starve its own lease out from under it with no contention whatsoever; an
+  event matching several held policies in a row used to run their handlers
+  back to back with no renewal in between too, so a later policy's lease
+  could expire — and be acquired by another worker — while the earlier
+  policies' handlers, or that later policy's own handler, were still
+  running. A handler stuck in a long `OnError::Retry` backoff no longer
+  silently outlives its lease either: held leases are renewed through every
+  backoff sleep and before every attempt, in chunks no longer than the
+  renewal interval, so `RetryLimit::Indefinite` or a
+  `RetryLimit::MaxDuration`/`max_delay` longer than `lease_duration` aborts
+  with `Error::LeaseLost` instead of letting another worker acquire the
+  same lease and run the event concurrently. A single handler call still
+  longer than roughly two thirds of `lease_duration` can lose the lease
+  before a renewal lands — see `docs/policies.md`'s Multi-Instance Safety
+  section.
 - Seeding a never-before-seen policy's checkpoint
   (`PolicyRunner::process_pending`) no longer races another worker doing
   the same: it now goes through `CheckpointStore::seed_checkpoint`'s atomic
