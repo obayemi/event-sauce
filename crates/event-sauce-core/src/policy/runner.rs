@@ -53,7 +53,9 @@ enum Handled {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PolicyRunOutcome {
     /// This call held the lease for at least one registered policy (even if
-    /// zero events ultimately matched any of them).
+    /// zero events ultimately matched any of them), or no policies are
+    /// registered at all — there is then no lease to hold and nothing to be
+    /// busy about.
     Completed(usize),
     /// Every registered policy's lease is currently held by another worker:
     /// this call processed nothing and held no lease. Distinguishes a

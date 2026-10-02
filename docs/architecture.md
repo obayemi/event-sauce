@@ -180,7 +180,11 @@ Read model building and reactions consume events durably from the store:
 - **EventFilter** - Filter events by type or aggregate
 - **CheckpointStore** - Track progress for resumability, plus
   `try_acquire_lease` / `renew_lease` / `release_lease` so multiple
-  workers can coordinate which one is the active processor
+  workers can coordinate which one is the active processor, a fenced
+  `save_checkpoint_fenced` (atomic with the lease check in the in-memory
+  and Postgres backends) to advance it safely under that lease, and
+  `seed_checkpoint` to insert-if-absent a brand-new consumer's starting
+  position
 - **PostgresProjection** trait (in `event-sauce-postgres`) - Transactional read models whose writes commit atomically with the subscription checkpoint
 - **`PostgresEventStore::listen_for_events`** - `LISTEN`/`NOTIFY` stream that
   wakes subscribers within milliseconds of a commit, with the new max
@@ -332,6 +336,12 @@ pub trait EventStore: Send + Sync {
     // `stream_all`; PostgreSQL answers with a cheap MAX query.
     async fn max_position(&self) -> Result<Position>;
 
+    // A bounded, already-materialized batch of up to `limit` entries after
+    // `from_position` — what `PolicyRunner` drives its rounds through
+    // instead of holding one open-ended stream. Default takes `limit` items
+    // off `stream_all`; PostgreSQL answers with one `LIMIT` query.
+    async fn fetch_batch(&self, from_position: Position, limit: usize) -> Result<Vec<EventLogEntry>>;
+
     async fn stream_exists(&self, stream_id: StreamId) -> Result<bool>;
 
     // Snapshot cache hooks — no-ops by default, wired by backends that
@@ -385,6 +395,11 @@ pub trait CheckpointStore: Send + Sync {
     async fn delete_checkpoint(&self, name: &str) -> Result<()>;
     // Plus try_acquire_lease / renew_lease / release_lease for multi-worker
     // coordination — exactly one worker is the active processor at a time.
+    // Plus save_checkpoint_fenced, a save that is atomic with the lease
+    // check (in-memory and Postgres override it with a single
+    // check-and-write; the default is renew_lease then save_checkpoint),
+    // and seed_checkpoint, an insert-if-absent for a never-before-seen
+    // consumer's starting position.
 }
 ```
 
