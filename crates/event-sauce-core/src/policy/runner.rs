@@ -807,6 +807,7 @@ mod tests {
     use super::*;
     use crate::test_fixtures::{MockCheckpointStore, MockEventStore};
     use crate::{CheckpointStore, EventFilter};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
     fn test_policy_runner_new() {
@@ -1158,11 +1159,11 @@ mod tests {
 
         let policy1 = Arc::new(CountingPolicyNoWait {
             name: "first".to_string(),
-            count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            count: Arc::new(AtomicUsize::new(0)),
         });
         let policy2 = Arc::new(CountingPolicyNoWait {
             name: "second".to_string(),
-            count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            count: Arc::new(AtomicUsize::new(0)),
         });
 
         let runner = PolicyRunner::new(store, cp)
@@ -1240,11 +1241,11 @@ mod tests {
 
         let policy1 = Arc::new(CountingPolicyNoWait {
             name: "first".to_string(),
-            count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            count: Arc::new(AtomicUsize::new(0)),
         });
         let policy2 = Arc::new(CountingPolicyNoWait {
             name: "second".to_string(),
-            count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            count: Arc::new(AtomicUsize::new(0)),
         });
 
         let runner = PolicyRunner::new(store, cp)
@@ -1300,8 +1301,8 @@ mod tests {
     /// released, letting a test deterministically interleave two runners.
     struct GatedPolicy {
         name: String,
-        entries: Arc<std::sync::atomic::AtomicUsize>,
-        count: Arc<std::sync::atomic::AtomicUsize>,
+        entries: Arc<AtomicUsize>,
+        count: Arc<AtomicUsize>,
         started: Arc<tokio::sync::Notify>,
         can_continue: Arc<tokio::sync::Notify>,
     }
@@ -1317,11 +1318,10 @@ mod tests {
         }
 
         async fn handle(&self, _event: &EventEnvelope, _ctx: &PolicyContext<S>) -> Result<()> {
-            self.entries
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.entries.fetch_add(1, Ordering::SeqCst);
             self.started.notify_one();
             self.can_continue.notified().await;
-            self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.count.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
     }
@@ -1340,13 +1340,13 @@ mod tests {
             .unwrap();
         store.add_event(test_envelope("TestEvent", "TestAggregate"));
 
-        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = Arc::new(AtomicUsize::new(0));
         let started = Arc::new(tokio::sync::Notify::new());
         let can_continue = Arc::new(tokio::sync::Notify::new());
 
         let policy_a = Arc::new(GatedPolicy {
             name: "gated".to_string(),
-            entries: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            entries: Arc::new(AtomicUsize::new(0)),
             count: Arc::clone(&count),
             started: Arc::clone(&started),
             can_continue: Arc::clone(&can_continue),
@@ -1356,7 +1356,7 @@ mod tests {
             .register(policy_a)
             .with_worker_id("worker-a");
 
-        let count2 = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count2 = Arc::new(AtomicUsize::new(0));
         let policy_b = Arc::new(CountingPolicyNoWait {
             name: "gated".to_string(),
             count: Arc::clone(&count2),
@@ -1378,14 +1378,14 @@ mod tests {
             processed_b.unwrap().is_busy(),
             "worker B must see the lease as busy while worker A holds it"
         );
-        assert_eq!(count2.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(count2.load(Ordering::SeqCst), 0);
         assert_eq!(processed_a.unwrap(), PolicyRunOutcome::Completed(1));
-        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(count.load(Ordering::SeqCst), 1);
     }
 
     struct CountingPolicyNoWait {
         name: String,
-        count: Arc<std::sync::atomic::AtomicUsize>,
+        count: Arc<AtomicUsize>,
     }
 
     #[async_trait::async_trait]
@@ -1399,7 +1399,7 @@ mod tests {
         }
 
         async fn handle(&self, _event: &EventEnvelope, _ctx: &PolicyContext<S>) -> Result<()> {
-            self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.count.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
     }
@@ -1425,8 +1425,8 @@ mod tests {
             .unwrap();
         store.add_event(test_envelope("TestEvent", "TestAggregate"));
 
-        let entries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let entries = Arc::new(AtomicUsize::new(0));
+        let count = Arc::new(AtomicUsize::new(0));
         let started = Arc::new(tokio::sync::Notify::new());
         let can_continue = Arc::new(tokio::sync::Notify::new());
         let policy = Arc::new(GatedPolicy {
@@ -1451,7 +1451,7 @@ mod tests {
                  complete while the first still holds the lock"
             );
             assert_eq!(
-                entries.load(std::sync::atomic::Ordering::SeqCst),
+                entries.load(Ordering::SeqCst),
                 1,
                 "a second concurrent call on the same runner must wait for \
                  the first before entering the handler at all"
@@ -1466,7 +1466,7 @@ mod tests {
 
         assert_eq!(outcome_a.unwrap(), PolicyRunOutcome::Completed(1));
         assert_eq!(outcome_b.unwrap(), PolicyRunOutcome::Completed(0));
-        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(count.load(Ordering::SeqCst), 1);
     }
 
     /// The per-policy skip guard must be strict (`position <= checkpoint`
@@ -1488,8 +1488,8 @@ mod tests {
             store.add_event(test_envelope("TestEvent", "TestAggregate"));
         }
 
-        let behind_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let ahead_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let behind_count = Arc::new(AtomicUsize::new(0));
+        let ahead_count = Arc::new(AtomicUsize::new(0));
         let runner = PolicyRunner::new(store, cp)
             .register(Arc::new(CountingPolicyNoWait {
                 name: "behind".to_string(),
@@ -1503,12 +1503,12 @@ mod tests {
         runner.process_pending().await.unwrap();
 
         assert_eq!(
-            behind_count.load(std::sync::atomic::Ordering::SeqCst),
+            behind_count.load(Ordering::SeqCst),
             3,
             "a policy starting at Position::start() must see every event"
         );
         assert_eq!(
-            ahead_count.load(std::sync::atomic::Ordering::SeqCst),
+            ahead_count.load(Ordering::SeqCst),
             1,
             "a policy whose checkpoint already sits on position 2 must not \
              re-run that event, only the one after it"
@@ -1524,7 +1524,7 @@ mod tests {
             store.add_event(test_envelope("TestEvent", "TestAggregate"));
         }
 
-        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = Arc::new(AtomicUsize::new(0));
         let policy = Arc::new(CountingPolicyNoWait {
             name: "test".to_string(),
             count: Arc::clone(&count),
@@ -1540,7 +1540,7 @@ mod tests {
             PolicyRunOutcome::Completed(5),
             "every event must still be processed across several small batches"
         );
-        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 5);
+        assert_eq!(count.load(Ordering::SeqCst), 5);
     }
 
     /// Wraps [`MockEventStore`], recording each `fetch_batch` call's
@@ -1617,7 +1617,7 @@ mod tests {
 
         let policy = Arc::new(CountingPolicyNoWait {
             name: "test".to_string(),
-            count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            count: Arc::new(AtomicUsize::new(0)),
         });
         let runner = PolicyRunner::new(Arc::clone(&store), cp)
             .register(policy)
@@ -1642,7 +1642,7 @@ mod tests {
     struct FlakyEventStore {
         inner: MockEventStore,
         fail_on_call: usize,
-        calls: std::sync::atomic::AtomicUsize,
+        calls: AtomicUsize,
     }
 
     impl FlakyEventStore {
@@ -1650,7 +1650,7 @@ mod tests {
             Self {
                 inner,
                 fail_on_call,
-                calls: std::sync::atomic::AtomicUsize::new(0),
+                calls: AtomicUsize::new(0),
             }
         }
     }
@@ -1690,7 +1690,7 @@ mod tests {
             from_position: Position,
             limit: usize,
         ) -> Result<Vec<crate::EventLogEntry>> {
-            let call = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
             if call == self.fail_on_call {
                 return Err(crate::Error::custom("simulated transient fetch failure"));
             }
@@ -1719,7 +1719,7 @@ mod tests {
 
         let policy = Arc::new(CountingPolicyNoWait {
             name: "test".to_string(),
-            count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            count: Arc::new(AtomicUsize::new(0)),
         });
         let runner = PolicyRunner::new(Arc::clone(&store), cp.clone())
             .register(policy)
@@ -1761,7 +1761,7 @@ mod tests {
     /// released, letting a test deterministically interleave two runners.
     struct GatedHandlerPolicy {
         name: String,
-        count: Arc<std::sync::atomic::AtomicUsize>,
+        count: Arc<AtomicUsize>,
         started: Arc<tokio::sync::Notify>,
         can_continue: Arc<tokio::sync::Notify>,
     }
@@ -1779,7 +1779,7 @@ mod tests {
         async fn handle(&self, _event: &EventEnvelope, _ctx: &PolicyContext<S>) -> Result<()> {
             self.started.notify_one();
             self.can_continue.notified().await;
-            self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.count.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
     }
@@ -1796,7 +1796,7 @@ mod tests {
             .unwrap();
         store.add_event(test_envelope("TestEvent", "TestAggregate"));
 
-        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = Arc::new(AtomicUsize::new(0));
         let started = Arc::new(tokio::sync::Notify::new());
         let can_continue = Arc::new(tokio::sync::Notify::new());
         let policy_a = Arc::new(GatedHandlerPolicy {
@@ -1861,7 +1861,7 @@ mod tests {
     struct SlowPolicy {
         name: String,
         delay: Duration,
-        count: Arc<std::sync::atomic::AtomicUsize>,
+        count: Arc<AtomicUsize>,
     }
 
     #[async_trait::async_trait]
@@ -1874,7 +1874,7 @@ mod tests {
         }
         async fn handle(&self, _event: &EventEnvelope, _ctx: &PolicyContext<S>) -> Result<()> {
             tokio::time::sleep(self.delay).await;
-            self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.count.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
     }
@@ -1893,7 +1893,7 @@ mod tests {
             store.add_event(test_envelope("TestEvent", "TestAggregate"));
         }
 
-        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = Arc::new(AtomicUsize::new(0));
         let policy = Arc::new(SlowPolicy {
             name: "renewal".to_string(),
             delay: Duration::from_millis(50),
@@ -1925,7 +1925,7 @@ mod tests {
         .expect("worker-a must not hang");
 
         assert_eq!(outcome.unwrap(), PolicyRunOutcome::Completed(10));
-        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 10);
+        assert_eq!(count.load(Ordering::SeqCst), 10);
     }
 
     /// Wraps [`MockEventStore`], sleeping `delay` before every `fetch_batch`
@@ -2066,9 +2066,7 @@ mod tests {
         store.add_event(test_envelope("TestEvent", "TestAggregate"));
 
         let handler_delay = Duration::from_millis(120);
-        let counts: Vec<_> = (0..3)
-            .map(|_| Arc::new(std::sync::atomic::AtomicUsize::new(0)))
-            .collect();
+        let counts: Vec<_> = (0..3).map(|_| Arc::new(AtomicUsize::new(0))).collect();
         let runner_a = ["p1", "p2", "p3"].into_iter().zip(&counts).fold(
             PolicyRunner::new(Arc::clone(&store), Arc::clone(&cp) as CheckpointStoreRef)
                 .with_worker_id("worker-a")
@@ -2082,7 +2080,7 @@ mod tests {
             },
         );
 
-        let count_b = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count_b = Arc::new(AtomicUsize::new(0));
         let policy_b = Arc::new(CountingPolicyNoWait {
             name: "p3".to_string(),
             count: Arc::clone(&count_b),
@@ -2108,7 +2106,7 @@ mod tests {
             "p3's lease must still be renewed (and so held by worker-a) at \
              320ms, while worker-a is still inside p3's handler"
         );
-        assert_eq!(count_b.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(count_b.load(Ordering::SeqCst), 0);
         assert_eq!(outcome_a.unwrap(), PolicyRunOutcome::Completed(3));
     }
 
@@ -2124,7 +2122,7 @@ mod tests {
             store.add_event(test_envelope("TestEvent", "TestAggregate"));
         }
 
-        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = Arc::new(AtomicUsize::new(0));
         let started = Arc::new(tokio::sync::Notify::new());
         let can_continue = Arc::new(tokio::sync::Notify::new());
         let policy_a = Arc::new(GatedHandlerPolicy {
@@ -2169,7 +2167,7 @@ mod tests {
             "losing the lease mid-batch must surface as LeaseLost, got {result:?}"
         );
         assert_eq!(
-            count.load(std::sync::atomic::Ordering::SeqCst),
+            count.load(Ordering::SeqCst),
             1,
             "events 2 and 3 must never run once the lease is lost"
         );
@@ -2187,7 +2185,7 @@ mod tests {
         name: String,
         fail_until: Duration,
         started_at: std::time::Instant,
-        ok_count: Arc<std::sync::atomic::AtomicUsize>,
+        ok_count: Arc<AtomicUsize>,
     }
 
     #[async_trait::async_trait]
@@ -2204,8 +2202,7 @@ mod tests {
             if self.started_at.elapsed() < self.fail_until {
                 return Err(crate::Error::custom("still flaky"));
             }
-            self.ok_count
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.ok_count.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
     }
@@ -2229,7 +2226,7 @@ mod tests {
             .unwrap();
         store.add_event(test_envelope("TestEvent", "TestAggregate"));
 
-        let ok_a = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let ok_a = Arc::new(AtomicUsize::new(0));
         let policy_a = Arc::new(FlakyThenOkPolicy {
             name: "flaky".to_string(),
             fail_until: Duration::from_millis(900),
@@ -2254,7 +2251,7 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(500)).await;
 
-        let ok_b = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let ok_b = Arc::new(AtomicUsize::new(0));
         let policy_b = Arc::new(CountingPolicyNoWait {
             name: "flaky".to_string(),
             count: Arc::clone(&ok_b),
@@ -2268,7 +2265,7 @@ mod tests {
         let outcome_a = call_a.await.unwrap().unwrap();
 
         assert_eq!(
-            ok_b.load(std::sync::atomic::Ordering::SeqCst),
+            ok_b.load(Ordering::SeqCst),
             0,
             "worker-b must never run the handler while worker-a's retry still holds the lease"
         );
@@ -2277,7 +2274,7 @@ mod tests {
             "worker-b must see the still-renewed lease as busy, not free"
         );
         assert_eq!(outcome_a, PolicyRunOutcome::Completed(1));
-        assert_eq!(ok_a.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(ok_a.load(Ordering::SeqCst), 1);
     }
 
     /// A handler that always fails, used to drive deterministic retry
@@ -2336,7 +2333,7 @@ mod tests {
 
         let policy_b = Arc::new(CountingPolicyNoWait {
             name: "m8".to_string(),
-            count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            count: Arc::new(AtomicUsize::new(0)),
         });
         let runner_b = PolicyRunner::new(Arc::clone(&store), Arc::clone(&cp) as CheckpointStoreRef)
             .register(policy_b)
