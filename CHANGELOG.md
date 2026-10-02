@@ -11,13 +11,13 @@ explicitly rather than gated behind a major version bump.
 ### Breaking Changes
 
 - **`PolicyRunner::process_pending` returns `PolicyRunOutcome`, not
-  `usize`.** It previously reported `Ok(0)` both when nothing was pending
-  and when every registered policy's lease was held by another worker,
-  which looked identical to a caller or a scheduler — a standby node was
-  indistinguishable from an idle one. `PolicyRunOutcome::Completed(usize)`
-  carries the old count; `PolicyRunOutcome::Busy` is returned exactly when
-  policies are registered but none of their leases could be acquired.
-  Replace `let n = runner.process_pending().await?;` with
+  `usize`.** `process_pending` now takes a per-policy lease (see Fixed,
+  below), and a standby worker that currently holds none of them needs to
+  be told apart from one that simply had nothing pending — both used to
+  look like `Ok(0)`. `PolicyRunOutcome::Completed(usize)` carries the old
+  count; `PolicyRunOutcome::Busy` is returned exactly when policies are
+  registered but none of their leases could be acquired. Replace
+  `let n = runner.process_pending().await?;` with
   `let n = runner.process_pending().await?.processed();` to keep the old
   count-only behavior, or match on the outcome to tell a busy standby apart
   from an idle one.
@@ -164,13 +164,18 @@ explicitly rather than gated behind a major version bump.
   30s, 500 events).
 - `CheckpointStore::seed_checkpoint` — seeds a subscription at a position if
   it has none yet, without overwriting one that does. The provided default
-  is load-then-save (racy under concurrent seeders); `InMemoryCheckpointStore`
-  and `PostgresCheckpointStore` override it with a single atomic
-  insert-if-absent (`entry().or_insert`, `INSERT ... ON CONFLICT DO
-  NOTHING`). `PolicyRunner` uses this to seed a never-before-seen policy
-  instead of a manual load-then-save, closing a window where a slower
-  worker's seed could regress progress a faster one already made under its
-  lease.
+  is load-then-save and racy under concurrent seeders, so a custom backend
+  should override it; `InMemoryCheckpointStore` and `PostgresCheckpointStore`
+  already do, with a single atomic insert-if-absent (`entry().or_insert`,
+  `INSERT ... ON CONFLICT DO NOTHING`). `PolicyRunner` uses this to seed a
+  never-before-seen policy, so a slower worker's seed never overwrites
+  progress another worker already made under its lease.
+- `CheckpointStore::save_checkpoint_fenced` — saves a checkpoint only while
+  `worker_id` still holds the lease, returning `Error::LeaseLost`
+  otherwise. The provided default is `renew_lease` then `save_checkpoint`,
+  which leaves a race window; `InMemoryCheckpointStore` and
+  `PostgresCheckpointStore` override it with one atomic check-and-write,
+  and a custom backend should do the same.
 - `PostgresBackend::run_sticky_projection` — a leased projection runner that
   holds its lease across idle ticks (renewing and re-draining in a loop)
   instead of releasing and reacquiring it on every call, removing the
@@ -183,61 +188,45 @@ explicitly rather than gated behind a major version bump.
 
 ### Fixed
 
-- `PolicyRunner::process_pending` now saves each policy's checkpoint after
-  every fetched batch, not just at the end of a round (or on the
-  `OnError::Fail` path, as before) — a cancellation or a transient error
-  partway through a round now replays at most the batch in flight when it
-  happened, instead of the whole round. Delivery stays at-least-once.
 - `PolicyRunner::process_pending` now drains events in bounded
   `EventStore::fetch_batch` calls (configurable via
   `PolicyRunner::with_batch_size`, default 500) instead of holding one
-  open-ended `stream_all` stream for the whole round — a connection or
+  open-ended `stream_all` stream for the whole call — a connection or
   MVCC snapshot the store holds for a fetch no longer outlives the
   handlers that run between fetches, so a slow handler no longer pins a
   pooled connection or the vacuum horizon for the length of a whole catch-up
   run. `PostgresEventStore` overrides the new `EventStore::fetch_batch`
   (default: `stream_all` bounded by `limit`) with its existing
-  `fetch_events_batch`.
-- `PolicyRunner::process_pending` now takes a per-policy lease through the
-  configured `CheckpointStore` (`try_acquire_lease`/`renew_lease`, mirroring
-  the `PostgreSQL` projection runners) instead of running unleased: two
-  instances calling it concurrently no longer double-run a policy's
-  reactions or regress each other's checkpoint. A new
-  `CheckpointStore::save_checkpoint_fenced` provided method backs this for
-  every backend; `InMemoryCheckpointStore` and `PostgresCheckpointStore`
-  override it with a single atomic check-and-write. A per-policy lease
-  alone doesn't stop two concurrent calls *on the same runner instance*
-  (same worker id) from both acquiring it, so `process_pending` also
-  serializes internally — a second concurrent call on the same instance
-  waits for the first rather than racing it.
-- `PolicyRunner::process_pending` now renews a due lease once for every
-  fetched event — matched or not — and again before every matching
-  policy's handler call. A held policy sitting ahead of the scan position
-  (e.g. a checkpoint reset for a replay) used to reach no renewal check at
-  all while the scan passed it by on events it never matched, and could
-  starve its own lease out from under it with no contention whatsoever; an
-  event matching several held policies in a row used to run their handlers
-  back to back with no renewal in between too, so a later policy's lease
-  could expire — and be acquired by another worker — while the earlier
-  policies' handlers, or that later policy's own handler, were still
-  running. A handler stuck in a long `OnError::Retry` backoff no longer
-  silently outlives its lease either: held leases are renewed through every
-  backoff sleep and before every attempt, in chunks no longer than the
-  renewal interval, so `RetryLimit::Indefinite` or a
-  `RetryLimit::MaxDuration`/`max_delay` longer than `lease_duration` aborts
-  with `Error::LeaseLost` instead of letting another worker acquire the
-  same lease and run the event concurrently. A single handler call still
-  longer than roughly two thirds of `lease_duration` can lose the lease
-  before a renewal lands — see `docs/policies.md`'s Multi-Instance Safety
-  section.
-- Seeding a never-before-seen policy's checkpoint
-  (`PolicyRunner::process_pending`) no longer races another worker doing
-  the same: it now goes through `CheckpointStore::seed_checkpoint`'s atomic
-  insert-if-absent instead of a plain load-then-save, so a slower worker's
-  seed can no longer overwrite progress a faster worker already made under
-  its lease. A seed failure also now releases every lease already acquired
-  earlier in that same call, instead of leaving them held until they
-  expire.
+  `fetch_events_batch`. Checkpoints are saved after every batch instead of
+  only once at the end, so a cancellation or a transient error partway
+  through replays at most the batch in flight, never the whole call.
+  Delivery stays at-least-once.
+- `PolicyRunner::process_pending` is now safe to call from more than one
+  process or pod: each registered policy is its own lease, acquired and
+  renewed through the configured `CheckpointStore`
+  (`try_acquire_lease`/`renew_lease`, mirroring the `PostgreSQL` projection
+  runners), with checkpoint saves fenced on it via the new
+  `CheckpointStore::save_checkpoint_fenced` (`InMemoryCheckpointStore` and
+  `PostgresCheckpointStore` override the provided default with a single
+  atomic check-and-write). A never-before-seen policy is seeded through the
+  new, atomic `CheckpointStore::seed_checkpoint` instead of a racy
+  load-then-save, and a seed or acquire failure releases every lease
+  already acquired earlier in that same call instead of leaving them held
+  until they expire. A per-policy lease alone doesn't stop two concurrent
+  calls *on the same runner instance* (same worker id) from both acquiring
+  it, so `process_pending` also serializes internally — a second
+  concurrent call on the same instance waits for the first rather than
+  racing it. Held leases are renewed through every backoff sleep and
+  before every attempt of an `OnError::Retry`, so a long
+  `RetryLimit::Indefinite` or `RetryLimit::MaxDuration`/`max_delay` keeps
+  its lease instead of silently outliving it; if the lease is lost anyway,
+  the retry aborts with `Error::LeaseLost` rather than running alongside
+  the new holder. Renewal is also checked on every fetched event (matched
+  or not) and again before every matching policy's handler call, so a held
+  policy sitting ahead of the scan position (e.g. a checkpoint reset for a
+  replay) is covered too. A single handler call still longer than roughly
+  two thirds of `lease_duration` can lose the lease before a renewal lands
+  — see `docs/policies.md`'s Multi-Instance Safety section.
 - Postgres claim conflicts now wait instead of risking a deadlock, and a
   racing claim correctly reports `ClaimConflict` rather than a generic
   error.
