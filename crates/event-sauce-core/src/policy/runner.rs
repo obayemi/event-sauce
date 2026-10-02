@@ -55,7 +55,8 @@ pub enum PolicyRunOutcome {
     /// This call held the lease for at least one registered policy (even if
     /// zero events ultimately matched any of them), or no policies are
     /// registered at all — there is then no lease to hold and nothing to be
-    /// busy about.
+    /// busy about. Carries the number of policy reactions that ran (see
+    /// [`processed`](Self::processed)).
     Completed(usize),
     /// Every registered policy's lease is currently held by another worker:
     /// this call processed nothing and held no lease. Distinguishes a
@@ -65,7 +66,12 @@ pub enum PolicyRunOutcome {
 }
 
 impl PolicyRunOutcome {
-    /// The number of events processed, or `0` for [`PolicyRunOutcome::Busy`].
+    /// The number of policy reactions that ran: a handler that ran and
+    /// flushed successfully, on the first attempt or after retries. Skipped
+    /// reactions ([`OnError::Skip`], or an exhausted retry under
+    /// [`OnRetryExhausted::Skip`]) are not counted, and an event handled by
+    /// several policies counts once per policy. `0` for
+    /// [`PolicyRunOutcome::Busy`].
     #[must_use]
     pub fn processed(&self) -> usize {
         match self {
@@ -230,13 +236,16 @@ pub struct PolicyRunner<S: EventStore> {
 impl<S: EventStore + 'static> PolicyRunner<S> {
     /// Creates a new policy runner.
     ///
-    /// Checkpoint store is required — policies track their position
-    /// to prevent duplicate processing on restart.
+    /// Checkpoint store is required — each policy tracks its own position
+    /// there, so a restart resumes where it left off instead of replaying
+    /// from the start.
     ///
     /// The worker id defaults to a value unique to this process and this
-    /// runner instance (see [`with_worker_id`](Self::with_worker_id)), and
-    /// the lease duration defaults to 30 seconds (see
-    /// [`with_lease_duration`](Self::with_lease_duration)).
+    /// runner instance (see [`with_worker_id`](Self::with_worker_id)), the
+    /// lease duration defaults to 30 seconds (see
+    /// [`with_lease_duration`](Self::with_lease_duration)), and the fetch
+    /// batch size defaults to 500 (see
+    /// [`with_batch_size`](Self::with_batch_size)).
     #[must_use]
     pub fn new(store: Arc<S>, checkpoint_store: CheckpointStoreRef) -> Self {
         Self {
@@ -274,6 +283,16 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
     /// (e.g. derived from the pod name or hostname plus the process id) if
     /// you need lease ownership to be recognizable across this runner being
     /// dropped and recreated — the generated default does not survive that.
+    ///
+    /// # Uniqueness
+    ///
+    /// The id must be unique to each **live** runner instance you expect to
+    /// run concurrently: two runners sharing a worker id count as one lease
+    /// holder, so they acquire and run every policy they both register,
+    /// together, instead of splitting the work. Keep the generated default
+    /// unless you specifically need ownership to survive this runner being
+    /// recreated, and give a process running more than one runner over the
+    /// same policies a distinct id per runner.
     #[must_use]
     pub fn with_worker_id(mut self, worker_id: impl Into<String>) -> Self {
         self.worker_id = worker_id.into();
@@ -301,6 +320,8 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
     /// is ever in flight. A larger batch means fewer round-trips to the
     /// store at the cost of more events to replay if this run is
     /// interrupted mid-batch.
+    ///
+    /// A `batch_size` of `0` is treated as `1`.
     #[must_use]
     pub fn with_batch_size(mut self, batch_size: usize) -> Self {
         self.batch_size = batch_size.max(1);
@@ -438,27 +459,40 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
 
     /// Processes all pending events in one-shot mode with checkpoint support.
     ///
-    /// For each registered policy:
-    /// 1. Acquires its lease (seeding a brand-new policy's checkpoint at the
-    ///    current max position first, so it skips existing history)
-    /// 2. Fetches bounded batches from the earliest held policy's checkpoint
-    /// 3. Routes matching events to held policies, respecting their individual checkpoints
-    /// 4. Handles cascading reactions until no new events are produced
-    /// 5. Saves updated checkpoints and releases every lease acquired
+    /// Seeds and acquires a lease for each registered policy (a brand-new
+    /// policy's checkpoint is seeded at the current max position first, so
+    /// it skips existing history), then fetches bounded batches from the
+    /// earliest held policy's checkpoint and routes each batch's events to
+    /// the held policies past their own checkpoint. Re-fetching after every
+    /// batch, rather than once up front, means an event a cascading handler
+    /// appends mid-call is picked up by this same call, the same way any
+    /// other pending event is. Checkpoints are saved after every batch, and
+    /// every held lease is released once the call is done, win or lose.
     ///
     /// Returns [`PolicyRunOutcome::Completed`] with the total number of
-    /// events processed by policies this call held the lease for — even
-    /// when that number is `0` because nothing was pending. A policy whose
-    /// lease is held by another worker is skipped entirely for this call
-    /// (its events are left for whichever worker holds it); if *every*
-    /// registered policy's lease is held elsewhere, this call held no lease
-    /// at all and returns [`PolicyRunOutcome::Busy`] instead, so a caller
-    /// can tell a busy standby apart from one that is idle because nothing
-    /// is pending.
+    /// policy reactions run by policies this call held the lease for (see
+    /// [`PolicyRunOutcome::processed`]) — even when that number is `0`
+    /// because nothing was pending. A policy whose lease is held by another
+    /// worker is skipped entirely for this call (its events are left for
+    /// whichever worker holds it); if *every* registered policy's lease is
+    /// held elsewhere, this call held no lease at all and returns
+    /// [`PolicyRunOutcome::Busy`] instead, so a caller can tell a busy
+    /// standby apart from one that is idle because nothing is pending.
     ///
     /// A flush conflict is treated exactly like a handler error: both go
     /// through the same [`OnError`] policy, so `Retry` retries the flush and
     /// `Skip` skips a reaction whose flush conflicted.
+    ///
+    /// # Cancel safety
+    ///
+    /// Checkpoints are saved after every batch, so dropping this future (a
+    /// timeout, a `select!`, a process crash) replays at most the batch that
+    /// was in flight; every earlier batch is already checkpointed. Delivery
+    /// is still at-least-once — a handler whose side effects flushed but
+    /// whose batch hadn't finished checkpointing yet re-runs on the next
+    /// call — so keep handlers idempotent (see `docs/policies.md`). A
+    /// cancellation also skips releasing this call's held leases, which
+    /// then stay held under this worker until they simply expire.
     ///
     /// # Concurrency
     ///
@@ -477,25 +511,25 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
     /// on an internal lock: a second concurrent call on the same `PolicyRunner`
     /// waits for the first to finish rather than racing it.
     ///
-    /// Held leases are renewed when due on every fetched event — matched or
-    /// not — and again before every matching policy's handler call, so a
-    /// held policy with nothing to process can never starve for renewal
-    /// while the scan passes it by. A handler stuck in a long
-    /// [`OnError::Retry`] backoff keeps them renewed throughout on top of
-    /// that. Two limits
-    /// remain, both covered in `docs/policies.md`'s
-    /// Multi-Instance Safety section: a single `Policy::handle` call (with
-    /// no retry backoff in between to renew from) longer than roughly two
-    /// thirds of `lease_duration` can still lose the lease before the next
-    /// renewal lands; and cancelling this future (a timeout, a `select!`)
-    /// skips the cleanup that releases its held leases, which then stay
-    /// held under this worker until they simply expire.
+    /// A due lease is renewed on every fetched event — matched or not — and
+    /// again before every matching policy's handler call, so a held policy
+    /// with nothing to process can never starve for renewal while the scan
+    /// passes it by. A handler stuck in a long [`OnError::Retry`] backoff
+    /// keeps them renewed throughout on top of that. Two limits remain, both
+    /// covered in `docs/policies.md`'s Multi-Instance Safety section: a
+    /// single `Policy::handle` call (with no retry backoff in between to
+    /// renew from) longer than roughly two thirds of `lease_duration` can
+    /// still lose the lease before the next renewal lands; and cancelling
+    /// this future skips the cleanup that releases its held leases (see
+    /// "# Cancel safety" above).
     ///
     /// # Errors
     ///
-    /// Returns an error if event loading, policy handling, or committing fails
-    /// (depending on the [`OnError`] configuration), or if a held policy's
-    /// lease is lost mid-run.
+    /// Returns an error if seeding a new policy's checkpoint, acquiring or
+    /// renewing a lease, fetching events, routing (per [`OnError`]), or
+    /// saving a checkpoint fails. A held policy's lease lost mid-run (a
+    /// renewal failure, or a fenced save rejected by a new holder) also
+    /// surfaces here.
     pub async fn process_pending(&self) -> Result<PolicyRunOutcome> {
         let _run_guard = self.run_lock.lock().await;
 
@@ -528,8 +562,8 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
     /// a fetch comes back empty.
     /// Checkpoints are saved after every batch, whether routing it succeeded
     /// or failed, before a [`route`](Self::route) error propagates — see
-    /// [`save_checkpoints`](Self::save_checkpoints) for the replay
-    /// guarantee this gives.
+    /// [`process_pending`](Self::process_pending)'s "# Cancel safety"
+    /// section for the replay guarantee this gives.
     async fn drain_held_policies(&self, held: &mut [HeldPolicy<S>]) -> Result<usize> {
         let mut position = held
             .iter()
@@ -641,21 +675,9 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
     /// skipped, so a call that only advanced some policies doesn't write
     /// the others' unchanged position. Called after every fetched batch, and
     /// again before any route error propagates (a `Fail`-dispatched error,
-    /// an exhausted retry, or a lost lease), so that a mid-batch failure
-    /// does not lose the progress of earlier events whose side effects were
-    /// already flushed.
-    ///
-    /// # Cancel safety
-    ///
-    /// Because this runs after every batch rather than only once at the end
-    /// of the call, dropping the [`process_pending`](Self::process_pending)
-    /// future (a timeout, a `select!`, a process crash), a route error, or a
-    /// transient error on a later batch's fetch replays **at most the batch
-    /// in flight when it happened** — every earlier batch in the call is
-    /// already checkpointed. Only a cancellation, or a failure of this save
-    /// itself, skips the save outright. Delivery is still **at-least-once**:
-    /// a handler whose side effects flushed but whose batch hadn't finished
-    /// checkpointing yet re-runs on the next call. Keep handlers idempotent.
+    /// an exhausted retry, or a lost lease) — see
+    /// [`process_pending`](Self::process_pending)'s "# Cancel safety"
+    /// section for the replay guarantee this gives.
     ///
     /// # Errors
     ///
@@ -685,11 +707,8 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
     /// performs retries. A flush conflict on a retry attempt is retried
     /// exactly like a handler error, on the next loop iteration.
     ///
-    /// When `keeper` is `Some`, the held leases it tracks are renewed before
-    /// every attempt and kept alive through every backoff sleep (see
-    /// [`LeaseKeeper`]), so a retry configured with [`RetryLimit::Indefinite`]
-    /// or a long [`RetryLimit::MaxDuration`] cannot silently outlive its
-    /// lease.
+    /// When `keeper` is `Some`, its held leases are renewed before every
+    /// attempt and through every backoff sleep (see [`LeaseKeeper`]).
     ///
     /// # Errors
     ///
@@ -1531,9 +1550,9 @@ mod tests {
     }
 
     /// Wraps [`MockEventStore`], recording each `fetch_batch` call's
-    /// `(from_position, limit)` arguments, to pin that `PolicyRunner` drives
-    /// its round through bounded [`EventStore::fetch_batch`] calls rather
-    /// than one unbounded `stream_all` held open for the whole round.
+    /// `(from_position, limit)` arguments, to pin that `PolicyRunner` drains
+    /// through bounded [`EventStore::fetch_batch`] calls rather than one
+    /// unbounded `stream_all` held open for the whole call.
     struct BatchRecordingStore {
         inner: MockEventStore,
         calls: std::sync::Mutex<Vec<(Position, usize)>>,
@@ -1624,9 +1643,9 @@ mod tests {
     }
 
     /// Wraps [`MockEventStore`], failing the `n`th (1-indexed) `fetch_batch`
-    /// call to simulate a transient error partway through a round — e.g. a
+    /// call to simulate a transient error partway through a call — e.g. a
     /// dropped connection on the *next* batch's fetch, after earlier
-    /// batches in the same round already ran their handlers and flushed.
+    /// batches in the same call already ran their handlers and flushed.
     struct FlakyEventStore {
         inner: MockEventStore,
         fail_on_call: usize,
@@ -1692,11 +1711,11 @@ mod tests {
 
     /// CONC-4: a transient error on a later batch's fetch must not lose the
     /// checkpoint progress of batches already handled and flushed earlier in
-    /// the same round. `batch_size` 2 over 6 events takes 3 `fetch_batch`
-    /// calls plus a trailing empty-batch call to end the round; failing the
+    /// the same call. `batch_size` 2 over 6 events takes 3 `fetch_batch`
+    /// calls plus a trailing empty-batch call to end the call; failing the
     /// 2nd means the 1st batch's 2 events were already handled and flushed.
     #[tokio::test]
-    async fn test_checkpoint_survives_a_failure_on_a_later_batch_in_the_same_round() {
+    async fn test_checkpoint_survives_a_failure_on_a_later_batch() {
         let inner = MockEventStore::new();
         for _ in 0..6 {
             inner.add_event(test_envelope("TestEvent", "TestAggregate"));
