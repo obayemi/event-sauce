@@ -321,22 +321,31 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
     }
 
     /// Seeds a never-before-seen policy's checkpoint at the store's current
-    /// max position, so it skips all existing history and only processes
-    /// events appended from now on. A no-op if the policy already has a
-    /// checkpoint. Called before the lease is acquired for this policy, so
+    /// max position, then tries to acquire its lease. Seeding first ensures
     /// a fresh row exists for [`try_acquire_lease`](crate::CheckpointStore::try_acquire_lease)
-    /// to return rather than defaulting to [`Position::start`].
-    ///
-    /// Uses [`CheckpointStore::seed_checkpoint`](crate::CheckpointStore::seed_checkpoint),
-    /// which backends implement as an atomic insert-if-absent — unlike a
-    /// plain load-then-save, two workers racing to seed the same new policy
-    /// can never have the slower one overwrite progress the faster one (now
-    /// holding the lease) already made.
-    async fn seed_new_policy_checkpoint(&self, policy_name: &str) -> Result<()> {
+    /// to return rather than defaulting to [`Position::start`]; it is a
+    /// no-op if the policy already has a checkpoint, and, since
+    /// [`CheckpointStore::seed_checkpoint`](crate::CheckpointStore::seed_checkpoint)
+    /// is an atomic insert-if-absent, two workers racing to seed the same
+    /// new policy can never have the slower one overwrite progress the
+    /// faster one (now holding the lease) already made.
+    async fn acquire_policy_lease(
+        &self,
+        policy: &Arc<dyn Policy<S>>,
+    ) -> Result<Option<HeldPolicy<S>>> {
         let max = self.store.max_position().await?;
         self.checkpoint_store
-            .seed_checkpoint(policy_name, max)
-            .await
+            .seed_checkpoint(policy.name(), max)
+            .await?;
+        let position = self
+            .checkpoint_store
+            .try_acquire_lease(policy.name(), &self.worker_id, self.lease_duration)
+            .await?;
+        Ok(position.map(|position| HeldPolicy {
+            policy: Arc::clone(policy),
+            checkpoint: position,
+            saved: position,
+        }))
     }
 
     /// Acquires every policy's lease this worker can currently hold.
@@ -349,21 +358,8 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
     async fn acquire_policy_leases(&self) -> Result<Vec<HeldPolicy<S>>> {
         let mut held = Vec::with_capacity(self.policies.len());
         for policy in &self.policies {
-            if let Err(e) = self.seed_new_policy_checkpoint(policy.name()).await {
-                self.release_leases(&held).await;
-                return Err(e);
-            }
-            match self
-                .checkpoint_store
-                .try_acquire_lease(policy.name(), &self.worker_id, self.lease_duration)
-                .await
-            {
-                Ok(Some(position)) => held.push(HeldPolicy {
-                    policy: Arc::clone(policy),
-                    checkpoint: position,
-                    saved: position,
-                }),
-                Ok(None) => {}
+            match self.acquire_policy_lease(policy).await {
+                Ok(acquired) => held.extend(acquired),
                 Err(e) => {
                     self.release_leases(&held).await;
                     return Err(e);
