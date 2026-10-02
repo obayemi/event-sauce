@@ -601,4 +601,110 @@ mod tests {
 
         assert!(batch.is_empty());
     }
+
+    /// An [`EventStore`] whose [`stream_all`](EventStore::stream_all) yields
+    /// a fixed, scripted sequence of items — including an `Err` at a chosen
+    /// point — so `fetch_batch`'s default error and limit handling can be
+    /// pinned without a real backend.
+    struct ScriptedStreamStore {
+        items: std::sync::Mutex<Vec<Result<EventLogEntry>>>,
+    }
+
+    impl ScriptedStreamStore {
+        fn new(items: Vec<Result<EventLogEntry>>) -> Self {
+            Self {
+                items: std::sync::Mutex::new(items),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl EventStore for ScriptedStreamStore {
+        async fn append(
+            &self,
+            _stream_id: StreamId,
+            _events: Vec<EventEnvelope>,
+            _expected_version: AggregateVersion,
+            _claims: Vec<AggregateClaim>,
+            _clear_claims: bool,
+        ) -> Result<()> {
+            unimplemented!("ScriptedStreamStore only exercises fetch_batch")
+        }
+
+        async fn load_stream(
+            &self,
+            _stream_id: StreamId,
+            _from_version: AggregateVersion,
+        ) -> Result<impl Stream<Item = Result<EventEnvelope>> + Send> {
+            Ok(futures::stream::iter(Vec::new()))
+        }
+
+        async fn stream_all(
+            &self,
+            _from_position: Position,
+        ) -> Result<impl Stream<Item = Result<EventLogEntry>> + Send> {
+            let items = std::mem::take(&mut *self.items.lock().unwrap());
+            Ok(futures::stream::iter(items))
+        }
+
+        async fn get_version(&self, _stream_id: StreamId) -> Result<AggregateVersion> {
+            unimplemented!("ScriptedStreamStore only exercises fetch_batch")
+        }
+    }
+
+    fn scripted_entry(position: i64) -> EventLogEntry {
+        use crate::test_fixtures::create_test_envelope;
+        EventLogEntry {
+            position: Position::new(position),
+            envelope: create_test_envelope("Thing.Happened", "Thing"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_fetch_batch_default_propagates_an_error_within_the_limit() {
+        let store = ScriptedStreamStore::new(vec![
+            Ok(scripted_entry(1)),
+            Ok(scripted_entry(2)),
+            Err(crate::Error::custom("simulated stream failure")),
+            Ok(scripted_entry(4)),
+        ]);
+
+        let result = store.fetch_batch(Position::start(), 10).await;
+
+        assert!(
+            result.is_err(),
+            "an error inside the limit must propagate, not be dropped"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_fetch_batch_default_never_reaches_an_error_past_the_limit() {
+        let store = ScriptedStreamStore::new(vec![
+            Ok(scripted_entry(1)),
+            Ok(scripted_entry(2)),
+            Err(crate::Error::custom("simulated stream failure")),
+        ]);
+
+        let batch = store
+            .fetch_batch(Position::start(), 2)
+            .await
+            .expect("the error sits past `limit` and must never be polled");
+
+        assert_eq!(batch.len(), 2);
+        assert_eq!(batch[1].position, Position::new(2));
+    }
+
+    #[tokio::test]
+    async fn test_fetch_batch_default_limit_zero_polls_nothing() {
+        let store = ScriptedStreamStore::new(vec![Err(crate::Error::custom(
+            "must never be polled with limit 0",
+        ))]);
+
+        let batch = store
+            .fetch_batch(Position::start(), 0)
+            .await
+            .expect("limit 0 must return an empty batch without polling the stream");
+
+        assert!(batch.is_empty());
+    }
 }
