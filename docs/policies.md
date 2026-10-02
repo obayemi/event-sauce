@@ -142,7 +142,7 @@ let runner = PolicyRunner::new(store, checkpoint_store)
     .register(Arc::new(KickUserPolicy))
     .register(Arc::new(NotifyOnRemovalPolicy));
 
-// One-shot: process all pending events (useful for testing)
+// One-shot: process all pending events
 let outcome = runner.process_pending().await?;
 let processed = outcome.processed(); // 0 also when outcome.is_busy()
 
@@ -154,12 +154,12 @@ let handled = runner.process_event(&envelope).await?;
 
 `PolicyRunner` uses a `CheckpointStore` to track which events each policy has already processed. This ensures:
 
-- **No duplicate processing**: Restarting `process_pending()` picks up where it left off
+- **Resumes where it left off**: a restart replays at most the batch in flight (at-least-once — keep handlers idempotent)
 - **No duplicate cascades**: Events produced by policies are not re-processed on restart
 - **New policy skip**: A newly registered policy (no checkpoint) starts from the current max position, skipping all historical events
 - **Resume at the failing event on `Fail`**: If a handler fails mid-batch under `OnError::Fail`, each policy's checkpoint is persisted up to the **last event it fully handled** before the error — never past the failing event. A subsequent `process_pending()` resumes at the failing event and does **not** re-run the already-flushed handlers of earlier events in the batch.
 
-> **At-least-once on the consume side.** The in-process `PolicyRunner` advances each policy's checkpoint *after* a fetched batch's handlers' buffered commits are flushed, in a separate write — fenced on the policy's lease, and saved after every batch (not just once at the end of a round), so a cancellation or a transient error replays at most the batch in flight when it happened, never the whole round. These are still not a single transaction with the flush, so a crash between a batch's last flush and its checkpoint save can re-deliver that batch's events on restart. Keep handlers idempotent. The Postgres outbox dispatcher (see [Two ways to dispatch](#two-ways-to-dispatch-in-process-runner-vs-queue)) adds per-event retry and a DLQ, but its delivery is **also** at-least-once — it does not make handlers exactly-once.
+> **At-least-once on the consume side.** The in-process `PolicyRunner` advances each policy's checkpoint *after* a fetched batch's handlers' buffered commits are flushed, in a separate write — fenced on the policy's lease, and saved after every batch (not just once at the end of the call), so a cancellation or a transient error replays at most the batch in flight when it happened, never the whole call. These are still not a single transaction with the flush, so a crash between a batch's last flush and its checkpoint save can re-deliver that batch's events on restart. Keep handlers idempotent. The Postgres outbox dispatcher (see [Two ways to dispatch](#two-ways-to-dispatch-in-process-runner-vs-queue)) adds per-event retry and a DLQ, but its delivery is **also** at-least-once — it does not make handlers exactly-once.
 
 ### Multi-Instance Safety
 
@@ -181,9 +181,12 @@ calls on the *same* `PolicyRunner` instance (same worker id) from both
 succeeding — a worker can always renew its own lease. `process_pending()`
 therefore also serializes internally: a second concurrent call on the same
 instance waits for the first to finish rather than racing it. If you need
-concurrent policy processing within one process, run separate
-`PolicyRunner` instances (each with their own `worker_id`) rather than
-calling the same instance from multiple tasks.
+policies processed concurrently within one process, register **disjoint**
+sets of policies on separate `PolicyRunner` instances (each with their own
+`worker_id`, see below). Instances that register the *same* policies never
+run the same policy at the same time: overlapping calls split those
+policies' leases between them, and a call that gets none of them reports
+`Busy`.
 
 **A `worker_id` must be unique per running instance.** Two live runners that
 share one `worker_id` (for example, a fixed string hard-coded across every
@@ -196,19 +199,19 @@ id — or leave it at the generated default.
 
 **Two known limits**, from how the lease is kept alive:
 
-- A lease is renewed once for every fetched event — matched or not — and
-  again before every matching policy's handler call, so an event matching
-  several held policies in a row renews between each of their handlers,
-  not once for all of them; and through every `OnError::Retry` backoff and
-  before every retry attempt, in chunks no longer than the renewal
-  interval (`lease_duration / 3`). A held policy with no matching event in
-  a long stretch the runner scans (e.g. a checkpoint reset for a replay)
-  is covered by the same per-event check, not left to starve. A **single
-  handler call** (one `Policy::handle`
-  invocation, with no retry backoff in between to renew from) longer than
-  roughly **two thirds of `lease_duration`** can still lose the lease
-  before the next renewal lands; size `lease_duration` well above your
-  slowest expected handler call.
+- A **single handler call** (one `Policy::handle` invocation, with no
+  retry backoff in between to renew from) longer than roughly **two
+  thirds of `lease_duration`** can lose the lease before the next renewal
+  lands; size `lease_duration` well above your slowest expected handler
+  call. This is the practical limit, because renewal itself is checked
+  often: on every fetched event (matched or not), before every matching
+  policy's handler call, and through every `OnError::Retry` backoff and
+  before every retry attempt — in chunks no longer than the renewal
+  interval (`lease_duration / 3`) — but the lease store only actually sees
+  a write once that interval has elapsed since the last one. A held policy
+  with no matching event in a long stretch the runner scans (e.g. a
+  checkpoint reset for a replay) is covered by the same per-event check,
+  not left to starve.
 - A **cancelled `process_pending()`** (a timeout, a `select!`, a dropped
   task) does not run its cleanup: whatever leases it had acquired stay
   held under this worker until they simply expire, rather than being

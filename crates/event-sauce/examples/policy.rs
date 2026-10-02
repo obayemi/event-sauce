@@ -328,7 +328,7 @@ async fn main() -> anyhow::Result<()> {
         .register(Arc::new(NotifyOnRemovalPolicy));
 
     let processed = runner.process_pending().await?.processed();
-    println!("Processed {processed} event-policy matches");
+    println!("Processed {processed} policy reactions");
 
     // --- Step 4: Verify results ---
 

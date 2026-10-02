@@ -337,9 +337,9 @@ pub trait EventStore: Send + Sync {
     async fn max_position(&self) -> Result<Position>;
 
     // A bounded, already-materialized batch of up to `limit` entries after
-    // `from_position` — what `PolicyRunner` drives its rounds through
-    // instead of holding one open-ended stream. Default takes `limit` items
-    // off `stream_all`; PostgreSQL answers with one `LIMIT` query.
+    // `from_position` — what `PolicyRunner` drains through instead of
+    // holding one open-ended stream. Default takes `limit` items off
+    // `stream_all`; PostgreSQL answers with one `LIMIT` query.
     async fn fetch_batch(&self, from_position: Position, limit: usize) -> Result<Vec<EventLogEntry>>;
 
     async fn stream_exists(&self, stream_id: StreamId) -> Result<bool>;

@@ -652,7 +652,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register(Arc::new(OrderCompletedPolicy));
 
     let processed = runner.process_pending().await?.processed();
-    println!("  Processed {processed} event-policy matches");
+    println!("  Processed {processed} policy reactions");
 
     // ========================================================================
     // Step 7: Show Causation Chain

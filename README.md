@@ -309,7 +309,7 @@ let runner = PolicyRunner::new(store, checkpoint_store)
 let processed = runner.process_pending().await?.processed();
 ```
 
-Cascading reactions are supported — a policy's output events can trigger further policies, with configurable depth limits. Checkpoint-based resumption prevents duplicate processing on restart.
+Cascading reactions are supported — a policy's output events can trigger further policies, with configurable depth limits. Each policy tracks its own checkpoint, so a restart resumes where it left off instead of replaying from the start.
 
 See the **[Policies Guide](docs/policies.md)** for full details.
 
