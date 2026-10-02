@@ -161,18 +161,6 @@ impl PostgresCheckpointStore {
         )
     }
 
-    /// Builds the insert-if-absent SQL [`seed_checkpoint`](Self::seed_checkpoint)
-    /// uses: unlike [`checkpoint_upsert_sql`](Self::checkpoint_upsert_sql), a
-    /// conflict leaves the existing row untouched.
-    fn checkpoint_seed_sql(&self) -> String {
-        let checkpoints_table = self.qualify_table("checkpoints");
-        format!(
-            "INSERT INTO {checkpoints_table} (subscription_name, position, updated_at)
-             VALUES ($1, $2, NOW())
-             ON CONFLICT (subscription_name) DO NOTHING"
-        )
-    }
-
     /// Saves a checkpoint inside an existing transaction.
     ///
     /// This is the building block used by transactional projection runners that
@@ -519,7 +507,12 @@ impl CheckpointStore for PostgresCheckpointStore {
     }
 
     async fn seed_checkpoint(&self, subscription_name: &str, position: Position) -> Result<()> {
-        let query = self.checkpoint_seed_sql();
+        let checkpoints_table = self.qualify_table("checkpoints");
+        let query = format!(
+            "INSERT INTO {checkpoints_table} (subscription_name, position, updated_at)
+             VALUES ($1, $2, NOW())
+             ON CONFLICT (subscription_name) DO NOTHING"
+        );
         sqlx::query(&query)
             .bind(subscription_name)
             .bind(position.as_i64())
