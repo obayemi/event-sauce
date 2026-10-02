@@ -913,7 +913,7 @@ mod tests {
     struct CountingPolicy {
         name: String,
         filter: EventFilter,
-        count: Arc<std::sync::Mutex<usize>>,
+        count: Arc<AtomicUsize>,
     }
 
     #[async_trait::async_trait]
@@ -927,7 +927,7 @@ mod tests {
         }
 
         async fn handle(&self, _event: &EventEnvelope, _ctx: &PolicyContext<S>) -> Result<()> {
-            *self.count.lock().unwrap() += 1;
+            self.count.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
     }
@@ -936,7 +936,7 @@ mod tests {
     fn test_policy_runner_register() {
         let store = Arc::new(MockEventStore::new());
         let cp = test_checkpoint_store();
-        let count = Arc::new(std::sync::Mutex::new(0));
+        let count = Arc::new(AtomicUsize::new(0));
         let policy = Arc::new(CountingPolicy {
             name: "test".to_string(),
             filter: EventFilter::all(),
@@ -951,7 +951,7 @@ mod tests {
     async fn test_policy_runner_process_event() {
         let store = Arc::new(MockEventStore::new());
         let cp = test_checkpoint_store();
-        let count = Arc::new(std::sync::Mutex::new(0));
+        let count = Arc::new(AtomicUsize::new(0));
         let policy = Arc::new(CountingPolicy {
             name: "test".to_string(),
             filter: EventFilter::by_event_type("MatchMe"),
@@ -963,20 +963,20 @@ mod tests {
         let envelope = test_envelope("MatchMe", "TestAggregate");
         let handled = runner.process_event(&envelope).await.unwrap();
         assert_eq!(handled, 1);
-        assert_eq!(*count.lock().unwrap(), 1);
+        assert_eq!(count.load(Ordering::SeqCst), 1);
 
         let envelope = test_envelope("DontMatchMe", "TestAggregate");
         let handled = runner.process_event(&envelope).await.unwrap();
         assert_eq!(handled, 0);
-        assert_eq!(*count.lock().unwrap(), 1);
+        assert_eq!(count.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
     async fn test_policy_runner_process_event_multiple_policies() {
         let store = Arc::new(MockEventStore::new());
         let cp = test_checkpoint_store();
-        let count1 = Arc::new(std::sync::Mutex::new(0));
-        let count2 = Arc::new(std::sync::Mutex::new(0));
+        let count1 = Arc::new(AtomicUsize::new(0));
+        let count2 = Arc::new(AtomicUsize::new(0));
 
         let policy1 = Arc::new(CountingPolicy {
             name: "policy1".to_string(),
@@ -997,8 +997,8 @@ mod tests {
         let handled = runner.process_event(&envelope).await.unwrap();
 
         assert_eq!(handled, 2);
-        assert_eq!(*count1.lock().unwrap(), 1);
-        assert_eq!(*count2.lock().unwrap(), 1);
+        assert_eq!(count1.load(Ordering::SeqCst), 1);
+        assert_eq!(count2.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
@@ -1023,7 +1023,7 @@ mod tests {
         store.add_event(test_envelope("OtherEvent", "TestAggregate"));
         store.add_event(test_envelope("TestEvent", "TestAggregate"));
 
-        let count = Arc::new(std::sync::Mutex::new(0));
+        let count = Arc::new(AtomicUsize::new(0));
         let policy = Arc::new(CountingPolicy {
             name: "test".to_string(),
             filter: EventFilter::by_event_type("TestEvent"),
@@ -1035,7 +1035,7 @@ mod tests {
 
         // 2 matching events out of 3 total
         assert_eq!(processed, PolicyRunOutcome::Completed(2));
-        assert_eq!(*count.lock().unwrap(), 2);
+        assert_eq!(count.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
@@ -1046,7 +1046,7 @@ mod tests {
         store.add_event(test_envelope("TestEvent", "TestAggregate"));
         store.add_event(test_envelope("TestEvent", "TestAggregate"));
 
-        let count = Arc::new(std::sync::Mutex::new(0));
+        let count = Arc::new(AtomicUsize::new(0));
         let policy = Arc::new(CountingPolicy {
             name: "fresh".to_string(),
             filter: EventFilter::all(),
@@ -1062,7 +1062,7 @@ mod tests {
             PolicyRunOutcome::Completed(0),
             "a new policy must skip existing history"
         );
-        assert_eq!(*count.lock().unwrap(), 0);
+        assert_eq!(count.load(Ordering::SeqCst), 0);
         assert_eq!(cp.get("fresh"), Some(Position::new(2)));
 
         store.add_event(test_envelope("TestEvent", "TestAggregate"));
@@ -1080,7 +1080,7 @@ mod tests {
         let cp = test_checkpoint_store();
         cp.save_checkpoint("test", Position::start()).await.unwrap();
 
-        let count = Arc::new(std::sync::Mutex::new(0));
+        let count = Arc::new(AtomicUsize::new(0));
         let policy = Arc::new(CountingPolicy {
             name: "test".to_string(),
             filter: EventFilter::all(),
@@ -1157,12 +1157,14 @@ mod tests {
             fail_for: "second".to_string(),
         });
 
-        let policy1 = Arc::new(CountingPolicyNoWait {
+        let policy1 = Arc::new(CountingPolicy {
             name: "first".to_string(),
+            filter: EventFilter::all(),
             count: Arc::new(AtomicUsize::new(0)),
         });
-        let policy2 = Arc::new(CountingPolicyNoWait {
+        let policy2 = Arc::new(CountingPolicy {
             name: "second".to_string(),
+            filter: EventFilter::all(),
             count: Arc::new(AtomicUsize::new(0)),
         });
 
@@ -1239,12 +1241,14 @@ mod tests {
             fail_for: "second".to_string(),
         });
 
-        let policy1 = Arc::new(CountingPolicyNoWait {
+        let policy1 = Arc::new(CountingPolicy {
             name: "first".to_string(),
+            filter: EventFilter::all(),
             count: Arc::new(AtomicUsize::new(0)),
         });
-        let policy2 = Arc::new(CountingPolicyNoWait {
+        let policy2 = Arc::new(CountingPolicy {
             name: "second".to_string(),
+            filter: EventFilter::all(),
             count: Arc::new(AtomicUsize::new(0)),
         });
 
@@ -1278,7 +1282,7 @@ mod tests {
 
         store.add_event(test_envelope("TestEvent", "TestAggregate"));
 
-        let count = Arc::new(std::sync::Mutex::new(0));
+        let count = Arc::new(AtomicUsize::new(0));
         let policy = Arc::new(CountingPolicy {
             name: "test".to_string(),
             filter: EventFilter::all(),
@@ -1294,7 +1298,7 @@ mod tests {
             processed.is_busy(),
             "a policy whose lease is held elsewhere must be skipped, not processed"
         );
-        assert_eq!(*count.lock().unwrap(), 0);
+        assert_eq!(count.load(Ordering::SeqCst), 0);
     }
 
     /// A policy that signals when its handler starts, then waits to be
@@ -1357,8 +1361,9 @@ mod tests {
             .with_worker_id("worker-a");
 
         let count2 = Arc::new(AtomicUsize::new(0));
-        let policy_b = Arc::new(CountingPolicyNoWait {
+        let policy_b = Arc::new(CountingPolicy {
             name: "gated".to_string(),
+            filter: EventFilter::all(),
             count: Arc::clone(&count2),
         });
         let runner_b = PolicyRunner::new(Arc::clone(&store), Arc::clone(&cp) as CheckpointStoreRef)
@@ -1381,27 +1386,6 @@ mod tests {
         assert_eq!(count2.load(Ordering::SeqCst), 0);
         assert_eq!(processed_a.unwrap(), PolicyRunOutcome::Completed(1));
         assert_eq!(count.load(Ordering::SeqCst), 1);
-    }
-
-    struct CountingPolicyNoWait {
-        name: String,
-        count: Arc<AtomicUsize>,
-    }
-
-    #[async_trait::async_trait]
-    impl<S: EventStore + 'static> Policy<S> for CountingPolicyNoWait {
-        fn name(&self) -> &str {
-            &self.name
-        }
-
-        fn event_filter(&self) -> EventFilter {
-            EventFilter::all()
-        }
-
-        async fn handle(&self, _event: &EventEnvelope, _ctx: &PolicyContext<S>) -> Result<()> {
-            self.count.fetch_add(1, Ordering::SeqCst);
-            Ok(())
-        }
     }
 
     /// A second `process_pending` call on the same runner must wait for the
@@ -1491,12 +1475,14 @@ mod tests {
         let behind_count = Arc::new(AtomicUsize::new(0));
         let ahead_count = Arc::new(AtomicUsize::new(0));
         let runner = PolicyRunner::new(store, cp)
-            .register(Arc::new(CountingPolicyNoWait {
+            .register(Arc::new(CountingPolicy {
                 name: "behind".to_string(),
+                filter: EventFilter::all(),
                 count: Arc::clone(&behind_count),
             }))
-            .register(Arc::new(CountingPolicyNoWait {
+            .register(Arc::new(CountingPolicy {
                 name: "ahead".to_string(),
+                filter: EventFilter::all(),
                 count: Arc::clone(&ahead_count),
             }));
 
@@ -1525,8 +1511,9 @@ mod tests {
         }
 
         let count = Arc::new(AtomicUsize::new(0));
-        let policy = Arc::new(CountingPolicyNoWait {
+        let policy = Arc::new(CountingPolicy {
             name: "test".to_string(),
+            filter: EventFilter::all(),
             count: Arc::clone(&count),
         });
         let runner = PolicyRunner::new(store, cp)
@@ -1615,8 +1602,9 @@ mod tests {
         let cp = test_checkpoint_store();
         cp.save_checkpoint("test", Position::start()).await.unwrap();
 
-        let policy = Arc::new(CountingPolicyNoWait {
+        let policy = Arc::new(CountingPolicy {
             name: "test".to_string(),
+            filter: EventFilter::all(),
             count: Arc::new(AtomicUsize::new(0)),
         });
         let runner = PolicyRunner::new(Arc::clone(&store), cp)
@@ -1717,8 +1705,9 @@ mod tests {
         let cp = test_checkpoint_store();
         cp.save_checkpoint("test", Position::start()).await.unwrap();
 
-        let policy = Arc::new(CountingPolicyNoWait {
+        let policy = Arc::new(CountingPolicy {
             name: "test".to_string(),
+            filter: EventFilter::all(),
             count: Arc::new(AtomicUsize::new(0)),
         });
         let runner = PolicyRunner::new(Arc::clone(&store), cp.clone())
@@ -1743,7 +1732,7 @@ mod tests {
     fn test_policy_runner_debug() {
         let store = Arc::new(MockEventStore::new());
         let cp = test_checkpoint_store();
-        let count = Arc::new(std::sync::Mutex::new(0));
+        let count = Arc::new(AtomicUsize::new(0));
         let policy = Arc::new(CountingPolicy {
             name: "my_policy".to_string(),
             filter: EventFilter::all(),
@@ -1990,12 +1979,12 @@ mod tests {
             .await
             .unwrap();
 
-        let ahead_count = Arc::new(std::sync::Mutex::new(0));
+        let ahead_count = Arc::new(AtomicUsize::new(0));
         let runner = PolicyRunner::new(Arc::clone(&store), Arc::clone(&cp) as CheckpointStoreRef)
             .register(Arc::new(CountingPolicy {
                 name: "replay".to_string(),
                 filter: EventFilter::by_event_type("NeverMatches"),
-                count: Arc::new(std::sync::Mutex::new(0)),
+                count: Arc::new(AtomicUsize::new(0)),
             }))
             .register(Arc::new(CountingPolicy {
                 name: "ahead".to_string(),
@@ -2017,7 +2006,7 @@ mod tests {
              lease renewed by the per-event check alone, with no matching \
              event or checkpoint movement of its own to trigger a renewal"
         );
-        assert_eq!(*ahead_count.lock().unwrap(), 1);
+        assert_eq!(ahead_count.load(Ordering::SeqCst), 1);
     }
 
     /// `route` must renew a due lease before *every* matching policy's
@@ -2055,8 +2044,9 @@ mod tests {
         );
 
         let count_b = Arc::new(AtomicUsize::new(0));
-        let policy_b = Arc::new(CountingPolicyNoWait {
+        let policy_b = Arc::new(CountingPolicy {
             name: "p3".to_string(),
+            filter: EventFilter::all(),
             count: Arc::clone(&count_b),
         });
         let runner_b = PolicyRunner::new(Arc::clone(&store), Arc::clone(&cp) as CheckpointStoreRef)
@@ -2227,8 +2217,9 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         let ok_b = Arc::new(AtomicUsize::new(0));
-        let policy_b = Arc::new(CountingPolicyNoWait {
+        let policy_b = Arc::new(CountingPolicy {
             name: "flaky".to_string(),
+            filter: EventFilter::all(),
             count: Arc::clone(&ok_b),
         });
         let runner_b = PolicyRunner::new(Arc::clone(&store), Arc::clone(&cp) as CheckpointStoreRef)
@@ -2306,8 +2297,9 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(375)).await;
 
-        let policy_b = Arc::new(CountingPolicyNoWait {
+        let policy_b = Arc::new(CountingPolicy {
             name: "m8".to_string(),
+            filter: EventFilter::all(),
             count: Arc::new(AtomicUsize::new(0)),
         });
         let runner_b = PolicyRunner::new(Arc::clone(&store), Arc::clone(&cp) as CheckpointStoreRef)
