@@ -574,7 +574,7 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
                 position = entry.position;
 
                 match self
-                    .route(position, &entry.envelope, held, Some(&mut keeper))
+                    .route(position, &entry.envelope, held, &mut keeper)
                     .await
                 {
                     Ok(n) => total_processed += n,
@@ -597,15 +597,11 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
     /// checkpoint to `position` in place — including one this event didn't
     /// match, so a non-matching gap is skipped on the next call too.
     ///
-    /// Renews a due lease once up front for this event, whether or not it
-    /// matches any held policy — a policy sitting ahead of the scan
-    /// position, with no event of its own to match and no checkpoint of its
-    /// own moving, would otherwise never reach a renewal check and starve
-    /// its lease out from under it. On top of that, renews again before
-    /// each matching policy's handler call, not just once per event: an
-    /// event matching several held policies in a row runs their handlers
-    /// back to back, and the sum of their durations — not any single one of
-    /// them — is what the next renewal has to arrive within.
+    /// A due lease is renewed before considering each held policy, which
+    /// covers both a policy sitting ahead of the scan (no event or
+    /// checkpoint of its own to trigger a check) and several matching
+    /// handlers run back to back (the sum of their durations, not any single
+    /// one, is what the next renewal has to arrive within).
     ///
     /// Returns how many policies ran their handler for this event
     /// ([`Handled::Yes`]).
@@ -622,29 +618,23 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
         position: Position,
         envelope: &EventEnvelope,
         held: &mut [HeldPolicy<S>],
-        mut keeper: Option<&mut LeaseKeeper<'_>>,
+        keeper: &mut LeaseKeeper<'_>,
     ) -> Result<usize> {
-        if let Some(k) = keeper.as_deref_mut() {
-            k.renew_if_due().await?;
-        }
-
         let mut processed = 0;
         for held_policy in held.iter_mut() {
+            keeper.renew_if_due().await?;
+
             if position <= held_policy.checkpoint {
                 continue;
             }
 
-            if held_policy.policy.event_filter().matches(envelope) {
-                if let Some(k) = keeper.as_deref_mut() {
-                    k.renew_if_due().await?;
-                }
-                match self
-                    .run_policy(&held_policy.policy, envelope, keeper.as_deref_mut())
+            if held_policy.policy.event_filter().matches(envelope)
+                && self
+                    .run_policy(&held_policy.policy, envelope, Some(&mut *keeper))
                     .await?
-                {
-                    Handled::Yes => processed += 1,
-                    Handled::Skipped => {}
-                }
+                    == Handled::Yes
+            {
+                processed += 1;
             }
 
             held_policy.checkpoint = position;
