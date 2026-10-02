@@ -89,6 +89,40 @@ impl Default for InMemoryCheckpointStore {
     }
 }
 
+/// Checks that `worker_id` still actively holds `subscription_name`'s lease
+/// and, if so, refreshes it for another `lease_duration` from now — the
+/// single check-and-write both [`renew_lease`](CheckpointStore::renew_lease)
+/// and [`save_checkpoint_fenced`](CheckpointStore::save_checkpoint_fenced)
+/// need, performed once under the caller's write guard so the two stay
+/// atomic with whatever the caller does next (e.g. moving `position`).
+///
+/// # Errors
+///
+/// Returns [`Error::lease_lost`] if there is no entry for
+/// `subscription_name`, or its lease is missing, expired, or held by
+/// another worker.
+fn renew_held<'a>(
+    entries: &'a mut HashMap<String, Entry>,
+    subscription_name: &str,
+    worker_id: &str,
+    lease_duration: Duration,
+) -> Result<&'a mut Entry> {
+    let now = Instant::now();
+    let Some(entry) = entries.get_mut(subscription_name) else {
+        return Err(Error::lease_lost(subscription_name, worker_id));
+    };
+    match &entry.lease {
+        Some(lease) if lease.worker_id == worker_id && lease.expires_at > now => {
+            entry.lease = Some(Lease {
+                worker_id: worker_id.to_string(),
+                expires_at: now + lease_duration,
+            });
+            Ok(entry)
+        }
+        _ => Err(Error::lease_lost(subscription_name, worker_id)),
+    }
+}
+
 #[async_trait]
 impl CheckpointStore for InMemoryCheckpointStore {
     async fn save_checkpoint(&self, subscription_name: &str, position: Position) -> Result<()> {
@@ -142,21 +176,13 @@ impl CheckpointStore for InMemoryCheckpointStore {
         worker_id: &str,
         lease_duration: Duration,
     ) -> Result<()> {
-        let mut guard = self.inner.write().await;
-        let now = Instant::now();
-        let Some(entry) = guard.get_mut(subscription_name) else {
-            return Err(Error::lease_lost(subscription_name, worker_id));
-        };
-        match &entry.lease {
-            Some(lease) if lease.worker_id == worker_id && lease.expires_at > now => {
-                entry.lease = Some(Lease {
-                    worker_id: worker_id.to_string(),
-                    expires_at: now + lease_duration,
-                });
-                Ok(())
-            }
-            _ => Err(Error::lease_lost(subscription_name, worker_id)),
-        }
+        renew_held(
+            &mut *self.inner.write().await,
+            subscription_name,
+            worker_id,
+            lease_duration,
+        )?;
+        Ok(())
     }
 
     async fn release_lease(&self, subscription_name: &str, worker_id: &str) -> Result<()> {
@@ -178,22 +204,14 @@ impl CheckpointStore for InMemoryCheckpointStore {
         lease_duration: Duration,
         position: Position,
     ) -> Result<()> {
-        let mut guard = self.inner.write().await;
-        let now = Instant::now();
-        let Some(entry) = guard.get_mut(subscription_name) else {
-            return Err(Error::lease_lost(subscription_name, worker_id));
-        };
-        match &entry.lease {
-            Some(lease) if lease.worker_id == worker_id && lease.expires_at > now => {
-                entry.lease = Some(Lease {
-                    worker_id: worker_id.to_string(),
-                    expires_at: now + lease_duration,
-                });
-                entry.position = position;
-                Ok(())
-            }
-            _ => Err(Error::lease_lost(subscription_name, worker_id)),
-        }
+        renew_held(
+            &mut *self.inner.write().await,
+            subscription_name,
+            worker_id,
+            lease_duration,
+        )?
+        .position = position;
+        Ok(())
     }
 
     async fn seed_checkpoint(&self, subscription_name: &str, position: Position) -> Result<()> {
