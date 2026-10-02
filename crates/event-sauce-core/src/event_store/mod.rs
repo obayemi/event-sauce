@@ -189,19 +189,13 @@ pub trait EventStore: Send + Sync {
         from_position: Position,
         limit: usize,
     ) -> Result<Vec<EventLogEntry>> {
-        use futures::StreamExt;
+        use futures::{StreamExt, TryStreamExt};
 
-        let stream = self.stream_all(from_position).await?;
-        futures::pin_mut!(stream);
-
-        let mut batch = Vec::with_capacity(limit.min(1024));
-        while batch.len() < limit {
-            match stream.next().await {
-                Some(entry) => batch.push(entry?),
-                None => break,
-            }
-        }
-        Ok(batch)
+        self.stream_all(from_position)
+            .await?
+            .take(limit)
+            .try_collect()
+            .await
     }
 
     /// Returns the highest position currently in the global event log, or
