@@ -88,22 +88,27 @@ impl PolicyRunOutcome {
 /// `LeaseRenewal` (a third of the lease's duration) — duplicated here rather
 /// than shared, since `event-sauce-core` cannot depend on a backend crate.
 struct LeaseRenewal {
-    interval: Duration,
+    lease_duration: Duration,
     last: std::time::Instant,
 }
 
 impl LeaseRenewal {
     fn new(lease_duration: Duration) -> Self {
         Self {
-            interval: lease_duration / 3,
+            lease_duration,
             last: std::time::Instant::now(),
         }
+    }
+
+    /// A third of `lease_duration`: how long this waits between renewals.
+    fn interval(&self) -> Duration {
+        self.lease_duration / 3
     }
 
     /// Whether at least one renewal interval has passed since the last
     /// renewal (or since this was created, if none yet).
     fn due(&self) -> bool {
-        self.last.elapsed() >= self.interval
+        self.last.elapsed() >= self.interval()
     }
 
     fn renewed(&mut self) {
@@ -111,27 +116,41 @@ impl LeaseRenewal {
     }
 }
 
-/// Keeps a worker's held policy leases alive across a long-running handler
-/// retry, where the normal per-event renewal point in
-/// [`route`](PolicyRunner::route) is not reached again until the handler
-/// finally returns.
+/// Renews a worker's held policy leases once a third of `lease_duration` has
+/// elapsed: [`route`](PolicyRunner::route) checks it as it visits each held
+/// policy, and [`retry_handler`](PolicyRunner::retry_handler) checks it
+/// before every attempt and between backoff chunks.
 ///
-/// Without this, a lease whose `lease_duration` is shorter than a retry's
-/// total backoff (e.g. [`RetryLimit::Indefinite`] or [`RetryLimit::MaxDuration`]
-/// longer than the lease) expires while the node is still retrying; another
-/// worker then acquires it and runs the same event concurrently. Threading
-/// this through the retry loop closes that window: a lease lost mid-retry
-/// now aborts the attempt with [`Error::LeaseLost`](crate::Error::LeaseLost)
-/// instead of silently continuing to work under it.
+/// The retry case matters because a lease whose `lease_duration` is shorter
+/// than a retry's total backoff (e.g. [`RetryLimit::Indefinite`] or
+/// [`RetryLimit::MaxDuration`] longer than the lease) would otherwise expire
+/// while the node is still retrying, letting another worker acquire it and
+/// run the same event concurrently. Threading this through the retry loop
+/// closes that window: a lease lost mid-retry now aborts the attempt with
+/// [`Error::LeaseLost`](crate::Error::LeaseLost) instead of silently
+/// continuing to work under it.
 struct LeaseKeeper<'a> {
     checkpoint_store: &'a CheckpointStoreRef,
     worker_id: &'a str,
-    lease_duration: Duration,
     policy_names: &'a [String],
-    renewal: &'a mut LeaseRenewal,
+    renewal: LeaseRenewal,
 }
 
-impl LeaseKeeper<'_> {
+impl<'a> LeaseKeeper<'a> {
+    fn new(
+        checkpoint_store: &'a CheckpointStoreRef,
+        worker_id: &'a str,
+        lease_duration: Duration,
+        policy_names: &'a [String],
+    ) -> Self {
+        Self {
+            checkpoint_store,
+            worker_id,
+            policy_names,
+            renewal: LeaseRenewal::new(lease_duration),
+        }
+    }
+
     /// Renews every held policy's lease if at least one renewal interval has
     /// passed since the last renewal.
     ///
@@ -145,7 +164,7 @@ impl LeaseKeeper<'_> {
         }
         for name in self.policy_names {
             self.checkpoint_store
-                .renew_lease(name, self.worker_id, self.lease_duration)
+                .renew_lease(name, self.worker_id, self.renewal.lease_duration)
                 .await?;
         }
         self.renewal.renewed();
@@ -163,7 +182,7 @@ impl LeaseKeeper<'_> {
     /// between chunks finds a held policy's lease no longer held by this
     /// worker.
     async fn sleep_renewing(&mut self, delay: Duration) -> Result<()> {
-        let chunk = self.renewal.interval.max(Duration::from_millis(1));
+        let chunk = self.renewal.interval().max(Duration::from_millis(1));
         let mut remaining = delay;
         while remaining > chunk {
             tokio::time::sleep(chunk).await;
@@ -537,14 +556,12 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
             .unwrap_or_else(Position::start);
 
         let policy_names: Vec<String> = held.iter().map(|h| h.policy.name().to_string()).collect();
-        let mut renewal = LeaseRenewal::new(self.lease_duration);
-        let mut keeper = LeaseKeeper {
-            checkpoint_store: &self.checkpoint_store,
-            worker_id: &self.worker_id,
-            lease_duration: self.lease_duration,
-            policy_names: &policy_names,
-            renewal: &mut renewal,
-        };
+        let mut keeper = LeaseKeeper::new(
+            &self.checkpoint_store,
+            &self.worker_id,
+            self.lease_duration,
+            &policy_names,
+        );
 
         let mut total_processed = 0;
         loop {
