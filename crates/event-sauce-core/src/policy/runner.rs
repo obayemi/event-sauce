@@ -540,14 +540,12 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
     /// checkpointed before the next is fetched at the now-advanced position,
     /// so an event a cascading handler appends mid-call is picked up by a
     /// later fetch the same way any other pending event is — one pass
-    /// already drains everything there is to drain, including cascades,
-    /// with no separate "round" needed once a fetch comes back empty.
-    /// Checkpoints are saved after every batch, and again before an error
-    /// from [`route`](Self::route) propagates, so a re-run only ever
-    /// replays at most the batch that was in flight (at-least-once): a lease
-    /// renewal error or a cancellation mid-batch returns without saving, so
-    /// the events that batch already handled before that point are replayed
-    /// on the next call.
+    /// already drains everything there is to drain, including cascades, once
+    /// a fetch comes back empty.
+    /// Checkpoints are saved after every batch, whether routing it succeeded
+    /// or failed, before a [`route`](Self::route) error propagates — see
+    /// [`save_checkpoints`](Self::save_checkpoints) for the replay
+    /// guarantee this gives.
     async fn drain_held_policies(&self, held: &mut [HeldPolicy<S>]) -> Result<usize> {
         let mut position = held
             .iter()
@@ -566,29 +564,39 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
         let mut total_processed = 0;
         loop {
             let batch = self.store.fetch_batch(position, self.batch_size).await?;
-            if batch.is_empty() {
+            let Some(last) = batch.last() else {
                 break;
-            }
+            };
+            position = last.position;
 
-            for entry in batch {
-                position = entry.position;
-
-                match self
-                    .route(position, &entry.envelope, held, &mut keeper)
-                    .await
-                {
-                    Ok(n) => total_processed += n,
-                    Err(e) => {
-                        self.save_checkpoints(held).await?;
-                        return Err(e);
-                    }
-                }
-            }
-
+            let routed = self.route_batch(&batch, held, &mut keeper).await;
             self.save_checkpoints(held).await?;
+            total_processed += routed?;
         }
 
         Ok(total_processed)
+    }
+
+    /// Routes every entry in `batch`, in order, summing how many policy
+    /// reactions ran (see [`route`](Self::route)).
+    ///
+    /// # Errors
+    ///
+    /// Returns the first error [`route`](Self::route) returns for an entry
+    /// in `batch`, leaving the rest of the batch unrouted.
+    async fn route_batch(
+        &self,
+        batch: &[crate::EventLogEntry],
+        held: &mut [HeldPolicy<S>],
+        keeper: &mut LeaseKeeper<'_>,
+    ) -> Result<usize> {
+        let mut processed = 0;
+        for entry in batch {
+            processed += self
+                .route(entry.position, &entry.envelope, held, keeper)
+                .await?;
+        }
+        Ok(processed)
     }
 
     /// Routes one global-log entry at `position` to every held policy whose
@@ -646,22 +654,24 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
     /// fenced on this worker still holding that policy's lease.
     ///
     /// A policy whose checkpoint has not moved since the last save is
-    /// skipped, so a round that only advanced some policies doesn't write
+    /// skipped, so a call that only advanced some policies doesn't write
     /// the others' unchanged position. Called after every fetched batch, and
-    /// again on the `OnError::Fail` path, so that a mid-batch failure does
-    /// not lose the progress of earlier events whose side effects were
+    /// again before any route error propagates (a `Fail`-dispatched error,
+    /// an exhausted retry, or a lost lease), so that a mid-batch failure
+    /// does not lose the progress of earlier events whose side effects were
     /// already flushed.
     ///
     /// # Cancel safety
     ///
     /// Because this runs after every batch rather than only once at the end
-    /// of a round, dropping the [`process_pending`](Self::process_pending)
-    /// future (a timeout, a `select!`, a process crash) or a transient error
-    /// on a later batch's fetch replays **at most the batch in flight when
-    /// it happened** — every earlier batch in the round is already
-    /// checkpointed. Delivery is still **at-least-once**: a handler whose
-    /// side effects flushed but whose batch hadn't finished checkpointing
-    /// yet re-runs on the next call. Keep handlers idempotent.
+    /// of the call, dropping the [`process_pending`](Self::process_pending)
+    /// future (a timeout, a `select!`, a process crash), a route error, or a
+    /// transient error on a later batch's fetch replays **at most the batch
+    /// in flight when it happened** — every earlier batch in the call is
+    /// already checkpointed. Only a cancellation, or a failure of this save
+    /// itself, skips the save outright. Delivery is still **at-least-once**:
+    /// a handler whose side effects flushed but whose batch hadn't finished
+    /// checkpointing yet re-runs on the next call. Keep handlers idempotent.
     ///
     /// # Errors
     ///
