@@ -402,9 +402,9 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
     }
 
     /// Runs one policy against one event and applies [`OnError`] to a
-    /// failure, folding `handle`+`flush`+error-handling into the single
-    /// outcome every caller (`process_event`, [`route`](Self::route)) reacts
-    /// to.
+    /// failure: fail, log and skip, or retry with backoff. Folds
+    /// `handle`+`flush`+error-handling into the single outcome every caller
+    /// (`process_event`, [`route`](Self::route)) reacts to.
     ///
     /// `keeper` is `Some` only when called from [`drain_held_policies`](Self::drain_held_policies)
     /// (i.e. this worker holds leases to keep alive); [`process_event`](Self::process_event)
@@ -421,22 +421,10 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
         envelope: &EventEnvelope,
         keeper: Option<&mut LeaseKeeper<'_>>,
     ) -> Result<Handled> {
-        match self.handle_and_flush(policy, envelope).await {
-            Ok(()) => Ok(Handled::Yes),
-            Err(e) => self.apply_on_error(policy, envelope, e, keeper).await,
-        }
-    }
+        let Err(error) = self.handle_and_flush(policy, envelope).await else {
+            return Ok(Handled::Yes);
+        };
 
-    /// Applies `self.on_error` to a `handle`/`flush` failure: fail, log and
-    /// skip, or retry with backoff. The single place both
-    /// [`run_policy`](Self::run_policy) callers share this dispatch through.
-    async fn apply_on_error(
-        &self,
-        policy: &Arc<dyn Policy<S>>,
-        envelope: &EventEnvelope,
-        error: crate::Error,
-        keeper: Option<&mut LeaseKeeper<'_>>,
-    ) -> Result<Handled> {
         match &self.on_error {
             OnError::Fail => Err(error),
             OnError::Skip => {
@@ -763,18 +751,16 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
                 None => tokio::time::sleep(delay).await,
             }
 
-            match self.handle_and_flush(policy, envelope).await {
-                Ok(()) => return Ok(Handled::Yes),
-                Err(e) => {
-                    tracing::warn!(
-                        policy = policy.name(),
-                        attempt,
-                        event_id = %envelope.id,
-                        error = %e,
-                        "Policy handler retry failed"
-                    );
-                }
-            }
+            let Err(e) = self.handle_and_flush(policy, envelope).await else {
+                return Ok(Handled::Yes);
+            };
+            tracing::warn!(
+                policy = policy.name(),
+                attempt,
+                event_id = %envelope.id,
+                error = %e,
+                "Policy handler retry failed"
+            );
         }
     }
 
