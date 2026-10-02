@@ -1757,33 +1757,6 @@ mod tests {
         assert!(debug.contains("max_cascade_depth: 10"));
     }
 
-    /// A policy that signals when its handler starts, then waits to be
-    /// released, letting a test deterministically interleave two runners.
-    struct GatedHandlerPolicy {
-        name: String,
-        count: Arc<AtomicUsize>,
-        started: Arc<tokio::sync::Notify>,
-        can_continue: Arc<tokio::sync::Notify>,
-    }
-
-    #[async_trait::async_trait]
-    impl<S: EventStore + 'static> Policy<S> for GatedHandlerPolicy {
-        fn name(&self) -> &str {
-            &self.name
-        }
-
-        fn event_filter(&self) -> EventFilter {
-            EventFilter::all()
-        }
-
-        async fn handle(&self, _event: &EventEnvelope, _ctx: &PolicyContext<S>) -> Result<()> {
-            self.started.notify_one();
-            self.can_continue.notified().await;
-            self.count.fetch_add(1, Ordering::SeqCst);
-            Ok(())
-        }
-    }
-
     /// A handler's fenced checkpoint save must reject a worker that lost its
     /// lease while the handler was running, and must not overwrite whatever
     /// position the new holder already saved.
@@ -1799,8 +1772,9 @@ mod tests {
         let count = Arc::new(AtomicUsize::new(0));
         let started = Arc::new(tokio::sync::Notify::new());
         let can_continue = Arc::new(tokio::sync::Notify::new());
-        let policy_a = Arc::new(GatedHandlerPolicy {
+        let policy_a = Arc::new(GatedPolicy {
             name: "fence".to_string(),
+            entries: Arc::new(AtomicUsize::new(0)),
             count: Arc::clone(&count),
             started: Arc::clone(&started),
             can_continue: Arc::clone(&can_continue),
@@ -2125,8 +2099,9 @@ mod tests {
         let count = Arc::new(AtomicUsize::new(0));
         let started = Arc::new(tokio::sync::Notify::new());
         let can_continue = Arc::new(tokio::sync::Notify::new());
-        let policy_a = Arc::new(GatedHandlerPolicy {
+        let policy_a = Arc::new(GatedPolicy {
             name: "lost".to_string(),
+            entries: Arc::new(AtomicUsize::new(0)),
             count: Arc::clone(&count),
             started: Arc::clone(&started),
             can_continue: Arc::clone(&can_continue),
