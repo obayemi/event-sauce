@@ -551,6 +551,87 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_renew_errors_when_own_lease_expired() {
+        let store = InMemoryCheckpointStore::new();
+        store
+            .try_acquire_lease("sub", "worker-a", Duration::from_millis(10))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let result = store
+            .renew_lease("sub", "worker-a", Duration::from_secs(60))
+            .await;
+
+        assert!(
+            result.unwrap_err().is_lease_lost(),
+            "renewing this worker's own expired lease must report LeaseLost"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_save_checkpoint_fenced_errors_when_own_lease_expired() {
+        let store = InMemoryCheckpointStore::new();
+        store
+            .try_acquire_lease("sub", "worker-a", Duration::from_millis(10))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let result = store
+            .save_checkpoint_fenced("sub", "worker-a", Duration::from_secs(60), Position::new(7))
+            .await;
+
+        assert!(
+            result.unwrap_err().is_lease_lost(),
+            "a fenced save under this worker's own expired lease must report LeaseLost"
+        );
+        assert_eq!(
+            store.load_checkpoint("sub").await.unwrap(),
+            Some(Position::start()),
+            "a rejected fenced save must not move the checkpoint"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_save_checkpoint_fenced_errors_on_unknown_subscription() {
+        let store = InMemoryCheckpointStore::new();
+
+        let result = store
+            .save_checkpoint_fenced("sub", "worker-a", Duration::from_secs(60), Position::new(7))
+            .await;
+
+        assert!(
+            result.unwrap_err().is_lease_lost(),
+            "a fenced save for a subscription with no entry must report LeaseLost"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_save_checkpoint_fenced_extends_the_lease() {
+        let store = InMemoryCheckpointStore::new();
+        store
+            .try_acquire_lease("sub", "worker-a", Duration::from_millis(50))
+            .await
+            .unwrap();
+
+        store
+            .save_checkpoint_fenced("sub", "worker-a", Duration::from_secs(60), Position::new(7))
+            .await
+            .unwrap();
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let result = store
+            .try_acquire_lease("sub", "worker-b", Duration::from_secs(60))
+            .await
+            .unwrap();
+        assert!(
+            result.is_none(),
+            "a fenced save must extend the lease past its original duration"
+        );
+    }
+
+    #[tokio::test]
     async fn test_concurrent_access() {
         let store = InMemoryCheckpointStore::new();
         let store1 = store.clone();
