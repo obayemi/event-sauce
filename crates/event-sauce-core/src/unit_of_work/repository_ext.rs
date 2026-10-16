@@ -3,10 +3,12 @@
 
 use async_trait::async_trait;
 
-use super::{Expectation, PreparedWrite};
+use super::{Expectation, PreparedWrite, StreamWrite};
+use crate::commit_source::CommitSource;
 use crate::{
-    Aggregate, AggregateRoot, AggregateVersion, DeletedAggregateRoot, EntityId, Repository, Result,
-    StateStore, StateStoredRepository, StreamId,
+    Aggregate, AggregateRoot, AggregateVersion, DeletedAggregateRoot, EntityId,
+    EventSourcedRepository, EventStore, Repository, Result, StateStore, StateStoredRepository,
+    StreamId,
 };
 
 /// Extends [`Repository<A>`] with the primitives a unit of work needs:
@@ -50,6 +52,74 @@ pub trait UnitOfWorkRepository<A: Aggregate>: Repository<A> {
     fn expect(&self, id: EntityId, version: AggregateVersion) -> Expectation;
 }
 
+/// Prepares an event-sourced root's stream write against `store`, shared by
+/// [`EventSourcedRepository`] and the unit of work's own registry.
+pub(super) async fn prepare_stream_write<S, A, R>(
+    store: &S,
+    root: &R,
+) -> Result<Option<PreparedWrite>>
+where
+    S: EventStore + ?Sized,
+    A: Aggregate,
+    A::Event: serde::Serialize,
+    R: CommitSource<A>,
+{
+    Ok(crate::event_store::prepare_commit(store, root)
+        .await?
+        .map(|prepared| {
+            PreparedWrite::Stream(StreamWrite {
+                commit: prepared.commit,
+                snapshot: prepared.snapshot,
+            })
+        }))
+}
+
+/// Asserts an event-sourced aggregate's stream is still at `version`.
+pub(super) fn stream_expectation<A: Aggregate>(
+    id: EntityId,
+    version: AggregateVersion,
+) -> Expectation {
+    Expectation::Stream {
+        stream_id: StreamId::new(A::aggregate_type(), id.as_uuid()),
+        version,
+    }
+}
+
+/// Asserts a state-stored aggregate's row is still at `version`.
+pub(super) fn state_expectation<A: Aggregate>(
+    id: EntityId,
+    version: AggregateVersion,
+) -> Expectation {
+    Expectation::State {
+        stream_id: StreamId::new(A::aggregate_type(), id.as_uuid()),
+        version,
+    }
+}
+
+#[async_trait]
+impl<S, A> UnitOfWorkRepository<A> for EventSourcedRepository<S, A>
+where
+    S: EventStore + 'static,
+    A: Aggregate + serde::Serialize + serde::de::DeserializeOwned,
+    A::DeletedState: serde::Serialize + serde::de::DeserializeOwned,
+    A::Event: serde::Serialize + serde::de::DeserializeOwned,
+{
+    async fn prepare(&self, root: &AggregateRoot<A>) -> Result<Option<PreparedWrite>> {
+        prepare_stream_write(self.store(), root).await
+    }
+
+    async fn prepare_deleted(
+        &self,
+        root: &DeletedAggregateRoot<A>,
+    ) -> Result<Option<PreparedWrite>> {
+        prepare_stream_write(self.store(), root).await
+    }
+
+    fn expect(&self, id: EntityId, version: AggregateVersion) -> Expectation {
+        stream_expectation::<A>(id, version)
+    }
+}
+
 #[async_trait]
 impl<S, A> UnitOfWorkRepository<A> for StateStoredRepository<S, A>
 where
@@ -70,10 +140,7 @@ where
     }
 
     fn expect(&self, id: EntityId, version: AggregateVersion) -> Expectation {
-        Expectation::State {
-            stream_id: StreamId::new(A::aggregate_type(), id.as_uuid()),
-            version,
-        }
+        state_expectation::<A>(id, version)
     }
 }
 
@@ -81,8 +148,9 @@ where
 mod tests {
     use super::*;
     use crate::test_fixtures::{
-        MockStateStore, SimpleTestDelete, SimpleTestEntity, SimpleTestEvent,
+        MockEventStore, MockStateStore, SimpleTestDelete, SimpleTestEntity, SimpleTestEvent,
     };
+    use crate::{EventSourcedRepository, EventStore};
     use std::sync::Arc;
 
     fn repo() -> (
@@ -182,6 +250,120 @@ mod tests {
                 panic!("a state repository must build a state expectation")
             }
         }
+    }
+
+    fn event_sourced_repo() -> EventSourcedRepository<MockEventStore, SimpleTestEntity> {
+        Arc::new(MockEventStore::new()).repository::<SimpleTestEntity>()
+    }
+
+    #[tokio::test]
+    async fn event_sourced_prepare_returns_none_for_a_clean_root() {
+        let repo = event_sourced_repo();
+        let aggregate = repo.create_with_id(EntityId::new());
+
+        let prepared = UnitOfWorkRepository::prepare(&repo, &aggregate)
+            .await
+            .unwrap();
+
+        assert!(prepared.is_none());
+    }
+
+    #[tokio::test]
+    async fn event_sourced_prepare_returns_a_stream_write_for_a_dirty_root() {
+        let repo = event_sourced_repo();
+        let mut aggregate = repo.create_with_id(EntityId::new());
+        aggregate
+            .apply(SimpleTestEvent::Created { value: 7 })
+            .unwrap();
+
+        let prepared = UnitOfWorkRepository::prepare(&repo, &aggregate)
+            .await
+            .unwrap()
+            .expect("a dirty root must prepare a write");
+
+        match prepared {
+            PreparedWrite::Stream(write) => {
+                assert_eq!(write.commit.expected_version, AggregateVersion::initial());
+                assert_eq!(write.commit.events.len(), 1);
+                assert!(!write.commit.clear_claims);
+            }
+            PreparedWrite::State(_) => {
+                panic!("an event-sourced repository must prepare a stream write")
+            }
+        }
+        assert_eq!(aggregate.pending_events().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn event_sourced_prepare_deleted_returns_a_stream_write_clearing_claims() {
+        let repo = event_sourced_repo();
+        let mut aggregate = repo.create_with_id(EntityId::new());
+        aggregate
+            .apply(SimpleTestEvent::Created { value: 1 })
+            .unwrap();
+        repo.save(&mut aggregate).await.unwrap();
+        let deleted = repo
+            .load(aggregate.entity_id())
+            .await
+            .unwrap()
+            .apply_delete(SimpleTestDelete)
+            .unwrap();
+
+        let prepared = UnitOfWorkRepository::prepare_deleted(&repo, &deleted)
+            .await
+            .unwrap()
+            .expect("a dirty deleted root must prepare a write");
+
+        match prepared {
+            PreparedWrite::Stream(write) => {
+                assert_eq!(write.commit.expected_version, AggregateVersion::new(1));
+                assert!(write.commit.clear_claims);
+            }
+            PreparedWrite::State(_) => {
+                panic!("an event-sourced repository must prepare a stream write")
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn event_sourced_expect_builds_a_stream_expectation() {
+        let repo = event_sourced_repo();
+        let id = EntityId::new();
+        let version = AggregateVersion::new(4);
+
+        let expectation = UnitOfWorkRepository::expect(&repo, id, version);
+
+        match expectation {
+            Expectation::Stream {
+                stream_id,
+                version: v,
+            } => {
+                assert_eq!(
+                    stream_id,
+                    StreamId::new(SimpleTestEntity::aggregate_type(), id.as_uuid())
+                );
+                assert_eq!(v, version);
+            }
+            Expectation::State { .. } => {
+                panic!("an event-sourced repository must build a stream expectation")
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn event_sourced_prepare_rejects_a_poisoned_root() {
+        let repo = event_sourced_repo();
+        let mut aggregate = repo.create_with_id(EntityId::new());
+        aggregate
+            .apply(SimpleTestEvent::Created { value: 1 })
+            .unwrap();
+        aggregate.apply(SimpleTestEvent::Rejected).unwrap_err();
+
+        let err = UnitOfWorkRepository::prepare(&repo, &aggregate)
+            .await
+            .unwrap_err();
+
+        assert!(err.is_invalid_state());
     }
 
     #[derive(Debug, serde::Serialize, serde::Deserialize)]
