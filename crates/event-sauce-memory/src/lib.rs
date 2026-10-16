@@ -19,6 +19,10 @@
 //! - `crypto` (opt-in, off by default): installs `event-sauce-crypto`'s
 //!   AES-256-GCM provider as the default crypto provider; implies
 //!   `event-sourcing`.
+//! - `unit-of-work` (opt-in, off by default): `InMemoryTransactionalStore`,
+//!   committing an `event_sauce_core::AtomicCommit` across an
+//!   `InMemoryEventStore` and an `InMemoryStateStore` atomically; implies
+//!   `event-sourcing` and `state-store`.
 
 #![deny(missing_docs)]
 #![deny(clippy::all)]
@@ -34,6 +38,8 @@ mod event_log;
 mod event_store;
 #[cfg(feature = "state-store")]
 mod state_store;
+#[cfg(feature = "unit-of-work")]
+mod unit_of_work;
 
 #[cfg(feature = "event-sourcing")]
 pub use checkpoint_store::InMemoryCheckpointStore;
@@ -45,3 +51,5 @@ pub use event_log::InMemoryEventLogQuery;
 pub use event_store::InMemoryEventStore;
 #[cfg(feature = "state-store")]
 pub use state_store::{InMemoryProjectionContext, InMemoryStateStore, InMemoryStateStoreBuilder};
+#[cfg(feature = "unit-of-work")]
+pub use unit_of_work::InMemoryTransactionalStore;
