@@ -299,8 +299,8 @@ store.migrate().await?;
 - Strong consistency requirements
 - Complex querying needs
 
-**Multiple instances of your app** (commands, `repo.load`/`repo.save`,
-`store.migrate()`) are safe to run side by side — see
+**Multiple instances of your app** (service command handlers,
+`repo.load`/`repo.save`, `store.migrate()`) are safe to run side by side — see
 [postgres-production.md](postgres-production.md#which-components-are-multi-node-safe)
 for exactly which *background* components (projections, policies, the
 outbox) need a lease or a dedicated worker to stay safe under more than one
@@ -369,7 +369,7 @@ async fn handle_counter_command(
     // Load aggregate
     let mut counter: AggregateRoot<Counter> = repo.load(counter_id).await?;
 
-    // Execute service command
+    // Run the aggregate command matching the service command
     match command {
         CounterCommand::Increment(amount) => counter.increment(amount)?,
         CounterCommand::Decrement(amount) => counter.decrement(amount)?,
@@ -395,10 +395,10 @@ both pass the precheck and one loses the insert race. Either way you get
 retry loop works for every backend.
 
 The retried closure **must be idempotent**: re-derive the events from freshly
-loaded state on each attempt (re-`load` inside the loop) rather than replaying
-a captured service command's result, otherwise a retry would re-apply stale
-decisions. Add jittered exponential backoff so contending writers do not
-synchronise into a thundering herd.
+loaded state on each attempt (re-`load` inside the loop) rather than
+replaying an aggregate command's captured result, otherwise a retry would
+re-apply stale decisions. Add jittered exponential backoff so contending
+writers do not synchronise into a thundering herd.
 
 ```text
 use std::time::Duration;

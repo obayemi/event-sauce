@@ -284,7 +284,7 @@ struct Order {
     status: OrderStatus,
 }
 
-// Command handler with @actor for permission-validated commands
+// Aggregate commands with @actor, validated against the acting User
 aggregate_command! {
     impl Order {
         /// Create a new order (requires authenticated user)

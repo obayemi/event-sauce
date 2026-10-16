@@ -265,7 +265,7 @@ define_events! {
 }
 ```
 
-Pair an `@occurred_at` variant with an `aggregate_command!` command that has no
+Pair an `@occurred_at` variant with an aggregate command that has no
 `@clock` (an `@clock` command would set a `timestamp` field the variant no
 longer has), so the caller supplies both instants directly. A variant with
 no marker keeps its `timestamp` field and works with either form:

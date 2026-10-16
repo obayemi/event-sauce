@@ -93,7 +93,7 @@ column's gaps are structural, not roadmap items:
 
 | Capability | Event-sourced | State-stored |
 |---|---|---|
-| Aggregates, events, commands, `define_events!`, `aggregate_command!` | ✅ | ✅ |
+| Aggregates, events, aggregate commands, `define_events!`, `aggregate_command!` | ✅ | ✅ |
 | `Repository` trait (`load` / `save` / `modify` / `create_*`) | ✅ | ✅ |
 | Optimistic concurrency (`ConcurrencyConflict`) | ✅ | ✅ |
 | Claims (cross-aggregate uniqueness) | ✅ | ✅ |
@@ -210,7 +210,7 @@ The semantics are deliberately strong:
 - **Read-your-writes.** When `repo.save()` returns, the read model already
   reflects the change. There is no eventual-consistency window to paper over
   in your UI.
-- **A failing projection rolls back the command.** The state write, claims,
+- **A failing projection rolls back the save.** The state write, claims,
   and every registered projection commit or roll back together. Your read
   model can never drift from your write model — at the price that a buggy
   projection blocks writes. Keep handlers small and total.
@@ -247,7 +247,7 @@ policy outbox:
 
 1. When the outbox is enabled on the store, `save` writes each event
    envelope into an outbox table **in the same transaction** as the state
-   row. If the command rolls back, nothing is enqueued; if it commits, the
+   row. If the save rolls back, nothing is enqueued; if it commits, the
    intent is durably recorded.
 2. A background dispatcher claims pending rows and invokes your handlers
    with the `EventEnvelope`, honoring a retry policy on failure.

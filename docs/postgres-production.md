@@ -552,9 +552,9 @@ WHERE schemaname = 'event_sauce';
 
 ### Read Replicas
 
-**Loads and appends behind aggregate commands must go to the primary.** A
-replica lags the primary by a variable, unbounded amount, so an aggregate
-loaded from a replica can be stale: a command validated against that stale
+**Write-side loads and appends must go to the primary.** A replica lags the
+primary by a variable, unbounded amount, so an aggregate loaded from a
+replica can be stale: an aggregate command validated against that stale
 state and then appended (necessarily to the primary — replicas are
 read-only) either produces a decision based on facts that no longer hold,
 or simply loses the optimistic-concurrency race against whatever *did*
@@ -573,7 +573,7 @@ source of truth:
 use sqlx::PgPool;
 use event_sauce::postgres::{PostgresEventStore, PostgresEventLogQuery};
 
-// Primary pool — all loads, saves, and appends behind aggregate commands
+// Primary pool — every write-side load, save, and append
 let primary_pool = PgPool::connect(&primary_url).await?;
 let store = std::sync::Arc::new(PostgresEventStore::new(primary_pool));
 let repo = store.repository::<Order>();
@@ -633,9 +633,9 @@ stalling.
 ### Which Components Are Multi-Node Safe
 
 Running more than one instance of your app (multiple pods, multiple
-processes) is safe for commands and for most background work, but not
-uniformly — check each component against this table before scaling
-horizontally:
+processes) is safe for service command handlers and for most background
+work, but not uniformly — check each component against this table before
+scaling horizontally:
 
 | Component | Multi-node safe? | Why |
 |---|---|---|

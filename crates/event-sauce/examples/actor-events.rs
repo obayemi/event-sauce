@@ -1,9 +1,10 @@
 //! # Actor Events Example - Permission-Validated Events with Type-Safe Actors
 //!
 //! This example demonstrates actor-required events where certain operations
-//! require an authorized actor (the entity performing the action). The actor's
-//! permissions are validated at aggregate command time, and their identity is
-//! tracked through to the event envelope's `created_by` field.
+//! require an authorized actor (the entity performing the action). The
+//! actor's permissions are validated when an aggregate command runs, and
+//! their identity is tracked through to the event envelope's `created_by`
+//! field.
 //!
 //! ## Key Concepts
 //!
@@ -238,7 +239,7 @@ define_events! {
 }
 
 // ============================================================================
-// Command handlers with @actor
+// Aggregate commands with @actor
 // ============================================================================
 
 aggregate_command! {

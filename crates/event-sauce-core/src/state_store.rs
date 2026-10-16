@@ -85,7 +85,7 @@ pub struct StateCommit {
 /// optimistic concurrency and uniqueness claims on write. Backends with real
 /// transactions additionally run registered in-transaction projections and
 /// outbox enqueues inside the same transaction as the state write — a
-/// projection failure rolls the whole aggregate command back. There are deliberately
+/// projection failure rolls the whole save back. There are deliberately
 /// **no after-commit callbacks**: anything that must outlive the transaction
 /// goes through the backend's transactional outbox.
 #[async_trait]

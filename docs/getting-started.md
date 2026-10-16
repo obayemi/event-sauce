@@ -48,7 +48,8 @@ define_events! {
     }
 }
 
-// 4. Implement aggregate commands (generates CounterCommands trait on AggregateRoot<Counter>).
+// 4. Implement aggregate commands (generates a CounterCommands trait on
+// AggregateRoot<Counter>).
 // @clock stamps `timestamp` from the wall clock; without it a command takes
 // its instant as an explicit parameter instead.
 aggregate_command! {
@@ -59,7 +60,7 @@ aggregate_command! {
 }
 ```
 
-That's it! You now have a fully functional event-sourced aggregate with validation, event replay, and type safety. (`aggregate_command!` was formerly named `command_handler!`, which is now deprecated.)
+That's it! You now have a fully functional event-sourced aggregate with validation, event replay, and type safety.
 
 ## Complete Examples
 

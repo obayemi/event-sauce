@@ -22,9 +22,9 @@
 //!   `StateStore`, `StateStoredRepository`, and in-transaction
 //!   `StateProjection`s.
 //!
-//! The domain layer (entities, aggregates, events, aggregate commands, the `Repository`
-//! trait, and the macros) is always available; application code written
-//! against it runs unchanged under either persistence style.
+//! The domain layer (entities, aggregates, events, aggregate commands, the
+//! `Repository` trait, and the macros) is always available; application code
+//! written against it runs unchanged under either persistence style.
 //!
 //! ## TDD Approach
 //!
@@ -108,7 +108,7 @@ pub mod __private {
 
 /// The `chrono` crate the generated code's instants are built from.
 ///
-/// Every command without `@clock` takes its instant as a parameter, and
+/// Every aggregate command without `@clock` takes its instant as a parameter, and
 /// every event carries its `occurred_at` through [`DomainEvent`], so
 /// `chrono` types are part of this library's public API. Re-exported here
 /// so a caller can spell

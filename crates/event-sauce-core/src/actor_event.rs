@@ -1,8 +1,9 @@
 //! Actor event traits for permission-validated, actor-required events.
 //!
 //! These traits enable compile-time enforcement that certain events require
-//! an actor (the entity performing the action). Actor validation happens
-//! at aggregate command time only — replayed events skip validation (historical facts).
+//! an actor (the entity performing the action). Actor validation happens only
+//! when an aggregate command runs — replayed events skip validation
+//! (historical facts).
 //!
 //! # Design
 //!

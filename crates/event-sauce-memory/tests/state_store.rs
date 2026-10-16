@@ -1,9 +1,10 @@
 //! Integration tests for `InMemoryStateStore` (Phase 3 of the state-store
 //! split).
 //!
-//! The parity test is the acceptance criterion of the split: one aggregate +
-//! aggregate-command module, written once, runs unchanged against the event-sourced and
-//! the state-stored repositories behind `R: Repository<A>`. The remaining
+//! The parity test is the acceptance criterion of the split: one aggregate
+//! and its aggregate commands, written once, run unchanged against the
+//! event-sourced and the state-stored repositories behind
+//! `R: Repository<A>`. The remaining
 //! tests cover the store's own guarantees: optimistic concurrency, claim
 //! uniqueness with release on delete, in-transaction projections with
 //! rollback, `EventFilter` routing, and atomic `save_batch`.

@@ -266,7 +266,7 @@ User clicks "Kick Member" button
 - **`causation_id`** — the immediate parent event (changes at each step)
 - **`causation_chain`** — full ancestry from root to direct parent, ordered chronologically
 
-These fields are populated automatically by `PolicyContext`. Direct user service commands have no causation metadata (they *are* the root cause).
+These fields are populated automatically by `PolicyContext`. Events from a service command a user issued directly carry no causation metadata: that command *is* the root cause.
 
 ## Best Practices
 

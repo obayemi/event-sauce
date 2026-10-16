@@ -108,10 +108,10 @@ impl<A: Aggregate> DeletedAggregateRoot<A> {
 
     /// Creates a deleted aggregate root from a delete operation with pending events.
     ///
-    /// Used by `AggregateRoot::apply_delete()` at aggregate command time, and with no
-    /// pending events by `apply_delete_unchecked()` on replay. `poisoned`
-    /// carries the poison flag of the source aggregate so the commit path can
-    /// refuse an inconsistent deleted root.
+    /// Used by `AggregateRoot::apply_delete()` from an aggregate command,
+    /// and with no pending events by `apply_delete_unchecked()` on replay.
+    /// `poisoned` carries the poison flag of the source aggregate so the
+    /// commit path can refuse an inconsistent deleted root.
     pub(crate) fn from_delete_with_pending(
         state: A::DeletedState,
         entity_id: EntityId,

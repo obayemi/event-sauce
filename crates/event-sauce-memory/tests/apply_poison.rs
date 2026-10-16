@@ -214,11 +214,11 @@ async fn test_clean_aggregate_can_be_deleted() {
 
 /// A REFUSAL is not a poisoning.
 ///
-/// `validate` runs before anything is mutated, so an aggregate that refused an aggregate command
-/// is exactly as it was and must stay usable. This is the ordinary shape of a caller
-/// that EXPECTS a refusal — `let _ = incident.raise_severity(..)`, where a member that
-/// does not raise the grade is a no-op — and it must still be able to save what it
-/// did change.
+/// `validate` runs before anything is mutated, so a root that refused an
+/// aggregate command is exactly as it was and must stay usable. This is
+/// the ordinary shape of a caller that EXPECTS a refusal — `let _ =
+/// incident.raise_severity(..)`, where a member that does not raise the
+/// grade is a no-op — and it must still be able to save what it did change.
 ///
 /// Before this, `apply` poisoned on any error from `dispatch`, which cannot tell a
 /// refusal apart from a failed apply. The next save then failed with "poisoned", and
