@@ -126,6 +126,24 @@ where
         }))
     }
 
+    /// Loads an aggregate's row from `store`, active or deleted.
+    ///
+    /// Crate-visible so code holding a borrowed state store rather than a
+    /// repository (e.g. the unit of work) loads through the same schema and
+    /// lifecycle checks as [`load_any`](Repository::load_any).
+    pub(crate) async fn load_any_from(store: &S, id: EntityId) -> Result<Loaded<A>> {
+        let state = store.load(Self::stream_id_for(id)).await?.ok_or_else(|| {
+            Error::not_found(A::aggregate_type().to_string(), id.as_uuid().to_string())
+        })?;
+        Self::check_schema_version(&state)?;
+        Loaded::restore(
+            state.is_deleted,
+            state.state_data,
+            EntityId::from(state.aggregate_id),
+            state.version,
+        )
+    }
+
     fn stream_id_for(id: EntityId) -> StreamId {
         StreamId::new(A::aggregate_type(), id.as_uuid())
     }
@@ -144,20 +162,7 @@ where
     }
 
     async fn load_any_by_id(&self, id: EntityId) -> Result<Loaded<A>> {
-        let state = self
-            .store
-            .load(Self::stream_id_for(id))
-            .await?
-            .ok_or_else(|| {
-                Error::not_found(A::aggregate_type().to_string(), id.as_uuid().to_string())
-            })?;
-        Self::check_schema_version(&state)?;
-        Loaded::restore(
-            state.is_deleted,
-            state.state_data,
-            EntityId::from(state.aggregate_id),
-            state.version,
-        )
+        Self::load_any_from(&*self.store, id).await
     }
 
     async fn load_deleted_by_id(&self, id: EntityId) -> Result<DeletedAggregateRoot<A>> {
