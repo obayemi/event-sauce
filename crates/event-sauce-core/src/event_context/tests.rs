@@ -1,4 +1,5 @@
 use super::*;
+use crate::EventMetadata;
 use serde_json::json;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
@@ -186,11 +187,7 @@ fn current_reproduces_the_effective_context_on_an_empty_stack() {
             EventContext::new()
                 .command("cmd")
                 .with("j", 1)
-                .in_scope(|| {
-                    let mut expected = snapshot();
-                    expected.correlation_path = vec!["req".into()];
-                    (expected, EventContext::current())
-                })
+                .in_scope(|| (snapshot(), EventContext::current()))
         });
     assert_eq!(current_snapshot(), None);
     rebuilt.in_scope(|| assert_eq!(snapshot(), expected));
@@ -220,4 +217,46 @@ fn current_is_a_root_that_discards_the_surrounding_context() {
 #[test]
 fn default_is_an_empty_nested_context() {
     EventContext::default().in_scope(|| assert_eq!(current_snapshot(), None));
+}
+
+#[test]
+fn current_keeps_the_full_correlation_path() {
+    let captured = EventContext::new().correlation_id("a").in_scope(|| {
+        EventContext::new()
+            .correlation_id("b")
+            .in_scope(EventContext::current)
+    });
+    captured.in_scope(|| {
+        assert_eq!(snapshot().correlation_path, ["a", "b"]);
+        assert_eq!(snapshot().correlation_id.as_deref(), Some("a"));
+        assert!(has_correlation_id());
+        EventContext::new().correlation_id("c").in_scope(|| {
+            assert_eq!(snapshot().correlation_path, ["a", "b", "c"]);
+        });
+    });
+}
+
+#[test]
+fn a_root_built_from_metadata_carries_tenant_id_and_path() {
+    let metadata = EventMetadata::new()
+        .with_correlation_id("req")
+        .with_correlation_path(vec!["req".into(), "import".into()]);
+    let metadata = EventMetadata {
+        tenant: Some("acme".into()),
+        ..metadata
+    };
+    EventContext::from_metadata(&metadata).in_scope(|| {
+        let snap = snapshot();
+        assert_eq!(snap.tenant.as_deref(), Some("acme"));
+        assert_eq!(snap.correlation_id.as_deref(), Some("req"));
+        assert_eq!(snap.correlation_path, ["req", "import"]);
+    });
+}
+
+#[test]
+fn a_root_built_from_metadata_without_a_path_starts_it_at_the_id() {
+    let metadata = EventMetadata::new().with_correlation_id("req");
+    EventContext::from_metadata(&metadata).in_scope(|| {
+        assert_eq!(snapshot().correlation_path, ["req"]);
+    });
 }

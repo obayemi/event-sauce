@@ -44,6 +44,7 @@ struct Frame {
     root: bool,
     tenant: Option<String>,
     correlation_id: Option<String>,
+    correlation_path: Vec<String>,
     command: Option<String>,
     additional: Map<String, Value>,
 }
@@ -279,8 +280,8 @@ impl EventContext<Root> {
     /// context, to hand to a spawned task (see
     /// [`with_event_context`](WithEventContextExt::with_event_context)).
     ///
-    /// The correlation path is not carried over: the snapshot restarts it at
-    /// the effective correlation id.
+    /// The correlation path is carried over whole, so contexts nested in the
+    /// snapshot extend it.
     ///
     /// # Examples
     ///
@@ -296,12 +297,30 @@ impl EventContext<Root> {
         Self::from_frame(Frame {
             root: true,
             tenant: snapshot.tenant,
-            correlation_id: snapshot.correlation_id,
+            correlation_id: None,
+            correlation_path: snapshot.correlation_path,
             command: snapshot.command,
             additional: match snapshot.additional {
                 Some(Value::Object(map)) => map,
                 _ => Map::new(),
             },
+        })
+    }
+}
+
+impl EventContext<Root> {
+    #[cfg(test)]
+    pub(crate) fn from_metadata(metadata: &crate::EventMetadata) -> Self {
+        let correlation_path = if metadata.correlation_path.is_empty() {
+            metadata.correlation_id.iter().cloned().collect()
+        } else {
+            metadata.correlation_path.clone()
+        };
+        Self::from_frame(Frame {
+            root: true,
+            tenant: metadata.tenant.clone(),
+            correlation_path,
+            ..Frame::default()
         })
     }
 }
@@ -343,7 +362,10 @@ pub(crate) struct ContextSnapshot {
 pub(crate) fn current_snapshot() -> Option<ContextSnapshot> {
     let snapshot = effective(|frames| {
         let mut correlation_path: Vec<String> = Vec::new();
-        for id in frames.iter().filter_map(|f| f.correlation_id.as_ref()) {
+        for id in frames
+            .iter()
+            .flat_map(|f| f.correlation_path.iter().chain(f.correlation_id.iter()))
+        {
             if correlation_path.last() != Some(id) {
                 correlation_path.push(id.clone());
             }
@@ -368,7 +390,11 @@ pub(crate) fn current_snapshot() -> Option<ContextSnapshot> {
 #[doc(hidden)]
 #[must_use]
 pub fn has_correlation_id() -> bool {
-    effective(|frames| frames.iter().any(|f| f.correlation_id.is_some()))
+    effective(|frames| {
+        frames
+            .iter()
+            .any(|f| f.correlation_id.is_some() || !f.correlation_path.is_empty())
+    })
 }
 
 #[cfg(test)]
