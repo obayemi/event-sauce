@@ -155,3 +155,20 @@ fn active_root_can_apply_events_after_narrowing() {
     active.apply(SimpleTestEvent::Updated { value: 9 }).unwrap();
     assert_eq!(active.value, 9);
 }
+
+#[test]
+fn loaded_active_converts_to_an_active_root() {
+    let id = EntityId::new();
+    let root: Root<SimpleTestEntity> = crate::Loaded::Active(AggregateRoot::new(id)).into();
+    assert_eq!(root.lifecycle(), Lifecycle::Active);
+    assert_eq!(root.entity_id(), id);
+}
+
+#[test]
+fn loaded_deleted_converts_to_a_deleted_root() {
+    let id = EntityId::new();
+    let root: Root<SimpleTestEntity> =
+        crate::Loaded::Deleted(deleted_simple_entity(id, 0, 1)).into();
+    assert_eq!(root.lifecycle(), Lifecycle::Deleted);
+    assert_eq!(root.entity_id(), id);
+}

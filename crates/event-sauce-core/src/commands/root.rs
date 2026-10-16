@@ -2,7 +2,8 @@
 
 use super::{CommandError, Lifecycle};
 use crate::{
-    Aggregate, AggregateRoot, DefaultEntity, DeletedAggregateRoot, EntityId, UninitAggregateRoot,
+    Aggregate, AggregateRoot, DefaultEntity, DeletedAggregateRoot, EntityId, Loaded,
+    UninitAggregateRoot,
 };
 
 /// An aggregate at one of its three lifecycle states.
@@ -176,6 +177,15 @@ impl<A: Aggregate> From<UninitAggregateRoot<A>> for Root<A> {
 impl<A: Aggregate> From<DeletedAggregateRoot<A>> for Root<A> {
     fn from(root: DeletedAggregateRoot<A>) -> Self {
         Root::Deleted(root)
+    }
+}
+
+impl<A: Aggregate> From<Loaded<A>> for Root<A> {
+    fn from(loaded: Loaded<A>) -> Self {
+        match loaded {
+            Loaded::Active(root) => Root::Active(root),
+            Loaded::Deleted(root) => Root::Deleted(root),
+        }
     }
 }
 

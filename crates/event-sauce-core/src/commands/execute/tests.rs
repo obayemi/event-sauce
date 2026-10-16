@@ -94,3 +94,26 @@ fn executed_debug_mentions_attempts() {
     };
     assert!(format!("{executed:?}").contains("attempts"));
 }
+
+#[test]
+fn command_domain_error_widens_to_the_domain_variant() {
+    let err: ExecuteError<SimpleTestError> =
+        super::super::CommandError::Domain(SimpleTestError).into();
+    assert!(matches!(err, ExecuteError::Domain(SimpleTestError)));
+}
+
+#[test]
+fn command_lifecycle_error_widens_to_the_lifecycle_variant() {
+    let err: ExecuteError<SimpleTestError> = super::super::CommandError::Lifecycle {
+        expected: Lifecycle::Active,
+        found: Lifecycle::Deleted,
+    }
+    .into();
+    assert!(matches!(
+        err,
+        ExecuteError::Lifecycle {
+            expected: Lifecycle::Active,
+            found: Lifecycle::Deleted,
+        }
+    ));
+}

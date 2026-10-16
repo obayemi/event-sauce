@@ -3,7 +3,7 @@
 
 use std::num::NonZeroU32;
 
-use super::{Lifecycle, Root};
+use super::{CommandError, Lifecycle, Root};
 use crate::Aggregate;
 
 /// The error [`Repository::execute`](crate::Repository::execute) returns.
@@ -52,6 +52,15 @@ pub enum ExecuteError<E> {
     /// gave up or declined to retry (a non-concurrency failure is never retried).
     #[error("save failed: {0}")]
     Save(#[source] crate::Error),
+}
+
+impl<E> From<CommandError<E>> for ExecuteError<E> {
+    fn from(err: CommandError<E>) -> Self {
+        match err {
+            CommandError::Domain(e) => Self::Domain(e),
+            CommandError::Lifecycle { expected, found } => Self::Lifecycle { expected, found },
+        }
+    }
 }
 
 impl<E> ExecuteError<E> {

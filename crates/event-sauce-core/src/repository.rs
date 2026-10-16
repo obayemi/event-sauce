@@ -405,18 +405,12 @@ pub trait Repository<A: Aggregate>: Send + Sync {
 
         loop {
             let root = match self.load_any_by_id(id).await {
-                Ok(Loaded::Active(root)) => Root::Active(root),
-                Ok(Loaded::Deleted(root)) => Root::Deleted(root),
+                Ok(loaded) => loaded.into(),
                 Err(e) if e.is_not_found() => Root::Missing(self.create_uninit_with_id(id)),
                 Err(e) => return Err(ExecuteError::Load(e)),
             };
 
-            let mut outcome = command.handle(root, ctx).map_err(|err| match err {
-                crate::CommandError::Domain(e) => ExecuteError::Domain(e),
-                crate::CommandError::Lifecycle { expected, found } => {
-                    ExecuteError::Lifecycle { expected, found }
-                }
-            })?;
+            let mut outcome = command.handle(root, ctx)?;
 
             if outcome.entity_id() != id {
                 return Err(ExecuteError::Save(Error::invalid_state(format!(
