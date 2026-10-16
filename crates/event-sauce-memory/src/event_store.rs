@@ -545,7 +545,7 @@ impl EventStore for InMemoryEventStore {
 #[cfg(test)]
 mod tests {
     use event_sauce_core::{
-        AggregateVersion, EventEnvelope, EventStore, Position, Snapshot, StreamId,
+        AggregateVersion, Error, EventEnvelope, EventStore, Position, Snapshot, StreamId,
     };
     use futures::StreamExt;
     use serde_json::json;
@@ -1298,6 +1298,169 @@ mod tests {
         // Both should have checkpoint store configured
         assert!(store1.checkpoint_store().is_some());
         assert!(store2.checkpoint_store().is_some());
+    }
+
+    use event_sauce_core::StreamCommit;
+
+    /// `append_batch` must be atomic: when a later commit in the batch
+    /// conflicts, no earlier commit may be left persisted. Mirrors the
+    /// PostgreSQL backend's `test_append_batch_is_atomic`.
+    #[tokio::test]
+    async fn test_append_batch_is_atomic_across_streams() {
+        let store = InMemoryEventStore::new();
+        let id_a = Uuid::new_v4();
+        let id_b = Uuid::new_v4();
+        let stream_a = StreamId::new("Acct", id_a);
+        let stream_b = StreamId::new("Acct", id_b);
+
+        let commits = vec![
+            StreamCommit {
+                stream_id: stream_a.clone(),
+                events: vec![create_test_envelope("Credited", id_a)],
+                expected_version: AggregateVersion::initial(),
+                claims: vec![],
+                clear_claims: false,
+            },
+            StreamCommit {
+                stream_id: stream_b.clone(),
+                events: vec![create_test_envelope("Credited", id_b)],
+                expected_version: AggregateVersion::new(5),
+                claims: vec![],
+                clear_claims: false,
+            },
+        ];
+
+        let error = store
+            .append_batch(commits)
+            .await
+            .expect_err("append_batch must fail when the second commit conflicts");
+        assert!(
+            error.is_concurrency_conflict(),
+            "expected a concurrency conflict, got {error:?}"
+        );
+
+        assert_eq!(
+            store.get_version(stream_a.clone()).await.unwrap(),
+            AggregateVersion::initial(),
+            "first stream must roll back with the failed batch"
+        );
+        assert_eq!(
+            store.get_version(stream_b).await.unwrap(),
+            AggregateVersion::initial(),
+            "second stream must not be partially written"
+        );
+
+        let mut first_stream = store
+            .load_stream(stream_a, AggregateVersion::initial())
+            .await
+            .unwrap();
+        assert!(
+            first_stream.next().await.is_none(),
+            "no events may survive an atomic batch that failed"
+        );
+
+        assert_eq!(
+            store.max_position().await.unwrap(),
+            Position::start(),
+            "global position must not advance for a rejected batch"
+        );
+    }
+
+    /// A batch with two consecutive commits to the SAME stream (v0 then v1)
+    /// must succeed, the second commit targeting the version the first
+    /// commit leaves the stream at rather than its currently committed
+    /// version. Mirrors the PostgreSQL backend's
+    /// `test_append_batch_allows_consecutive_commits_to_same_stream`.
+    #[tokio::test]
+    async fn test_append_batch_allows_consecutive_commits_to_same_stream() {
+        let store = InMemoryEventStore::new();
+        let id = Uuid::new_v4();
+        let stream = StreamId::new("Acct", id);
+
+        let commits = vec![
+            StreamCommit {
+                stream_id: stream.clone(),
+                events: vec![create_test_envelope("Opened", id)],
+                expected_version: AggregateVersion::initial(),
+                claims: vec![],
+                clear_claims: false,
+            },
+            StreamCommit {
+                stream_id: stream.clone(),
+                events: vec![create_test_envelope("Credited", id)],
+                expected_version: AggregateVersion::new(1),
+                claims: vec![],
+                clear_claims: false,
+            },
+        ];
+
+        store
+            .append_batch(commits)
+            .await
+            .expect("consecutive commits to the same stream must succeed");
+
+        assert_eq!(
+            store.get_version(stream.clone()).await.unwrap(),
+            AggregateVersion::new(2),
+            "both commits must be stored, advancing the stream by two versions"
+        );
+
+        let events = store
+            .load_stream(stream, AggregateVersion::initial())
+            .await
+            .unwrap()
+            .collect::<Vec<_>>()
+            .await;
+        assert_eq!(events.len(), 2, "both events must be persisted");
+    }
+
+    /// A later commit to the same stream that skips a version, rather than
+    /// extending the previous commit in the batch by exactly its event
+    /// count, must be rejected and leave no trace — not even the first
+    /// commit's events. Mirrors the PostgreSQL backend's
+    /// `test_append_batch_rejects_a_skipped_version_in_the_same_stream`.
+    #[tokio::test]
+    async fn test_append_batch_rejects_a_skipped_version_in_the_same_stream() {
+        let store = InMemoryEventStore::new();
+        let id = Uuid::new_v4();
+        let stream = StreamId::new("Acct", id);
+
+        let commits = vec![
+            StreamCommit {
+                stream_id: stream.clone(),
+                events: vec![create_test_envelope("Opened", id)],
+                expected_version: AggregateVersion::initial(),
+                claims: vec![],
+                clear_claims: false,
+            },
+            StreamCommit {
+                stream_id: stream.clone(),
+                events: vec![create_test_envelope("Credited", id)],
+                expected_version: AggregateVersion::new(5),
+                claims: vec![],
+                clear_claims: false,
+            },
+        ];
+
+        let error = store
+            .append_batch(commits)
+            .await
+            .expect_err("a batch whose second commit skips a version must be rejected");
+        assert!(
+            matches!(error, Error::ConcurrencyConflict { .. }),
+            "expected a concurrency conflict, got {error:?}"
+        );
+
+        assert_eq!(
+            store.get_version(stream.clone()).await.unwrap(),
+            AggregateVersion::initial(),
+            "a rejected batch must leave no events behind, not even the first commit's"
+        );
+        assert_eq!(
+            store.max_position().await.unwrap(),
+            Position::start(),
+            "global position must not advance for a rejected batch"
+        );
     }
 
     /// Model-based property test: random batches of appends (correctly or
