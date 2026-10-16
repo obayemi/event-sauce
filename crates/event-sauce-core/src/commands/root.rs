@@ -2,8 +2,7 @@
 
 use super::{CommandError, Lifecycle};
 use crate::{
-    Aggregate, AggregateRoot, DefaultEntity, DeletedAggregateRoot, EntityId, Loaded,
-    UninitAggregateRoot,
+    Aggregate, AggregateRoot, DeletedAggregateRoot, EntityId, Loaded, UninitAggregateRoot,
 };
 
 /// An aggregate at one of its three lifecycle states.
@@ -186,91 +185,6 @@ impl<A: Aggregate> From<Loaded<A>> for Root<A> {
             Loaded::Active(root) => Root::Active(root),
             Loaded::Deleted(root) => Root::Deleted(root),
         }
-    }
-}
-
-impl<A: Aggregate + DefaultEntity> UninitAggregateRoot<A> {
-    /// Activates the aggregate directly from its default state, without an
-    /// init event.
-    ///
-    /// Only available when `A` implements [`DefaultEntity`], the same bound
-    /// [`AggregateRoot::new`] requires: a shortcut for aggregates that do not
-    /// need an init event's validation or payload, for callers that would
-    /// otherwise discard this [`UninitAggregateRoot`] and call
-    /// `AggregateRoot::new(root.entity_id())` themselves.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use event_sauce_core::{
-    ///     Aggregate, AggregateError, DefaultEntity, DomainEvent, Entity, EntityId,
-    ///     EventApplicator, EventVersion, UninitAggregateRoot,
-    /// };
-    /// use serde::{Deserialize, Serialize};
-    /// use thiserror::Error;
-    ///
-    /// #[derive(Debug, Serialize, Deserialize)]
-    /// struct Counter {
-    ///     id: EntityId,
-    ///     value: i32,
-    /// }
-    /// impl Entity for Counter {
-    ///     fn new(id: EntityId) -> Self {
-    ///         Self { id, value: 0 }
-    ///     }
-    ///     fn entity_id(&self) -> EntityId {
-    ///         self.id
-    ///     }
-    /// }
-    /// impl DefaultEntity for Counter {}
-    ///
-    /// #[derive(Debug, Clone, Serialize, Deserialize)]
-    /// enum CounterEvent {
-    ///     Incremented { amount: i32 },
-    /// }
-    /// impl DomainEvent for CounterEvent {
-    ///     type Aggregate = Counter;
-    ///     fn event_type(&self) -> &'static str {
-    ///         "Incremented"
-    ///     }
-    ///     fn event_version(&self) -> EventVersion {
-    ///         EventVersion::new(1)
-    ///     }
-    ///     fn occurred_at(&self) -> chrono::DateTime<chrono::Utc> {
-    ///         chrono::Utc::now()
-    ///     }
-    /// }
-    /// impl EventApplicator<Counter> for CounterEvent {
-    ///     fn dispatch(&self, c: &mut Counter) -> Result<(), CounterError> {
-    ///         match self {
-    ///             CounterEvent::Incremented { amount } => c.value += amount,
-    ///         }
-    ///         Ok(())
-    ///     }
-    ///     fn dispatch_unchecked(&self, c: &mut Counter) {
-    ///         match self {
-    ///             CounterEvent::Incremented { amount } => c.value += amount,
-    ///         }
-    ///     }
-    /// }
-    /// #[derive(Debug, Error)]
-    /// #[error("counter error")]
-    /// struct CounterError;
-    /// impl AggregateError for CounterError {}
-    /// impl Aggregate for Counter {
-    ///     type Event = CounterEvent;
-    ///     type Error = CounterError;
-    ///     type DeletedState = Self;
-    /// }
-    ///
-    /// let id = EntityId::new();
-    /// let active = UninitAggregateRoot::<Counter>::new(id).into_default();
-    /// assert_eq!(active.entity_id(), id);
-    /// assert_eq!(active.value, 0);
-    /// ```
-    #[must_use]
-    pub fn into_default(self) -> AggregateRoot<A> {
-        AggregateRoot::new(self.entity_id())
     }
 }
 

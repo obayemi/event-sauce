@@ -1,6 +1,5 @@
 use super::*;
 use crate::test_fixtures::{deleted_simple_entity, SimpleTestEntity, SimpleTestEvent};
-use crate::AggregateVersion;
 
 fn active_root() -> Root<SimpleTestEntity> {
     Root::Active(AggregateRoot::new(EntityId::new()))
@@ -138,15 +137,6 @@ fn from_deleted_aggregate_root_produces_the_deleted_variant() {
     let Root::Deleted(_) = deleted_root() else {
         panic!("expected a deleted root");
     };
-}
-
-#[test]
-fn into_default_activates_without_an_init_event() {
-    let id = EntityId::new();
-    let active = UninitAggregateRoot::<SimpleTestEntity>::new(id).into_default();
-    assert_eq!(active.entity_id(), id);
-    assert_eq!(active.value, 0);
-    assert_eq!(active.version(), AggregateVersion::initial());
 }
 
 #[test]
