@@ -29,4 +29,10 @@ pub trait UnitOfWorkCommand<T: TransactionalStore, Ctx = ()>: Send + Sync {
     /// [`AggregateError`](crate::AggregateError) or
     /// [`CommandError`](crate::CommandError) converts with `?`.
     async fn handle(&self, uow: &UnitOfWork<'_, T>, ctx: &Ctx) -> Result<(), UnitOfWorkError>;
+
+    /// The name recorded on the events the command produces, when it has
+    /// one. Commands are anonymous by default.
+    fn name(&self) -> Option<&str> {
+        None
+    }
 }

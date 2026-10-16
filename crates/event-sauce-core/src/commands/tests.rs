@@ -60,3 +60,34 @@ fn a_closure_implements_command_through_the_blanket_impl() {
     let result = Command::handle(&handler, root, &()).unwrap();
     assert_eq!(result.active().unwrap().value, 5);
 }
+
+#[test]
+fn a_closure_command_has_no_name() {
+    let command =
+        |root: Root<SimpleTestEntity>,
+         _ctx: &()|
+         -> Result<Root<SimpleTestEntity>, CommandError<SimpleTestError>> { Ok(root) };
+    assert_eq!(Command::<SimpleTestEntity>::name(&command), None);
+}
+
+struct NamedCommand;
+
+impl Command<SimpleTestEntity> for NamedCommand {
+    fn handle(
+        &self,
+        root: Root<SimpleTestEntity>,
+        _ctx: &(),
+    ) -> Result<Root<SimpleTestEntity>, CommandError<SimpleTestError>> {
+        Ok(root)
+    }
+
+    fn name(&self) -> Option<&str> {
+        Some("named")
+    }
+}
+
+#[test]
+fn a_command_can_report_a_name() {
+    assert_eq!(NamedCommand.name(), Some("named"));
+    assert_eq!(DoubleCommand.name(), None);
+}

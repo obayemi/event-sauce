@@ -141,8 +141,13 @@ impl std::fmt::Display for Lifecycle {
 ///         root.apply(CounterEvent::Incremented { amount: self.0 })?;
 ///         Ok(root.into())
 ///     }
+///
+///     fn name(&self) -> Option<&str> {
+///         Some("Increment")
+///     }
 /// }
 ///
+/// assert_eq!(Increment(5).name(), Some("Increment"));
 /// let root = Root::Active(AggregateRoot::<Counter>::new(EntityId::new()));
 /// let root = Increment(5).handle(root, &()).unwrap();
 /// assert_eq!(root.active().unwrap().value, 5);
@@ -157,6 +162,14 @@ pub trait Command<A: crate::Aggregate, Ctx = ()>: Send + Sync {
     /// lifecycle this command requires, or [`CommandError::Domain`] when the
     /// aggregate itself rejects the event.
     fn handle(&self, root: Root<A>, ctx: &Ctx) -> Result<Root<A>, CommandError<A::Error>>;
+
+    /// The name recorded on the events the command produces, when it has
+    /// one. Commands are anonymous by default.
+    ///
+    /// See the trait documentation for an example.
+    fn name(&self) -> Option<&str> {
+        None
+    }
 }
 
 impl<A, Ctx, F> Command<A, Ctx> for F

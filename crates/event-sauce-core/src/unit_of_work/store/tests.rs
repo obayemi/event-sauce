@@ -212,3 +212,26 @@ fn an_aggregate_error_converts_inside_a_handler() {
     }
     assert!(matches!(reject(), Err(UnitOfWorkError::Domain(_))));
 }
+
+struct NamedLeakless;
+
+#[async_trait]
+impl UnitOfWorkCommand<Stores> for NamedLeakless {
+    async fn handle(
+        &self,
+        _uow: &UnitOfWork<'_, Stores>,
+        _ctx: &(),
+    ) -> Result<(), UnitOfWorkError> {
+        Ok(())
+    }
+
+    fn name(&self) -> Option<&str> {
+        Some("named")
+    }
+}
+
+#[test]
+fn a_unit_of_work_command_reports_no_name_unless_it_overrides_it() {
+    assert_eq!(NamedLeakless.name(), Some("named"));
+    assert_eq!(Leak(EntityId::new()).name(), None);
+}
