@@ -348,6 +348,61 @@ impl PostgresEventStore {
 
         Ok(())
     }
+
+    /// Filters out no-op commits and computes [`plan_version_chain_checks`]'s
+    /// precheck plan for the remainder: the pure, I/O-free preparation step
+    /// shared by [`Self::append_batch`] and
+    /// [`TransactionalStore::commit_atomic`](event_sauce_core::TransactionalStore::commit_atomic),
+    /// so a doomed or empty batch is rejected before either one opens a
+    /// transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::ConcurrencyConflict` if the batch's version chain is
+    /// inconsistent (see [`plan_version_chain_checks`]).
+    pub(crate) fn prepare_batch(
+        commits: Vec<event_sauce_core::StreamCommit>,
+    ) -> Result<(Vec<event_sauce_core::StreamCommit>, Vec<usize>)> {
+        let commits: Vec<event_sauce_core::StreamCommit> =
+            commits.into_iter().filter(|c| !is_noop_commit(c)).collect();
+        let precheck_indices = plan_version_chain_checks(&commits)?;
+        Ok((commits, precheck_indices))
+    }
+
+    /// Takes the append serialization lock on `conn`'s transaction for a
+    /// caller that has no commits of its own to pass through
+    /// [`Self::write_streams_in`] — namely
+    /// [`TransactionalStore::commit_atomic`](event_sauce_core::TransactionalStore::commit_atomic),
+    /// which must hold this lock before checking a stream version
+    /// expectation for that check to be trustworthy (see
+    /// [`Self::acquire_append_lock`]'s doc for why every id-allocating append
+    /// shares it).
+    pub(crate) async fn acquire_append_lock_for(&self, conn: &mut PgConnection) -> Result<()> {
+        let events_table = self.qualify_table("events");
+        self.acquire_append_lock(conn, &events_table).await
+    }
+
+    /// Asserts `stream_id` is still at `expected_version` on `conn`'s
+    /// transaction, without writing anything.
+    ///
+    /// Only trustworthy while the append lock
+    /// (see [`Self::acquire_append_lock_for`]) is held: that is what makes
+    /// this an authoritative read of every committed append up to this
+    /// point under READ COMMITTED, rather than a racy snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::ConcurrencyConflict` if `stream_id`'s committed
+    /// version does not match `expected_version`.
+    pub(crate) async fn check_stream_expectation_in(
+        &self,
+        conn: &mut PgConnection,
+        stream_id: &StreamId,
+        expected_version: AggregateVersion,
+    ) -> Result<()> {
+        let events_table = self.qualify_table("events");
+        Self::precheck_version(conn, &events_table, stream_id, expected_version).await
+    }
 }
 
 #[cfg(test)]

@@ -99,6 +99,8 @@ mod projection;
 mod sql;
 mod state_outbox;
 mod state_store;
+#[cfg(feature = "unit-of-work")]
+mod unit_of_work;
 
 #[cfg(test)]
 mod test_support;
@@ -115,6 +117,8 @@ pub use state_outbox::{
     PostgresStateOutbox, StateOutboxClaim, StateOutboxDispatcher, StateOutboxHandler,
 };
 pub use state_store::{PostgresStateStore, PostgresStateStoreBuilder};
+#[cfg(feature = "unit-of-work")]
+pub use unit_of_work::PostgresTransactionalStore;
 
 /// Outcome of a leased projection or worker run.
 ///

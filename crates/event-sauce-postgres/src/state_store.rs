@@ -358,7 +358,60 @@ impl PostgresStateStore {
         Ok(())
     }
 
-    async fn write_commit_in_tx(&self, conn: &mut PgConnection, commit: StateCommit) -> Result<()> {
+    /// Asserts `stream_id`'s stored row is still at `expected_version` on
+    /// `conn`'s transaction, without writing anything. Takes a `FOR SHARE`
+    /// lock on the row, so a concurrent writer of the same row blocks behind
+    /// this check and is seen rather than raced past under READ COMMITTED. A
+    /// missing row reads as [`AggregateVersion::initial`], the same
+    /// convention [`Self::upsert_state`] uses for a brand-new aggregate.
+    ///
+    /// Used by
+    /// [`TransactionalStore::commit_atomic`](event_sauce_core::TransactionalStore::commit_atomic)
+    /// to check a state expectation inside the shared transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::ConcurrencyConflict` if the row's version does not
+    /// match `expected_version`.
+    pub(crate) async fn check_expectation_in(
+        &self,
+        conn: &mut PgConnection,
+        stream_id: &StreamId,
+        expected_version: AggregateVersion,
+    ) -> Result<()> {
+        let states_table = self.qualify_table("aggregate_states");
+        let query = format!(
+            "SELECT version FROM {states_table}
+             WHERE aggregate_id = $1 AND aggregate_type = $2
+             FOR SHARE"
+        );
+        let version: Option<i64> = sqlx::query_scalar(&query)
+            .bind(stream_id.aggregate_id())
+            .bind(stream_id.aggregate_type().as_str())
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(|e| Error::backend("Failed to check state expectation", e))?;
+        let actual = version.map_or_else(AggregateVersion::initial, AggregateVersion::new);
+        if actual != expected_version {
+            return Err(Error::concurrency_conflict(expected_version, actual));
+        }
+        Ok(())
+    }
+
+    /// Writes one state commit's effects — the row upsert, claim
+    /// enforcement, projections, and the outbox — on `conn`, without opening
+    /// or closing a transaction itself.
+    ///
+    /// Shared by [`Self::save_batch`], which runs it on a freshly begun
+    /// transaction, and by
+    /// [`TransactionalStore::commit_atomic`](event_sauce_core::TransactionalStore::commit_atomic),
+    /// which needs this store's writes to share a transaction with an event
+    /// store's.
+    pub(crate) async fn write_commit_in_tx(
+        &self,
+        conn: &mut PgConnection,
+        commit: StateCommit,
+    ) -> Result<()> {
         let StateCommit {
             state,
             expected_version,

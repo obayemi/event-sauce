@@ -13,6 +13,9 @@ categories = ["asynchronous", "database"]
 [features]
 default = []
 crypto = ["dep:event-sauce-crypto"]
+# Postgres `TransactionalStore`: commits event-sourced and state-stored
+# writes across one database in a single transaction.
+unit-of-work = ["event-sauce-core/unit-of-work"]
 
 [dependencies]
 event-sauce-core = { path = "../event-sauce-core", version = "0.1.0", default-features = false, features = [
