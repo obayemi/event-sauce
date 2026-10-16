@@ -315,27 +315,19 @@ define_events! {
 
 ### Command Implementation Standards
 
-**RECOMMENDED**: Use the `command_handler!` macro for command methods:
+**RECOMMENDED**: Use the `aggregate_command!` macro for command methods:
 
 ```rust
-use event_sauce::command_handler;
-
-impl Order {
-    fn create(id: OrderId, order_id: String) -> Self {
-        let mut order = Self::new(id);
-        let event = CreatedEvent { order_id, timestamp: Utc::now() };
-        order.apply(event).expect("Creation should never fail");
-        order
-    }
-}
+use event_sauce::aggregate_command;
 
 // Auto-generate command methods
-command_handler! {
+aggregate_command! {
     impl Order {
-        fn add_item(item_id: String, quantity: u32, price: i64) -> ItemAddedEvent {
+        @clock @init fn create(order_id: String) -> CreatedEvent { order_id };
+        @clock fn add_item(item_id: String, quantity: u32, price: i64) -> ItemAddedEvent {
             item_id, quantity, price
         };
-        fn complete() -> CompletedEvent { };
+        @clock fn complete() -> CompletedEvent { };
     }
 }
 ```
@@ -343,9 +335,16 @@ command_handler! {
 **Benefits:**
 - ✅ **70% less boilerplate** - No manual event creation or timestamp handling
 - ✅ **Consistent patterns** - All commands follow the same structure
-- ✅ **Automatic timestamp handling** - `Utc::now()` added automatically
+- ✅ **Explicit time** - `@clock` stamps `timestamp` from `Utc::now()`; otherwise the instant is a parameter
 - ✅ **Type-safe** - Compile-time parameter validation
 - ✅ **Combined with `define_events!`** - Total 80%+ reduction in code
+
+`command_handler!` is a deprecated alias of `aggregate_command!`; never use it.
+
+A named, lifecycle-aware operation is a typed `Command` run with
+`Repository::execute` and a `RetryPolicy` (see `docs/commands.md`). An atomic
+operation over several aggregates is a `UnitOfWorkCommand` (see
+`docs/unit-of-work.md`).
 
 **Alternative**: For commands requiring complex logic, conditional validation, or custom error handling, implement methods manually (see `docs/getting-started.md`).
 
@@ -653,7 +652,8 @@ The CI pipeline (`.github/workflows/ci.yml`) runs on pushes and PRs against
    `.cargo/audit.toml`)
 8. **MSRV** — `cargo check` on the pinned `rust-version`
 9. **Core Feature Combinations** — `event-sauce-core` with each combination of
-   `event-sourcing` / `state-store`
+   `event-sourcing` / `state-store`, plus `commands`, `commands,state-store`,
+   `commands,event-sourcing` and `unit-of-work`
 
 PostgreSQL tests spin up their own containers via testcontainers, so the
 pipeline needs Docker (present on `ubuntu-latest`) rather than a database
@@ -662,10 +662,7 @@ service.
 ### Before Pushing
 
 ```bash
-# Run full CI locally
-./scripts/ci-check.sh
-
-# Or manually (COMPREHENSIVE - includes all features, examples, bins, benches):
+# Run the CI checks locally (COMPREHENSIVE - includes all features, examples, bins, benches):
 cargo test --workspace --all-features --all-targets    # All tests
 cargo test --workspace --all-features --doc            # Doc tests
 cargo build --workspace --all-features --examples      # Examples
