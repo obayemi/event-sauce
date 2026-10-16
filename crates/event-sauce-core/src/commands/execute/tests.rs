@@ -117,3 +117,9 @@ fn command_lifecycle_error_widens_to_the_lifecycle_variant() {
         }
     ));
 }
+
+#[cfg(all(
+    feature = "commands",
+    any(feature = "event-sourcing", feature = "state-store")
+))]
+mod engine;
