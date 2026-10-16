@@ -40,7 +40,8 @@ impl<'a> CommitGuard<'a> {
     }
 
     /// Validates every commit's `expected_version` against the stream's
-    /// current length, without mutating anything.
+    /// current length, then every expectation's version against the same
+    /// state, without mutating anything.
     ///
     /// Commits to the same stream within the batch chain: a later commit's
     /// `expected_version` is checked against the version the previous commit
@@ -51,18 +52,33 @@ impl<'a> CommitGuard<'a> {
     /// does not advance it), matching `append`'s existing behaviour for a
     /// single empty commit.
     ///
+    /// An expectation for a stream this batch also writes is checked against
+    /// the version that stream was at when the batch's *first* commit to it
+    /// was prepared — the load-time version — not against the version later
+    /// commits in the chain leave it at. A write and an expectation for the
+    /// same stream therefore agree only when they were prepared from the
+    /// same read; if they disagree, that disagreement is itself a conflict.
+    ///
     /// # Errors
     ///
-    /// Returns `Error::ConcurrencyConflict` on the first commit whose
-    /// `expected_version` doesn't match.
-    fn check(&self, commits: &[StreamCommit]) -> Result<()> {
+    /// Returns `Error::ConcurrencyConflict` on the first commit or
+    /// expectation whose version doesn't match.
+    fn check(
+        &self,
+        commits: &[StreamCommit],
+        expectations: &[(StreamId, AggregateVersion)],
+    ) -> Result<()> {
         let mut next_required: HashMap<&StreamId, AggregateVersion> = HashMap::new();
+        let mut load_versions: HashMap<&StreamId, AggregateVersion> = HashMap::new();
 
         for commit in commits {
             let current_version = next_required
                 .get(&commit.stream_id)
                 .copied()
                 .unwrap_or_else(|| Self::committed_version(self.streams, &commit.stream_id));
+            load_versions
+                .entry(&commit.stream_id)
+                .or_insert(current_version);
 
             if current_version != commit.expected_version {
                 return Err(Error::concurrency_conflict(
@@ -76,6 +92,17 @@ impl<'a> CommitGuard<'a> {
                 commit.expected_version.as_i64() + commit.events.len() as i64,
             );
             next_required.insert(&commit.stream_id, leaves_at);
+        }
+
+        for (stream_id, version) in expectations {
+            let current_version = load_versions
+                .get(stream_id)
+                .copied()
+                .unwrap_or_else(|| Self::committed_version(self.streams, stream_id));
+
+            if current_version != *version {
+                return Err(Error::concurrency_conflict(*version, current_version));
+            }
         }
 
         Ok(())
@@ -337,6 +364,36 @@ impl InMemoryEventStore {
                 .build(),
         )
     }
+
+    /// Checks and applies `commits` together with `expectations` — read-only
+    /// stream version assertions for streams this call does not itself write
+    /// — under one pair of write locks, atomically.
+    ///
+    /// [`EventStore::append_batch`] calls this with no expectations. The
+    /// `unit-of-work` feature's cross-store atomic commit calls it with the
+    /// stream expectations collected by a unit of work, from inside the
+    /// state store's own commit critical section, so a stream write or
+    /// expectation failure and a state write or expectation failure roll
+    /// back together.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::ConcurrencyConflict` if any commit's or any
+    /// expectation's version does not match what is currently stored.
+    pub(crate) fn commit_with_expectations(
+        &self,
+        commits: Vec<StreamCommit>,
+        expectations: &[(StreamId, AggregateVersion)],
+    ) -> Result<()> {
+        let mut streams = self.inner.streams.write();
+        let mut global_events = self.inner.global_events.write();
+
+        let mut guard = CommitGuard::new(&mut streams, &mut global_events);
+        guard.check(&commits, expectations)?;
+        guard.apply(commits);
+
+        Ok(())
+    }
 }
 
 impl InMemoryEventStoreBuilder {
@@ -519,24 +576,10 @@ impl EventStore for InMemoryEventStore {
     /// left exactly as it was — no earlier commit in the batch survives a
     /// later one's rejection.
     ///
-    /// Acquiring both write locks together gives this backend the same
-    /// ordering guarantee the PostgreSQL backend enforces with a
-    /// transaction-scoped advisory lock: a global position is assigned and
-    /// published under the same exclusive critical section, so once an event
-    /// with global position N is visible to a reader, all events with
-    /// position < N are already visible.
-    ///
     /// Claims are ignored, as [`Self::append`] has always done — this
     /// backend has no claim store.
     async fn append_batch(&self, commits: Vec<StreamCommit>) -> Result<()> {
-        let mut streams = self.inner.streams.write();
-        let mut global_events = self.inner.global_events.write();
-
-        let mut guard = CommitGuard::new(&mut streams, &mut global_events);
-        guard.check(&commits)?;
-        guard.apply(commits);
-
-        Ok(())
+        self.commit_with_expectations(commits, &[])
     }
 
     async fn load_stream(
@@ -1551,6 +1594,117 @@ mod tests {
             store.max_position().await.unwrap(),
             Position::start(),
             "global position must not advance for a rejected batch"
+        );
+    }
+
+    /// An expectation for a stream this call does not write is satisfied
+    /// when the stream is already at that version, and has no effect on what
+    /// gets applied.
+    #[tokio::test]
+    async fn test_commit_with_expectations_accepts_a_matching_read_only_expectation() {
+        let store = InMemoryEventStore::new();
+        let aggregate_id = Uuid::new_v4();
+        let stream_id = StreamId::new("Acct", aggregate_id);
+        store
+            .append(
+                stream_id.clone(),
+                vec![create_test_envelope("Opened", aggregate_id)],
+                AggregateVersion::initial(),
+                vec![],
+                false,
+            )
+            .await
+            .unwrap();
+
+        store
+            .commit_with_expectations(vec![], &[(stream_id.clone(), AggregateVersion::new(1))])
+            .expect("a matching expectation must be accepted");
+
+        assert_eq!(
+            store.get_version(stream_id).await.unwrap(),
+            AggregateVersion::new(1),
+            "an expectation-only call must not write anything"
+        );
+    }
+
+    /// A stale expectation for a stream this call does not write is a
+    /// conflict, even though nothing in the call touches that stream.
+    #[tokio::test]
+    async fn test_commit_with_expectations_rejects_a_stale_read_only_expectation() {
+        let store = InMemoryEventStore::new();
+        let aggregate_id = Uuid::new_v4();
+        let stream_id = StreamId::new("Acct", aggregate_id);
+        store
+            .append(
+                stream_id.clone(),
+                vec![create_test_envelope("Opened", aggregate_id)],
+                AggregateVersion::initial(),
+                vec![],
+                false,
+            )
+            .await
+            .unwrap();
+
+        let error = store
+            .commit_with_expectations(vec![], &[(stream_id, AggregateVersion::initial())])
+            .expect_err("a stale expectation must be rejected");
+        assert!(error.is_concurrency_conflict());
+    }
+
+    /// An expectation for a stream this call also writes, agreeing with the
+    /// write's own `expected_version`, is redundant but harmless.
+    #[tokio::test]
+    async fn test_commit_with_expectations_accepts_an_expectation_agreeing_with_its_own_write() {
+        let store = InMemoryEventStore::new();
+        let aggregate_id = Uuid::new_v4();
+        let stream_id = StreamId::new("Acct", aggregate_id);
+
+        store
+            .commit_with_expectations(
+                vec![StreamCommit {
+                    stream_id: stream_id.clone(),
+                    events: vec![create_test_envelope("Opened", aggregate_id)],
+                    expected_version: AggregateVersion::initial(),
+                    claims: vec![],
+                    clear_claims: false,
+                }],
+                &[(stream_id.clone(), AggregateVersion::initial())],
+            )
+            .expect("an expectation agreeing with the write must be accepted");
+
+        assert_eq!(
+            store.get_version(stream_id).await.unwrap(),
+            AggregateVersion::new(1)
+        );
+    }
+
+    /// An expectation for a stream this call also writes, disagreeing with
+    /// the write's own `expected_version`, is a conflict — the two were
+    /// prepared from different reads of the same stream.
+    #[tokio::test]
+    async fn test_commit_with_expectations_rejects_disagreement_with_its_own_write() {
+        let store = InMemoryEventStore::new();
+        let aggregate_id = Uuid::new_v4();
+        let stream_id = StreamId::new("Acct", aggregate_id);
+
+        let error = store
+            .commit_with_expectations(
+                vec![StreamCommit {
+                    stream_id: stream_id.clone(),
+                    events: vec![create_test_envelope("Opened", aggregate_id)],
+                    expected_version: AggregateVersion::initial(),
+                    claims: vec![],
+                    clear_claims: false,
+                }],
+                &[(stream_id.clone(), AggregateVersion::new(1))],
+            )
+            .expect_err("a write and an expectation that disagree must conflict");
+        assert!(error.is_concurrency_conflict());
+
+        assert_eq!(
+            store.get_version(stream_id).await.unwrap(),
+            AggregateVersion::initial(),
+            "the write must not apply when its own expectation disagrees"
         );
     }
 
