@@ -11,9 +11,7 @@ use event_sauce::{
     EntityId, EventStore, Repository, RetryPolicy, StateStore, UnitOfWorkError, UnitOfWorkStore,
 };
 use sqlx::postgres::PgPoolOptions;
-use support::{
-    register, ListProduct, Order, PlaceOrder, Product, QuoteOrder, RivalRepricing, TransferStock,
-};
+use support::{register, Order, PlaceOrder, Product, QuoteOrder, RivalRepricing, TransferStock};
 use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
 use testcontainers_modules::testcontainers::{ContainerAsync, ImageExt};
@@ -55,13 +53,7 @@ impl World {
     }
 
     async fn list_product(&self, price: i64, stock: u32) -> EntityId {
-        let id = EntityId::new();
-        let listing = ListProduct { id, price, stock };
-        self.uow
-            .execute(&listing, &(), RetryPolicy::none())
-            .await
-            .unwrap();
-        id
+        support::list_product(&self.uow, price, stock).await
     }
 
     async fn stock(&self, id: EntityId) -> u32 {

@@ -653,6 +653,21 @@ mod tests {
     use std::sync::Arc;
     use uuid::Uuid;
 
+    fn commit(
+        stream_id: &StreamId,
+        aggregate_id: Uuid,
+        event_type: &str,
+        expected_version: AggregateVersion,
+    ) -> StreamCommit {
+        StreamCommit {
+            stream_id: stream_id.clone(),
+            events: vec![create_test_envelope(event_type, aggregate_id)],
+            expected_version,
+            claims: vec![],
+            clear_claims: false,
+        }
+    }
+
     fn create_test_envelope(event_type: &str, aggregate_id: Uuid) -> EventEnvelope {
         EventEnvelope::new(
             Uuid::new_v4(),
@@ -1413,20 +1428,18 @@ mod tests {
         let stream_b = StreamId::new("Acct", id_b);
 
         let commits = vec![
-            StreamCommit {
-                stream_id: stream_a.clone(),
-                events: vec![create_test_envelope("Credited", id_a)],
-                expected_version: AggregateVersion::initial(),
-                claims: vec![],
-                clear_claims: false,
-            },
-            StreamCommit {
-                stream_id: stream_b.clone(),
-                events: vec![create_test_envelope("Credited", id_b)],
-                expected_version: AggregateVersion::new(5),
-                claims: vec![],
-                clear_claims: false,
-            },
+            commit(
+                &stream_a.clone(),
+                id_a,
+                "Credited",
+                AggregateVersion::initial(),
+            ),
+            commit(
+                &stream_b.clone(),
+                id_b,
+                "Credited",
+                AggregateVersion::new(5),
+            ),
         ];
 
         let error = store
@@ -1477,20 +1490,8 @@ mod tests {
         let stream = StreamId::new("Acct", id);
 
         let commits = vec![
-            StreamCommit {
-                stream_id: stream.clone(),
-                events: vec![create_test_envelope("Opened", id)],
-                expected_version: AggregateVersion::initial(),
-                claims: vec![],
-                clear_claims: false,
-            },
-            StreamCommit {
-                stream_id: stream.clone(),
-                events: vec![create_test_envelope("Credited", id)],
-                expected_version: AggregateVersion::new(1),
-                claims: vec![],
-                clear_claims: false,
-            },
+            commit(&stream.clone(), id, "Opened", AggregateVersion::initial()),
+            commit(&stream.clone(), id, "Credited", AggregateVersion::new(1)),
         ];
 
         store
@@ -1525,20 +1526,8 @@ mod tests {
         let stream = StreamId::new("Acct", id);
 
         let commits = vec![
-            StreamCommit {
-                stream_id: stream.clone(),
-                events: vec![create_test_envelope("Opened", id)],
-                expected_version: AggregateVersion::initial(),
-                claims: vec![],
-                clear_claims: false,
-            },
-            StreamCommit {
-                stream_id: stream.clone(),
-                events: vec![create_test_envelope("Credited", id)],
-                expected_version: AggregateVersion::new(5),
-                claims: vec![],
-                clear_claims: false,
-            },
+            commit(&stream.clone(), id, "Opened", AggregateVersion::initial()),
+            commit(&stream.clone(), id, "Credited", AggregateVersion::new(5)),
         ];
 
         let error = store
@@ -1626,13 +1615,12 @@ mod tests {
 
         store
             .commit_with_expectations(
-                vec![StreamCommit {
-                    stream_id: stream_id.clone(),
-                    events: vec![create_test_envelope("Opened", aggregate_id)],
-                    expected_version: AggregateVersion::initial(),
-                    claims: vec![],
-                    clear_claims: false,
-                }],
+                vec![commit(
+                    &stream_id.clone(),
+                    aggregate_id,
+                    "Opened",
+                    AggregateVersion::initial(),
+                )],
                 &[(stream_id.clone(), AggregateVersion::initial())],
             )
             .expect("an expectation agreeing with the write must be accepted");
@@ -1654,13 +1642,12 @@ mod tests {
 
         let error = store
             .commit_with_expectations(
-                vec![StreamCommit {
-                    stream_id: stream_id.clone(),
-                    events: vec![create_test_envelope("Opened", aggregate_id)],
-                    expected_version: AggregateVersion::initial(),
-                    claims: vec![],
-                    clear_claims: false,
-                }],
+                vec![commit(
+                    &stream_id.clone(),
+                    aggregate_id,
+                    "Opened",
+                    AggregateVersion::initial(),
+                )],
                 &[(stream_id.clone(), AggregateVersion::new(1))],
             )
             .expect_err("a write and an expectation that disagree must conflict");

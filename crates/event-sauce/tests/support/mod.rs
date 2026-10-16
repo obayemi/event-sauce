@@ -283,3 +283,16 @@ pub fn register<T: TransactionalStore + 'static>(stores: T) -> UnitOfWorkStore<T
         .event_sourced::<Order>()
         .state_stored::<Product>()
 }
+
+pub async fn list_product<T: TransactionalStore + 'static>(
+    uow: &UnitOfWorkStore<T>,
+    price: i64,
+    stock: u32,
+) -> EntityId {
+    let id = EntityId::new();
+    let listing = ListProduct { id, price, stock };
+    uow.execute(&listing, &(), RetryPolicy::none())
+        .await
+        .unwrap();
+    id
+}

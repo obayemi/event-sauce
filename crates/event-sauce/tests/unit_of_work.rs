@@ -11,8 +11,7 @@ use event_sauce::{
     EntityId, EventStore, Repository, RetryPolicy, StateStore, UnitOfWorkError, UnitOfWorkStore,
 };
 use support::{
-    register, ListProduct, Order, PlaceOrder, Product, ProductError, QuoteOrder, RivalRepricing,
-    TransferStock,
+    register, Order, PlaceOrder, Product, ProductError, QuoteOrder, RivalRepricing, TransferStock,
 };
 
 struct World {
@@ -34,13 +33,7 @@ impl World {
     }
 
     async fn list_product(&self, price: i64, stock: u32) -> EntityId {
-        let id = EntityId::new();
-        let listing = ListProduct { id, price, stock };
-        self.uow
-            .execute(&listing, &(), RetryPolicy::none())
-            .await
-            .unwrap();
-        id
+        support::list_product(&self.uow, price, stock).await
     }
 
     async fn product(&self, id: EntityId) -> Product {
