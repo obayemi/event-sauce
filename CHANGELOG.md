@@ -215,8 +215,10 @@ explicitly rather than gated behind a major version bump.
   lifecycle states (`Missing`/`Active`/`Deleted`) a command needs to match
   on or narrow with `?`; `Lifecycle` and `CommandError<E>`, turning a
   lifecycle mismatch into a typed error instead of a panic or a silent
-  no-op; and `RetryPolicy`, the attempt count and backoff a retry loop runs
-  on.
+  no-op; `RetryPolicy`, the attempt count and backoff a retry loop runs
+  on; `ExecuteError` (`Load`/`Domain`/`Lifecycle`/`Save`) and `Executed`
+  (the final `Root` plus the attempt count), the error and result of
+  `execute`.
 - `Repository::execute` — runs a `Command` against an aggregate's current
   lifecycle state and saves wherever it leaves it, retrying the whole
   load/handle/save cycle on a concurrency conflict up to a `RetryPolicy`'s
@@ -226,10 +228,15 @@ explicitly rather than gated behind a major version bump.
   changes any mix of event-sourced and state-stored aggregates, committed
   in one atomic `TransactionalStore::commit_atomic` call that also asserts
   every aggregate the command only read is still at the version it loaded,
-  retrying the whole command on a concurrency conflict. `InMemoryTransactionalStore`
-  and `PostgresTransactionalStore` implement `TransactionalStore` for the
-  two built-in backends (the Postgres one requires both stores to share one
-  database).
+  retrying the whole command on a concurrency conflict. The backend-facing
+  contract is `TransactionalStore`, `AtomicCommit`, `PreparedWrite`,
+  `StreamWrite`, `Expectation` and `UnitOfWorkRepository`; commands return
+  `UnitOfWorkExecuted` or fail with `UnitOfWorkError`.
+  `InMemoryTransactionalStore` and `PostgresTransactionalStore` implement
+  `TransactionalStore` for the two built-in backends. The Postgres one
+  requires both stores to share one database:
+  `PostgresTransactionalStore::new` returns `Error::InvalidState` when the
+  two pools differ in host, port or database.
 
 ### Deprecated
 
