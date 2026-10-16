@@ -376,15 +376,10 @@ impl EventStore for PostgresEventStore {
     /// savepoint-based recovery resolves a same-value race there to a typed
     /// `ClaimConflict` for the loser.
     async fn append_batch(&self, commits: Vec<event_sauce_core::StreamCommit>) -> Result<()> {
-        let commits: Vec<event_sauce_core::StreamCommit> = commits
-            .into_iter()
-            .filter(|c| !append::is_noop_commit(c))
-            .collect();
+        let (commits, precheck_indices) = Self::prepare_batch(commits)?;
         if commits.is_empty() {
             return Ok(());
         }
-
-        let precheck_indices = append::plan_version_chain_checks(&commits)?;
 
         let mut tx = self
             .pool
