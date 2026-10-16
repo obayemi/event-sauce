@@ -249,7 +249,6 @@ impl ApplyEvent<TestAggregate> for ResetEvent {
     }
 }
 
-// This is the test for the aggregate_command! macro
 aggregate_command! {
     impl TestAggregate {
         @clock fn increment(amount: i32) -> IncrementedEvent { amount };
@@ -264,7 +263,6 @@ aggregate_command! {
 fn test_aggregate_command_increment() {
     let mut root = AggregateRoot::<TestAggregate>::new(EntityId::new());
 
-    // Test that generated aggregate command method works through AggregateRoot
     let result = root.increment(5);
 
     assert!(result.is_ok());
@@ -362,8 +360,6 @@ fn test_aggregate_command_event_helper() {
     let event = root.increment_event(42);
     assert_eq!(event.amount, 42);
 }
-
-// ===== aggregate_command! Event Helper Function Tests =====
 
 #[test]
 fn test_aggregate_command_generates_event_helper_functions() {

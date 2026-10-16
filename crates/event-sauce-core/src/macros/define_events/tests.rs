@@ -1020,8 +1020,6 @@ fn test_init_event_macro_domain_event() {
     assert_eq!(deposit.event_type(), "Account.Deposited");
 }
 
-// ===== @init aggregate_command! macro tests =====
-
 aggregate_command! {
     impl Account {
         @clock @init fn open_account(name: String, initial_balance: i64)
@@ -1475,8 +1473,6 @@ fn test_multi_init_validation_per_variant() {
         "Invalid invite code"
     );
 }
-
-// --- aggregate_command! tests for multiple @init aggregate commands ---
 
 #[test]
 fn test_multi_init_cmd_event_helpers() {
@@ -1991,8 +1987,6 @@ mod actor_tests {
         };
         assert!(!EventApplicator::<Ticket>::is_init(&closed));
     }
-
-    // --- aggregate_command! @actor tests ---
 
     #[test]
     fn test_actor_init_cmd_event_helper() {
@@ -2827,8 +2821,6 @@ mod delete_tests {
         assert!(!deleted.active);
         assert!(deleted.name.is_empty());
     }
-
-    // --- aggregate_command! @delete tests ---
 
     #[test]
     fn test_delete_command_event_helper() {
