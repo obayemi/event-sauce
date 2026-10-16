@@ -16,6 +16,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
+use crate::event_context::{execution_context, WithEventContextExt};
+
 #[cfg(feature = "commands")]
 use crate::{
     commands::run_with_retry, Command, CommandError, Error, ExecuteError, Executed, Lifecycle,
@@ -340,6 +342,7 @@ pub trait Repository<A: Aggregate>: Send + Sync {
             || attempt(self, id, |root| command.handle(root, ctx)),
             ExecuteError::is_concurrency_conflict,
         )
+        .with_event_context(execution_context(command.name()))
         .await?;
         Ok(Executed { root, attempts })
     }
@@ -399,28 +402,34 @@ pub trait Repository<A: Aggregate>: Send + Sync {
         F: FnOnce(&mut AggregateRoot<A>) -> std::result::Result<R, A::Error> + Send,
         R: Send,
     {
-        #[cfg(feature = "commands")]
-        {
-            let entity_id = id.entity_id();
-            let mut result = None;
-            attempt(self, entity_id, |root| {
-                let mut active = root.active()?;
-                result = Some(f(&mut active)?);
-                Ok(active.into())
-            })
-            .await
-            .map_err(|e| map_modify_error::<A>(entity_id, e))?;
-            Ok(result.expect("a successful attempt ran the closure"))
-        }
-        #[cfg(not(feature = "commands"))]
-        {
-            let mut aggregate = self.load(id).await.map_err(crate::ModifyError::Load)?;
-            let result = f(&mut aggregate).map_err(crate::ModifyError::Domain)?;
-            self.save(&mut aggregate)
+        async move {
+            #[cfg(feature = "commands")]
+            {
+                let entity_id = id.entity_id();
+                let mut result = None;
+                attempt(self, entity_id, |root| {
+                    let mut active = root.active()?;
+                    result = Some(f(&mut active)?);
+                    Ok(active.into())
+                })
                 .await
-                .map_err(crate::ModifyError::Save)?;
-            Ok(result)
+                .map_err(|e| map_modify_error::<A>(entity_id, e))?;
+                Ok::<R, crate::ModifyError<A::Error>>(
+                    result.expect("a successful attempt ran the closure"),
+                )
+            }
+            #[cfg(not(feature = "commands"))]
+            {
+                let mut aggregate = self.load(id).await.map_err(crate::ModifyError::Load)?;
+                let result = f(&mut aggregate).map_err(crate::ModifyError::Domain)?;
+                self.save(&mut aggregate)
+                    .await
+                    .map_err(crate::ModifyError::Save)?;
+                Ok::<R, crate::ModifyError<A::Error>>(result)
+            }
         }
+        .with_event_context(execution_context(None))
+        .await
     }
 
     /// Loads a deleted aggregate, applies a closure, and saves any new pending changes.
@@ -452,31 +461,37 @@ pub trait Repository<A: Aggregate>: Send + Sync {
         F: FnOnce(&mut DeletedAggregateRoot<A>) -> std::result::Result<R, A::Error> + Send,
         R: Send,
     {
-        #[cfg(feature = "commands")]
-        {
-            let entity_id = id.entity_id();
-            let mut result = None;
-            attempt(self, entity_id, |root| {
-                let mut deleted = root.deleted()?;
-                result = Some(f(&mut deleted)?);
-                Ok(deleted.into())
-            })
-            .await
-            .map_err(|e| map_modify_error::<A>(entity_id, e))?;
-            Ok(result.expect("a successful attempt ran the closure"))
-        }
-        #[cfg(not(feature = "commands"))]
-        {
-            let mut deleted = self
-                .load_deleted(id)
+        async move {
+            #[cfg(feature = "commands")]
+            {
+                let entity_id = id.entity_id();
+                let mut result = None;
+                attempt(self, entity_id, |root| {
+                    let mut deleted = root.deleted()?;
+                    result = Some(f(&mut deleted)?);
+                    Ok(deleted.into())
+                })
                 .await
-                .map_err(crate::ModifyError::Load)?;
-            let result = f(&mut deleted).map_err(crate::ModifyError::Domain)?;
-            self.save_deleted(&mut deleted)
-                .await
-                .map_err(crate::ModifyError::Save)?;
-            Ok(result)
+                .map_err(|e| map_modify_error::<A>(entity_id, e))?;
+                Ok::<R, crate::ModifyError<A::Error>>(
+                    result.expect("a successful attempt ran the closure"),
+                )
+            }
+            #[cfg(not(feature = "commands"))]
+            {
+                let mut deleted = self
+                    .load_deleted(id)
+                    .await
+                    .map_err(crate::ModifyError::Load)?;
+                let result = f(&mut deleted).map_err(crate::ModifyError::Domain)?;
+                self.save_deleted(&mut deleted)
+                    .await
+                    .map_err(crate::ModifyError::Save)?;
+                Ok::<R, crate::ModifyError<A::Error>>(result)
+            }
         }
+        .with_event_context(execution_context(None))
+        .await
     }
 
     /// Creates an uninitialized aggregate root with a random `EntityId`.
@@ -1018,6 +1033,60 @@ mod tests {
         assert_eq!(returned, 99);
         let reloaded = repo.load(id).await.unwrap();
         assert_eq!(reloaded.value, 99);
+    }
+
+    #[tokio::test]
+    async fn test_repository_modify_runs_in_a_correlation_scope() {
+        let store = Arc::new(MockEventStore::new());
+        let repo = store.repository::<SimpleTestEntity>();
+        let id = EntityId::new();
+        let mut aggregate = AggregateRoot::<SimpleTestEntity>::new(id);
+        aggregate
+            .apply(SimpleTestEvent::Created { value: 1 })
+            .unwrap();
+        repo.save(&mut aggregate).await.unwrap();
+
+        repo.modify(id, |agg| agg.apply(SimpleTestEvent::Updated { value: 2 }))
+            .await
+            .unwrap();
+        let seen = repo
+            .modify(id, |_agg| {
+                Ok(crate::event_context::current_snapshot().and_then(|s| s.correlation_id))
+            })
+            .await
+            .unwrap();
+
+        let events = store.get_events();
+        assert!(events[1]
+            .metadata
+            .as_ref()
+            .unwrap()
+            .correlation_id
+            .is_some());
+        assert!(seen.is_some());
+        assert_eq!(crate::event_context::current_snapshot(), None);
+    }
+
+    #[tokio::test]
+    async fn test_repository_modify_deleted_runs_in_a_correlation_scope() {
+        let store = Arc::new(MockEventStore::new());
+        let repo = store.repository::<SimpleTestEntity>();
+        let id = EntityId::new();
+        let mut aggregate = AggregateRoot::<SimpleTestEntity>::new(id);
+        aggregate
+            .apply(SimpleTestEvent::Created { value: 1 })
+            .unwrap();
+        let mut deleted = aggregate.apply_delete(SimpleTestDelete).unwrap();
+        repo.save_deleted(&mut deleted).await.unwrap();
+
+        let seen = repo
+            .modify_deleted(id, |_deleted| {
+                Ok(crate::event_context::current_snapshot().and_then(|s| s.correlation_id))
+            })
+            .await
+            .unwrap();
+
+        assert!(seen.is_some());
     }
 
     #[tokio::test]

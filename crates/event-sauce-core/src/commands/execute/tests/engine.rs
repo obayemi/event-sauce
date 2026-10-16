@@ -75,6 +75,155 @@ fn swap_identity() -> impl Fn(
 }
 
 #[cfg(feature = "event-sourcing")]
+mod context {
+    use super::*;
+    use crate::event_context::current_snapshot;
+    use crate::test_fixtures::{FailNTimesEventStore, MockEventStore};
+    use crate::{Command, EventContext, EventMetadata, EventStore, WithEventContextExt};
+    use std::sync::{Arc, Mutex};
+
+    struct Recording {
+        seen: Mutex<Vec<Option<String>>>,
+    }
+
+    impl Recording {
+        fn new() -> Self {
+            Self {
+                seen: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl Command<SimpleTestEntity> for Recording {
+        fn handle(
+            &self,
+            root: Root<SimpleTestEntity>,
+            ctx: &(),
+        ) -> std::result::Result<Root<SimpleTestEntity>, CommandError<SimpleTestError>> {
+            let id = current_snapshot().and_then(|snapshot| snapshot.correlation_id);
+            self.seen.lock().unwrap().push(id);
+            update_to(5)(root, ctx)
+        }
+
+        fn name(&self) -> Option<&str> {
+            Some("recording")
+        }
+    }
+
+    fn stored_metadata(store: &MockEventStore) -> Vec<EventMetadata> {
+        store
+            .get_events()
+            .into_iter()
+            .skip(1)
+            .map(|event| event.metadata.expect("events carry metadata"))
+            .collect()
+    }
+
+    async fn seeded() -> (Arc<MockEventStore>, EntityId) {
+        let store = Arc::new(MockEventStore::new());
+        let id = EntityId::new();
+        seed_active(&store.repository::<SimpleTestEntity>(), id).await;
+        (store, id)
+    }
+
+    #[tokio::test]
+    async fn a_generated_correlation_id_is_shared_by_every_retry() {
+        let (inner, id) = seeded().await;
+        let flaky = Arc::new(FailNTimesEventStore::new(Arc::clone(&inner), 2));
+        let command = Recording::new();
+
+        flaky
+            .repository::<SimpleTestEntity>()
+            .execute(id, &command, &(), RetryPolicy::default())
+            .await
+            .unwrap();
+
+        let seen = command.seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), 3);
+        assert!(seen[0].is_some());
+        assert!(seen.iter().all(|id| *id == seen[0]));
+        let stored = stored_metadata(&inner);
+        assert_eq!(stored[0].correlation_id, seen[0]);
+        assert_eq!(stored[0].correlation_path, [seen[0].clone().unwrap()]);
+    }
+
+    #[tokio::test]
+    async fn separate_executions_get_separate_correlation_ids() {
+        let (store, id) = seeded().await;
+        let repo = store.repository::<SimpleTestEntity>();
+
+        repo.execute(id, &update_to(1), &(), RetryPolicy::default())
+            .await
+            .unwrap();
+        repo.execute(id, &update_to(2), &(), RetryPolicy::default())
+            .await
+            .unwrap();
+
+        let stored = stored_metadata(&store);
+        assert!(stored[0].correlation_id.is_some());
+        assert_ne!(stored[0].correlation_id, stored[1].correlation_id);
+    }
+
+    #[tokio::test]
+    async fn an_ambient_correlation_id_is_kept_without_extending_the_path() {
+        let (store, id) = seeded().await;
+
+        store
+            .repository::<SimpleTestEntity>()
+            .execute(id, &update_to(1), &(), RetryPolicy::default())
+            .with_event_context(EventContext::new().correlation_id("req-9"))
+            .await
+            .unwrap();
+
+        let stored = stored_metadata(&store);
+        assert_eq!(stored[0].correlation_id.as_deref(), Some("req-9"));
+        assert_eq!(stored[0].correlation_path, ["req-9"]);
+    }
+
+    #[tokio::test]
+    async fn the_command_name_is_recorded() {
+        let (store, id) = seeded().await;
+
+        store
+            .repository::<SimpleTestEntity>()
+            .execute(id, &Recording::new(), &(), RetryPolicy::default())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            stored_metadata(&store)[0].command.as_deref(),
+            Some("recording")
+        );
+    }
+
+    #[tokio::test]
+    async fn an_anonymous_command_records_no_command() {
+        let (store, id) = seeded().await;
+
+        store
+            .repository::<SimpleTestEntity>()
+            .execute(id, &update_to(1), &(), RetryPolicy::default())
+            .await
+            .unwrap();
+
+        assert_eq!(stored_metadata(&store)[0].command, None);
+    }
+
+    #[tokio::test]
+    async fn the_command_name_does_not_leak_after_execution() {
+        let (store, id) = seeded().await;
+
+        store
+            .repository::<SimpleTestEntity>()
+            .execute(id, &Recording::new(), &(), RetryPolicy::default())
+            .await
+            .unwrap();
+
+        assert_eq!(current_snapshot(), None);
+    }
+}
+
+#[cfg(feature = "event-sourcing")]
 mod event_sourced {
     use super::*;
     use crate::commands::ExecuteError;

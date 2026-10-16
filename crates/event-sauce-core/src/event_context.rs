@@ -158,11 +158,8 @@ impl<K> EventContext<K> {
         self
     }
 
-    /// Sets the name of the command being executed. Set by command
-    /// execution, not meant to be called directly.
-    #[doc(hidden)]
     #[must_use]
-    pub fn command(mut self, name: impl Into<String>) -> Self {
+    pub(crate) fn command(mut self, name: impl Into<String>) -> Self {
         self.frame.command = Some(name.into());
         self
     }
@@ -398,16 +395,25 @@ pub(crate) fn current_snapshot() -> Option<ContextSnapshot> {
     (snapshot != ContextSnapshot::default()).then_some(snapshot)
 }
 
-/// Whether the effective context already carries a correlation id. Used by
-/// command execution, not meant to be called directly.
-#[doc(hidden)]
-#[must_use]
-pub fn has_correlation_id() -> bool {
+pub(crate) fn has_correlation_id() -> bool {
     effective(|frames| {
         frames
             .iter()
             .any(|f| f.correlation_id.is_some() || !f.correlation_path.is_empty())
     })
+}
+
+/// The context a command execution runs in: it names the command when it
+/// has a name and starts a correlation id unless one is already active.
+pub(crate) fn execution_context(command: Option<&str>) -> EventContext {
+    let mut context = EventContext::new();
+    if let Some(name) = command {
+        context = context.command(name);
+    }
+    if !has_correlation_id() {
+        context = context.correlation_id(uuid::Uuid::new_v4().to_string());
+    }
+    context
 }
 
 #[cfg(test)]

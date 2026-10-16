@@ -260,3 +260,24 @@ fn a_root_built_from_metadata_without_a_path_starts_it_at_the_id() {
         assert_eq!(snapshot().correlation_path, ["req"]);
     });
 }
+
+#[test]
+fn an_execution_context_generates_a_correlation_id_when_none_is_active() {
+    let context = execution_context(Some("place-order"));
+    context.in_scope(|| {
+        let snap = snapshot();
+        assert_eq!(snap.command.as_deref(), Some("place-order"));
+        assert_eq!(snap.correlation_path.len(), 1);
+        assert_eq!(snap.correlation_id, snap.correlation_path.first().cloned());
+    });
+}
+
+#[test]
+fn an_execution_context_keeps_the_active_correlation_id() {
+    EventContext::new().correlation_id("req-1").in_scope(|| {
+        execution_context(None).in_scope(|| {
+            assert_eq!(snapshot().correlation_path, ["req-1"]);
+            assert_eq!(snapshot().command, None);
+        });
+    });
+}
