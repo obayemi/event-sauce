@@ -69,16 +69,12 @@ impl<'a> CommitGuard<'a> {
         expectations: &[(StreamId, AggregateVersion)],
     ) -> Result<()> {
         let mut next_required: HashMap<&StreamId, AggregateVersion> = HashMap::new();
-        let mut load_versions: HashMap<&StreamId, AggregateVersion> = HashMap::new();
 
         for commit in commits {
             let current_version = next_required
                 .get(&commit.stream_id)
                 .copied()
                 .unwrap_or_else(|| Self::committed_version(self.streams, &commit.stream_id));
-            load_versions
-                .entry(&commit.stream_id)
-                .or_insert(current_version);
 
             if current_version != commit.expected_version {
                 return Err(Error::concurrency_conflict(
@@ -95,10 +91,7 @@ impl<'a> CommitGuard<'a> {
         }
 
         for (stream_id, version) in expectations {
-            let current_version = load_versions
-                .get(stream_id)
-                .copied()
-                .unwrap_or_else(|| Self::committed_version(self.streams, stream_id));
+            let current_version = Self::committed_version(self.streams, stream_id);
 
             if current_version != *version {
                 return Err(Error::concurrency_conflict(*version, current_version));
