@@ -261,6 +261,12 @@ explicitly rather than gated behind a major version bump.
 
 ### Fixed
 
+- `PostgresEventStore` now persists `EventMetadata::causation_chain`. It
+  used to store the causation id only, so a stored event read back with an
+  empty chain and `PolicyRunner::max_cascade_depth` never stopped a
+  cascade on Postgres. `migrate()` adds the column; events stored before
+  the fix keep an empty chain, so their cascades restart counting from
+  zero.
 - `InMemoryEventStore::append_batch` is now atomic: every commit's expected
   version is checked under one pair of write locks before any commit in the
   batch is applied, so a batch that fails partway leaves every stream
