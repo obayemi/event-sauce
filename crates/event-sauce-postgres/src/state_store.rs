@@ -263,20 +263,28 @@ impl PostgresStateStore {
         .await
     }
 
-    async fn stored_version_on(
-        conn: &mut PgConnection,
+    /// Reads the stored version of `stream_id`'s state row, a missing row
+    /// reading as [`AggregateVersion::initial`]. `lock` is appended to the
+    /// query (`""` or `"FOR SHARE"`) and `context` labels a backend failure.
+    async fn stored_version<'e, E>(
+        executor: E,
         states_table: &str,
         stream_id: &StreamId,
-    ) -> Result<AggregateVersion> {
+        lock: &str,
+        context: &'static str,
+    ) -> Result<AggregateVersion>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+    {
         let query = format!(
-            "SELECT version FROM {states_table} WHERE aggregate_id = $1 AND aggregate_type = $2"
+            "SELECT version FROM {states_table} WHERE aggregate_id = $1 AND aggregate_type = $2 {lock}"
         );
         let version: Option<i64> = sqlx::query_scalar(&query)
             .bind(stream_id.aggregate_id())
             .bind(stream_id.aggregate_type().as_str())
-            .fetch_optional(&mut *conn)
+            .fetch_optional(executor)
             .await
-            .map_err(|e| Error::backend("Failed to read stored state version", e))?;
+            .map_err(|e| Error::backend(context, e))?;
         Ok(version.map_or_else(AggregateVersion::initial, AggregateVersion::new))
     }
 
@@ -333,7 +341,14 @@ impl PostgresStateStore {
         };
 
         if affected == 0 {
-            let actual = Self::stored_version_on(conn, states_table, &state.stream_id()).await?;
+            let actual = Self::stored_version(
+                conn,
+                states_table,
+                &state.stream_id(),
+                "",
+                "Failed to read stored state version",
+            )
+            .await?;
             return Err(Error::concurrency_conflict(expected_version, actual));
         }
         Ok(())
@@ -380,18 +395,14 @@ impl PostgresStateStore {
         expected_version: AggregateVersion,
     ) -> Result<()> {
         let states_table = self.qualify_table("aggregate_states");
-        let query = format!(
-            "SELECT version FROM {states_table}
-             WHERE aggregate_id = $1 AND aggregate_type = $2
-             FOR SHARE"
-        );
-        let version: Option<i64> = sqlx::query_scalar(&query)
-            .bind(stream_id.aggregate_id())
-            .bind(stream_id.aggregate_type().as_str())
-            .fetch_optional(&mut *conn)
-            .await
-            .map_err(|e| Error::backend("Failed to check state expectation", e))?;
-        let actual = version.map_or_else(AggregateVersion::initial, AggregateVersion::new);
+        let actual = Self::stored_version(
+            conn,
+            &states_table,
+            stream_id,
+            "FOR SHARE",
+            "Failed to check state expectation",
+        )
+        .await?;
         if actual != expected_version {
             return Err(Error::concurrency_conflict(expected_version, actual));
         }
@@ -593,17 +604,14 @@ impl StateStore for PostgresStateStore {
     }
 
     async fn get_version(&self, stream_id: StreamId) -> Result<AggregateVersion> {
-        let states_table = self.qualify_table("aggregate_states");
-        let query = format!(
-            "SELECT version FROM {states_table} WHERE aggregate_id = $1 AND aggregate_type = $2"
-        );
-        let version: Option<i64> = sqlx::query_scalar(&query)
-            .bind(stream_id.aggregate_id())
-            .bind(stream_id.aggregate_type().as_str())
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(|e| Error::backend("Failed to get state version", e))?;
-        Ok(version.map_or_else(AggregateVersion::initial, AggregateVersion::new))
+        Self::stored_version(
+            &self.pool,
+            &self.qualify_table("aggregate_states"),
+            &stream_id,
+            "",
+            "Failed to get state version",
+        )
+        .await
     }
 
     async fn exists(&self, stream_id: StreamId) -> Result<bool> {

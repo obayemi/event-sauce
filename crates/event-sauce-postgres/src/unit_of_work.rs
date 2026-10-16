@@ -186,7 +186,7 @@ impl PostgresTransactionalStore {
             .map_err(|e| Error::backend("Failed to start transaction", e))?;
 
         if !batch.is_empty() || !stream_expectations.is_empty() {
-            self.events.acquire_append_lock_for(&mut tx).await?;
+            self.events.acquire_append_lock(&mut tx).await?;
         }
 
         for (stream_id, version) in &stream_expectations {

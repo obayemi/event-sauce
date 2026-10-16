@@ -155,11 +155,7 @@ impl PostgresEventStore {
     /// manual unlock). Readers stay fully concurrent: the advisory lock does not
     /// block SELECT. Only id-allocating appends take it — claims-only /
     /// clear-only writes allocate no ids and must not serialize on it.
-    pub(super) async fn acquire_append_lock(
-        &self,
-        conn: &mut PgConnection,
-        events_table: &str,
-    ) -> Result<()> {
+    pub(crate) async fn acquire_append_lock(&self, conn: &mut PgConnection) -> Result<()> {
         #[allow(clippy::cast_possible_truncation)]
         let lock_timeout_ms = self.append_lock_timeout.as_millis() as i64;
         sqlx::query(&format!("SET LOCAL lock_timeout = {lock_timeout_ms}"))
@@ -167,7 +163,7 @@ impl PostgresEventStore {
             .await
             .map_err(|e| Error::backend("Failed to set append lock timeout", e))?;
         sqlx::query("SELECT pg_advisory_xact_lock($1)")
-            .bind(append_lock_key(events_table))
+            .bind(append_lock_key(&self.qualify_table("events")))
             .execute(conn)
             .await
             .map_err(|e| Error::backend("Failed to acquire append serialization lock", e))?;
@@ -352,7 +348,7 @@ impl PostgresEventStore {
         }
 
         if commits.iter().any(|c| !c.events.is_empty()) {
-            self.acquire_append_lock(conn, &events_table).await?;
+            self.acquire_append_lock(conn).await?;
         }
 
         let claims_table = self.qualify_table("aggregate_claims");
@@ -378,24 +374,11 @@ impl PostgresEventStore {
         Ok(())
     }
 
-    /// Takes the append serialization lock on `conn`'s transaction for a
-    /// caller that has no commits of its own to pass through
-    /// [`Self::write_streams_on`] — namely
-    /// [`TransactionalStore::commit_atomic`](event_sauce_core::TransactionalStore::commit_atomic),
-    /// which must hold this lock before checking a stream version
-    /// expectation for that check to be trustworthy (see
-    /// [`Self::acquire_append_lock`]'s doc for why every id-allocating append
-    /// shares it).
-    pub(crate) async fn acquire_append_lock_for(&self, conn: &mut PgConnection) -> Result<()> {
-        let events_table = self.qualify_table("events");
-        self.acquire_append_lock(conn, &events_table).await
-    }
-
     /// Asserts `stream_id` is still at `expected_version` on `conn`'s
     /// transaction, without writing anything.
     ///
     /// Only trustworthy while the append lock
-    /// (see [`Self::acquire_append_lock_for`]) is held: that is what makes
+    /// (see [`Self::acquire_append_lock`]) is held: that is what makes
     /// this an authoritative read of every committed append up to this
     /// point under READ COMMITTED, rather than a racy snapshot.
     ///
