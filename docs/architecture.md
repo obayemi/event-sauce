@@ -101,7 +101,10 @@ The foundation providing traits and types:
 - **DomainEvent** - Something that happened in the domain
 - **ApplyEvent** - Trait for event validation and state mutation
 - **EventApplicator** - Dispatches event enum variants to individual `ApplyEvent` impls
-- **Repository** - Persistence-style-agnostic aggregate persistence trait (`load`/`save`/`modify`/`create_*`); `EventSourcedRepository` is its event-store-backed implementation
+- **Repository** - Persistence-style-agnostic aggregate persistence trait (`load`/`save`/`modify`/`execute`/`create_*`); `EventSourcedRepository` is its event-store-backed implementation
+- **Command / Root** - Typed, lifecycle-aware command handlers (`commands` feature)
+- **Repository::execute** - Load, handle and save a `Command`, retrying conflicts according to a `RetryPolicy`
+- **UnitOfWorkStore / TransactionalStore** - Atomic commits across event-sourced and state-stored aggregates (`unit-of-work` feature)
 - **EventStore** - Event-stream persistence abstraction
 - **EventFilter** - Predicate for selecting events a consumer cares about
 - **CheckpointStore** - Per-consumer position tracking and leasing for projections and policies
@@ -118,6 +121,7 @@ The foundation providing traits and types:
 In-memory implementation for testing:
 
 - **InMemoryEventStore** - HashMap-based storage with durable subscriptions
+- **InMemoryTransactionalStore** - Atomic commits across stores (`unit-of-work` feature)
 - Fast, no I/O, deterministic
 - Perfect for unit tests
 
@@ -126,6 +130,7 @@ In-memory implementation for testing:
 Production-ready PostgreSQL backend:
 
 - **PostgresEventStore** - Durable event storage with subscription support
+- **PostgresTransactionalStore** - Atomic commits across the event and state stores (`unit-of-work` feature); both stores must share one database
 - Optimistic concurrency via unique constraints
 - Streaming support for memory efficiency
 - Transaction support
@@ -447,6 +452,9 @@ User B fails with ConcurrencyConflict
 // User B must reload and retry
 User B: Load counter (version 6) → decrement → save (expects 6) → Success
 ```
+
+`Repository::execute` and `UnitOfWorkStore::execute` perform this
+reload-and-retry automatically.
 
 Benefits:
 - No locks needed
