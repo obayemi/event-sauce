@@ -506,9 +506,10 @@ fn test_set_pending_metadata() {
 }
 
 #[test]
-fn test_set_pending_metadata_does_not_overwrite_existing() {
+fn test_set_pending_metadata_fills_missing_fields_of_existing() {
     let mut counter = AggregateRoot::<CounterEntity>::new(EntityId::new());
-    let existing_metadata = crate::EventMetadata::new().with_causation_id(uuid::Uuid::new_v4());
+    let existing = crate::EventMetadata::new().with_tenant("acme");
+    let cause = uuid::Uuid::new_v4();
 
     counter
         .apply_with_metadata(
@@ -516,20 +517,58 @@ fn test_set_pending_metadata_does_not_overwrite_existing() {
                 amount: 5,
                 timestamp: Utc::now(),
             },
-            existing_metadata.clone(),
+            existing.clone(),
         )
         .unwrap();
     counter.increment(3).unwrap();
 
-    let new_metadata = crate::EventMetadata::new().with_correlation_id("req-123");
+    let policy_metadata = crate::EventMetadata::new()
+        .with_tenant("globex")
+        .with_correlation_id("req-123")
+        .with_causation_id(cause)
+        .with_causation_chain(vec![cause]);
 
-    counter.set_pending_metadata(&new_metadata);
+    counter.set_pending_metadata(&policy_metadata);
 
     let pending = counter.pending_events_with_actors();
-    // First event keeps its existing metadata
-    assert_eq!(pending[0].metadata, Some(existing_metadata));
-    // Second event gets the new metadata
-    assert_eq!(pending[1].metadata, Some(new_metadata));
+    let first = pending[0].metadata.as_ref().unwrap();
+    assert_eq!(first.tenant.as_deref(), Some("acme"));
+    assert_eq!(first.correlation_id.as_deref(), Some("req-123"));
+    assert_eq!(first.causation_id, Some(cause));
+    assert_eq!(first.causation_chain, vec![cause]);
+    assert_eq!(first.timestamp, existing.timestamp);
+    assert_eq!(pending[1].metadata, Some(policy_metadata));
+}
+
+#[test]
+fn test_set_pending_metadata_keeps_existing_causation_pair() {
+    let mut counter = AggregateRoot::<CounterEntity>::new(EntityId::new());
+    let own_cause = uuid::Uuid::new_v4();
+    let existing = crate::EventMetadata::new().with_causation_id(own_cause);
+
+    counter
+        .apply_with_metadata(
+            IncrementedEvent {
+                amount: 5,
+                timestamp: Utc::now(),
+            },
+            existing,
+        )
+        .unwrap();
+
+    let other_cause = uuid::Uuid::new_v4();
+    let policy_metadata = crate::EventMetadata::new()
+        .with_causation_id(other_cause)
+        .with_causation_chain(vec![other_cause]);
+
+    counter.set_pending_metadata(&policy_metadata);
+
+    let metadata = counter.pending_events_with_actors()[0]
+        .metadata
+        .clone()
+        .unwrap();
+    assert_eq!(metadata.causation_id, Some(own_cause));
+    assert!(metadata.causation_chain.is_empty());
 }
 
 #[test]

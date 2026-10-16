@@ -10,6 +10,12 @@ explicitly rather than gated behind a major version bump.
 
 ### Breaking Changes
 
+- **Policy causation merges into events that carry metadata.** An event
+  recorded with `apply_with_metadata` used to keep its metadata untouched
+  when a policy committed it, so it lost the cascade tracking. It now
+  keeps every field it set and gains the ones it lacks: correlation id,
+  tenant, command, correlation path, additional keys, and the causation id
+  and chain together, the latter only when it set neither.
 - **Correlation ids are strings.** `EventMetadata::correlation_id` is now
   `Option<String>`, `with_correlation_id` and `EventEnvelope::with_causation`
   take `impl Into<String>`, and `child_metadata` falls back to the parent

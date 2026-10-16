@@ -35,6 +35,19 @@ impl<E> PendingEvent<E> {
             metadata,
         }
     }
+
+    /// Completes the pending event's metadata with `metadata`.
+    ///
+    /// An event recorded without metadata takes a clone; one recorded with
+    /// metadata keeps its own fields and only gains the ones it lacks, see
+    /// [`EventMetadata::fill_missing_from`].
+    #[cfg(any(test, feature = "event-sourcing"))]
+    pub(crate) fn fill_metadata(&mut self, metadata: &EventMetadata) {
+        match &mut self.metadata {
+            Some(existing) => existing.fill_missing_from(metadata),
+            none => *none = Some(metadata.clone()),
+        }
+    }
 }
 
 /// Builds event envelopes from pending events, attaching actor and metadata.
@@ -374,16 +387,17 @@ impl<A: Aggregate> AggregateRoot<A> {
         Ok(())
     }
 
-    /// Sets metadata on all pending events that don't already have metadata.
+    /// Completes the metadata of every pending event with `metadata`.
+    ///
+    /// Events without metadata take it whole; events with metadata keep their
+    /// own fields and gain the missing ones.
     ///
     /// Used by `PolicyContext::commit()` to inject causation tracking
     /// into pending events before delegating to the event store.
     #[cfg(any(test, feature = "event-sourcing"))]
     pub(crate) fn set_pending_metadata(&mut self, metadata: &EventMetadata) {
         for pe in &mut self.pending_events {
-            if pe.metadata.is_none() {
-                pe.metadata = Some(metadata.clone());
-            }
+            pe.fill_metadata(metadata);
         }
     }
 

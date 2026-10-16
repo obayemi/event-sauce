@@ -93,16 +93,17 @@ impl<A: Aggregate> DeletedAggregateRoot<A> {
         self.pending_events.clear();
     }
 
-    /// Sets metadata on all pending events that don't already have metadata.
+    /// Completes the metadata of every pending event with `metadata`.
+    ///
+    /// Events without metadata take it whole; events with metadata keep their
+    /// own fields and gain the missing ones.
     ///
     /// Used by `PolicyContext::commit_deleted()` to inject causation tracking
     /// into pending events before delegating to the event store.
     #[cfg(any(test, feature = "event-sourcing"))]
     pub(crate) fn set_pending_metadata(&mut self, metadata: &crate::EventMetadata) {
         for pe in &mut self.pending_events {
-            if pe.metadata.is_none() {
-                pe.metadata = Some(metadata.clone());
-            }
+            pe.fill_metadata(metadata);
         }
     }
 
@@ -383,12 +384,13 @@ mod tests {
     }
 
     #[test]
-    fn test_deleted_aggregate_root_set_pending_metadata_does_not_overwrite() {
+    fn test_deleted_aggregate_root_set_pending_metadata_fills_missing_fields() {
         let entity = SimpleTestEntity {
             id: EntityId::new(),
             value: 0,
         };
-        let existing = crate::EventMetadata::new().with_causation_id(uuid::Uuid::new_v4());
+        let existing = crate::EventMetadata::new().with_tenant("acme");
+        let cause = uuid::Uuid::new_v4();
         let pending = vec![
             PendingEvent {
                 event: SimpleTestEvent::Updated { value: 1 },
@@ -409,13 +411,20 @@ mod tests {
             false,
         );
 
-        let new_metadata = crate::EventMetadata::new().with_correlation_id("req-123");
-        deleted.set_pending_metadata(&new_metadata);
+        let policy_metadata = crate::EventMetadata::new()
+            .with_tenant("globex")
+            .with_correlation_id("req-123")
+            .with_causation_id(cause)
+            .with_causation_chain(vec![cause]);
+        deleted.set_pending_metadata(&policy_metadata);
 
         let with_actors = deleted.pending_events_with_actors();
-        // First event keeps its existing metadata
-        assert_eq!(with_actors[0].metadata, Some(existing));
-        // Second event gets the new metadata
-        assert_eq!(with_actors[1].metadata, Some(new_metadata));
+        let first = with_actors[0].metadata.as_ref().unwrap();
+        assert_eq!(first.tenant.as_deref(), Some("acme"));
+        assert_eq!(first.correlation_id.as_deref(), Some("req-123"));
+        assert_eq!(first.causation_id, Some(cause));
+        assert_eq!(first.causation_chain, vec![cause]);
+        assert_eq!(first.timestamp, existing.timestamp);
+        assert_eq!(with_actors[1].metadata, Some(policy_metadata));
     }
 }
