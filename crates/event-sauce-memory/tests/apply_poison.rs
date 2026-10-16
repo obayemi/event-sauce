@@ -12,7 +12,8 @@
 
 use event_sauce_core::Repository;
 use event_sauce_core::{
-    command_handler, define_events, Aggregate, AggregateError, Entity, EntityId, Error, EventStore,
+    aggregate_command, define_events, Aggregate, AggregateError, Entity, EntityId, Error,
+    EventStore,
 };
 use event_sauce_memory::InMemoryEventStore;
 use serde::{Deserialize, Serialize};
@@ -97,7 +98,7 @@ define_events! {
     }
 }
 
-command_handler! {
+aggregate_command! {
     impl Account {
         @clock @init fn open(opening_balance: i64) -> OpenedEvent { opening_balance };
         @clock fn adjust(delta: i64) -> AdjustedEvent { delta };

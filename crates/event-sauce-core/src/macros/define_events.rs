@@ -128,7 +128,7 @@
 /// `timestamp`. A variant with no marker is unchanged.
 ///
 /// The commands over it take that instant as a parameter, which is
-/// [`command_handler!`](crate::command_handler)'s default.
+/// [`aggregate_command!`](crate::aggregate_command)'s default.
 #[macro_export]
 macro_rules! define_events {
     // =========================================================================

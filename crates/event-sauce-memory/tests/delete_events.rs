@@ -3,13 +3,13 @@
 //! Tests the full delete event lifecycle including:
 //! - `@delete` events via `define_events!` macro
 //! - `@delete @actor(Type)` events with permission validation
-//! - `command_handler!` `@delete fn` support
+//! - `aggregate_command!` `@delete fn` support
 //! - Event store `load_any()`, `load_deleted()`, `commit_deleted()`
 //! - Repository `save_deleted()`, `load_any()`, `load_deleted()`
 
 use event_sauce_core::{
-    command_handler, define_events, Aggregate, AggregateError, AggregateRoot, DomainEvent, Entity,
-    EntityId, EventApplicator, EventStore, Repository, SnapshotConfig, StoredVersion,
+    aggregate_command, define_events, Aggregate, AggregateError, AggregateRoot, DomainEvent,
+    Entity, EntityId, EventApplicator, EventStore, Repository, SnapshotConfig, StoredVersion,
 };
 use event_sauce_memory::InMemoryEventStore;
 use serde::{Deserialize, Serialize};
@@ -167,7 +167,7 @@ define_events! {
     }
 }
 
-command_handler! {
+aggregate_command! {
     impl Project {
         @clock @init fn create_project(name: String) -> CreatedEvent { name };
         @clock fn rename_project(new_name: String) -> RenamedEvent { new_name };

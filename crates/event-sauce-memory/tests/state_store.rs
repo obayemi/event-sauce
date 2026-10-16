@@ -10,7 +10,7 @@
 
 use async_trait::async_trait;
 use event_sauce_core::{
-    command_handler, define_events, Aggregate, AggregateClaim, AggregateError, Entity, EntityId,
+    aggregate_command, define_events, Aggregate, AggregateClaim, AggregateError, Entity, EntityId,
     Error, EventEnvelope, EventFilter, EventStore, Repository, Result, StateProjection, StateStore,
 };
 use event_sauce_memory::{InMemoryEventStore, InMemoryProjectionContext, InMemoryStateStore};
@@ -77,7 +77,7 @@ define_events! {
     }
 }
 
-command_handler! {
+aggregate_command! {
     impl Account {
         @clock @init fn open(owner: String, opening_balance: i64) -> OpenedEvent { owner, opening_balance };
         @clock fn deposit(amount: i64) -> DepositedEvent { amount };

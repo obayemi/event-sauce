@@ -18,7 +18,7 @@
 
 use chrono::{DateTime, TimeZone as _, Utc};
 use event_sauce_core::{
-    command_handler, define_events, Aggregate, AggregateError, ApplyEvent, DomainEvent, Entity,
+    aggregate_command, define_events, Aggregate, AggregateError, ApplyEvent, DomainEvent, Entity,
     EntityId,
 };
 use serde::{Deserialize, Serialize};
@@ -164,7 +164,7 @@ fn validate_reads_the_named_instant() {
 // `@no_clock`: the command takes its instants instead of reading them
 // ---------------------------------------------------------------------------
 
-command_handler! {
+aggregate_command! {
     impl Sensor {
         // The default: every field of the event is a parameter, instants included,
         // and nothing in the generated body calls `Utc::now()`.

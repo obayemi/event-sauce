@@ -35,7 +35,7 @@ use std::sync::Arc;
 
 use event_sauce::memory::InMemoryEventStore;
 use event_sauce::{
-    command_handler, define_events, policy, Aggregate, AggregateError, AggregateRoot,
+    aggregate_command, define_events, policy, Aggregate, AggregateError, AggregateRoot,
     DefaultEntity, Entity, EntityId, EventSourcedRepository, EventStore, Position, Repository,
 };
 use serde::{Deserialize, Serialize};
@@ -104,7 +104,7 @@ define_events! {
     }
 }
 
-command_handler! {
+aggregate_command! {
     impl User {
         @clock fn register(name: String) -> RegisteredEvent { name };
         @clock fn kick(group_id: EntityId, reason: String) -> KickedEvent { group_id, reason };
@@ -181,7 +181,7 @@ define_events! {
     }
 }
 
-command_handler! {
+aggregate_command! {
     impl Group {
         @clock fn create(name: String) -> CreatedEvent { name };
         @clock fn add_member(member_id: EntityId) -> MemberAddedEvent { member_id };
@@ -236,7 +236,7 @@ define_events! {
     }
 }
 
-command_handler! {
+aggregate_command! {
     impl Notification {
         @clock fn send_notification(message: String) -> SentEvent { message };
     }

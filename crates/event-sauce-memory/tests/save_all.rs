@@ -9,7 +9,7 @@
 //! `test_append_batch_is_atomic` / `test_flush_multi_aggregate_is_atomic`).
 
 use event_sauce_core::{
-    command_handler, define_events, Aggregate, AggregateError, Entity, EntityId, EventStore,
+    aggregate_command, define_events, Aggregate, AggregateError, Entity, EntityId, EventStore,
     Repository,
 };
 use event_sauce_memory::InMemoryEventStore;
@@ -60,7 +60,7 @@ define_events! {
     }
 }
 
-command_handler! {
+aggregate_command! {
     impl Account {
         @clock @init fn open(opening_balance: i64) -> OpenedEvent { opening_balance };
         @clock fn adjust(delta: i64) -> AdjustedEvent { delta };

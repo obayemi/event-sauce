@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use event_sauce::memory::{InMemoryEventStore, InMemoryProjectionContext, InMemoryStateStore};
 use event_sauce::{
-    command_handler, define_events, Aggregate, AggregateError, DefaultEntity, Entity, EntityId,
+    aggregate_command, define_events, Aggregate, AggregateError, DefaultEntity, Entity, EntityId,
     EventEnvelope, EventFilter, EventStore, Repository, StateProjection, StateStore,
 };
 use serde::{Deserialize, Serialize};
@@ -100,7 +100,7 @@ define_events! {
     }
 }
 
-command_handler! {
+aggregate_command! {
     impl Order {
         @clock fn add_item(item_id: String, price: i64) -> ItemAddedEvent { item_id, price };
         @clock fn complete() -> CompletedEvent { };

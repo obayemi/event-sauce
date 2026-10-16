@@ -23,7 +23,7 @@ use crate::{Aggregate, Entity};
 ///
 /// # Lifecycle
 ///
-/// When applying via `command_handler!` with `@actor`:
+/// When applying via `aggregate_command!` with `@actor`:
 /// 1. `validate_actor()` is called with the aggregate state and actor entity
 /// 2. If validation passes, the event is applied via `AggregateRoot::apply_with_actor()`
 /// 3. The actor's entity ID is stored alongside the pending event

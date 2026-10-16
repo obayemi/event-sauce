@@ -1,4 +1,4 @@
-//! [`command_handler!`](crate::command_handler) and the internal muncher and
+//! [`aggregate_command!`](crate::aggregate_command) and the internal muncher and
 //! arity-dispatch macros it recurses through.
 
 /// Generate command handler methods for an aggregate.
@@ -16,7 +16,7 @@
 /// # Syntax
 ///
 /// ```ignore
-/// command_handler! {
+/// aggregate_command! {
 ///     impl AggregateType {
 ///         // Regular commands (on AggregateRoot)
 ///         fn command_name(param1: Type1, param2: Type2)
@@ -71,9 +71,9 @@
 /// # Examples
 ///
 /// ```ignore
-/// use event_sauce_core::command_handler;
+/// use event_sauce_core::aggregate_command;
 ///
-/// command_handler! {
+/// aggregate_command! {
 ///     impl Order {
 ///         @clock @init fn create_order(user_id: EntityId) -> OrderCreatedEvent { user_id };
 ///         @clock fn add_item(item: String, qty: u32) -> ItemAddedEvent { item, qty };
@@ -115,7 +115,7 @@
 /// So the default is:
 ///
 /// ```text
-/// command_handler! {
+/// aggregate_command! {
 ///     impl Sensor {
 ///         fn measure(
 ///             measured_at: DateTime<Utc>,
@@ -129,7 +129,7 @@
 /// `@clock` is the opt-in for the other case:
 ///
 /// ```text
-/// command_handler! {
+/// aggregate_command! {
 ///     impl Session {
 ///         @clock fn touch() -> TouchedEvent { };
 ///     }
@@ -140,7 +140,7 @@
 /// [`define_events!`](crate::define_events)'s `@occurred_at`, which names the instant
 /// the event declares.
 #[macro_export]
-macro_rules! command_handler {
+macro_rules! aggregate_command {
     // Single entry point — always delegates to TT muncher.
     // Supports `@init`, `@actor(Type)`, `@delete`, and regular commands.
     (
@@ -160,6 +160,18 @@ macro_rules! command_handler {
         }
     };
 }
+/// Former name of [`aggregate_command!`](crate::aggregate_command).
+///
+/// It reads like the service command handler that loads an aggregate, runs
+/// aggregate commands on it and saves it, which is not what it generates.
+#[deprecated(since = "0.1.0", note = "renamed to `aggregate_command!`")]
+#[macro_export]
+macro_rules! command_handler {
+    ($($tokens:tt)*) => {
+        $crate::aggregate_command! { $($tokens)* }
+    };
+}
+
 /// The event literal a command builds, with or without a clock read.
 ///
 /// `clock: [now]` is what `@clock` selects: the generated event carries a
@@ -183,7 +195,7 @@ macro_rules! __command_handler_event {
     };
 }
 
-/// Internal TT muncher for `command_handler!`.
+/// Internal TT muncher for `aggregate_command!`.
 ///
 /// Each arm matches a distinct command shape (regular / `@init` / `@delete` /
 /// `@actor(Ty)` / combinations) and pushes the parsed metadata into the

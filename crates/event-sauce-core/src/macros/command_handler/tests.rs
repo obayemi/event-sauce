@@ -249,8 +249,8 @@ impl ApplyEvent<TestAggregate> for ResetEvent {
     }
 }
 
-// This is the test for the command_handler! macro
-command_handler! {
+// This is the test for the aggregate_command! macro
+aggregate_command! {
     impl TestAggregate {
         @clock fn increment(amount: i32) -> IncrementedEvent { amount };
         @clock fn decrement(amount: i32) -> DecrementedEvent { amount };
@@ -363,7 +363,7 @@ fn test_command_handler_event_helper() {
     assert_eq!(event.amount, 42);
 }
 
-// ===== command_handler! Event Helper Function Tests =====
+// ===== aggregate_command! Event Helper Function Tests =====
 
 #[test]
 fn test_command_handler_generates_event_helper_functions() {

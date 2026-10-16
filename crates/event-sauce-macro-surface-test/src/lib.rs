@@ -75,7 +75,7 @@ event_sauce::define_events! {
     }
 }
 
-event_sauce::command_handler! {
+event_sauce::aggregate_command! {
     impl Counter {
         @clock fn increment(amount: i32) -> IncrementedEvent { amount };
     }
@@ -87,7 +87,7 @@ event_sauce::spec!(
 );
 
 /// Main aggregate: one `define_events!` enum with an enum-level `@upcast`
-/// and every variant shape `command_handler!` supports.
+/// and every variant shape `aggregate_command!` supports.
 #[derive(Debug, Serialize, Deserialize)]
 struct Vault {
     id: event_sauce::EntityId,
@@ -186,7 +186,7 @@ event_sauce::define_events! {
     }
 }
 
-event_sauce::command_handler! {
+event_sauce::aggregate_command! {
     impl Vault {
         @clock @init fn open(label: String) -> OpenedEvent { label };
         @clock @init @actor(Counter) fn provision(owner: String) -> ProvisionedEvent { owner };

@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 use event_sauce::postgres::PostgresBackend;
 use event_sauce::{
-    aggregate, aggregate_error, command_handler, crypto, define_events, policy, specification,
+    aggregate, aggregate_command, aggregate_error, crypto, define_events, policy, specification,
     Aggregate, AggregateError, AggregateId, AggregateRoot, AggregateVersion, EntityId, EventStore,
     Loaded, Position, Repository, Specification, StreamId,
 };
@@ -133,8 +133,8 @@ struct User {
     role: UserRole,
 }
 
-// Use command_handler! macro for command methods
-command_handler! {
+// Use aggregate_command! macro for command methods
+aggregate_command! {
     impl User {
         /// Create a new user (init command)
         @clock @init fn create_user(email: String, name: String, role: UserRole) -> CreatedEvent {
@@ -285,7 +285,7 @@ struct Order {
 }
 
 // Command handler with @actor for permission-validated commands
-command_handler! {
+aggregate_command! {
     impl Order {
         /// Create a new order (requires authenticated user)
         @clock @init @actor(User)
@@ -333,7 +333,7 @@ define_events! {
     }
 }
 
-command_handler! {
+aggregate_command! {
     impl Notification {
         @clock fn send_notification(message: String) -> SentEvent { message };
     }

@@ -70,7 +70,7 @@ struct Ledger {
     balance: i64,
 }
 
-command_handler! {
+aggregate_command! {
     impl Ledger {
         /// Open a ledger for an owner.
         @clock @init fn open(owner: String) -> OpenedEvent { owner };

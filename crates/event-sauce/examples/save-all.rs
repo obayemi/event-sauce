@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use event_sauce::memory::InMemoryEventStore;
 use event_sauce::{
-    command_handler, define_events, Aggregate, AggregateError, Entity, EntityId, EventStore,
+    aggregate_command, define_events, Aggregate, AggregateError, Entity, EntityId, EventStore,
     Repository,
 };
 use serde::{Deserialize, Serialize};
@@ -92,7 +92,7 @@ define_events! {
     }
 }
 
-command_handler! {
+aggregate_command! {
     impl Account {
         @clock @init fn open(holder: String, opening_balance: i64) -> OpenedEvent { holder, opening_balance };
         @clock fn withdraw(amount: i64) -> WithdrawnEvent { amount };

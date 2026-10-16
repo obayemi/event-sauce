@@ -1,6 +1,6 @@
 use crate::{
-    command_handler, spec, Aggregate, AggregateError, AggregateRoot, AggregateVersion, ApplyEvent,
-    DomainEvent, Entity, EntityId, SpecificationError,
+    aggregate_command, spec, Aggregate, AggregateError, AggregateRoot, AggregateVersion,
+    ApplyEvent, DomainEvent, Entity, EntityId, SpecificationError,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -1020,9 +1020,9 @@ fn test_init_event_macro_domain_event() {
     assert_eq!(deposit.event_type(), "Account.Deposited");
 }
 
-// ===== @init command_handler! macro tests =====
+// ===== @init aggregate_command! macro tests =====
 
-command_handler! {
+aggregate_command! {
     impl Account {
         @clock @init fn open_account(name: String, initial_balance: i64)
             -> AccountOpenedEvent { name, initial_balance };
@@ -1322,7 +1322,7 @@ define_events! {
     }
 }
 
-command_handler! {
+aggregate_command! {
     impl Member {
         @clock @init fn create_admin(email: String, name: String)
             -> AdminCreatedEvent { email, name };
@@ -1476,7 +1476,7 @@ fn test_multi_init_validation_per_variant() {
     );
 }
 
-// --- command_handler! tests for multiple @init commands ---
+// --- aggregate_command! tests for multiple @init commands ---
 
 #[test]
 fn test_multi_init_cmd_event_helpers() {
@@ -1643,7 +1643,7 @@ fn test_multi_init_envelope_roundtrip_invite() {
 }
 
 // ===================================================================
-// @actor define_events! + command_handler! tests (in submodule to avoid
+// @actor define_events! + aggregate_command! tests (in submodule to avoid
 // naming collisions with existing CreatedEvent etc.)
 // ===================================================================
 
@@ -1793,7 +1793,7 @@ mod actor_tests {
         }
     }
 
-    command_handler! {
+    aggregate_command! {
         impl Ticket {
             @clock @init @actor(Operator)
             fn open_ticket(title: String) -> TicketOpenedEvent { title };
@@ -1992,7 +1992,7 @@ mod actor_tests {
         assert!(!EventApplicator::<Ticket>::is_init(&closed));
     }
 
-    // --- command_handler! @actor tests ---
+    // --- aggregate_command! @actor tests ---
 
     #[test]
     fn test_actor_init_cmd_event_helper() {
@@ -2587,7 +2587,7 @@ mod delete_tests {
         }
     }
 
-    command_handler! {
+    aggregate_command! {
         impl Account {
             @clock @init fn create_account(name: String) -> AccountCreatedEvent { name };
             @clock fn update_account(name: String) -> AccountUpdatedEvent { name };
@@ -2828,7 +2828,7 @@ mod delete_tests {
         assert!(deleted.name.is_empty());
     }
 
-    // --- command_handler! @delete tests ---
+    // --- aggregate_command! @delete tests ---
 
     #[test]
     fn test_delete_command_event_helper() {

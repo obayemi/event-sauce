@@ -9,7 +9,7 @@
 //!
 //! - **`@actor(Type)`** in `define_events!`: marks events as requiring an actor
 //! - **`@validate |agg, actor, evt|`**: 3-arg arity validates actor permissions at command time
-//! - **`@actor(Type)`** in `command_handler!`: generates methods requiring an actor parameter
+//! - **`@actor(Type)`** in `aggregate_command!`: generates methods requiring an actor parameter
 //! - Actor validation is **skipped during replay** (events are historical facts)
 //! - Actor ID flows into `EventEnvelope::created_by` at commit time
 //!
@@ -23,7 +23,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use event_sauce::memory::InMemoryEventStore;
 use event_sauce::{
-    command_handler, define_events, Aggregate, AggregateError, AggregateRoot, DefaultEntity,
+    aggregate_command, define_events, Aggregate, AggregateError, AggregateRoot, DefaultEntity,
     DomainEvent, Entity, EntityId, EventApplicator, EventStore, Repository,
 };
 use serde::{Deserialize, Serialize};
@@ -241,7 +241,7 @@ define_events! {
 // Command handlers with @actor
 // ============================================================================
 
-command_handler! {
+aggregate_command! {
     impl Document {
         @clock @init @actor(User)
         fn create_document(title: String, content: String) -> DocumentCreatedEvent { title, content };

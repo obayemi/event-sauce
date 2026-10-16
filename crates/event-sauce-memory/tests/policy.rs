@@ -5,7 +5,7 @@
 //! error handling strategies, and the `policy!` macro.
 
 use event_sauce_core::{
-    command_handler, define_events, policy, Aggregate, AggregateClaim, AggregateError,
+    aggregate_command, define_events, policy, Aggregate, AggregateClaim, AggregateError,
     AggregateRoot, AggregateVersion, CheckpointStore, Entity, EntityId, Error, EventEnvelope,
     EventFilter, EventLogEntry, EventSourcedRepository, EventStore, OnError, OnRetryExhausted,
     PolicyContext, PolicyRunner, Position, Repository, Result, RetryConfig, RetryLimit,
@@ -81,7 +81,7 @@ define_events! {
     }
 }
 
-command_handler! {
+aggregate_command! {
     impl User {
         @clock fn register(name: String) -> RegisteredEvent { name };
         @clock fn kick(group_id: EntityId, reason: String) -> KickedEvent { group_id, reason };
@@ -158,7 +158,7 @@ define_events! {
     }
 }
 
-command_handler! {
+aggregate_command! {
     impl Group {
         @clock fn create(name: String) -> CreatedEvent { name };
         @clock fn add_member(member_id: EntityId) -> MemberAddedEvent { member_id };
@@ -213,7 +213,7 @@ define_events! {
     }
 }
 
-command_handler! {
+aggregate_command! {
     impl Notification {
         @clock fn send_notification(message: String) -> SentEvent { message };
     }

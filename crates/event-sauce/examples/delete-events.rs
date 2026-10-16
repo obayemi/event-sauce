@@ -10,7 +10,7 @@
 //!
 //! - **`@delete`** in `define_events!`: marks events as delete transitions
 //! - **`@delete @actor(Type)`**: delete events with actor permission validation
-//! - **`@delete fn`** in `command_handler!`: generates delete command methods
+//! - **`@delete fn`** in `aggregate_command!`: generates delete command methods
 //! - **`DeletedAggregateRoot<A>`**: terminal state with `Deref<Target=A::DeletedState>`
 //! - **`load_any()`**: returns `Loaded::Active` or `Loaded::Deleted`
 //! - **`load_deleted()`**: returns `DeletedAggregateRoot` or errors
@@ -26,7 +26,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use event_sauce::memory::InMemoryEventStore;
 use event_sauce::{
-    command_handler, define_events, Aggregate, AggregateError, AggregateRoot, DefaultEntity,
+    aggregate_command, define_events, Aggregate, AggregateError, AggregateRoot, DefaultEntity,
     DomainEvent, Entity, EntityId, EventApplicator, EventStore, Repository, StoredVersion,
 };
 use serde::{Deserialize, Serialize};
@@ -187,7 +187,7 @@ define_events! {
     }
 }
 
-command_handler! {
+aggregate_command! {
     impl Subscription {
         @clock @init fn start_subscription(plan: String) -> StartedEvent { plan };
         @clock fn change_plan(new_plan: String) -> PlanChangedEvent { new_plan };

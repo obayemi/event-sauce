@@ -12,7 +12,7 @@
 //! instead of returning an error — reachable from untrusted input.
 
 use event_sauce_core::{
-    command_handler, define_events, Aggregate, AggregateError, AggregateRoot, DefaultEntity,
+    aggregate_command, define_events, Aggregate, AggregateError, AggregateRoot, DefaultEntity,
     DomainEvent, Entity, EntityId, EventApplicator, EventStore, Repository,
 };
 use event_sauce_memory::InMemoryEventStore;
@@ -74,7 +74,7 @@ define_events! {
     }
 }
 
-command_handler! {
+aggregate_command! {
     impl Account {
         @clock @init fn open_account(owner: String) -> OpenedEvent { owner };
         @clock fn deposit(amount: i64) -> DepositedEvent { amount };

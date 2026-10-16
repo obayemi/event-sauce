@@ -9,7 +9,7 @@
 //! commits would otherwise never snapshot -> unbounded replay growth.
 
 use event_sauce_core::{
-    command_handler, define_events, Aggregate, AggregateError, AggregateRoot, Entity, EntityId,
+    aggregate_command, define_events, Aggregate, AggregateError, AggregateRoot, Entity, EntityId,
     EventStore, EveryNEvents, SnapshotConfig, StreamId,
 };
 use event_sauce_memory::InMemoryEventStore;
@@ -61,7 +61,7 @@ define_events! {
     }
 }
 
-command_handler! {
+aggregate_command! {
     impl Counter {
         @clock @init fn create(name: String) -> CreatedEvent { name };
         @clock fn tick() -> TickedEvent { };

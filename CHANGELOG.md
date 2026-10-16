@@ -208,6 +208,15 @@ explicitly rather than gated behind a major version bump.
   (`mark_done` only flips status, by design, to keep idempotency). The
   state outbox has no equivalent yet: its `mark_done` deletes the row
   outright, so it has no `'done'` rows to accumulate.
+- `aggregate_command!` — the new name of `command_handler!`, saying that it
+  generates aggregate commands rather than a service command handler.
+
+### Deprecated
+
+- `command_handler!` — renamed to `aggregate_command!`. It still expands to
+  the same code and warns at each call site; replace
+  `command_handler! { impl Order { ... } }` with
+  `aggregate_command! { impl Order { ... } }`.
 
 ### Fixed
 

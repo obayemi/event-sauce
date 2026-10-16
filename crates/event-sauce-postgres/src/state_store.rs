@@ -577,7 +577,7 @@ mod tests {
     use super::*;
     use crate::{AckOutcome, BackoffPolicy, StateOutboxHandler};
     use event_sauce_core::{
-        command_handler, define_events, Aggregate, AggregateClaim, AggregateError, AggregateType,
+        aggregate_command, define_events, Aggregate, AggregateClaim, AggregateError, AggregateType,
         Entity, EntityId, EventFilter, Repository,
     };
     use serde::{Deserialize, Serialize};
@@ -679,7 +679,7 @@ mod tests {
         }
     }
 
-    command_handler! {
+    aggregate_command! {
         impl Ticket {
             @clock @init fn open(title: String) -> OpenedEvent { title };
             @clock fn vote(amount: i64) -> VotedEvent { amount };

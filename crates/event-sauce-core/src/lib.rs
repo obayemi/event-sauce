@@ -11,7 +11,7 @@
 //! - `EventStore` trait for event-sourced persistence
 //! - `StateStore` trait for current-state persistence
 //! - Core types like `EventEnvelope`, `StreamId`, `AggregateVersion`, `EventVersion`, `EntityId`
-//! - Helper macros like `command_handler!` for reducing boilerplate
+//! - Helper macros like `aggregate_command!` for reducing boilerplate
 //!
 //! ## Feature flags
 //!
