@@ -2223,3 +2223,67 @@ async fn test_on_error_retry_retries_a_conflicting_flush() {
          commit must not be persisted twice, nor lost"
     );
 }
+
+#[tokio::test]
+async fn test_reactions_inherit_the_source_context_not_the_ambient_one() {
+    use event_sauce_core::{EventContext, WithEventContextExt};
+    use futures::StreamExt;
+
+    let store = create_store();
+    let cp = checkpoint_store(&store);
+    seed_checkpoint(&cp, "KickUserPolicy").await;
+    let group_id = EntityId::new();
+    let user_id = EntityId::new();
+    let mut group = AggregateRoot::<Group>::new(group_id);
+    group.create("Test Group".to_string()).unwrap();
+    group.add_member(user_id).unwrap();
+    store.commit(&mut group).await.unwrap();
+
+    let request = EventContext::root()
+        .tenant("acme")
+        .correlation_id("req-7")
+        .with("region", "eu");
+    let store_ref = Arc::clone(&store);
+    async move {
+        let mut user = AggregateRoot::<User>::new(user_id);
+        user.register("Alice".to_string()).unwrap();
+        user.kick(group_id, "bad behavior".to_string()).unwrap();
+        store_ref.commit(&mut user).await.unwrap();
+    }
+    .with_event_context(request)
+    .await;
+
+    let runner = PolicyRunner::new(Arc::clone(&store), cp).register(Arc::new(KickUserPolicy));
+    runner
+        .process_pending()
+        .with_event_context(
+            EventContext::root()
+                .tenant("other")
+                .correlation_id("worker-loop")
+                .with("worker", 1),
+        )
+        .await
+        .unwrap();
+
+    let stream = store
+        .stream_all(event_sauce_core::Position::start())
+        .await
+        .unwrap();
+    futures::pin_mut!(stream);
+    let mut removed = None;
+    while let Some(entry) = stream.next().await {
+        let envelope = entry.unwrap().envelope;
+        if envelope.event_type.contains("MemberRemoved") {
+            removed = Some(envelope);
+        }
+    }
+    let metadata = removed
+        .expect("the policy removed the member")
+        .metadata
+        .unwrap();
+    assert_eq!(metadata.tenant.as_deref(), Some("acme"));
+    assert_eq!(metadata.correlation_id.as_deref(), Some("req-7"));
+    assert_eq!(metadata.command.as_deref(), Some("KickUserPolicy"));
+    assert_eq!(metadata.additional, None);
+    assert!(metadata.causation_id.is_some());
+}

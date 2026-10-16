@@ -306,7 +306,7 @@ impl EventContext<Root> {
 }
 
 impl EventContext<Root> {
-    #[cfg(test)]
+    #[cfg(feature = "event-sourcing")]
     pub(crate) fn from_metadata(metadata: &crate::EventMetadata) -> Self {
         let correlation_path = if metadata.correlation_path.is_empty() {
             metadata.correlation_id.iter().cloned().collect()

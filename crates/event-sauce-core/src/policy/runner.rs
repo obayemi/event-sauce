@@ -7,7 +7,10 @@ use std::time::Duration;
 use super::context::PolicyContext;
 use super::on_error::{OnError, OnRetryExhausted, RetryConfig, RetryLimit};
 use super::Policy;
-use crate::{CheckpointStoreRef, EventEnvelope, EventStore, Position, Result};
+use crate::{
+    CheckpointStoreRef, EventContext, EventEnvelope, EventStore, Position, Result,
+    WithEventContextExt,
+};
 
 /// Default duration a [`PolicyRunner`] leases each policy for while draining
 /// pending events (see [`PolicyRunner::with_lease_duration`]).
@@ -414,7 +417,17 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
             envelope.clone(),
             self.max_cascade_depth,
         );
-        policy.handle(envelope, &ctx).await?;
+        let source_metadata = envelope
+            .metadata
+            .clone()
+            .unwrap_or_default()
+            .child_metadata(envelope.id);
+        policy
+            .handle(envelope, &ctx)
+            .with_event_context(
+                EventContext::from_metadata(&source_metadata).command(policy.name()),
+            )
+            .await?;
         ctx.flush().await
     }
 
@@ -2341,5 +2354,130 @@ mod tests {
             outcome_a.is_err(),
             "retries exhausted under OnRetryExhausted::Fail must propagate"
         );
+    }
+
+    struct ReactPolicy {
+        failures: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl<S: EventStore + 'static> Policy<S> for ReactPolicy {
+        fn name(&self) -> &'static str {
+            "react"
+        }
+
+        fn event_filter(&self) -> EventFilter {
+            EventFilter::all()
+        }
+
+        async fn handle(&self, _event: &EventEnvelope, ctx: &PolicyContext<S>) -> Result<()> {
+            let mut reaction = crate::AggregateRoot::<crate::test_fixtures::SimpleTestEntity>::new(
+                crate::EntityId::new(),
+            );
+            reaction
+                .apply(crate::test_fixtures::SimpleTestEvent::Created { value: 1 })
+                .unwrap();
+            ctx.commit(&mut reaction).await?;
+            if self
+                .failures
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                .is_ok()
+            {
+                return Err(crate::Error::custom("transient"));
+            }
+            Ok(())
+        }
+    }
+
+    fn parent_event() -> EventEnvelope {
+        let mut metadata = crate::EventMetadata::new()
+            .with_correlation_id("req-1")
+            .with_correlation_path(vec!["req-1".to_string()])
+            .with_additional(serde_json::json!({"parent": true}));
+        metadata.tenant = Some("acme".to_string());
+        metadata.command = Some("ParentCommand".to_string());
+        test_envelope("TestEvent", "TestAggregate").with_metadata(metadata)
+    }
+
+    async fn reaction_metadata(
+        on_error: OnError,
+        failures: usize,
+    ) -> (EventEnvelope, crate::EventMetadata) {
+        use crate::{EventContext, WithEventContextExt};
+
+        let store = Arc::new(MockEventStore::new());
+        let runner = PolicyRunner::new(Arc::clone(&store), test_checkpoint_store())
+            .register(Arc::new(ReactPolicy {
+                failures: AtomicUsize::new(failures),
+            }))
+            .on_error(on_error);
+        let parent = parent_event();
+
+        let handled = runner
+            .process_event(&parent)
+            .with_event_context(
+                EventContext::root()
+                    .tenant("other-tenant")
+                    .correlation_id("ambient")
+                    .command("AmbientCommand")
+                    .with("ambient", true),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(handled, 1);
+        let events = store.get_events();
+        assert_eq!(events.len(), 1);
+        let metadata = events[0].metadata.clone().expect("reaction is tagged");
+        (parent, metadata)
+    }
+
+    fn assert_source_context(parent: &EventEnvelope, metadata: &crate::EventMetadata) {
+        assert_eq!(metadata.tenant.as_deref(), Some("acme"));
+        assert_eq!(metadata.correlation_id.as_deref(), Some("req-1"));
+        assert_eq!(metadata.correlation_path, ["req-1"]);
+        assert_eq!(metadata.command.as_deref(), Some("react"));
+        assert_eq!(metadata.additional, None);
+        assert_eq!(metadata.causation_id, Some(parent.id));
+        assert_eq!(metadata.causation_chain, vec![parent.id]);
+    }
+
+    #[tokio::test]
+    async fn reactions_run_in_the_source_context_whatever_the_ambient_one() {
+        let (parent, metadata) = reaction_metadata(OnError::Fail, 0).await;
+
+        assert_source_context(&parent, &metadata);
+    }
+
+    #[tokio::test]
+    async fn retried_reactions_run_in_the_source_context() {
+        let retry = OnError::Retry(RetryConfig {
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(1),
+            limit: RetryLimit::Indefinite,
+            on_exhausted: OnRetryExhausted::Fail,
+        });
+
+        let (parent, metadata) = reaction_metadata(retry, 2).await;
+
+        assert_source_context(&parent, &metadata);
+    }
+
+    #[tokio::test]
+    async fn a_source_without_metadata_correlates_its_reactions_to_its_own_id() {
+        let store = Arc::new(MockEventStore::new());
+        let runner = PolicyRunner::new(Arc::clone(&store), test_checkpoint_store()).register(
+            Arc::new(ReactPolicy {
+                failures: AtomicUsize::new(0),
+            }),
+        );
+        let parent = test_envelope("TestEvent", "TestAggregate");
+
+        runner.process_event(&parent).await.unwrap();
+
+        let metadata = store.get_events()[0].metadata.clone().unwrap();
+        assert_eq!(metadata.correlation_id, Some(parent.id.to_string()));
+        assert_eq!(metadata.correlation_path, [parent.id.to_string()]);
+        assert_eq!(metadata.causation_id, Some(parent.id));
     }
 }

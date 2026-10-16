@@ -1,5 +1,4 @@
 use super::*;
-use crate::EventMetadata;
 use serde_json::json;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
@@ -236,12 +235,13 @@ fn current_keeps_the_full_correlation_path() {
     });
 }
 
+#[cfg(feature = "event-sourcing")]
 #[test]
 fn a_root_built_from_metadata_carries_tenant_id_and_path() {
-    let metadata = EventMetadata::new()
+    let metadata = crate::EventMetadata::new()
         .with_correlation_id("req")
         .with_correlation_path(vec!["req".into(), "import".into()]);
-    let metadata = EventMetadata {
+    let metadata = crate::EventMetadata {
         tenant: Some("acme".into()),
         ..metadata
     };
@@ -253,9 +253,10 @@ fn a_root_built_from_metadata_carries_tenant_id_and_path() {
     });
 }
 
+#[cfg(feature = "event-sourcing")]
 #[test]
 fn a_root_built_from_metadata_without_a_path_starts_it_at_the_id() {
-    let metadata = EventMetadata::new().with_correlation_id("req");
+    let metadata = crate::EventMetadata::new().with_correlation_id("req");
     EventContext::from_metadata(&metadata).in_scope(|| {
         assert_eq!(snapshot().correlation_path, ["req"]);
     });
