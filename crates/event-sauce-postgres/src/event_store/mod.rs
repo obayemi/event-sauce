@@ -392,45 +392,8 @@ impl EventStore for PostgresEventStore {
             .await
             .map_err(|e| Error::backend("Failed to start transaction", e))?;
 
-        let events_table = self.qualify_table("events");
-
-        for &index in &precheck_indices {
-            let commit = &commits[index];
-            Self::precheck_version(
-                &mut tx,
-                &events_table,
-                &commit.stream_id,
-                commit.expected_version,
-            )
+        self.write_streams_in(&mut tx, &commits, &precheck_indices)
             .await?;
-        }
-
-        // Take the append serialization lock ONCE for the whole batch if any
-        // commit allocates ids. Holding it across all streams keeps the
-        // insert-order = commit-order invariant for the batch.
-        if commits.iter().any(|c| !c.events.is_empty()) {
-            self.acquire_append_lock(&mut tx, &events_table).await?;
-        }
-
-        let claims_table = self.qualify_table("aggregate_claims");
-        for commit in &commits {
-            crate::claims::enforce(
-                &mut tx,
-                &claims_table,
-                &commit.stream_id,
-                commit.claims.clone(),
-                commit.clear_claims,
-            )
-            .await?;
-        }
-
-        let mut max_inserted: Option<Position> = None;
-        for commit in commits.iter().filter(|c| !c.events.is_empty()) {
-            let last = Self::insert_events_batch(&mut tx, &events_table, commit).await?;
-            max_inserted = max_inserted.max(last);
-        }
-
-        self.notify_inserted(&mut tx, max_inserted).await?;
 
         tx.commit()
             .await

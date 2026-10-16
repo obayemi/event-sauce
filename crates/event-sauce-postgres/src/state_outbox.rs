@@ -33,7 +33,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use event_sauce_core::{Error, EventEnvelope, Result};
-use sqlx::PgPool;
+use sqlx::{PgConnection, PgPool};
 
 use crate::policy_outbox::AckOutcome;
 
@@ -111,7 +111,7 @@ impl PostgresStateOutbox {
 
     pub(crate) async fn enqueue_tx(
         &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        conn: &mut PgConnection,
         envelope: &EventEnvelope,
     ) -> Result<()> {
         let outbox_table = self.outbox_table();
@@ -123,7 +123,7 @@ impl PostgresStateOutbox {
         sqlx::query(&query)
             .bind(envelope.id)
             .bind(serde_json::to_value(envelope)?)
-            .execute(&mut **tx)
+            .execute(conn)
             .await
             .map_err(|e| Error::backend("Failed to enqueue state outbox row", e))?;
         Ok(())

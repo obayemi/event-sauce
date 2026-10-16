@@ -264,7 +264,7 @@ impl PostgresStateStore {
     }
 
     async fn stored_version_in_tx(
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        conn: &mut PgConnection,
         states_table: &str,
         stream_id: &StreamId,
     ) -> Result<AggregateVersion> {
@@ -274,14 +274,14 @@ impl PostgresStateStore {
         let version: Option<i64> = sqlx::query_scalar(&query)
             .bind(stream_id.aggregate_id())
             .bind(stream_id.aggregate_type().as_str())
-            .fetch_optional(&mut **tx)
+            .fetch_optional(&mut *conn)
             .await
             .map_err(|e| Error::backend("Failed to read stored state version", e))?;
         Ok(version.map_or_else(AggregateVersion::initial, AggregateVersion::new))
     }
 
     async fn upsert_state(
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        conn: &mut PgConnection,
         states_table: &str,
         state: &StoredState,
         expected_version: AggregateVersion,
@@ -307,7 +307,7 @@ impl PostgresStateStore {
                 .bind(state.is_deleted)
                 .bind(i64::from(state.schema_version))
                 .bind(expected_version.as_i64())
-                .execute(&mut **tx)
+                .execute(&mut *conn)
                 .await
                 .map_err(|e| Error::backend("Failed to insert aggregate state", e))?
                 .rows_affected()
@@ -326,14 +326,14 @@ impl PostgresStateStore {
                 .bind(state.is_deleted)
                 .bind(i64::from(state.schema_version))
                 .bind(expected_version.as_i64())
-                .execute(&mut **tx)
+                .execute(&mut *conn)
                 .await
                 .map_err(|e| Error::backend("Failed to update aggregate state", e))?
                 .rows_affected()
         };
 
         if affected == 0 {
-            let actual = Self::stored_version_in_tx(tx, states_table, &state.stream_id()).await?;
+            let actual = Self::stored_version_in_tx(conn, states_table, &state.stream_id()).await?;
             return Err(Error::concurrency_conflict(expected_version, actual));
         }
         Ok(())
@@ -341,7 +341,7 @@ impl PostgresStateStore {
 
     async fn run_projections(
         &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        conn: &mut PgConnection,
         events: &[EventEnvelope],
     ) -> Result<()> {
         for projection in &self.projections {
@@ -352,17 +352,13 @@ impl PostgresStateStore {
                 .cloned()
                 .collect();
             if !matching.is_empty() {
-                projection.project(&mut **tx, &matching).await?;
+                projection.project(conn, &matching).await?;
             }
         }
         Ok(())
     }
 
-    async fn write_commit_in_tx(
-        &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-        commit: StateCommit,
-    ) -> Result<()> {
+    async fn write_commit_in_tx(&self, conn: &mut PgConnection, commit: StateCommit) -> Result<()> {
         let StateCommit {
             state,
             expected_version,
@@ -373,10 +369,10 @@ impl PostgresStateStore {
         let states_table = self.qualify_table("aggregate_states");
         let stream_id = state.stream_id();
 
-        Self::upsert_state(tx, &states_table, &state, expected_version).await?;
+        Self::upsert_state(conn, &states_table, &state, expected_version).await?;
 
         crate::claims::enforce(
-            tx,
+            conn,
             &self.qualify_table("aggregate_claims"),
             &stream_id,
             claims,
@@ -384,12 +380,12 @@ impl PostgresStateStore {
         )
         .await?;
 
-        self.run_projections(tx, &events).await?;
+        self.run_projections(conn, &events).await?;
 
         if self.outbox_enabled {
             let outbox = self.outbox();
             for event in &events {
-                outbox.enqueue_tx(tx, event).await?;
+                outbox.enqueue_tx(conn, event).await?;
             }
         }
 

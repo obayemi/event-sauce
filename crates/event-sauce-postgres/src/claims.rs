@@ -8,7 +8,7 @@
 //! module.
 
 use event_sauce_core::{AggregateClaim, Error, Result, StreamId};
-use sqlx::PgPool;
+use sqlx::{PgConnection, PgPool};
 
 /// Hashes each claim's key for SQL binding, pairing it with the claim it
 /// came from for error reporting, and returns the pairs sorted by
@@ -78,7 +78,7 @@ pub(crate) async fn create_table(pool: &PgPool, claims_table: &str) -> Result<()
 /// [`PostgresStateStore`](crate::PostgresStateStore) inside their own
 /// write transaction, so a rejected claim rolls back the whole commit.
 pub(crate) async fn enforce(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    conn: &mut PgConnection,
     claims_table: &str,
     stream_id: &StreamId,
     claims: Vec<AggregateClaim>,
@@ -91,7 +91,7 @@ pub(crate) async fn enforce(
 
         let aggregate_id = stream_id.aggregate_id();
         upsert_or_conflict(
-            tx,
+            conn,
             claims_table,
             aggregate_id,
             &hashed,
@@ -106,7 +106,7 @@ pub(crate) async fn enforce(
         sqlx::query(&cleanup_query)
             .bind(aggregate_id)
             .bind(&types)
-            .execute(&mut **tx)
+            .execute(&mut *conn)
             .await
             .map_err(|e| Error::backend("Failed to cleanup old claims", e))?;
     }
@@ -115,7 +115,7 @@ pub(crate) async fn enforce(
         let delete_query = format!("DELETE FROM {claims_table} WHERE aggregate_id = $1");
         sqlx::query(&delete_query)
             .bind(stream_id.aggregate_id())
-            .execute(&mut **tx)
+            .execute(&mut *conn)
             .await
             .map_err(|e| Error::backend("Failed to clear claims", e))?;
     }
@@ -135,7 +135,7 @@ pub(crate) async fn enforce(
 /// the whole transaction) clears the abort while keeping the version
 /// precheck and any already-inserted events.
 async fn upsert_or_conflict(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    conn: &mut PgConnection,
     claims_table: &str,
     aggregate_id: uuid::Uuid,
     hashed: &[(&AggregateClaim, Vec<u8>)],
@@ -171,7 +171,7 @@ async fn upsert_or_conflict(
         .bind(types)
         .bind(claim_hashes);
 
-    let mut savepoint = tx
+    let mut savepoint = conn
         .begin()
         .await
         .map_err(|e| Error::backend("Failed to open claims savepoint", e))?;
@@ -191,8 +191,15 @@ async fn upsert_or_conflict(
                 .rollback()
                 .await
                 .map_err(|e| Error::backend("Failed to roll back claims savepoint", e))?;
-            recover_concurrent_conflict(tx, claims_table, aggregate_id, hashed, types, claim_hashes)
-                .await
+            recover_concurrent_conflict(
+                conn,
+                claims_table,
+                aggregate_id,
+                hashed,
+                types,
+                claim_hashes,
+            )
+            .await
         }
         Err(e) => Err(Error::backend("Failed to upsert claims", e)),
     }
@@ -215,7 +222,7 @@ fn build_conflict_error(
 /// query finds any of our (`claim_type`, `claim_hash`) pairs already held by
 /// a different aggregate. Avoids N round-trips on contended writes.
 async fn recover_concurrent_conflict(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    conn: &mut PgConnection,
     claims_table: &str,
     aggregate_id: uuid::Uuid,
     hashed: &[(&AggregateClaim, Vec<u8>)],
@@ -233,7 +240,7 @@ async fn recover_concurrent_conflict(
         .bind(types)
         .bind(claim_hashes);
 
-    match query.fetch_optional(&mut **tx).await {
+    match query.fetch_optional(conn).await {
         Ok(Some((claim_type, claim_hash, holder))) => Err(build_conflict_error(
             hashed,
             &claim_type,

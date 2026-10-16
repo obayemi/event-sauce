@@ -3,6 +3,7 @@
 //! insert.
 
 use event_sauce_core::{AggregateVersion, Error, Position, Result, StreamId};
+use sqlx::PgConnection;
 
 use super::PostgresEventStore;
 
@@ -120,18 +121,18 @@ impl PostgresEventStore {
     /// clear-only writes allocate no ids and must not serialize on it.
     pub(super) async fn acquire_append_lock(
         &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        conn: &mut PgConnection,
         events_table: &str,
     ) -> Result<()> {
         #[allow(clippy::cast_possible_truncation)]
         let lock_timeout_ms = self.append_lock_timeout.as_millis() as i64;
         sqlx::query(&format!("SET LOCAL lock_timeout = {lock_timeout_ms}"))
-            .execute(&mut **tx)
+            .execute(&mut *conn)
             .await
             .map_err(|e| Error::backend("Failed to set append lock timeout", e))?;
         sqlx::query("SELECT pg_advisory_xact_lock($1)")
             .bind(append_lock_key(events_table))
-            .execute(&mut **tx)
+            .execute(conn)
             .await
             .map_err(|e| Error::backend("Failed to acquire append serialization lock", e))?;
         Ok(())
@@ -149,13 +150,12 @@ impl PostgresEventStore {
     /// Callers only invoke this for a commit with events: an empty commit
     /// has no version to verify.
     pub(super) async fn precheck_version(
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        conn: &mut PgConnection,
         events_table: &str,
         stream_id: &StreamId,
         expected_version: AggregateVersion,
     ) -> Result<()> {
-        let current_version =
-            Self::current_stream_version(&mut **tx, events_table, stream_id).await?;
+        let current_version = Self::current_stream_version(conn, events_table, stream_id).await?;
         if current_version != expected_version {
             return Err(Error::concurrency_conflict(
                 expected_version,
@@ -193,7 +193,7 @@ impl PostgresEventStore {
     /// issues a single NOTIFY for the whole batch once every commit has been
     /// written.
     pub(super) async fn insert_events_batch(
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        conn: &mut PgConnection,
         events_table: &str,
         commit: &event_sauce_core::StreamCommit,
     ) -> Result<Option<Position>> {
@@ -249,7 +249,7 @@ impl PostgresEventStore {
             .bind(correlation_ids)
             .bind(causation_ids)
             .bind(metadatas)
-            .fetch_all(&mut **tx)
+            .fetch_all(conn)
             .await;
 
         match insert_result {
@@ -268,7 +268,7 @@ impl PostgresEventStore {
     /// inserted (claims-only / clear-only) — nothing to notify.
     pub(super) async fn notify_inserted(
         &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        conn: &mut PgConnection,
         last_inserted: Option<Position>,
     ) -> Result<()> {
         let Some(last_inserted) = last_inserted else {
@@ -278,9 +278,74 @@ impl PostgresEventStore {
         sqlx::query("SELECT pg_notify($1, $2)")
             .bind(&channel)
             .bind(last_inserted.as_i64().to_string())
-            .execute(&mut **tx)
+            .execute(conn)
             .await
             .map_err(|e| Error::backend("Failed to issue NOTIFY", e))?;
+        Ok(())
+    }
+
+    /// Writes a whole batch's event-store effects — version prechecks, the
+    /// append lock, claim enforcement, event inserts, and the NOTIFY — on
+    /// `conn`, without opening or closing a transaction itself.
+    ///
+    /// Shared by [`Self::append_batch`], which runs it on a freshly begun
+    /// transaction, and by any caller that needs the event store's writes to
+    /// share a transaction with other work (e.g. a state-store write in the
+    /// same commit).
+    ///
+    /// `precheck_indices` must be exactly
+    /// [`plan_version_chain_checks`]`(commits)`'s result: the indices of the
+    /// commits whose stream is seen here for the first time and so still
+    /// need [`Self::precheck_version`]. Computing it is a pure, I/O-free
+    /// step the caller runs before opening the transaction `conn` belongs
+    /// to, so a doomed batch is rejected before any connection is used.
+    ///
+    /// Takes the append serialization lock ONCE for the whole batch if any
+    /// commit allocates ids, holding it across every stream so insert order
+    /// equals commit order for the batch (see [`Self::acquire_append_lock`]).
+    pub(crate) async fn write_streams_in(
+        &self,
+        conn: &mut PgConnection,
+        commits: &[event_sauce_core::StreamCommit],
+        precheck_indices: &[usize],
+    ) -> Result<()> {
+        let events_table = self.qualify_table("events");
+
+        for &index in precheck_indices {
+            let commit = &commits[index];
+            Self::precheck_version(
+                conn,
+                &events_table,
+                &commit.stream_id,
+                commit.expected_version,
+            )
+            .await?;
+        }
+
+        if commits.iter().any(|c| !c.events.is_empty()) {
+            self.acquire_append_lock(conn, &events_table).await?;
+        }
+
+        let claims_table = self.qualify_table("aggregate_claims");
+        for commit in commits {
+            crate::claims::enforce(
+                conn,
+                &claims_table,
+                &commit.stream_id,
+                commit.claims.clone(),
+                commit.clear_claims,
+            )
+            .await?;
+        }
+
+        let mut max_inserted: Option<Position> = None;
+        for commit in commits.iter().filter(|c| !c.events.is_empty()) {
+            let last = Self::insert_events_batch(conn, &events_table, commit).await?;
+            max_inserted = max_inserted.max(last);
+        }
+
+        self.notify_inserted(conn, max_inserted).await?;
+
         Ok(())
     }
 }
