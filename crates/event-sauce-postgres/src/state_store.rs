@@ -263,7 +263,7 @@ impl PostgresStateStore {
         .await
     }
 
-    async fn stored_version_in_tx(
+    async fn stored_version_on(
         conn: &mut PgConnection,
         states_table: &str,
         stream_id: &StreamId,
@@ -333,7 +333,7 @@ impl PostgresStateStore {
         };
 
         if affected == 0 {
-            let actual = Self::stored_version_in_tx(conn, states_table, &state.stream_id()).await?;
+            let actual = Self::stored_version_on(conn, states_table, &state.stream_id()).await?;
             return Err(Error::concurrency_conflict(expected_version, actual));
         }
         Ok(())
@@ -373,7 +373,7 @@ impl PostgresStateStore {
     ///
     /// Returns `Error::ConcurrencyConflict` if the row's version does not
     /// match `expected_version`.
-    pub(crate) async fn check_expectation_in(
+    pub(crate) async fn check_state_expectation_on(
         &self,
         conn: &mut PgConnection,
         stream_id: &StreamId,
@@ -407,7 +407,7 @@ impl PostgresStateStore {
     /// [`TransactionalStore::commit_atomic`](event_sauce_core::TransactionalStore::commit_atomic),
     /// which needs this store's writes to share a transaction with an event
     /// store's.
-    pub(crate) async fn write_commit_in_tx(
+    pub(crate) async fn write_commit_on(
         &self,
         conn: &mut PgConnection,
         commit: StateCommit,
@@ -583,7 +583,7 @@ impl StateStore for PostgresStateStore {
             .map_err(|e| Error::backend("Failed to start transaction", e))?;
 
         for commit in commits {
-            self.write_commit_in_tx(&mut tx, commit).await?;
+            self.write_commit_on(&mut tx, commit).await?;
         }
 
         tx.commit()

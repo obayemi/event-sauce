@@ -157,14 +157,14 @@ impl TransactionalStore for PostgresTransactionalStore {
         if commit.is_empty() {
             return Ok(());
         }
-        self.commit_atomic_in_tx(commit)
+        self.run_commit_atomic(commit)
             .await
             .map_err(as_retryable_conflict)
     }
 }
 
 impl PostgresTransactionalStore {
-    async fn commit_atomic_in_tx(&self, commit: AtomicCommit) -> Result<()> {
+    async fn run_commit_atomic(&self, commit: AtomicCommit) -> Result<()> {
         let AtomicCommit {
             stream_writes,
             mut state_writes,
@@ -191,22 +191,22 @@ impl PostgresTransactionalStore {
 
         for (stream_id, version) in &stream_expectations {
             self.events
-                .check_stream_expectation_in(&mut tx, stream_id, *version)
+                .check_stream_expectation_on(&mut tx, stream_id, *version)
                 .await?;
         }
 
         for (stream_id, version) in &state_expectations {
             self.states
-                .check_expectation_in(&mut tx, stream_id, *version)
+                .check_state_expectation_on(&mut tx, stream_id, *version)
                 .await?;
         }
 
         self.events
-            .write_streams_in(&mut tx, &stream_commits, &precheck_indices)
+            .write_streams_on(&mut tx, &stream_commits, &precheck_indices)
             .await?;
 
         for commit in state_writes {
-            self.states.write_commit_in_tx(&mut tx, commit).await?;
+            self.states.write_commit_on(&mut tx, commit).await?;
         }
 
         tx.commit()

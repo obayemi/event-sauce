@@ -387,7 +387,7 @@ impl EventStore for PostgresEventStore {
             .await
             .map_err(|e| Error::backend("Failed to start transaction", e))?;
 
-        self.write_streams_in(&mut tx, &commits, &precheck_indices)
+        self.write_streams_on(&mut tx, &commits, &precheck_indices)
             .await?;
 
         tx.commit()

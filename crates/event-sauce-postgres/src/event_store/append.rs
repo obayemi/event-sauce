@@ -303,7 +303,7 @@ impl PostgresEventStore {
     /// Takes the append serialization lock ONCE for the whole batch if any
     /// commit allocates ids, holding it across every stream so insert order
     /// equals commit order for the batch (see [`Self::acquire_append_lock`]).
-    pub(crate) async fn write_streams_in(
+    pub(crate) async fn write_streams_on(
         &self,
         conn: &mut PgConnection,
         commits: &[event_sauce_core::StreamCommit],
@@ -371,7 +371,7 @@ impl PostgresEventStore {
 
     /// Takes the append serialization lock on `conn`'s transaction for a
     /// caller that has no commits of its own to pass through
-    /// [`Self::write_streams_in`] — namely
+    /// [`Self::write_streams_on`] — namely
     /// [`TransactionalStore::commit_atomic`](event_sauce_core::TransactionalStore::commit_atomic),
     /// which must hold this lock before checking a stream version
     /// expectation for that check to be trustworthy (see
@@ -394,7 +394,7 @@ impl PostgresEventStore {
     ///
     /// Returns `Error::ConcurrencyConflict` if `stream_id`'s committed
     /// version does not match `expected_version`.
-    pub(crate) async fn check_stream_expectation_in(
+    pub(crate) async fn check_stream_expectation_on(
         &self,
         conn: &mut PgConnection,
         stream_id: &StreamId,
