@@ -252,13 +252,13 @@ impl PostgresEventStore {
             .iter()
             .map(|e| e.metadata.as_ref().and_then(|m| m.causation_id))
             .collect();
-        let causation_chains: Vec<Option<serde_json::Value>> = events
+        let causation_chains: Vec<Option<sqlx::types::Json<Vec<uuid::Uuid>>>> = events
             .iter()
             .map(|e| {
                 e.metadata
                     .as_ref()
                     .filter(|m| !m.causation_chain.is_empty())
-                    .map(|m| serde_json::json!(m.causation_chain))
+                    .map(|m| sqlx::types::Json(m.causation_chain.clone()))
             })
             .collect();
         let tenants: Vec<Option<String>> = events
@@ -269,13 +269,13 @@ impl PostgresEventStore {
             .iter()
             .map(|e| e.metadata.as_ref().and_then(|m| m.command.clone()))
             .collect();
-        let correlation_paths: Vec<Option<serde_json::Value>> = events
+        let correlation_paths: Vec<Option<sqlx::types::Json<Vec<String>>>> = events
             .iter()
             .map(|e| {
                 e.metadata
                     .as_ref()
                     .filter(|m| !m.correlation_path.is_empty())
-                    .map(|m| serde_json::json!(m.correlation_path))
+                    .map(|m| sqlx::types::Json(m.correlation_path.clone()))
             })
             .collect();
         let metadatas: Vec<Option<serde_json::Value>> = events
