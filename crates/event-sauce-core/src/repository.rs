@@ -1028,6 +1028,128 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_repository_modify_on_missing_aggregate_is_load_not_found() {
+        let store = Arc::new(MockEventStore::new());
+        let repo = store.repository::<SimpleTestEntity>();
+
+        let id = EntityId::new();
+        let err = repo
+            .modify(id, |agg| agg.apply(SimpleTestEvent::Updated { value: 1 }))
+            .await
+            .unwrap_err();
+
+        match err {
+            crate::ModifyError::Load(e) => {
+                assert!(e.is_not_found(), "expected NotFound, got {e:?}");
+            }
+            other => panic!("expected ModifyError::Load, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_repository_modify_on_deleted_aggregate_is_load_aggregate_deleted() {
+        let store = Arc::new(MockEventStore::new());
+        let repo = store.repository::<SimpleTestEntity>();
+
+        let id = EntityId::new();
+        let mut aggregate = AggregateRoot::<SimpleTestEntity>::new(id);
+        aggregate
+            .apply(SimpleTestEvent::Created { value: 1 })
+            .unwrap();
+        repo.save(&mut aggregate).await.unwrap();
+        let mut deleted = repo
+            .load(id)
+            .await
+            .unwrap()
+            .apply_delete(crate::test_fixtures::SimpleTestDelete)
+            .unwrap();
+        repo.save_deleted(&mut deleted).await.unwrap();
+
+        let err = repo
+            .modify(id, |agg| agg.apply(SimpleTestEvent::Updated { value: 2 }))
+            .await
+            .unwrap_err();
+
+        match err {
+            crate::ModifyError::Load(e) => {
+                assert!(
+                    e.is_aggregate_deleted(),
+                    "expected AggregateDeleted, got {e:?}"
+                );
+            }
+            other => panic!("expected ModifyError::Load, got {other:?}"),
+        }
+    }
+
+    /// Wraps a [`MockEventStore`], delegating loads but always failing
+    /// `append` with a claim conflict — for pinning that `Repository::modify`
+    /// surfaces a save-time claim conflict through `ModifyError::Save`
+    /// unchanged.
+    struct ClaimConflictEventStore {
+        inner: Arc<MockEventStore>,
+    }
+
+    #[async_trait]
+    impl EventStore for ClaimConflictEventStore {
+        async fn append(
+            &self,
+            _stream_id: StreamId,
+            _events: Vec<crate::EventEnvelope>,
+            _expected_version: AggregateVersion,
+            _claims: Vec<crate::AggregateClaim>,
+            _clear_claims: bool,
+        ) -> Result<()> {
+            Err(crate::Error::claim_conflict(
+                "Profile.email",
+                serde_json::json!("taken@example.com"),
+                None,
+            ))
+        }
+
+        async fn load_stream(
+            &self,
+            stream_id: StreamId,
+            from_version: AggregateVersion,
+        ) -> Result<impl futures::Stream<Item = Result<crate::EventEnvelope>> + Send> {
+            self.inner.load_stream(stream_id, from_version).await
+        }
+
+        async fn stream_all(
+            &self,
+            from_position: crate::Position,
+        ) -> Result<impl futures::Stream<Item = Result<crate::EventLogEntry>> + Send> {
+            self.inner.stream_all(from_position).await
+        }
+
+        async fn get_version(&self, stream_id: StreamId) -> Result<AggregateVersion> {
+            self.inner.get_version(stream_id).await
+        }
+    }
+
+    #[tokio::test]
+    async fn test_repository_modify_save_claim_conflict_is_decodable() {
+        let inner = Arc::new(MockEventStore::new());
+        let setup = inner.repository::<SimpleTestEntity>();
+        let id = EntityId::new();
+        let mut aggregate = AggregateRoot::<SimpleTestEntity>::new(id);
+        aggregate
+            .apply(SimpleTestEvent::Created { value: 1 })
+            .unwrap();
+        setup.save(&mut aggregate).await.unwrap();
+
+        let repo = EventSourcedRepository::<ClaimConflictEventStore, SimpleTestEntity>::new(
+            Arc::new(ClaimConflictEventStore { inner }),
+        );
+        let err = repo
+            .modify(id, |agg| agg.apply(SimpleTestEvent::Updated { value: 2 }))
+            .await
+            .unwrap_err();
+
+        let conflict = err.save_claim_conflict().expect("claim conflict");
+        assert_eq!(conflict.claim_type, "Profile.email");
+    }
+
+    #[tokio::test]
     async fn test_repository_load_any_returns_active() {
         let store = Arc::new(MockEventStore::new());
         let repo = store.repository::<SimpleTestEntity>();
