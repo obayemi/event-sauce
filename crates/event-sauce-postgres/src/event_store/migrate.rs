@@ -56,6 +56,7 @@ impl PostgresEventStore {
             .await?;
         self.migrate_crypto_keys_shredded_at(migrations_table)
             .await?;
+        self.migrate_causation_chain(migrations_table).await?;
         Ok(())
     }
 
@@ -212,6 +213,32 @@ impl PostgresEventStore {
             "add_crypto_keys_shredded_at",
             move |pool| async move {
                 crate::crypto_key_store::add_shred_state_columns(pool, &crypto_keys_table).await
+            },
+        )
+        .await
+    }
+
+    /// Migration 6: adds the `causation_chain` column to `events`.
+    ///
+    /// Stores the ancestor event ids of a policy-produced event as a JSON
+    /// array so the cascade depth survives a round trip. Existing rows read
+    /// back as `NULL`, an empty chain.
+    async fn migrate_causation_chain(&self, migrations_table: &str) -> Result<()> {
+        let events_table = self.qualify_table("events");
+        crate::migrations::apply_once(
+            &self.pool,
+            migrations_table,
+            20_261_017_000_000_i64,
+            "add_events_causation_chain",
+            move |pool| async move {
+                let alter = format!(
+                    "ALTER TABLE {events_table} ADD COLUMN IF NOT EXISTS causation_chain JSONB"
+                );
+                sqlx::query(&alter)
+                    .execute(pool)
+                    .await
+                    .map_err(|e| Error::backend("Failed to add causation_chain column", e))?;
+                Ok(())
             },
         )
         .await

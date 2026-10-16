@@ -599,7 +599,8 @@ impl PostgresEventStore {
 /// shared by every query that reads events (per-stream, the global log, and
 /// the log-query filters), so a query can never omit one.
 pub(crate) const EVENT_COLUMNS: &str = "id, event_id, aggregate_id, aggregate_type, event_type, \
-     event_version, event_data, created_by, created_at, correlation_id, causation_id, metadata";
+     event_version, event_data, created_by, created_at, correlation_id, causation_id, metadata, \
+     causation_chain";
 
 // Database row types
 #[derive(sqlx::FromRow)]
@@ -617,6 +618,7 @@ pub(crate) struct EventRow {
     correlation_id: Option<uuid::Uuid>,
     causation_id: Option<uuid::Uuid>,
     metadata: Option<serde_json::Value>,
+    causation_chain: Option<sqlx::types::Json<Vec<uuid::Uuid>>>,
 }
 
 impl EventRow {
@@ -633,19 +635,22 @@ impl EventRow {
 
 impl From<EventRow> for EventEnvelope {
     fn from(row: EventRow) -> Self {
-        let metadata =
-            if row.correlation_id.is_some() || row.causation_id.is_some() || row.metadata.is_some()
-            {
-                Some(event_sauce_core::EventMetadata {
-                    correlation_id: row.correlation_id,
-                    causation_id: row.causation_id,
-                    causation_chain: Vec::new(),
-                    timestamp: row.created_at,
-                    additional: row.metadata,
-                })
-            } else {
-                None
-            };
+        let causation_chain = row.causation_chain.map(|chain| chain.0).unwrap_or_default();
+        let metadata = if row.correlation_id.is_some()
+            || row.causation_id.is_some()
+            || row.metadata.is_some()
+            || !causation_chain.is_empty()
+        {
+            Some(event_sauce_core::EventMetadata {
+                correlation_id: row.correlation_id,
+                causation_id: row.causation_id,
+                causation_chain,
+                timestamp: row.created_at,
+                additional: row.metadata,
+            })
+        } else {
+            None
+        };
 
         EventEnvelope {
             id: row.event_id,
@@ -856,6 +861,41 @@ mod tests {
         let loaded = stream.next().await.unwrap().unwrap();
 
         assert_eq!(loaded.event_type, "UserCreated");
+    }
+
+    #[tokio::test]
+    async fn test_causation_chain_round_trips() {
+        let db = TestDatabase::new().await.unwrap();
+        let store = db.store();
+        let aggregate_id = Uuid::new_v4();
+        let stream_id = StreamId::new("User", aggregate_id);
+        let chain = vec![Uuid::new_v4(), Uuid::new_v4()];
+        let event = create_test_envelope("UserCreated", aggregate_id).with_metadata(
+            event_sauce_core::EventMetadata::new()
+                .with_causation_id(chain[1])
+                .with_causation_chain(chain.clone()),
+        );
+
+        store
+            .append(
+                stream_id.clone(),
+                vec![event],
+                AggregateVersion::initial(),
+                vec![],
+                false,
+            )
+            .await
+            .unwrap();
+
+        let mut stream = store
+            .load_stream(stream_id, AggregateVersion::initial())
+            .await
+            .unwrap();
+        let loaded = stream.next().await.unwrap().unwrap();
+        let metadata = loaded.metadata.expect("metadata is stored");
+
+        assert_eq!(metadata.causation_chain, chain);
+        assert_eq!(metadata.cascade_depth(), 2);
     }
 
     #[tokio::test]

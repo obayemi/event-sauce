@@ -252,6 +252,15 @@ impl PostgresEventStore {
             .iter()
             .map(|e| e.metadata.as_ref().and_then(|m| m.causation_id))
             .collect();
+        let causation_chains: Vec<Option<serde_json::Value>> = events
+            .iter()
+            .map(|e| {
+                e.metadata
+                    .as_ref()
+                    .filter(|m| !m.causation_chain.is_empty())
+                    .map(|m| serde_json::json!(m.causation_chain))
+            })
+            .collect();
         let metadatas: Vec<Option<serde_json::Value>> = events
             .iter()
             .map(|e| e.metadata.as_ref().and_then(|m| m.additional.clone()))
@@ -260,11 +269,12 @@ impl PostgresEventStore {
         let insert_query = format!(
             "INSERT INTO {events_table} (
                 event_id, aggregate_id, aggregate_type, event_type, event_version,
-                event_data, stream_version, created_by, correlation_id, causation_id, metadata
+                event_data, stream_version, created_by, correlation_id, causation_id, metadata,
+                causation_chain
             )
             SELECT * FROM UNNEST(
                 $1::uuid[], $2::uuid[], $3::text[], $4::text[], $5::bigint[],
-                $6::jsonb[], $7::bigint[], $8::uuid[], $9::uuid[], $10::uuid[], $11::jsonb[]
+                $6::jsonb[], $7::bigint[], $8::uuid[], $9::uuid[], $10::uuid[], $11::jsonb[], $12::jsonb[]
             )
             RETURNING id"
         );
@@ -281,6 +291,7 @@ impl PostgresEventStore {
             .bind(correlation_ids)
             .bind(causation_ids)
             .bind(metadatas)
+            .bind(causation_chains)
             .fetch_all(conn)
             .await;
 
