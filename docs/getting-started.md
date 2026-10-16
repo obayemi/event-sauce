@@ -367,9 +367,13 @@ Now that you understand the basics, explore:
 4. **[Projections Guide](projections.md)** - Build read models
 5. **[Claims Guide](claims.md)** - Enforce cross-aggregate uniqueness (e.g., unique emails)
 6. **[Audit Log Guide](audit-log.md)** - Query event history with actor tracking and causation tracing
-7. **Complete Examples** - See real-world applications:
+7. **[Commands](commands.md)** - Typed lifecycle-aware commands with automatic conflict retries
+8. **[Unit of Work](unit-of-work.md)** - Commit several aggregates atomically
+9. **Complete Examples** - See real-world applications:
    - **[postgres-quickstart.rs](../crates/event-sauce/examples/postgres-quickstart.rs)** - User and Order aggregates with init events, creation functions, and projections (recommended approach)
    - **[apply-event.rs](../crates/event-sauce/examples/apply-event.rs)** - Bank account with manual `ApplyEvent` trait implementation (for complex validation scenarios)
+   - **[commands.rs](../crates/event-sauce/examples/commands.rs)** - Typed commands run with `Repository::execute` (requires `memory` + `commands` + `event-sourcing`)
+   - **[unit-of-work.rs](../crates/event-sauce/examples/unit-of-work.rs)** - One command committing several aggregates atomically (requires `memory` + `unit-of-work`)
 
 ## Init Aggregates
 
@@ -439,6 +443,12 @@ async fn handle_increment_command<R: Repository<Counter>>(
     Ok(())
 }
 ```
+
+With the `commands` feature, the same handler is a `Command` run with
+`repo.execute(id, &cmd, &(), RetryPolicy::default())`, which also checks the
+lifecycle and retries concurrency conflicts (see [Commands](commands.md)). To
+commit several aggregates together, use a unit of work (see
+[Unit of Work](unit-of-work.md)).
 
 ### Using the Repository Pattern
 
