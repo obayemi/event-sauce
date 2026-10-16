@@ -44,9 +44,16 @@ commands = ["event-sauce-core/commands"]
 # re-export; the flag is all the facade adds.
 dependencies = ["event-sauce-core/dependencies"]
 # The unit-of-work storage contract for committing aggregates of several
-# persistence styles in one atomic write. Backend implementations land in a
-# later release; this flag only brings in the core contract today.
-unit-of-work = ["commands", "event-sourcing", "state-store", "event-sauce-core/unit-of-work"]
+# persistence styles in one atomic write, plus the in-memory and Postgres
+# `TransactionalStore`s that implement it.
+unit-of-work = [
+    "commands",
+    "event-sourcing",
+    "state-store",
+    "event-sauce-core/unit-of-work",
+    "event-sauce-memory?/unit-of-work",
+    "event-sauce-postgres?/unit-of-work",
+]
 full = [
     "macros",
     "memory",
