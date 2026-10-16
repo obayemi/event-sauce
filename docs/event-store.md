@@ -358,26 +358,41 @@ repo.save(&mut counter).await?;
 
 ### Event Sourcing Loop
 
-Typical service command handling pattern:
+A typed [`Command`](../crates/event-sauce-core/src/commands/mod.rs) (behind
+the `commands` feature) replaces the load/match/save loop above with one call
+to [`Repository::execute`](../crates/event-sauce-core/src/repository.rs),
+which also retries the whole command on a concurrency conflict:
 
 ```rust
+use event_sauce::{Command, CommandError, RetryPolicy, Root};
+
+enum CounterCommand {
+    Increment(i32),
+    Decrement(i32),
+}
+
+impl Command<Counter> for CounterCommand {
+    fn handle(
+        &self,
+        root: Root<Counter>,
+        _ctx: &(),
+    ) -> Result<Root<Counter>, CommandError<CounterError>> {
+        let mut root = root.active()?;
+        match self {
+            CounterCommand::Increment(amount) => root.increment(*amount)?,
+            CounterCommand::Decrement(amount) => root.decrement(*amount)?,
+        }
+        Ok(root.into())
+    }
+}
+
 async fn handle_counter_command(
     repo: &EventSourcedRepository<InMemoryEventStore, Counter>,
     counter_id: EntityId,
     command: CounterCommand,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Load aggregate
-    let mut counter: AggregateRoot<Counter> = repo.load(counter_id).await?;
-
-    // Run the aggregate command matching the service command
-    match command {
-        CounterCommand::Increment(amount) => counter.increment(amount)?,
-        CounterCommand::Decrement(amount) => counter.decrement(amount)?,
-        CounterCommand::Reset => counter.reset(),
-    }
-
-    // Save events
-    repo.save(&mut counter).await?;
+    repo.execute(counter_id, &command, &(), RetryPolicy::default())
+        .await?;
 
     Ok(())
 }
