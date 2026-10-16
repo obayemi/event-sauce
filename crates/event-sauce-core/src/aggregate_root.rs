@@ -22,6 +22,21 @@ pub(crate) struct PendingEvent<E> {
     pub metadata: Option<EventMetadata>,
 }
 
+impl<E> PendingEvent<E> {
+    /// Records an event with the actor and metadata it was applied with.
+    pub(crate) fn record(
+        event: E,
+        actor_id: Option<EntityId>,
+        metadata: Option<EventMetadata>,
+    ) -> Self {
+        Self {
+            event,
+            actor_id,
+            metadata,
+        }
+    }
+}
+
 /// Builds event envelopes from pending events, attaching actor and metadata.
 ///
 /// Shared by the event-sourced commit path and the state-stored save path.
@@ -295,11 +310,7 @@ impl<A: Aggregate> AggregateRoot<A> {
     pub fn apply<E: Into<A::Event>>(&mut self, event: E) -> Result<(), A::Error> {
         let event = event.into();
         EventApplicator::validate_only(&event, &self.entity)?;
-        self.dispatch_and_record(PendingEvent {
-            event,
-            actor_id: None,
-            metadata: None,
-        })
+        self.dispatch_and_record(PendingEvent::record(event, None, None))
     }
 
     /// Applies an event with actor tracking.
@@ -321,11 +332,7 @@ impl<A: Aggregate> AggregateRoot<A> {
     ) -> Result<(), A::Error> {
         let event = event.into();
         EventApplicator::validate_only(&event, &self.entity)?;
-        self.dispatch_and_record(PendingEvent {
-            event,
-            actor_id: Some(actor_id),
-            metadata: None,
-        })
+        self.dispatch_and_record(PendingEvent::record(event, Some(actor_id), None))
     }
 
     /// Applies an event with causation metadata.
@@ -349,11 +356,7 @@ impl<A: Aggregate> AggregateRoot<A> {
         event: E,
         metadata: EventMetadata,
     ) -> Result<(), A::Error> {
-        self.dispatch_and_record(PendingEvent {
-            event: event.into(),
-            actor_id: None,
-            metadata: Some(metadata),
-        })
+        self.dispatch_and_record(PendingEvent::record(event.into(), None, Some(metadata)))
     }
 
     /// Dispatches a pending event's inner event and, on success, records it.
@@ -531,11 +534,7 @@ impl<A: Aggregate> AggregateRoot<A> {
         Self {
             entity,
             version: AggregateVersion::new(1),
-            pending_events: vec![PendingEvent {
-                event,
-                actor_id,
-                metadata: None,
-            }],
+            pending_events: vec![PendingEvent::record(event, actor_id, None)],
             poisoned: false,
         }
     }
@@ -590,11 +589,7 @@ impl<A: Aggregate> AggregateRoot<A> {
         event.post_validate_delete(&state)?;
         let version = self.version.next();
         let mut pending = std::mem::take(&mut self.pending_events);
-        pending.push(PendingEvent {
-            event: event.into(),
-            actor_id,
-            metadata: None,
-        });
+        pending.push(PendingEvent::record(event.into(), actor_id, None));
         Ok(DeletedAggregateRoot::from_delete_with_pending(
             state, entity_id, version, pending, poisoned,
         ))
