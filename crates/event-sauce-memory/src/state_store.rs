@@ -4,6 +4,7 @@
 //! suitable for testing and development, including in-transaction projections
 //! running against an [`InMemoryProjectionContext`].
 
+use crate::expectations::check_expectations;
 use async_trait::async_trait;
 use event_sauce_core::{
     AggregateClaim, AggregateVersion, Error, EventEnvelope, Result, StateCommit, StateProjection,
@@ -284,12 +285,9 @@ impl InMemoryStateStore {
     /// untouched too, exactly as if `before_swap` had been just another
     /// state check.
     ///
-    /// An expectation for a stream this call also writes is checked against
-    /// the version that stream was at when the batch's *first* commit to it
-    /// was staged — the load-time version — mirroring the in-memory event
-    /// store's same rule for stream expectations: a write and an expectation
-    /// for the same stream must agree, or the disagreement itself is a
-    /// conflict. A missing row is at [`AggregateVersion::initial`]; a
+    /// Expectations follow the load-time rule of [`check_expectations`]: a
+    /// stream this call also writes is at the version its first commit was
+    /// staged from. A missing row is at [`AggregateVersion::initial`]; a
     /// deleted row is checked by its stored version like any other row,
     /// `is_deleted` plays no part in the comparison.
     ///
@@ -341,15 +339,12 @@ impl InMemoryStateStore {
             }
         }
 
-        for (stream_id, expected) in state_expectations {
-            let actual = load_versions
+        check_expectations(state_expectations, |stream_id| {
+            load_versions
                 .get(stream_id)
                 .copied()
-                .unwrap_or_else(|| staged.current_version(stream_id));
-            if actual != *expected {
-                return Err(Error::concurrency_conflict(*expected, actual));
-            }
-        }
+                .unwrap_or_else(|| staged.current_version(stream_id))
+        })?;
 
         before_swap()?;
 

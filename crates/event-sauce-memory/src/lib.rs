@@ -36,6 +36,8 @@ mod crypto_key_store;
 mod event_log;
 #[cfg(feature = "event-sourcing")]
 mod event_store;
+#[cfg(any(feature = "event-sourcing", feature = "state-store"))]
+mod expectations;
 #[cfg(feature = "state-store")]
 mod state_store;
 #[cfg(feature = "unit-of-work")]

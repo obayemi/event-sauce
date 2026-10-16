@@ -3,6 +3,7 @@
 //! Provides a fast, thread-safe in-memory implementation of `EventStore`
 //! suitable for testing and development.
 
+use crate::expectations::check_expectations;
 use async_trait::async_trait;
 use event_sauce_core::{
     AggregateVersion, Error, EventEnvelope, EventLogEntry, EventStore, Position, Result, Snapshot,
@@ -30,12 +31,9 @@ type GlobalEvents = Vec<(Position, Arc<EventEnvelope>)>;
 /// does not advance it), matching `append`'s existing behaviour for a
 /// single empty commit.
 ///
-/// An expectation is checked against the committed version of its stream,
-/// which for a stream the batch also writes is the version its *first*
-/// commit was prepared from — the load-time version — not the version later
-/// commits in the chain leave it at. A write and an expectation for the
-/// same stream therefore agree only when they were prepared from the same
-/// read; if they disagree, that disagreement is itself a conflict.
+/// Expectations follow the load-time rule of [`check_expectations`]: the
+/// batch never mutates `streams`, so the committed version is the load-time
+/// version.
 ///
 /// # Errors
 ///
@@ -67,15 +65,9 @@ fn check(
         next_required.insert(&commit.stream_id, leaves_at);
     }
 
-    for (stream_id, version) in expectations {
-        let current_version = committed_version(streams, stream_id);
-
-        if current_version != *version {
-            return Err(Error::concurrency_conflict(*version, current_version));
-        }
-    }
-
-    Ok(())
+    check_expectations(expectations, |stream_id| {
+        committed_version(streams, stream_id)
+    })
 }
 
 /// Appends every commit's events, assigning global positions in batch
