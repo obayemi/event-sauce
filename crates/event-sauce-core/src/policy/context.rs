@@ -231,9 +231,9 @@ impl<S: EventStore + 'static> PolicyContext<S> {
     ///
     /// All buffered commits go through a single
     /// [`append_batch`](EventStore::append_batch) call, so a handler that reacts
-    /// across several aggregates commits atomically on backends with real
-    /// transactions (e.g. `PostgreSQL`): the whole reaction succeeds or none of it
-    /// is persisted. On the in-memory backend the commits are applied per-stream.
+    /// across several aggregates commits atomically on every built-in backend:
+    /// the whole reaction succeeds or none of it is persisted — one transaction
+    /// on `PostgreSQL`, one locked critical section on the in-memory backend.
     ///
     /// # Errors
     ///

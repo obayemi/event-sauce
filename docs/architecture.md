@@ -328,7 +328,8 @@ pub trait EventStore: Send + Sync {
 
     // Multi-stream write — the consistency-boundary primitive behind
     // `Repository::save_all` and atomic policy reactions. The default loops
-    // `append` (NOT atomic); PostgreSQL overrides it with one transaction.
+    // `append` (NOT atomic); PostgreSQL overrides it with one transaction,
+    // and the in-memory backend with one locked critical section.
     async fn append_batch(&self, commits: Vec<StreamCommit>) -> Result<()>;
 
     // Highest position in the log (`Position::start()` if empty) — what a

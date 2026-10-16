@@ -238,10 +238,12 @@ pub trait Repository<A: Aggregate>: Send + Sync {
 
     /// Persists several aggregate roots as one logical write.
     ///
-    /// On backends with real transactions (e.g. `PostgreSQL`) the whole set
-    /// commits atomically: all aggregates are saved or none are. The in-memory
-    /// backends apply them per-aggregate (not atomic). Aggregates with no
-    /// pending changes are skipped.
+    /// The whole set commits atomically on every built-in backend — all
+    /// aggregates are saved or none are, whether `PostgreSQL`'s single
+    /// transaction or the in-memory store's one locked critical section. A
+    /// custom [`EventStore`](crate::EventStore) that keeps
+    /// [`append_batch`](crate::EventStore::append_batch)'s looping default is
+    /// not atomic. Aggregates with no pending changes are skipped.
     ///
     /// # Errors
     ///

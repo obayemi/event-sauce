@@ -32,9 +32,10 @@ use crate::{
 ///
 /// Mirrors the parameters of [`EventStore::append`] for one stream. A batch of
 /// `StreamCommit`s is passed to [`EventStore::append_batch`] so that several
-/// aggregates can be persisted together — atomically on backends that support
-/// it (e.g. `PostgreSQL`), or stream-by-stream on backends whose default
-/// implementation simply loops [`append`](EventStore::append).
+/// aggregates can be persisted together — atomically on both built-in
+/// backends (`PostgreSQL` and the in-memory store), or stream-by-stream on a
+/// backend that keeps [`append_batch`](EventStore::append_batch)'s default,
+/// which simply loops [`append`](EventStore::append).
 ///
 /// This is the consistency-boundary primitive behind atomic multi-aggregate
 /// policy reactions and [`Repository::save_all`](crate::Repository::save_all).
@@ -117,16 +118,18 @@ pub trait EventStore: Send + Sync {
     ///
     /// The default implementation simply loops [`append`](Self::append) over each
     /// commit, so it is **not** atomic: a partial failure leaves earlier commits
-    /// persisted. Backends with real transactions (e.g. `PostgreSQL`) override this
-    /// to run the whole batch in a single transaction — all commits succeed or
-    /// none do. The in-memory backend keeps the per-stream default.
+    /// persisted. Both built-in backends override this: `PostgreSQL` runs the
+    /// whole batch in a single transaction, and the in-memory backend checks
+    /// every commit under one pair of write locks before applying any of
+    /// them — either way, all commits succeed or none do.
     ///
     /// # Errors
     ///
     /// Returns `Error::ConcurrencyConflict` if any commit's expected version
     /// doesn't match, or `Error::ClaimConflict` if a claim is already held by
-    /// another aggregate. On atomic backends the whole batch rolls back; on the
-    /// looping default, commits before the failing one are already persisted.
+    /// another aggregate. On atomic backends the whole batch rolls back; a
+    /// custom backend that keeps the looping default instead leaves commits
+    /// before the failing one persisted.
     async fn append_batch(&self, commits: Vec<StreamCommit>) -> Result<()> {
         for commit in commits {
             self.append(

@@ -6,11 +6,11 @@
 //! credit is lost would lose money.
 //!
 //! `Repository::save_all` persists several aggregates through a single
-//! `EventStore::append_batch`. On the PostgreSQL backend that is one transaction
-//! (all-or-nothing); the in-memory backend used here applies them per-stream, so
-//! this example demonstrates the API shape and the happy path. See
-//! `docs/event-store.md` ("Multi-Aggregate Atomic Writes") for the consistency
-//! guarantees per backend.
+//! `EventStore::append_batch`, which is atomic on every built-in backend
+//! (all-or-nothing) — one transaction on PostgreSQL, one locked critical
+//! section on the in-memory backend used here. See `docs/event-store.md`
+//! ("Multi-Aggregate Atomic Writes") for the consistency guarantees per
+//! backend.
 //!
 //! Run with:
 //! ```bash

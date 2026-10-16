@@ -491,14 +491,19 @@ repo.save_all(&mut [&mut from, &mut to]).await?;
 `append_batch` is the consistency-boundary primitive: it takes a `Vec<StreamCommit>`
 (one per stream) and writes them together.
 
+Both built-in backends are atomic: a `ConcurrencyConflict` (or claim conflict)
+on any stream aborts the entire write — no aggregate is left partially
+applied.
+
 - **PostgreSQL** runs the whole batch in **one transaction** under a single append
-  serialization lock: all commits succeed or the whole batch rolls back. A
-  `ConcurrencyConflict` (or claim conflict) on any stream aborts the entire write —
-  no aggregate is left partially applied.
-- **In-memory** keeps the per-stream default: `append_batch` simply loops `append`,
-  so it is **not** transactional. A failure mid-batch leaves earlier streams
-  written. Use it for the API shape and single-process happy path; rely on the
-  PostgreSQL backend when atomic multi-aggregate writes matter.
+  serialization lock: all commits succeed or the whole batch rolls back.
+- **In-memory** checks every commit's version under one pair of write locks
+  before applying any of them, so either every commit in the batch is applied
+  or none are — no separate locking or transaction mechanism, but the same
+  all-or-nothing guarantee.
+
+A custom `EventStore` that keeps `append_batch`'s looping default is **not**
+atomic: a failure mid-batch leaves earlier streams written.
 
 Each aggregate's pending events are cleared as it is prepared, and aggregates with
 no pending events are skipped.

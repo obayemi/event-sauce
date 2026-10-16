@@ -1,12 +1,13 @@
 //! Integration test for `Repository::save_all` (M3-L1).
 //!
 //! `save_all` prepares several aggregates and persists them via a single
-//! `EventStore::append_batch`. On the in-memory backend the default
-//! `append_batch` loops `append` per stream, so this test asserts the API shape
-//! and the happy path (all aggregates persisted on success). It deliberately
-//! does NOT assert rollback: the in-memory default is per-stream, not atomic —
-//! only the PostgreSQL override is transactional (see the postgres crate's
-//! `test_append_batch_is_atomic` / `test_flush_multi_aggregate_is_atomic`).
+//! `EventStore::append_batch`, which the in-memory backend commits
+//! atomically (see `event_sauce_memory::event_store`'s own
+//! `test_append_batch_is_atomic_across_streams` for the rollback proof, and
+//! the postgres crate's `test_append_batch_is_atomic` /
+//! `test_flush_multi_aggregate_is_atomic` for the PostgreSQL equivalent).
+//! This test covers the API shape and the happy path (all aggregates
+//! persisted on success, clean aggregates skipped).
 
 use event_sauce_core::{
     aggregate_command, define_events, Aggregate, AggregateError, Entity, EntityId, EventStore,
