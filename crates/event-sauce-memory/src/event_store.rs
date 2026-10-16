@@ -6,12 +6,109 @@
 use async_trait::async_trait;
 use event_sauce_core::{
     AggregateVersion, Error, EventEnvelope, EventLogEntry, EventStore, Position, Result, Snapshot,
-    SnapshotConfig, StreamId,
+    SnapshotConfig, StreamCommit, StreamId,
 };
 use futures::stream::{self, Stream};
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
+
+/// Validates and applies a batch of [`StreamCommit`]s against the event
+/// store's already-locked `streams`/`global_events` state, so a whole batch
+/// can be checked before anything in it is mutated — the batch either fully
+/// applies or leaves the state untouched.
+///
+/// Built once per [`EventStore::append_batch`] call over the write-locked
+/// maps (the same locks a single [`EventStore::append`] takes), so a later
+/// slice that must commit event streams and in-memory projected state
+/// together under one critical section can drive the same check/apply split
+/// without taking its own, separate locks.
+struct CommitGuard<'a> {
+    streams: &'a mut HashMap<StreamId, Vec<Arc<EventEnvelope>>>,
+    global_events: &'a mut Vec<(Position, Arc<EventEnvelope>)>,
+}
+
+impl<'a> CommitGuard<'a> {
+    fn new(
+        streams: &'a mut HashMap<StreamId, Vec<Arc<EventEnvelope>>>,
+        global_events: &'a mut Vec<(Position, Arc<EventEnvelope>)>,
+    ) -> Self {
+        Self {
+            streams,
+            global_events,
+        }
+    }
+
+    /// Validates every commit's `expected_version` against the stream's
+    /// current length, without mutating anything.
+    ///
+    /// Commits to the same stream within the batch chain: a later commit's
+    /// `expected_version` is checked against the version the previous commit
+    /// to that stream in this batch leaves it at, not against the stream's
+    /// currently committed version — mirroring the PostgreSQL backend's
+    /// `plan_version_chain_checks`. An empty-events commit still has its
+    /// version checked and still occupies its slot in the chain (it just
+    /// does not advance it), matching `append`'s existing behaviour for a
+    /// single empty commit.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::ConcurrencyConflict` on the first commit whose
+    /// `expected_version` doesn't match.
+    fn check(&self, commits: &[StreamCommit]) -> Result<()> {
+        let mut next_required: HashMap<&StreamId, AggregateVersion> = HashMap::new();
+
+        for commit in commits {
+            let current_version = next_required
+                .get(&commit.stream_id)
+                .copied()
+                .unwrap_or_else(|| Self::committed_version(self.streams, &commit.stream_id));
+
+            if current_version != commit.expected_version {
+                return Err(Error::concurrency_conflict(
+                    commit.expected_version,
+                    current_version,
+                ));
+            }
+
+            #[allow(clippy::cast_possible_wrap)]
+            let leaves_at = AggregateVersion::new(
+                commit.expected_version.as_i64() + commit.events.len() as i64,
+            );
+            next_required.insert(&commit.stream_id, leaves_at);
+        }
+
+        Ok(())
+    }
+
+    /// Appends every commit's events, assigning global positions in batch
+    /// order. Must only run after [`Self::check`] accepted the same batch —
+    /// it does not re-validate versions.
+    fn apply(&mut self, commits: Vec<StreamCommit>) {
+        for commit in commits {
+            let stream = self.streams.entry(commit.stream_id).or_default();
+            for event in commit.events {
+                let shared = Arc::new(event);
+                stream.push(Arc::clone(&shared));
+                #[allow(clippy::cast_possible_wrap)]
+                let position = Position::new(self.global_events.len() as i64 + 1);
+                self.global_events.push((position, shared));
+            }
+        }
+    }
+
+    #[allow(clippy::cast_possible_wrap)]
+    fn committed_version(
+        streams: &HashMap<StreamId, Vec<Arc<EventEnvelope>>>,
+        stream_id: &StreamId,
+    ) -> AggregateVersion {
+        streams
+            .get(stream_id)
+            .map_or(AggregateVersion::initial(), |stream| {
+                AggregateVersion::new(stream.len() as i64)
+            })
+    }
+}
 
 /// In-memory event store for testing and development.
 ///
@@ -403,46 +500,41 @@ impl EventStore for InMemoryEventStore {
         stream_id: StreamId,
         events: Vec<EventEnvelope>,
         expected_version: AggregateVersion,
-        _claims: Vec<event_sauce_core::AggregateClaim>,
-        _clear_claims: bool,
+        claims: Vec<event_sauce_core::AggregateClaim>,
+        clear_claims: bool,
     ) -> Result<()> {
-        // Append events to store within a scope to ensure locks are released
-        {
-            // Acquiring both write locks together gives this backend the same
-            // ordering guarantee the postgres backend enforces with a
-            // transaction-scoped advisory lock: a global position is assigned and
-            // published under the same exclusive critical section, so once an
-            // event with global position N is visible to a reader, all events
-            // with position < N are already visible. There is no window where a
-            // higher position commits before a lower one.
-            let mut streams = self.inner.streams.write();
-            let mut global_events = self.inner.global_events.write();
+        self.append_batch(vec![StreamCommit {
+            stream_id,
+            events,
+            expected_version,
+            claims,
+            clear_claims,
+        }])
+        .await
+    }
 
-            // Get current stream
-            let stream = streams.entry(stream_id.clone()).or_default();
+    /// Checks and applies every commit under one pair of write locks, so the
+    /// batch is atomic: either every commit's version checks out and all of
+    /// them are applied, or the first conflict is returned and the store is
+    /// left exactly as it was — no earlier commit in the batch survives a
+    /// later one's rejection.
+    ///
+    /// Acquiring both write locks together gives this backend the same
+    /// ordering guarantee the PostgreSQL backend enforces with a
+    /// transaction-scoped advisory lock: a global position is assigned and
+    /// published under the same exclusive critical section, so once an event
+    /// with global position N is visible to a reader, all events with
+    /// position < N are already visible.
+    ///
+    /// Claims are ignored, as [`Self::append`] has always done — this
+    /// backend has no claim store.
+    async fn append_batch(&self, commits: Vec<StreamCommit>) -> Result<()> {
+        let mut streams = self.inner.streams.write();
+        let mut global_events = self.inner.global_events.write();
 
-            // Check version for optimistic concurrency control
-            #[allow(clippy::cast_possible_wrap)]
-            let current_version = AggregateVersion::new(stream.len() as i64);
-            if current_version != expected_version {
-                return Err(Error::concurrency_conflict(
-                    expected_version,
-                    current_version,
-                ));
-            }
-
-            // Append events: wrap each in Arc once and share between
-            // per-stream and global views, avoiding the second envelope clone.
-            // Assign a 1-based global position inside the write lock so position
-            // order matches insertion order.
-            for event in events {
-                let shared = Arc::new(event);
-                stream.push(Arc::clone(&shared));
-                #[allow(clippy::cast_possible_wrap)]
-                let position = Position::new(global_events.len() as i64 + 1);
-                global_events.push((position, shared));
-            }
-        } // Locks are dropped here
+        let mut guard = CommitGuard::new(&mut streams, &mut global_events);
+        guard.check(&commits)?;
+        guard.apply(commits);
 
         Ok(())
     }
@@ -545,7 +637,8 @@ impl EventStore for InMemoryEventStore {
 #[cfg(test)]
 mod tests {
     use event_sauce_core::{
-        AggregateVersion, Error, EventEnvelope, EventStore, Position, Snapshot, StreamId,
+        AggregateVersion, Error, EventEnvelope, EventStore, Position, Snapshot, StreamCommit,
+        StreamId,
     };
     use futures::StreamExt;
     use serde_json::json;
@@ -1300,8 +1393,6 @@ mod tests {
         assert!(store2.checkpoint_store().is_some());
     }
 
-    use event_sauce_core::StreamCommit;
-
     /// `append_batch` must be atomic: when a later commit in the batch
     /// conflicts, no earlier commit may be left persisted. Mirrors the
     /// PostgreSQL backend's `test_append_batch_is_atomic`.
@@ -1469,13 +1560,13 @@ mod tests {
     /// `load_stream`/`stream_all` reporting exactly the model's contents from
     /// every offset (not just the start), and must assign dense, strictly
     /// increasing global positions. Every op runs through
-    /// [`EventStore::append_batch`], whose in-memory default loops
-    /// [`EventStore::append`] and stops at the first rejected commit — a
-    /// batch of one sub-commit exercises `append` itself, and a longer batch
-    /// exercises that stop-on-first-failure (non-atomic) semantics.
+    /// [`EventStore::append_batch`], which checks every commit in the batch
+    /// before applying any of them — a batch of one sub-commit exercises
+    /// `append` itself, and a longer batch exercises that atomic-rollback
+    /// semantics: a batch condemned by any of its sub-commits leaves the
+    /// model, and the store, exactly as they were before it ran.
     mod proptests {
         use super::*;
-        use event_sauce_core::StreamCommit;
         use proptest::prelude::*;
         use proptest::test_runner::TestCaseError;
         use std::sync::LazyLock;
@@ -1592,12 +1683,16 @@ mod tests {
                                     "expected a concurrency conflict, got {error:?}"
                                 )));
                             }
-                        } else if let Err(error) = result {
-                            return Err(TestCaseError::fail(format!(
-                                "expected the batch to be accepted, got {error:?}"
-                            )));
+                            // Atomic rollback: a condemned batch applies NONE of
+                            // its sub-commits, so the model stays as it was.
+                        } else {
+                            if let Err(error) = result {
+                                return Err(TestCaseError::fail(format!(
+                                    "expected the batch to be accepted, got {error:?}"
+                                )));
+                            }
+                            model = tentative;
                         }
-                        model = tentative;
                     }
 
                     for (stream, stream_id) in stream_ids.iter().enumerate() {
