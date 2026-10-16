@@ -74,6 +74,42 @@ pub(super) fn plan_version_chain_checks(
     Ok(needs_db_check)
 }
 
+/// A batch of stream commits ready to be written: no-op commits are
+/// filtered out and the version prechecks it still needs are planned.
+///
+/// Planning is a pure, I/O-free step shared by
+/// [`PostgresEventStore::append_batch`] and
+/// [`TransactionalStore::commit_atomic`](event_sauce_core::TransactionalStore::commit_atomic),
+/// so a doomed or empty batch is rejected before either opens a
+/// transaction.
+pub(crate) struct PlannedBatch {
+    commits: Vec<event_sauce_core::StreamCommit>,
+    precheck_indices: Vec<usize>,
+}
+
+impl PlannedBatch {
+    /// Filters out no-op commits and computes [`plan_version_chain_checks`]'s
+    /// precheck plan for the remainder.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::ConcurrencyConflict` if the batch's version chain is
+    /// inconsistent (see [`plan_version_chain_checks`]).
+    pub(crate) fn plan(commits: Vec<event_sauce_core::StreamCommit>) -> Result<Self> {
+        let commits: Vec<_> = commits.into_iter().filter(|c| !is_noop_commit(c)).collect();
+        let precheck_indices = plan_version_chain_checks(&commits)?;
+        Ok(Self {
+            commits,
+            precheck_indices,
+        })
+    }
+
+    /// Whether the batch holds no commit to write.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.commits.is_empty()
+    }
+}
+
 impl PostgresEventStore {
     /// Reads the current committed stream version through `executor`, which
     /// is either the pool (for a plain read, see [`Self::get_version`]) or an
@@ -293,25 +329,18 @@ impl PostgresEventStore {
     /// share a transaction with other work (e.g. a state-store write in the
     /// same commit).
     ///
-    /// `precheck_indices` must be exactly
-    /// [`plan_version_chain_checks`]`(commits)`'s result: the indices of the
-    /// commits whose stream is seen here for the first time and so still
-    /// need [`Self::precheck_version`]. Computing it is a pure, I/O-free
-    /// step the caller runs before opening the transaction `conn` belongs
-    /// to, so a doomed batch is rejected before any connection is used.
-    ///
     /// Takes the append serialization lock ONCE for the whole batch if any
     /// commit allocates ids, holding it across every stream so insert order
     /// equals commit order for the batch (see [`Self::acquire_append_lock`]).
     pub(crate) async fn write_streams_on(
         &self,
         conn: &mut PgConnection,
-        commits: &[event_sauce_core::StreamCommit],
-        precheck_indices: &[usize],
+        batch: &PlannedBatch,
     ) -> Result<()> {
+        let commits = &batch.commits;
         let events_table = self.qualify_table("events");
 
-        for &index in precheck_indices {
+        for &index in &batch.precheck_indices {
             let commit = &commits[index];
             Self::precheck_version(
                 conn,
@@ -347,26 +376,6 @@ impl PostgresEventStore {
         self.notify_inserted(conn, max_inserted).await?;
 
         Ok(())
-    }
-
-    /// Filters out no-op commits and computes [`plan_version_chain_checks`]'s
-    /// precheck plan for the remainder: the pure, I/O-free preparation step
-    /// shared by [`Self::append_batch`] and
-    /// [`TransactionalStore::commit_atomic`](event_sauce_core::TransactionalStore::commit_atomic),
-    /// so a doomed or empty batch is rejected before either one opens a
-    /// transaction.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Error::ConcurrencyConflict` if the batch's version chain is
-    /// inconsistent (see [`plan_version_chain_checks`]).
-    pub(crate) fn prepare_batch(
-        commits: Vec<event_sauce_core::StreamCommit>,
-    ) -> Result<(Vec<event_sauce_core::StreamCommit>, Vec<usize>)> {
-        let commits: Vec<event_sauce_core::StreamCommit> =
-            commits.into_iter().filter(|c| !is_noop_commit(c)).collect();
-        let precheck_indices = plan_version_chain_checks(&commits)?;
-        Ok((commits, precheck_indices))
     }
 
     /// Takes the append serialization lock on `conn`'s transaction for a

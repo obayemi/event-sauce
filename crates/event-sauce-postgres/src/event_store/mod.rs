@@ -12,6 +12,7 @@ use futures::TryStreamExt;
 use sqlx::PgPool;
 
 mod append;
+pub(crate) use append::PlannedBatch;
 mod builder;
 mod migrate;
 
@@ -376,8 +377,8 @@ impl EventStore for PostgresEventStore {
     /// savepoint-based recovery resolves a same-value race there to a typed
     /// `ClaimConflict` for the loser.
     async fn append_batch(&self, commits: Vec<event_sauce_core::StreamCommit>) -> Result<()> {
-        let (commits, precheck_indices) = Self::prepare_batch(commits)?;
-        if commits.is_empty() {
+        let batch = PlannedBatch::plan(commits)?;
+        if batch.is_empty() {
             return Ok(());
         }
 
@@ -387,8 +388,7 @@ impl EventStore for PostgresEventStore {
             .await
             .map_err(|e| Error::backend("Failed to start transaction", e))?;
 
-        self.write_streams_on(&mut tx, &commits, &precheck_indices)
-            .await?;
+        self.write_streams_on(&mut tx, &batch).await?;
 
         tx.commit()
             .await

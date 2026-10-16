@@ -15,7 +15,7 @@ use event_sauce_core::{
 };
 use uuid::Uuid;
 
-use crate::event_store::PostgresEventStore;
+use crate::event_store::{PlannedBatch, PostgresEventStore};
 use crate::state_store::PostgresStateStore;
 
 /// Pairs a [`PostgresEventStore`] and a [`PostgresStateStore`] that share one
@@ -172,7 +172,7 @@ impl PostgresTransactionalStore {
             mut state_expectations,
         } = commit;
 
-        let (stream_commits, precheck_indices) = PostgresEventStore::prepare_batch(stream_writes)?;
+        let batch = PlannedBatch::plan(stream_writes)?;
 
         state_writes.sort_by_key(|write| sort_key(&write.state.stream_id()));
         stream_expectations.sort_by_key(|(stream_id, _)| sort_key(stream_id));
@@ -185,7 +185,7 @@ impl PostgresTransactionalStore {
             .await
             .map_err(|e| Error::backend("Failed to start transaction", e))?;
 
-        if !stream_commits.is_empty() || !stream_expectations.is_empty() {
+        if !batch.is_empty() || !stream_expectations.is_empty() {
             self.events.acquire_append_lock_for(&mut tx).await?;
         }
 
@@ -201,9 +201,7 @@ impl PostgresTransactionalStore {
                 .await?;
         }
 
-        self.events
-            .write_streams_on(&mut tx, &stream_commits, &precheck_indices)
-            .await?;
+        self.events.write_streams_on(&mut tx, &batch).await?;
 
         for commit in state_writes {
             self.states.write_commit_on(&mut tx, commit).await?;
