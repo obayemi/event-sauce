@@ -210,6 +210,26 @@ explicitly rather than gated behind a major version bump.
   outright, so it has no `'done'` rows to accumulate.
 - `aggregate_command!` — the new name of `command_handler!`, saying that it
   generates aggregate commands rather than a service command handler.
+- `commands` feature — `Command<A, Ctx = ()>`, a typed, lifecycle-aware
+  command handler; `Root<A>`, an aggregate at whichever of its three
+  lifecycle states (`Missing`/`Active`/`Deleted`) a command needs to match
+  on or narrow with `?`; `Lifecycle` and `CommandError<E>`, turning a
+  lifecycle mismatch into a typed error instead of a panic or a silent
+  no-op; and `RetryPolicy`, the attempt count and backoff a retry loop runs
+  on.
+- `Repository::execute` — runs a `Command` against an aggregate's current
+  lifecycle state and saves wherever it leaves it, retrying the whole
+  load/handle/save cycle on a concurrency conflict up to a `RetryPolicy`'s
+  attempt budget.
+- `unit-of-work` feature — `UnitOfWorkStore`, `UnitOfWork`,
+  `UnitOfWorkCommand` and `Tracked`: a command that loads, creates and
+  changes any mix of event-sourced and state-stored aggregates, committed
+  in one atomic `TransactionalStore::commit_atomic` call that also asserts
+  every aggregate the command only read is still at the version it loaded,
+  retrying the whole command on a concurrency conflict. `InMemoryTransactionalStore`
+  and `PostgresTransactionalStore` implement `TransactionalStore` for the
+  two built-in backends (the Postgres one requires both stores to share one
+  database).
 
 ### Deprecated
 
@@ -220,6 +240,10 @@ explicitly rather than gated behind a major version bump.
 
 ### Fixed
 
+- `InMemoryEventStore::append_batch` is now atomic: every commit's expected
+  version is checked under one pair of write locks before any commit in the
+  batch is applied, so a batch that fails partway leaves every stream
+  untouched instead of persisting the commits that came before the failure.
 - `PolicyRunner::process_pending` now drains events in bounded
   `EventStore::fetch_batch` calls (configurable via
   `PolicyRunner::with_batch_size`, default 500) instead of holding one
@@ -293,6 +317,8 @@ explicitly rather than gated behind a major version bump.
 
 ### Changed
 
+- `Repository::modify` is now built on `Repository::execute` internally;
+  its signature and behaviour are unchanged.
 - Postgres appends hold the global append-serialization lock for less of
   their critical section.
 - The policy dispatcher batches its checkpoint writes per fetched batch (up

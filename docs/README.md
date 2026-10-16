@@ -11,10 +11,12 @@ events.
 
 - **[Getting Started Guide](getting-started.md)** - Start here if you're new to event-sauce or event-driven modeling
 - **[State Storage](state-storage.md)** - Choosing a persistence style: what each mode guarantees, in-transaction projections, and the transactional outbox
+- **[Unit of Work](unit-of-work.md)** - Committing aggregates of several persistence styles atomically in one command
 
 ## Core Concepts
 
 - **[Aggregates](aggregates.md)** - Business entities and consistency boundaries
+- **[Commands](commands.md)** - Typed, lifecycle-aware command handling with `Command`, `Root` and `Repository::execute`
 - **[Events](events.md)** - Domain events and event modeling
 - **[Validation](validation.md)** - Event validation and business rules
 - **[Claims](claims.md)** - Cross-aggregate uniqueness constraints (e.g., unique emails)
@@ -51,6 +53,8 @@ The [`../crates/event-sauce/examples/`](../crates/event-sauce/examples/) directo
 9. **[state-stored-order.rs](../crates/event-sauce/examples/state-stored-order.rs)** - One codebase, two persistence styles: the same aggregate against both `EventStore` and `StateStore` (requires `memory` + `state-store` + `event-sourcing` features)
 10. **[postgres-quickstart.rs](../crates/event-sauce/examples/postgres-quickstart.rs)** - Full-featured example with typed aggregate IDs, projections, and the PostgreSQL backend (requires `postgres` + `crypto` features; needs Docker for testcontainers)
 11. **[projection-worker.rs](../crates/event-sauce/examples/projection-worker.rs)** - Running a postgres-backed projection in its own process, alongside other workers (requires `postgres` feature; needs Docker)
+12. **[commands.rs](../crates/event-sauce/examples/commands.rs)** - Typed lifecycle-aware commands run with `Repository::execute` (requires `memory` + `commands` features)
+13. **[unit-of-work.rs](../crates/event-sauce/examples/unit-of-work.rs)** - One atomic commit across an event-sourced order and a state-stored product (requires `memory` + `unit-of-work` features)
 
 ## Quick Links
 
