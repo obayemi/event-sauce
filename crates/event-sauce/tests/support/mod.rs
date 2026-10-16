@@ -220,6 +220,10 @@ impl<T: TransactionalStore + 'static> UnitOfWorkCommand<T> for PlaceOrder {
             unit_price,
         )
     }
+
+    fn name(&self) -> Option<&str> {
+        Some("PlaceOrder")
+    }
 }
 
 pub struct RivalRepricing<T: TransactionalStore> {

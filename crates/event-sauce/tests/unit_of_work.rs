@@ -156,3 +156,44 @@ async fn transferring_stock_to_the_same_product_is_already_checked_out() {
     assert!(matches!(error, UnitOfWorkError::AlreadyCheckedOut { id, .. } if id == product_id));
     assert_eq!(world.product(product_id).await.stock, 10);
 }
+
+#[tokio::test]
+async fn a_unit_of_work_tags_every_stored_event_with_its_name_and_one_correlation_id() {
+    use event_sauce::{AggregateVersion, StreamId};
+    use futures::StreamExt;
+
+    let world = World::new();
+    let product_id = world.list_product(250, 10).await;
+    let order_id = EntityId::new();
+    let place = PlaceOrder {
+        order_id,
+        product_id,
+        quantity: 2,
+    };
+
+    world
+        .uow
+        .execute(&place, &(), RetryPolicy::default())
+        .await
+        .unwrap();
+
+    let stream = world
+        .events
+        .load_stream(
+            StreamId::new("Order", order_id.as_uuid()),
+            AggregateVersion::initial(),
+        )
+        .await
+        .unwrap();
+    let metadata: Vec<_> = stream
+        .map(|envelope| envelope.unwrap().metadata.expect("events are tagged"))
+        .collect()
+        .await;
+    assert!(!metadata.is_empty());
+    let correlation_id = metadata[0].correlation_id.clone();
+    assert!(correlation_id.is_some());
+    for metadata in &metadata {
+        assert_eq!(metadata.correlation_id, correlation_id);
+        assert_eq!(metadata.command.as_deref(), Some("PlaceOrder"));
+    }
+}

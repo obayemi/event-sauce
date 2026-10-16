@@ -8,6 +8,7 @@ use std::num::NonZeroU32;
 use super::erased::{EventSourced, Persistence, Registered, Registration, StateStored};
 use super::{TransactionalStore, UnitOfWork, UnitOfWorkCommand, UnitOfWorkError};
 use crate::commands::run_with_retry;
+use crate::event_context::{execution_context, WithEventContextExt};
 use crate::{Aggregate, RetryPolicy};
 
 /// The outcome of a successful [`UnitOfWorkStore::execute`].
@@ -182,6 +183,7 @@ impl<T: TransactionalStore + 'static> UnitOfWorkStore<T> {
             },
             UnitOfWorkError::is_concurrency_conflict,
         )
+        .with_event_context(execution_context(command.name()))
         .await?;
         handled?;
         Ok(UnitOfWorkExecuted { attempts })

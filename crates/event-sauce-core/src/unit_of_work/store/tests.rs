@@ -235,3 +235,84 @@ fn a_unit_of_work_command_reports_no_name_unless_it_overrides_it() {
     assert_eq!(NamedLeakless.name(), Some("named"));
     assert_eq!(Leak(EntityId::new()).name(), None);
 }
+
+struct Retag<'s> {
+    stores: &'s Stores,
+    entity: EntityId,
+    tally: EntityId,
+    interfere: u32,
+    attempts: AtomicU32,
+    tagged: std::sync::Mutex<Vec<(Option<String>, Option<String>)>>,
+}
+
+#[async_trait]
+impl UnitOfWorkCommand<Stores> for Retag<'_> {
+    async fn handle(&self, uow: &UnitOfWork<'_, Stores>, _ctx: &()) -> Result<(), UnitOfWorkError> {
+        let attempt = self.attempts.fetch_add(1, Ordering::SeqCst) + 1;
+        let mut entity = uow.load::<SimpleTestEntity>(self.entity).await?;
+        entity.apply(SimpleTestEvent::Updated { value: 9 })?;
+        let mut tally = uow.load::<Tally>(self.tally).await?;
+        tally.apply(TallyEvent::Added { amount: 1 })?;
+        let tally_metadata = tally.pending_events_with_actors()[0].metadata.clone();
+        let entity_metadata = entity.pending_events_with_actors()[0].metadata.clone();
+        self.tagged.lock().unwrap().push((
+            entity_metadata.and_then(|m| m.correlation_id),
+            tally_metadata.and_then(|m| m.command),
+        ));
+        if attempt <= self.interfere {
+            self.stores.update_entity(self.entity, 1).await;
+        }
+        Ok(())
+    }
+
+    fn name(&self) -> Option<&str> {
+        Some("retag")
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn every_aggregate_of_a_unit_of_work_shares_one_correlation_id_across_retries() {
+    let store = uow_store();
+    let entity = store.store().seed_entity(1).await;
+    let tally = store.store().seed_tally(0).await;
+    let command = Retag {
+        stores: store.store(),
+        entity,
+        tally,
+        interfere: 1,
+        attempts: AtomicU32::new(0),
+        tagged: std::sync::Mutex::new(Vec::new()),
+    };
+
+    let executed = store
+        .execute(&command, &(), RetryPolicy::default())
+        .await
+        .unwrap();
+
+    assert_eq!(executed.attempts.get(), 2);
+    let tagged = command.tagged.lock().unwrap().clone();
+    let id = tagged[0].0.clone().expect("a correlation id is generated");
+    assert!(tagged
+        .iter()
+        .all(|(correlation, command)| *correlation == Some(id.clone())
+            && command.as_deref() == Some("retag")));
+    let committed = store.store().events.get_events().pop().unwrap();
+    let metadata = committed.metadata.expect("the committed event is tagged");
+    assert_eq!(metadata.correlation_id, Some(id));
+    assert_eq!(metadata.command.as_deref(), Some("retag"));
+}
+
+#[tokio::test]
+async fn the_execution_context_does_not_outlive_the_unit_of_work() {
+    let store = uow_store();
+    let guard = store.store().seed_entity(1).await;
+    let tally = store.store().seed_tally(0).await;
+    let command = AddIfPositive::new(store.store(), guard, tally, 0);
+
+    store
+        .execute(&command, &(), RetryPolicy::default())
+        .await
+        .unwrap();
+
+    assert_eq!(crate::event_context::current_snapshot(), None);
+}
