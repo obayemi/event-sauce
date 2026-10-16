@@ -331,4 +331,24 @@ mod tests {
         vault.lock(&operator).unwrap();
         assert!(vault.empty("no longer needed".to_string()).is_err());
     }
+
+    #[test]
+    fn event_context_surface_compiles_and_runs() {
+        let attempt = 2_u32;
+        event_sauce::event_context!().in_scope(|| ());
+        event_sauce::event_context!(root).in_scope(|| ());
+        event_sauce::event_context!(
+            root,
+            tenant = "acme",
+            correlation_id = "req-1",
+            region = "eu",
+            "http.method" = "GET",
+            user = %attempt,
+            "a.b" = %attempt,
+            attempt,
+            %attempt,
+        )
+        .in_scope(|| ());
+        event_sauce::event_context!(correlation_id = "req-2", region = "eu").in_scope(|| ());
+    }
 }

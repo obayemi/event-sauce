@@ -3,6 +3,7 @@
 //! This module provides declarative macros that simplify common patterns in event sourcing:
 //! - [`aggregate_command!`](crate::aggregate_command) - automatic aggregate command method generation
 //! - [`define_events!`](crate::define_events) - declarative event enum and trait generation
+//! - [`event_context!`](crate::event_context!) - event context construction
 //!
 //! Each family lives in its own submodule. `spec!` lives beside
 //! [`specification`](crate::specification) and `policy!` beside
@@ -10,4 +11,5 @@
 
 mod aggregate_command;
 mod define_events;
+mod event_context;
 mod validation;

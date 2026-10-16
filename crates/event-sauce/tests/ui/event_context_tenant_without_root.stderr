@@ -1,0 +1,7 @@
+error: `tenant` is only valid after `root`: use `event_context!(root, tenant = ..)`
+ --> tests/ui/event_context_tenant_without_root.rs:2:13
+  |
+2 |     let _ = event_sauce::event_context!(tenant = "acme");
+  |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the macro `$crate::event_context` which comes from the expansion of the macro `event_sauce::event_context` (in Nightly builds, run with -Z macro-backtrace for more info)
