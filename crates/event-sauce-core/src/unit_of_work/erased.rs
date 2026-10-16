@@ -6,7 +6,7 @@ use std::any::Any;
 
 use async_trait::async_trait;
 
-use super::identity_map::{downcast, Held, Returned};
+use super::identity_map::{downcast, Held, Origin, Returned};
 use super::{AtomicCommit, Expectation, PreparedWrite, StreamWrite, TransactionalStore};
 use crate::commit_source::CommitSource;
 use crate::{
@@ -178,13 +178,13 @@ where
                 self.persistence.prepare_deleted(store, &root).await?
             }
         };
-        Ok(match (write, returned.loaded) {
+        Ok(match (write, returned.origin) {
             (Some(write), _) => commit.push_write(write),
-            (None, Some(version)) => {
+            (None, Origin::Loaded(version)) => {
                 commit.push_expectation(self.persistence.expect(returned.key.1, version));
                 None
             }
-            (None, None) => None,
+            (None, Origin::Created) => None,
         })
     }
 }

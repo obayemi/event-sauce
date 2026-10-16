@@ -55,10 +55,16 @@ pub(super) enum SlotState {
     Consumed(AggregateType),
 }
 
+/// How a unit of work came to hold an aggregate.
+#[derive(Clone, Copy)]
+pub(super) enum Origin {
+    Loaded(AggregateVersion),
+    Created,
+}
+
 /// One aggregate the unit of work has handed out.
 pub(super) struct Slot {
-    /// The version it was loaded at, or `None` if this unit of work created it.
-    pub(super) loaded: Option<AggregateVersion>,
+    pub(super) origin: Origin,
     pub(super) state: SlotState,
 }
 
@@ -99,7 +105,7 @@ impl Slot {
 /// A slot ready to be committed: the unit of work holds its root.
 pub(super) struct Returned {
     pub(super) key: Key,
-    pub(super) loaded: Option<AggregateVersion>,
+    pub(super) origin: Origin,
     pub(super) root: Held,
 }
 
@@ -141,7 +147,7 @@ impl IdentityMap {
             Entry::Occupied(mut slot) => slot.get_mut().check_out(id),
             Entry::Vacant(slot) => {
                 slot.insert(Slot {
-                    loaded: Some(root.version()),
+                    origin: Origin::Loaded(root.version()),
                     state: SlotState::CheckedOut,
                 });
                 Ok(root)
@@ -163,7 +169,7 @@ impl IdentityMap {
             }),
             Entry::Vacant(slot) => {
                 slot.insert(Slot {
-                    loaded: None,
+                    origin: Origin::Created,
                     state: SlotState::CheckedOut,
                 });
                 Ok(())
@@ -197,7 +203,7 @@ impl IdentityMap {
             match slot.state {
                 SlotState::Held(root) => returned.push(Returned {
                     key,
-                    loaded: slot.loaded,
+                    origin: slot.origin,
                     root,
                 }),
                 SlotState::CheckedOut => leaked += 1,
