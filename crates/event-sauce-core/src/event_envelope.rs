@@ -19,7 +19,7 @@ use crate::{AggregateType, EventVersion};
 /// # Built-in Fields
 ///
 /// - **`correlation_id`** — Links related events across services for distributed tracing.
-/// - **`causation_id`** — Identifies the command or event that caused this event.
+/// - **`causation_id`** — Identifies the application command or event that caused this event.
 /// - **`timestamp`** — When the metadata was created (set automatically).
 /// - **`additional`** — Arbitrary JSON for application-specific data (e.g., user ID,
 ///   IP address, tenant ID).
@@ -42,7 +42,7 @@ pub struct EventMetadata {
     /// Correlation ID for tracing related events across the system.
     pub correlation_id: Option<Uuid>,
 
-    /// Causation ID - the event or command that caused this event.
+    /// Causation ID - the event or application command that caused this event.
     pub causation_id: Option<Uuid>,
 
     /// Full causation chain from the root event to the direct parent.

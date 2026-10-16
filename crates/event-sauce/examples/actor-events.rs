@@ -2,8 +2,8 @@
 //!
 //! This example demonstrates actor-required events where certain operations
 //! require an authorized actor (the entity performing the action). The actor's
-//! permissions are validated at command time, and their identity is tracked
-//! through to the event envelope's `created_by` field.
+//! permissions are validated at aggregate command time, and their identity is
+//! tracked through to the event envelope's `created_by` field.
 //!
 //! ## Key Concepts
 //!

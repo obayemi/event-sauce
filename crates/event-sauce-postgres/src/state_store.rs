@@ -13,7 +13,7 @@
 //!   via [`PostgresStateStoreBuilder::with_projection`] run on the save
 //!   transaction's connection with the commit's matching events.
 //!   Exactly-once, read-your-writes; a failing projection rolls the whole
-//!   command back.
+//!   aggregate command back.
 //! - **Transactional outbox** — with
 //!   [`PostgresStateStoreBuilder::with_outbox`], the commit's events are
 //!   inserted into the `state_outbox` table in the same transaction, for a

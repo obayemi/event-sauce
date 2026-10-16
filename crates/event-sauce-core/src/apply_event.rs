@@ -92,7 +92,7 @@ pub trait ApplyEvent<A: Aggregate> {
     /// `validate` **must be pure and deterministic**, like
     /// [`apply`](Self::apply): with a macro-generated `EventApplicator`,
     /// [`AggregateRoot::apply`](crate::AggregateRoot::apply) and
-    /// `apply_with_actor` call it twice per command — once through
+    /// `apply_with_actor` call it twice per aggregate command — once through
     /// `validate_only` so a refusal doesn't poison, and again inside
     /// `dispatch`.
     ///

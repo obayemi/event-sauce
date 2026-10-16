@@ -2,7 +2,7 @@
 //!
 //! These traits enable compile-time enforcement that certain events require
 //! an actor (the entity performing the action). Actor validation happens
-//! at command time only — replayed events skip validation (historical facts).
+//! at aggregate command time only — replayed events skip validation (historical facts).
 //!
 //! # Design
 //!

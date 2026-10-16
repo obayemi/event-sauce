@@ -10,7 +10,7 @@
 //!
 //! - **`@delete`** in `define_events!`: marks events as delete transitions
 //! - **`@delete @actor(Type)`**: delete events with actor permission validation
-//! - **`@delete fn`** in `aggregate_command!`: generates delete command methods
+//! - **`@delete fn`** in `aggregate_command!`: generates delete aggregate command methods
 //! - **`DeletedAggregateRoot<A>`**: terminal state with `Deref<Target=A::DeletedState>`
 //! - **`load_any()`**: returns `Loaded::Active` or `Loaded::Deleted`
 //! - **`load_deleted()`**: returns `DeletedAggregateRoot` or errors

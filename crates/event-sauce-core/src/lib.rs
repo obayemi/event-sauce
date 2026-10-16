@@ -22,7 +22,7 @@
 //!   `StateStore`, `StateStoredRepository`, and in-transaction
 //!   `StateProjection`s.
 //!
-//! The domain layer (entities, aggregates, events, commands, the `Repository`
+//! The domain layer (entities, aggregates, events, aggregate commands, the `Repository`
 //! trait, and the macros) is always available; application code written
 //! against it runs unchanged under either persistence style.
 //!

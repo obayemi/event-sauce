@@ -3,7 +3,7 @@
 //! This example demonstrates:
 //! - **Typed aggregate IDs** with `#[derive(AggregateId)]` for compile-time safety
 //! - **Private User aggregate** with crypto-shredding for GDPR compliance
-//! - **Actor-validated Order commands** requiring an authenticated User
+//! - **Actor-validated Order aggregate commands** requiring an authenticated User
 //! - **Delete events** for order cancellation (`@delete @actor(User)`)
 //! - **Policy system** for cross-aggregate event orchestration
 //! - **Function-based specifications** with `#[specification]` for validation

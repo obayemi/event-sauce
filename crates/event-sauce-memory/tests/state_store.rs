@@ -2,7 +2,7 @@
 //! split).
 //!
 //! The parity test is the acceptance criterion of the split: one aggregate +
-//! command module, written once, runs unchanged against the event-sourced and
+//! aggregate-command module, written once, runs unchanged against the event-sourced and
 //! the state-stored repositories behind `R: Repository<A>`. The remaining
 //! tests cover the store's own guarantees: optimistic concurrency, claim
 //! uniqueness with release on delete, in-transaction projections with

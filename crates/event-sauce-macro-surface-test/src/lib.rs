@@ -17,7 +17,7 @@
 use serde::{Deserialize, Serialize};
 
 /// `event_sauce::chrono`'s instant type, spelled out once so a non-`@clock`
-/// command can take it as a parameter without this crate adding `chrono` to
+/// aggregate command can take it as a parameter without this crate adding `chrono` to
 /// its own `Cargo.toml`.
 type Instant = event_sauce::chrono::DateTime<event_sauce::chrono::Utc>;
 

@@ -161,7 +161,7 @@ fn validate_reads_the_named_instant() {
 }
 
 // ---------------------------------------------------------------------------
-// `@no_clock`: the command takes its instants instead of reading them
+// `@no_clock`: the aggregate command takes its instants instead of reading them
 // ---------------------------------------------------------------------------
 
 aggregate_command! {

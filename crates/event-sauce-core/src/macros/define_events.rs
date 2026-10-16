@@ -64,7 +64,7 @@
 /// - `@actor(Type)` marks a variant as requiring an actor for permission checks
 /// - `@validate |...|` inline validation with arity-based dispatch:
 ///   - `|agg, evt|` → `validate()` (runs on replay)
-///   - `|agg, actor, evt|` → `validate_actor()` (command-time only)
+///   - `|agg, actor, evt|` → `validate_actor()` (aggregate-command-time only)
 ///   - `|evt|` → `validate_init()` (init, runs on replay)
 ///   - `|actor, evt|` → `validate_init_actor()` (actor-init, command-time only)
 /// - `@validate_spec(Expr)` / `@validate_spec(|..| Expr)` specification-based validation

@@ -145,8 +145,8 @@ pub trait Repository<A: Aggregate>: Send + Sync {
 
     /// Loads an aggregate, applies a closure that mutates it, and saves the result.
     ///
-    /// The most common command-handler pattern condensed into a single call. The
-    /// closure receives the loaded aggregate and may apply commands or events.
+    /// The most common service command handler pattern condensed into a single call. The
+    /// closure receives the loaded aggregate and may apply aggregate commands or events.
     ///
     /// Returns `Result<R, ModifyError<A::Error>>`, which distinguishes three
     /// failure modes:

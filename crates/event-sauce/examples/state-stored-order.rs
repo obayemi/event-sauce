@@ -1,7 +1,7 @@
 //! # State-Stored Order Example — One Codebase, Two Persistence Styles
 //!
 //! Demonstrates the core promise of the state-store split: the SAME aggregate,
-//! events, commands, and application code run unchanged against
+//! events, aggregate commands, and application code run unchanged against
 //! an event-sourced store and a state-stored one. Only the composition root
 //! differs.
 //!

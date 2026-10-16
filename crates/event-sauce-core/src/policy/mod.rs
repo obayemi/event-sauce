@@ -1,8 +1,8 @@
 //! Policy system for cross-aggregate event reactions.
 //!
 //! Provides the [`Policy`] trait for defining event handlers that react to events
-//! by issuing commands on other aggregates, and [`PolicyContext`] for safe event
-//! store access with automatic causation tracking.
+//! by issuing aggregate commands on other aggregates, and [`PolicyContext`] for
+//! safe event store access with automatic causation tracking.
 //!
 //! # Overview
 //!
@@ -55,7 +55,7 @@ pub use runner::{PolicyRunOutcome, PolicyRunner};
 
 use crate::{EventEnvelope, EventFilter, EventStore, Result};
 
-/// A policy handles events by issuing commands on other aggregates.
+/// A policy handles events by issuing aggregate commands on other aggregates.
 ///
 /// Policies are the mechanism for cross-aggregate event orchestration
 /// (known as "process managers" or "sagas" in some literature).

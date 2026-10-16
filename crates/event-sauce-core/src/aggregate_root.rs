@@ -229,7 +229,7 @@ impl<A: Aggregate> AggregateRoot<A> {
     /// `apply*`/`apply_delete*` calls do **not** check it, and keep mutating
     /// the same inconsistent entity. Check this after any `apply*` failure;
     /// if it is `true`, discard the aggregate and reload it rather than
-    /// issue further commands on it.
+    /// issue further aggregate commands on it.
     #[must_use]
     pub fn is_poisoned(&self) -> bool {
         self.poisoned

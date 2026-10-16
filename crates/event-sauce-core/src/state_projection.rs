@@ -2,7 +2,7 @@
 //!
 //! A [`StateProjection`] maintains a read model **inside the same transaction**
 //! as the state write that produced the events: exactly-once, read-your-writes,
-//! and a failing projection rolls the whole command back. Handlers are
+//! and a failing projection rolls the whole aggregate command back. Handlers are
 //! registered on the concrete state store (whose transaction type fills the
 //! `Ctx` parameter) and must stay DB-local — anything that outlives the
 //! transaction (external calls, notifications, policies) belongs in the

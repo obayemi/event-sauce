@@ -268,7 +268,7 @@ impl Aggregate for BankAccount {
 }
 
 // ============================================================================
-// Command Methods
+// Aggregate Command Methods
 // ============================================================================
 
 /// Helper to create an opened account wrapped in `AggregateRoot`

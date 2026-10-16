@@ -1,7 +1,7 @@
 //! The [`policy!`](crate::policy) declarative macro for defining a `Policy`
 //! from a set of `on EventStruct |event, ctx| { .. }` handlers.
 
-/// Define a policy that handles events by issuing commands on other aggregates.
+/// Define a policy that handles events by issuing aggregate commands on other aggregates.
 ///
 /// This macro generates a struct implementing [`Policy<S>`](crate::policy::Policy)
 /// that routes events to handler closures based on event type. Each handler receives

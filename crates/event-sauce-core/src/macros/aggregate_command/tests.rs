@@ -264,7 +264,7 @@ aggregate_command! {
 fn test_aggregate_command_increment() {
     let mut root = AggregateRoot::<TestAggregate>::new(EntityId::new());
 
-    // Test that generated command method works through AggregateRoot
+    // Test that generated aggregate command method works through AggregateRoot
     let result = root.increment(5);
 
     assert!(result.is_ok());

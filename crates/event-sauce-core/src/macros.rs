@@ -1,7 +1,7 @@
 //! Helper macros for reducing boilerplate in event-sourced aggregates
 //!
 //! This module provides declarative macros that simplify common patterns in event sourcing:
-//! - [`aggregate_command!`](crate::aggregate_command) - automatic command method generation
+//! - [`aggregate_command!`](crate::aggregate_command) - automatic aggregate command method generation
 //! - [`define_events!`](crate::define_events) - declarative event enum and trait generation
 //!
 //! Each family lives in its own submodule. `spec!` lives beside

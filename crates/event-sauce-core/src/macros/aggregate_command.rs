@@ -1,15 +1,17 @@
 //! [`aggregate_command!`](crate::aggregate_command) and the internal muncher and
 //! arity-dispatch macros it recurses through.
 
-/// Generate command handler methods for an aggregate.
+/// Generate aggregate command methods for an aggregate.
 ///
-/// This macro reduces boilerplate by automatically generating command methods
-/// that create events and apply them via `AggregateRoot`. A command stamps a
-/// `timestamp` from the wall clock only when marked `@clock` — see below.
-/// It generates:
+/// Formerly `command_handler!`, now kept only as a deprecated alias.
+///
+/// This macro reduces boilerplate by automatically generating aggregate
+/// command methods that create events and apply them via `AggregateRoot`. A
+/// command stamps a `timestamp` from the wall clock only when marked
+/// `@clock` — see below. It generates:
 ///
 /// 1. **Event helper functions** on the entity type (for creating events)
-/// 2. **A commands trait** implemented on `AggregateRoot<Entity>` (for applying them)
+/// 2. **An aggregate commands trait** implemented on `AggregateRoot<Entity>` (for applying them)
 /// 3. **Init commands trait** (if any `@init` commands) on `UninitAggregateRoot<Entity>`
 /// 4. **Init creation functions** (if any `@init` commands) as associated functions on the entity
 ///

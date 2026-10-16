@@ -979,7 +979,7 @@ mod proptests {
 
         /// Replaying the same accepted sequence through `apply_unchecked`
         /// (the event-replay path) reproduces the exact state and version
-        /// that building it through `apply` (the command path) produced.
+        /// that building it through `apply` (the aggregate command path) produced.
         #[test]
         fn apply_and_apply_unchecked_agree_on_accepted_sequences(
             amounts in prop::collection::vec(-1_000_000i64..1_000_000, 0..20)

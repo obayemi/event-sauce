@@ -26,11 +26,11 @@
 //! `uuid`, `serde_json` and `async-trait` (needed only by `policy!`) are
 //! macro-only: a caller adds none of them to use the macros.
 //!
-//! `chrono` is not macro-only — every command without `@clock` takes its
-//! instant as a parameter, and every generated event carries a public
-//! `DateTime<Utc>` field, so `chrono` types are part of the public API. A
-//! caller still adds no `chrono` line of its own: the crate is reachable as
-//! [`chrono`], the same one `event-sauce` already depends on. A
+//! `chrono` is not macro-only — every aggregate command without `@clock`
+//! takes its instant as a parameter, and every generated event carries a
+//! public `DateTime<Utc>` field, so `chrono` types are part of the public
+//! API. A caller still adds no `chrono` line of its own: the crate is
+//! reachable as [`chrono`], the same one `event-sauce` already depends on. A
 //! hand-written `impl` of one of the async traits (`StateProjection`,
 //! `EventStore`, `CheckpointStore`) is a separate case: those traits are
 //! themselves declared with `#[async_trait]`, so implementing one by hand

@@ -1476,7 +1476,7 @@ fn test_multi_init_validation_per_variant() {
     );
 }
 
-// --- aggregate_command! tests for multiple @init commands ---
+// --- aggregate_command! tests for multiple @init aggregate commands ---
 
 #[test]
 fn test_multi_init_cmd_event_helpers() {
