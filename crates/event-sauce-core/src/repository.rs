@@ -25,6 +25,8 @@ use crate::{
     Aggregate, AggregateRoot, AggregateVersion, DefaultEntity, DeletedAggregateRoot, EntityId,
     EntityIdFor, InitEvent, Loaded, Result, UninitAggregateRoot,
 };
+#[cfg(feature = "commands")]
+use crate::{Command, Error, ExecuteError, Executed, RetryPolicy, Root};
 
 /// Persistence-style-agnostic aggregate persistence.
 ///
@@ -141,6 +143,167 @@ pub trait Repository<A: Aggregate>: Send + Sync {
     /// Returns an error if the store operation fails.
     async fn version_by_id(&self, id: EntityId) -> Result<AggregateVersion> {
         Ok(self.load_any_by_id(id).await?.version())
+    }
+
+    /// Runs a [`Command`](crate::Command) against the aggregate `id` names,
+    /// retrying its save when the backend reports a concurrency conflict.
+    ///
+    /// Each attempt repeats the same cycle: load the aggregate's current
+    /// [`Root`](crate::Root) — synthesizing [`Root::Missing`](crate::Root::Missing)
+    /// from an `Error::NotFound` load, since nothing saved yet does not mean
+    /// the command should be refused; it may be the one that creates the
+    /// aggregate — run `command` against it, then save whatever lifecycle
+    /// state it returns (`save` for [`Root::Active`](crate::Root::Active),
+    /// `save_deleted` for [`Root::Deleted`](crate::Root::Deleted), nothing for
+    /// [`Root::Missing`](crate::Root::Missing)). Only a save-time concurrency
+    /// conflict is retried, reloading and re-running `command` from scratch
+    /// each time, up to `retry`'s attempt budget; every other failure returns
+    /// immediately.
+    ///
+    /// Accepts both raw `EntityId` and typed IDs implementing `EntityIdFor<A>`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExecuteError::Load`] if loading fails for a reason other
+    /// than "nothing saved yet", [`ExecuteError::Domain`] or
+    /// [`ExecuteError::Lifecycle`] if `command` refuses the aggregate's
+    /// current lifecycle state, and [`ExecuteError::Save`] if saving still
+    /// fails once `retry` is exhausted (or immediately, for a non-concurrency
+    /// save failure). Also returns [`ExecuteError::Save`] if `command`
+    /// returns a [`Root`](crate::Root) under a different [`EntityId`] than
+    /// `id` — it is rejected rather than saved under the wrong identity.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use event_sauce_core::{
+    /// #     Aggregate, AggregateError, AggregateRoot, Command, CommandError, DefaultEntity,
+    /// #     DomainEvent, Entity, EntityId, EventApplicator, EventVersion, Repository, RetryPolicy,
+    /// #     Root,
+    /// # };
+    /// # use serde::{Deserialize, Serialize};
+    /// # use thiserror::Error;
+    /// # use std::sync::Arc;
+    /// # #[derive(Debug, Serialize, Deserialize)]
+    /// # struct Counter { id: EntityId, value: i32 }
+    /// # impl Entity for Counter {
+    /// #     fn new(id: EntityId) -> Self { Self { id, value: 0 } }
+    /// #     fn entity_id(&self) -> EntityId { self.id }
+    /// # }
+    /// # impl DefaultEntity for Counter {}
+    /// # #[derive(Debug, Clone, Serialize, Deserialize)]
+    /// # enum CounterEvent { Incremented { amount: i32 } }
+    /// # impl DomainEvent for CounterEvent {
+    /// #     type Aggregate = Counter;
+    /// #     fn event_type(&self) -> &'static str { "Incremented" }
+    /// #     fn event_version(&self) -> EventVersion { EventVersion::new(1) }
+    /// #     fn occurred_at(&self) -> chrono::DateTime<chrono::Utc> { chrono::Utc::now() }
+    /// # }
+    /// # impl EventApplicator<Counter> for CounterEvent {
+    /// #     fn dispatch(&self, c: &mut Counter) -> Result<(), CounterError> {
+    /// #         match self { CounterEvent::Incremented { amount } => c.value += amount }
+    /// #         Ok(())
+    /// #     }
+    /// #     fn dispatch_unchecked(&self, c: &mut Counter) {
+    /// #         match self { CounterEvent::Incremented { amount } => c.value += amount }
+    /// #     }
+    /// # }
+    /// # #[derive(Debug, Error)]
+    /// # #[error("counter error")]
+    /// # struct CounterError;
+    /// # impl AggregateError for CounterError {}
+    /// # impl Aggregate for Counter {
+    /// #     type Event = CounterEvent;
+    /// #     type Error = CounterError;
+    /// #     type DeletedState = Self;
+    /// # }
+    /// struct Increment(i32);
+    /// impl Command<Counter> for Increment {
+    ///     fn handle(
+    ///         &self,
+    ///         root: Root<Counter>,
+    ///         _ctx: &(),
+    ///     ) -> Result<Root<Counter>, CommandError<CounterError>> {
+    ///         let mut root = root.active()?;
+    ///         root.apply(CounterEvent::Incremented { amount: self.0 })?;
+    ///         Ok(root.into())
+    ///     }
+    /// }
+    ///
+    /// # async fn run<R: Repository<Counter>>(repo: &R) {
+    /// let id = EntityId::new();
+    /// let executed = repo
+    ///     .execute(id, &Increment(5), &(), RetryPolicy::default())
+    ///     .await
+    ///     .unwrap();
+    /// assert_eq!(executed.attempts.get(), 1);
+    /// assert_eq!(executed.root.active().unwrap().value, 5);
+    /// # }
+    /// ```
+    #[cfg(feature = "commands")]
+    async fn execute<I, C, Ctx>(
+        &self,
+        id: I,
+        command: &C,
+        ctx: &Ctx,
+        retry: RetryPolicy,
+    ) -> std::result::Result<Executed<A>, ExecuteError<A::Error>>
+    where
+        I: EntityIdFor<A> + Send,
+        C: Command<A, Ctx>,
+        Ctx: Sync,
+        Self: Sized,
+    {
+        let id = id.entity_id();
+        let max_attempts = retry.max_attempts().get();
+        let mut attempt = 1u32;
+
+        loop {
+            let root = match self.load_any_by_id(id).await {
+                Ok(Loaded::Active(root)) => Root::Active(root),
+                Ok(Loaded::Deleted(root)) => Root::Deleted(root),
+                Err(e) if e.is_not_found() => Root::Missing(self.create_uninit_with_id(id)),
+                Err(e) => return Err(ExecuteError::Load(e)),
+            };
+
+            let mut outcome = command.handle(root, ctx).map_err(|err| match err {
+                crate::CommandError::Domain(e) => ExecuteError::Domain(e),
+                crate::CommandError::Lifecycle { expected, found } => {
+                    ExecuteError::Lifecycle { expected, found }
+                }
+            })?;
+
+            if outcome.entity_id() != id {
+                return Err(ExecuteError::Save(Error::invalid_state(format!(
+                    "command returned aggregate {} for requested id {id}",
+                    outcome.entity_id()
+                ))));
+            }
+
+            let saved = match &mut outcome {
+                Root::Active(root) => self.save(root).await,
+                Root::Deleted(root) => self.save_deleted(root).await,
+                Root::Missing(_) => Ok(()),
+            };
+
+            match saved {
+                Ok(()) => {
+                    return Ok(Executed {
+                        root: outcome,
+                        attempts: std::num::NonZeroU32::new(attempt)
+                            .expect("attempt starts at 1 and only grows"),
+                    });
+                }
+                Err(e) if e.is_concurrency_conflict() && attempt < max_attempts => {
+                    let backoff = retry.backoff(attempt);
+                    attempt += 1;
+                    if !backoff.is_zero() {
+                        tokio::time::sleep(backoff).await;
+                    }
+                }
+                Err(e) => return Err(ExecuteError::Save(e)),
+            }
+        }
     }
 
     /// Loads an aggregate, applies a closure that mutates it, and saves the result.
@@ -1034,5 +1197,493 @@ mod tests {
 
         assert!(first.pending_events().is_empty());
         assert!(second.pending_events().is_empty());
+    }
+}
+
+#[cfg(all(
+    test,
+    feature = "commands",
+    any(feature = "event-sourcing", feature = "state-store")
+))]
+mod execute_tests {
+    use super::*;
+    use crate::test_fixtures::{
+        SimpleTestEntity, SimpleTestError, SimpleTestEvent, SimpleTestInit,
+    };
+    use crate::CommandError;
+
+    fn update_to(
+        value: i32,
+    ) -> impl Fn(
+        Root<SimpleTestEntity>,
+        &(),
+    ) -> std::result::Result<Root<SimpleTestEntity>, CommandError<SimpleTestError>> {
+        move |root, _ctx| {
+            let mut active = root.active()?;
+            active.apply(SimpleTestEvent::Updated { value })?;
+            Ok(active.into())
+        }
+    }
+
+    fn create_with(
+        value: i32,
+    ) -> impl Fn(
+        Root<SimpleTestEntity>,
+        &(),
+    ) -> std::result::Result<Root<SimpleTestEntity>, CommandError<SimpleTestError>> {
+        move |root, _ctx| {
+            let uninit = root.missing()?;
+            Ok(uninit.apply_init(SimpleTestInit { value })?.into())
+        }
+    }
+
+    #[cfg(feature = "event-sourcing")]
+    fn delete() -> impl Fn(
+        Root<SimpleTestEntity>,
+        &(),
+    )
+        -> std::result::Result<Root<SimpleTestEntity>, CommandError<SimpleTestError>> {
+        |root, _ctx| {
+            let active = root.active()?;
+            Ok(active
+                .apply_delete(crate::test_fixtures::SimpleTestDelete)?
+                .into())
+        }
+    }
+
+    #[cfg(feature = "event-sourcing")]
+    fn reject() -> impl Fn(
+        Root<SimpleTestEntity>,
+        &(),
+    )
+        -> std::result::Result<Root<SimpleTestEntity>, CommandError<SimpleTestError>> {
+        |root, _ctx| {
+            let mut active = root.active()?;
+            active.apply(SimpleTestEvent::Rejected)?;
+            Ok(active.into())
+        }
+    }
+
+    #[cfg(feature = "event-sourcing")]
+    fn swap_identity() -> impl Fn(
+        Root<SimpleTestEntity>,
+        &(),
+    ) -> std::result::Result<
+        Root<SimpleTestEntity>,
+        CommandError<SimpleTestError>,
+    > {
+        |root, _ctx| {
+            let _active = root.active()?;
+            Ok(Root::Active(AggregateRoot::<SimpleTestEntity>::new(
+                EntityId::new(),
+            )))
+        }
+    }
+
+    #[cfg(feature = "event-sourcing")]
+    mod event_sourced {
+        use super::*;
+        use crate::event_store::EventStore;
+        use crate::test_fixtures::MockEventStore;
+        use crate::{AggregateClaim, EventEnvelope, EventLogEntry, Position};
+
+        /// Wraps a [`MockEventStore`], failing `append`'s first `failures`
+        /// calls with a concurrency conflict regardless of the version
+        /// actually stored, before delegating to the inner store.
+        struct FailNTimesEventStore {
+            inner: Arc<MockEventStore>,
+            remaining_failures: std::sync::Mutex<usize>,
+        }
+
+        impl FailNTimesEventStore {
+            fn new(inner: Arc<MockEventStore>, failures: usize) -> Self {
+                Self {
+                    inner,
+                    remaining_failures: std::sync::Mutex::new(failures),
+                }
+            }
+        }
+
+        #[async_trait]
+        impl EventStore for FailNTimesEventStore {
+            async fn append(
+                &self,
+                stream_id: StreamId,
+                events: Vec<EventEnvelope>,
+                expected_version: AggregateVersion,
+                claims: Vec<AggregateClaim>,
+                clear_claims: bool,
+            ) -> Result<()> {
+                let should_fail = {
+                    let mut remaining = self.remaining_failures.lock().unwrap();
+                    if *remaining > 0 {
+                        *remaining -= 1;
+                        true
+                    } else {
+                        false
+                    }
+                };
+                if should_fail {
+                    return Err(Error::concurrency_conflict(
+                        expected_version,
+                        AggregateVersion::new(expected_version.as_i64() + 1),
+                    ));
+                }
+                self.inner
+                    .append(stream_id, events, expected_version, claims, clear_claims)
+                    .await
+            }
+
+            async fn load_stream(
+                &self,
+                stream_id: StreamId,
+                from_version: AggregateVersion,
+            ) -> Result<impl futures::Stream<Item = Result<EventEnvelope>> + Send> {
+                self.inner.load_stream(stream_id, from_version).await
+            }
+
+            async fn stream_all(
+                &self,
+                from_position: Position,
+            ) -> Result<impl futures::Stream<Item = Result<EventLogEntry>> + Send> {
+                self.inner.stream_all(from_position).await
+            }
+
+            async fn get_version(&self, stream_id: StreamId) -> Result<AggregateVersion> {
+                self.inner.get_version(stream_id).await
+            }
+        }
+
+        #[tokio::test]
+        async fn succeeds_on_the_first_attempt() {
+            let store = Arc::new(MockEventStore::new());
+            let repo = store.repository::<SimpleTestEntity>();
+            let id = EntityId::new();
+            let mut seed = AggregateRoot::<SimpleTestEntity>::new(id);
+            seed.apply(SimpleTestEvent::Created { value: 1 }).unwrap();
+            repo.save(&mut seed).await.unwrap();
+
+            let executed = repo
+                .execute(id, &update_to(42), &(), RetryPolicy::default())
+                .await
+                .unwrap();
+
+            assert_eq!(executed.attempts.get(), 1);
+            assert_eq!(executed.root.active().unwrap().value, 42);
+            assert_eq!(repo.load(id).await.unwrap().value, 42);
+        }
+
+        #[tokio::test]
+        async fn creates_from_missing_via_an_init_command() {
+            let store = Arc::new(MockEventStore::new());
+            let repo = store.repository::<SimpleTestEntity>();
+            let id = EntityId::new();
+
+            let executed = repo
+                .execute(id, &create_with(7), &(), RetryPolicy::default())
+                .await
+                .unwrap();
+
+            assert_eq!(executed.attempts.get(), 1);
+            assert_eq!(executed.root.active().unwrap().value, 7);
+            assert_eq!(repo.load(id).await.unwrap().value, 7);
+        }
+
+        #[tokio::test]
+        async fn deletes_an_active_aggregate() {
+            let store = Arc::new(MockEventStore::new());
+            let repo = store.repository::<SimpleTestEntity>();
+            let id = EntityId::new();
+            let mut seed = AggregateRoot::<SimpleTestEntity>::new(id);
+            seed.apply(SimpleTestEvent::Created { value: 1 }).unwrap();
+            repo.save(&mut seed).await.unwrap();
+
+            let executed = repo
+                .execute(id, &delete(), &(), RetryPolicy::default())
+                .await
+                .unwrap();
+
+            assert!(matches!(executed.root, Root::Deleted(_)));
+            assert!(repo.load_any(id).await.unwrap().is_deleted());
+        }
+
+        #[tokio::test]
+        async fn domain_refusal_is_not_retried_and_saves_nothing() {
+            let store = Arc::new(MockEventStore::new());
+            let repo = store.repository::<SimpleTestEntity>();
+            let id = EntityId::new();
+            let mut seed = AggregateRoot::<SimpleTestEntity>::new(id);
+            seed.apply(SimpleTestEvent::Created { value: 1 }).unwrap();
+            repo.save(&mut seed).await.unwrap();
+
+            let err = repo
+                .execute(id, &reject(), &(), RetryPolicy::default())
+                .await
+                .unwrap_err();
+
+            assert!(matches!(err, ExecuteError::Domain(SimpleTestError)));
+            assert_eq!(repo.load(id).await.unwrap().value, 1);
+        }
+
+        #[tokio::test]
+        async fn lifecycle_refusal_is_reported() {
+            let store = Arc::new(MockEventStore::new());
+            let repo = store.repository::<SimpleTestEntity>();
+            let id = EntityId::new();
+            let mut seed = AggregateRoot::<SimpleTestEntity>::new(id);
+            seed.apply(SimpleTestEvent::Created { value: 1 }).unwrap();
+            repo.save(&mut seed).await.unwrap();
+
+            // Entity is active; `create_with` requires it to be missing.
+            let err = repo
+                .execute(id, &create_with(1), &(), RetryPolicy::default())
+                .await
+                .unwrap_err();
+
+            assert!(matches!(
+                err,
+                ExecuteError::Lifecycle {
+                    expected: crate::Lifecycle::Missing,
+                    found: crate::Lifecycle::Active,
+                }
+            ));
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn retries_once_after_a_concurrency_conflict_then_succeeds() {
+            let inner = Arc::new(MockEventStore::new());
+            let setup = inner.repository::<SimpleTestEntity>();
+            let id = EntityId::new();
+            let mut seed = AggregateRoot::<SimpleTestEntity>::new(id);
+            seed.apply(SimpleTestEvent::Created { value: 1 }).unwrap();
+            setup.save(&mut seed).await.unwrap();
+
+            let flaky = Arc::new(FailNTimesEventStore::new(Arc::clone(&inner), 1));
+            let repo = flaky.repository::<SimpleTestEntity>();
+
+            let executed = repo
+                .execute(id, &update_to(99), &(), RetryPolicy::default())
+                .await
+                .unwrap();
+
+            assert_eq!(executed.attempts.get(), 2);
+            assert_eq!(executed.root.active().unwrap().value, 99);
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn conflicts_exhausted_returns_save_error_after_max_attempts() {
+            let inner = Arc::new(MockEventStore::new());
+            let setup = inner.repository::<SimpleTestEntity>();
+            let id = EntityId::new();
+            let mut seed = AggregateRoot::<SimpleTestEntity>::new(id);
+            seed.apply(SimpleTestEvent::Created { value: 1 }).unwrap();
+            setup.save(&mut seed).await.unwrap();
+
+            let flaky = Arc::new(FailNTimesEventStore::new(Arc::clone(&inner), usize::MAX));
+            let repo = flaky.repository::<SimpleTestEntity>();
+            let retry =
+                RetryPolicy::default().with_max_attempts(std::num::NonZeroU32::new(3).unwrap());
+
+            let err = repo
+                .execute(id, &update_to(99), &(), retry)
+                .await
+                .unwrap_err();
+
+            assert!(err.is_concurrency_conflict());
+            assert!(matches!(err, ExecuteError::Save(_)));
+        }
+
+        #[tokio::test]
+        async fn non_concurrency_save_error_is_not_retried() {
+            let store = Arc::new(MockEventStore::new());
+            let repo = store.repository::<SimpleTestEntity>();
+            let id = EntityId::new();
+            let mut seed = AggregateRoot::<SimpleTestEntity>::new(id);
+            seed.apply(SimpleTestEvent::Created { value: 1 }).unwrap();
+            repo.save(&mut seed).await.unwrap();
+            // Poison the aggregate so the next save fails for a reason other
+            // than a concurrency conflict.
+            let mut loaded = repo.load(id).await.unwrap();
+            assert!(loaded.apply(SimpleTestEvent::Rejected).is_err());
+            assert!(loaded.is_poisoned());
+
+            // Craft a command that hands back this already-poisoned root.
+            let poisoned = std::sync::Mutex::new(Some(loaded));
+            let command = move |_root: Root<SimpleTestEntity>, _ctx: &()| {
+                Ok(Root::Active(poisoned.lock().unwrap().take().unwrap()))
+            };
+
+            let err = repo
+                .execute(id, &command, &(), RetryPolicy::default())
+                .await
+                .unwrap_err();
+
+            assert!(!err.is_concurrency_conflict());
+            assert!(matches!(err, ExecuteError::Save(_)));
+        }
+
+        #[tokio::test]
+        async fn load_error_other_than_not_found_is_reported() {
+            let store = Arc::new(MockEventStore::new());
+            let id = EntityId::new();
+            store.add_event(EventEnvelope::new(
+                uuid::Uuid::new_v4(),
+                id.as_uuid(),
+                "SimpleTestEntity".to_string(),
+                "SimpleTestEntity.Updated".to_string(),
+                crate::EventVersion::new(1),
+                serde_json::json!({ "totally": "unrecognized" }),
+            ));
+            let repo = store.repository::<SimpleTestEntity>();
+
+            let err = repo
+                .execute(id, &update_to(1), &(), RetryPolicy::default())
+                .await
+                .unwrap_err();
+
+            assert!(matches!(err, ExecuteError::Load(e) if !e.is_not_found()));
+        }
+
+        #[tokio::test]
+        async fn id_mismatch_is_reported_as_a_save_error() {
+            let store = Arc::new(MockEventStore::new());
+            let repo = store.repository::<SimpleTestEntity>();
+            let id = EntityId::new();
+            let mut seed = AggregateRoot::<SimpleTestEntity>::new(id);
+            seed.apply(SimpleTestEvent::Created { value: 1 }).unwrap();
+            repo.save(&mut seed).await.unwrap();
+
+            let err = repo
+                .execute(id, &swap_identity(), &(), RetryPolicy::default())
+                .await
+                .unwrap_err();
+
+            assert!(matches!(err, ExecuteError::Save(e) if e.is_invalid_state()));
+        }
+    }
+
+    #[cfg(feature = "state-store")]
+    mod state_stored {
+        use super::*;
+        use crate::test_fixtures::MockStateStore;
+        use crate::{StateCommit, StateStore, StreamId};
+        use std::sync::Arc;
+
+        /// Wraps a [`MockStateStore`], failing `save`'s first `failures`
+        /// calls with a concurrency conflict before delegating to the inner
+        /// store.
+        struct FailNTimesStateStore {
+            inner: Arc<MockStateStore>,
+            remaining_failures: std::sync::Mutex<usize>,
+        }
+
+        impl FailNTimesStateStore {
+            fn new(inner: Arc<MockStateStore>, failures: usize) -> Self {
+                Self {
+                    inner,
+                    remaining_failures: std::sync::Mutex::new(failures),
+                }
+            }
+        }
+
+        #[async_trait]
+        impl StateStore for FailNTimesStateStore {
+            async fn load(&self, stream_id: StreamId) -> Result<Option<crate::StoredState>> {
+                self.inner.load(stream_id).await
+            }
+
+            async fn save(&self, commit: StateCommit) -> Result<()> {
+                let should_fail = {
+                    let mut remaining = self.remaining_failures.lock().unwrap();
+                    if *remaining > 0 {
+                        *remaining -= 1;
+                        true
+                    } else {
+                        false
+                    }
+                };
+                if should_fail {
+                    return Err(Error::concurrency_conflict(
+                        commit.expected_version,
+                        commit.expected_version,
+                    ));
+                }
+                self.inner.save(commit).await
+            }
+        }
+
+        #[tokio::test]
+        async fn succeeds_on_the_first_attempt() {
+            let store = Arc::new(MockStateStore::new());
+            let repo = store.repository::<SimpleTestEntity>();
+            let id = EntityId::new();
+            let mut seed = repo.create_with_id(id);
+            seed.apply(SimpleTestEvent::Created { value: 1 }).unwrap();
+            repo.save(&mut seed).await.unwrap();
+
+            let executed = repo
+                .execute(id, &update_to(42), &(), RetryPolicy::default())
+                .await
+                .unwrap();
+
+            assert_eq!(executed.attempts.get(), 1);
+            assert_eq!(repo.load(id).await.unwrap().value, 42);
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn retries_once_after_a_concurrency_conflict_then_succeeds() {
+            let inner = Arc::new(MockStateStore::new());
+            let setup = inner.repository::<SimpleTestEntity>();
+            let id = EntityId::new();
+            let mut seed = setup.create_with_id(id);
+            seed.apply(SimpleTestEvent::Created { value: 1 }).unwrap();
+            setup.save(&mut seed).await.unwrap();
+
+            let flaky = Arc::new(FailNTimesStateStore::new(Arc::clone(&inner), 1));
+            let repo = flaky.repository::<SimpleTestEntity>();
+
+            let executed = repo
+                .execute(id, &update_to(99), &(), RetryPolicy::default())
+                .await
+                .unwrap();
+
+            assert_eq!(executed.attempts.get(), 2);
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn conflicts_exhausted_returns_save_error_after_max_attempts() {
+            let inner = Arc::new(MockStateStore::new());
+            let setup = inner.repository::<SimpleTestEntity>();
+            let id = EntityId::new();
+            let mut seed = setup.create_with_id(id);
+            seed.apply(SimpleTestEvent::Created { value: 1 }).unwrap();
+            setup.save(&mut seed).await.unwrap();
+
+            let flaky = Arc::new(FailNTimesStateStore::new(Arc::clone(&inner), usize::MAX));
+            let repo = flaky.repository::<SimpleTestEntity>();
+            let retry =
+                RetryPolicy::default().with_max_attempts(std::num::NonZeroU32::new(3).unwrap());
+
+            let err = repo
+                .execute(id, &update_to(99), &(), retry)
+                .await
+                .unwrap_err();
+
+            assert!(err.is_concurrency_conflict());
+        }
+
+        #[tokio::test]
+        async fn creates_from_missing_via_an_init_command() {
+            let store = Arc::new(MockStateStore::new());
+            let repo = store.repository::<SimpleTestEntity>();
+            let id = EntityId::new();
+
+            let executed = repo
+                .execute(id, &create_with(5), &(), RetryPolicy::default())
+                .await
+                .unwrap();
+
+            assert_eq!(executed.root.active().unwrap().value, 5);
+        }
     }
 }

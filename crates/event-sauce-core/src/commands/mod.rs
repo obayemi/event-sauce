@@ -16,10 +16,12 @@
 //! [`Repository`](crate::Repository) concern, built on top of this module.
 
 mod error;
+mod execute;
 mod retry;
 mod root;
 
 pub use error::CommandError;
+pub use execute::{ExecuteError, Executed};
 pub use retry::RetryPolicy;
 pub use root::Root;
 

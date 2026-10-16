@@ -132,7 +132,7 @@ pub use apply_event::ApplyEvent;
 pub use checkpoint::{wait_for_checkpoint, CheckpointStore};
 pub use claims::AggregateClaim;
 #[cfg(feature = "commands")]
-pub use commands::{Command, CommandError, Lifecycle, RetryPolicy, Root};
+pub use commands::{Command, CommandError, ExecuteError, Executed, Lifecycle, RetryPolicy, Root};
 #[cfg(feature = "event-sourcing")]
 pub use crypto::{CryptoKeyStore, CryptoProvider};
 pub use delete_event::DeleteEvent;
