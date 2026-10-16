@@ -663,12 +663,6 @@ where
         }
     }
 
-    /// The event store this repository reads from and writes to.
-    #[cfg(feature = "unit-of-work")]
-    pub(crate) fn store(&self) -> &S {
-        &self.store
-    }
-
     /// Counts the number of events for an aggregate.
     ///
     /// Event-sourcing-specific: only meaningful when aggregates are persisted

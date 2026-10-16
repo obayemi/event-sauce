@@ -7,10 +7,9 @@
 //! primitives that make that possible without the unit of work ever
 //! branching on persistence kind:
 //!
-//! - [`PreparedWrite`] and [`Expectation`] — what
-//!   [`UnitOfWorkRepository::prepare`]/[`prepare_deleted`](UnitOfWorkRepository::prepare_deleted)
-//!   and [`expect`](UnitOfWorkRepository::expect) hand back: opaque values a
-//!   unit of work collects without inspecting.
+//! - [`PreparedWrite`] and [`Expectation`] — what the unit of work's registry
+//!   prepares for each aggregate it holds: opaque values it collects without
+//!   inspecting.
 //! - [`AtomicCommit`] — the collected writes and expectations, sorted by
 //!   persistence kind, ready for a backend to apply.
 //! - [`TransactionalStore`] — the pair of stores (an [`EventStore`] and a
@@ -32,7 +31,6 @@ mod command;
 mod erased;
 mod error;
 mod identity_map;
-mod repository_ext;
 mod store;
 #[cfg(test)]
 mod test_support;
@@ -42,7 +40,6 @@ mod uow;
 pub use atomic_commit::{AtomicCommit, Expectation, PreparedWrite, StreamWrite};
 pub use command::UnitOfWorkCommand;
 pub use error::UnitOfWorkError;
-pub use repository_ext::UnitOfWorkRepository;
 pub use store::{UnitOfWorkExecuted, UnitOfWorkStore};
 pub use tracked::Tracked;
 pub use uow::UnitOfWork;

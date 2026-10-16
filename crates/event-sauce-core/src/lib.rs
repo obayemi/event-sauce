@@ -26,7 +26,7 @@
 //! - `unit-of-work`: commands spanning several aggregates of any persistence
 //!   style (`UnitOfWorkStore`, `UnitOfWork`, `UnitOfWorkCommand`), committed
 //!   in one atomic write through the storage contract they build on
-//!   (`TransactionalStore`, `AtomicCommit`, `UnitOfWorkRepository`). Implies
+//!   (`TransactionalStore`, `AtomicCommit`). Implies
 //!   `commands`, `event-sourcing`, and `state-store`.
 //!
 //! The domain layer (entities, aggregates, events, aggregate commands, the
@@ -191,6 +191,6 @@ pub use uninit_aggregate_root::UninitAggregateRoot;
 #[cfg(feature = "unit-of-work")]
 pub use unit_of_work::{
     AtomicCommit, Expectation, PreparedWrite, StreamWrite, Tracked, TransactionalStore, UnitOfWork,
-    UnitOfWorkCommand, UnitOfWorkError, UnitOfWorkExecuted, UnitOfWorkRepository, UnitOfWorkStore,
+    UnitOfWorkCommand, UnitOfWorkError, UnitOfWorkExecuted, UnitOfWorkStore,
 };
 pub use version::{AggregateVersion, EventVersion, InvalidStoredVersion, StoredVersion};

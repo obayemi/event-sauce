@@ -21,13 +21,13 @@ pub struct StreamWrite {
 
 /// One aggregate's pending write, prepared but not yet persisted.
 ///
-/// Returned by [`UnitOfWorkRepository::prepare`](super::UnitOfWorkRepository::prepare)
-/// and [`prepare_deleted`](super::UnitOfWorkRepository::prepare_deleted). Opaque
+/// Prepared by the [`UnitOfWorkStore`](super::UnitOfWorkStore) registry for
+/// each aggregate a [`UnitOfWork`](super::UnitOfWork) changed. Opaque
 /// to the unit of work collecting it — it hands each one to
 /// [`AtomicCommit::push_write`] without inspecting which variant it got, so
 /// mixing event-sourced and state-stored aggregates in one unit of work never
-/// requires branching on persistence kind. Which variant a repository
-/// produces follows from its own persistence style, never from a runtime
+/// requires branching on persistence kind. Which variant is
+/// produced follows from the aggregate's registered persistence style, never from a runtime
 /// choice.
 #[derive(Debug, Clone)]
 pub enum PreparedWrite {
@@ -39,7 +39,7 @@ pub enum PreparedWrite {
 
 /// A version assertion without a write.
 ///
-/// Returned by [`UnitOfWorkRepository::expect`](super::UnitOfWorkRepository::expect)
+/// Prepared by the [`UnitOfWorkStore`](super::UnitOfWorkStore) registry
 /// for an aggregate the unit of work only read: asserts its stream or row is
 /// still at the loaded version, without writing anything for it. Like
 /// [`PreparedWrite`], it is opaque to the unit of work — it is sorted into

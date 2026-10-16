@@ -7,20 +7,19 @@ use std::any::Any;
 use async_trait::async_trait;
 
 use super::identity_map::{downcast, Held, Returned};
-use super::repository_ext::{
-    prepare_state_write, prepare_stream_write, state_expectation, stream_expectation,
-};
-use super::{AtomicCommit, Expectation, PreparedWrite, TransactionalStore};
+use super::{AtomicCommit, Expectation, PreparedWrite, StreamWrite, TransactionalStore};
+use crate::commit_source::CommitSource;
 use crate::{
-    Aggregate, AggregateRoot, AggregateVersion, DeletedAggregateRoot, EntityId, Loaded, Result,
-    Snapshot, StateStoredRepository,
+    Aggregate, AggregateRoot, AggregateVersion, DeletedAggregateRoot, EntityId, EventStore, Loaded,
+    Result, Snapshot, StateStore, StateStoredRepository, StreamId,
 };
 
 /// Aggregate `A`'s persistence against a borrowed [`TransactionalStore`].
 ///
-/// Mirrors [`UnitOfWorkRepository`](super::UnitOfWorkRepository) plus
-/// `load_any`, but borrows the store per call: a [`TransactionalStore`]
-/// hands out `&Events` and `&States`, never the `Arc` a repository owns.
+/// Loads an aggregate, prepares its write without persisting it, and builds
+/// the version assertion for one the unit of work only read. Borrows the
+/// store per call: a [`TransactionalStore`] hands out `&Events` and
+/// `&States`, never the `Arc` a repository owns.
 #[async_trait]
 pub(super) trait Persistence<T, A: Aggregate>: Send + Sync {
     async fn load_any(&self, store: &T, id: EntityId) -> Result<Loaded<A>>;
@@ -98,6 +97,48 @@ where
 
     fn expect(&self, id: EntityId, version: AggregateVersion) -> Expectation {
         state_expectation::<A>(id, version)
+    }
+}
+
+async fn prepare_stream_write<S, A, R>(store: &S, root: &R) -> Result<Option<PreparedWrite>>
+where
+    S: EventStore + ?Sized,
+    A: Aggregate,
+    A::Event: serde::Serialize,
+    R: CommitSource<A>,
+{
+    Ok(crate::event_store::prepare_commit(store, root)
+        .await?
+        .map(|prepared| {
+            PreparedWrite::Stream(StreamWrite {
+                commit: prepared.commit,
+                snapshot: prepared.snapshot,
+            })
+        }))
+}
+
+fn prepare_state_write<S, A, R>(root: &R) -> Result<Option<PreparedWrite>>
+where
+    S: StateStore + 'static,
+    A: Aggregate + serde::Serialize + serde::de::DeserializeOwned,
+    A::DeletedState: serde::Serialize + serde::de::DeserializeOwned,
+    A::Event: serde::Serialize + serde::de::DeserializeOwned,
+    R: CommitSource<A>,
+{
+    Ok(StateStoredRepository::<S, A>::prepare(root)?.map(PreparedWrite::State))
+}
+
+fn stream_expectation<A: Aggregate>(id: EntityId, version: AggregateVersion) -> Expectation {
+    Expectation::Stream {
+        stream_id: StreamId::new(A::aggregate_type(), id.as_uuid()),
+        version,
+    }
+}
+
+fn state_expectation<A: Aggregate>(id: EntityId, version: AggregateVersion) -> Expectation {
+    Expectation::State {
+        stream_id: StreamId::new(A::aggregate_type(), id.as_uuid()),
+        version,
     }
 }
 
