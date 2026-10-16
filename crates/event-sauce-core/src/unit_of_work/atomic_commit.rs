@@ -2,7 +2,7 @@
 //! call persists: prepared writes and read-only version assertions, sorted
 //! by persistence kind so a backend never has to match on it itself.
 
-use crate::{AggregateVersion, Snapshot, StateCommit, StreamCommit, StreamId};
+use crate::{Aggregate, AggregateVersion, EntityId, Snapshot, StateCommit, StreamCommit, StreamId};
 
 /// An event-sourced aggregate's prepared stream write.
 ///
@@ -60,6 +60,24 @@ pub enum Expectation {
         /// The version the row was loaded at.
         version: AggregateVersion,
     },
+}
+
+impl Expectation {
+    /// Asserts that `id`'s stream, as an `A` aggregate, is still at `version`.
+    pub(super) fn stream<A: Aggregate>(id: EntityId, version: AggregateVersion) -> Self {
+        Self::Stream {
+            stream_id: StreamId::new(A::aggregate_type(), id.as_uuid()),
+            version,
+        }
+    }
+
+    /// Asserts that `id`'s row, as an `A` aggregate, is still at `version`.
+    pub(super) fn state<A: Aggregate>(id: EntityId, version: AggregateVersion) -> Self {
+        Self::State {
+            stream_id: StreamId::new(A::aggregate_type(), id.as_uuid()),
+            version,
+        }
+    }
 }
 
 /// Everything a [`TransactionalStore::commit_atomic`](super::TransactionalStore::commit_atomic)

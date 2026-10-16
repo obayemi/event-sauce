@@ -11,7 +11,7 @@ use super::{AtomicCommit, Expectation, PreparedWrite, StreamWrite, Transactional
 use crate::commit_source::CommitSource;
 use crate::{
     Aggregate, AggregateRoot, AggregateVersion, DeletedAggregateRoot, EntityId, EventStore, Loaded,
-    Result, Snapshot, StateStore, StateStoredRepository, StreamId,
+    Result, Snapshot, StateStore, StateStoredRepository,
 };
 
 /// Aggregate `A`'s persistence against a borrowed [`TransactionalStore`].
@@ -66,7 +66,7 @@ where
     }
 
     fn expect(&self, id: EntityId, version: AggregateVersion) -> Expectation {
-        stream_expectation::<A>(id, version)
+        Expectation::stream::<A>(id, version)
     }
 }
 
@@ -96,7 +96,7 @@ where
     }
 
     fn expect(&self, id: EntityId, version: AggregateVersion) -> Expectation {
-        state_expectation::<A>(id, version)
+        Expectation::state::<A>(id, version)
     }
 }
 
@@ -126,20 +126,6 @@ where
     R: CommitSource<A>,
 {
     Ok(StateStoredRepository::<S, A>::prepare(root)?.map(PreparedWrite::State))
-}
-
-fn stream_expectation<A: Aggregate>(id: EntityId, version: AggregateVersion) -> Expectation {
-    Expectation::Stream {
-        stream_id: StreamId::new(A::aggregate_type(), id.as_uuid()),
-        version,
-    }
-}
-
-fn state_expectation<A: Aggregate>(id: EntityId, version: AggregateVersion) -> Expectation {
-    Expectation::State {
-        stream_id: StreamId::new(A::aggregate_type(), id.as_uuid()),
-        version,
-    }
 }
 
 /// One registered aggregate type: its [`Persistence`], whichever style.
