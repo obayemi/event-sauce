@@ -157,7 +157,10 @@ pub use entity::{DefaultEntity, Entity};
 pub use entity_id::EntityId;
 pub use error::{ClaimConflict, Error, Result};
 pub use event_applicator::EventApplicator;
-pub use event_context::{display, ContextValue, DisplayValue, EnteredEventContext, EventContext};
+pub use event_context::{
+    display, ContextValue, DisplayValue, EnteredEventContext, EventContext, WithEventContext,
+    WithEventContextExt,
+};
 pub use event_envelope::{EventEnvelope, EventMetadata};
 pub use event_filter::EventFilter;
 #[cfg(feature = "event-sourcing")]

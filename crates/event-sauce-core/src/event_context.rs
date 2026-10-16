@@ -19,6 +19,7 @@
 //! });
 //! ```
 
+mod future;
 mod value;
 
 use serde_json::{Map, Value};
@@ -26,6 +27,7 @@ use std::cell::RefCell;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
+pub use future::{WithEventContext, WithEventContextExt};
 pub use value::{display, ContextValue, DisplayValue};
 
 /// Marker of an [`EventContext`] that starts a fresh context: it inherits
@@ -76,7 +78,8 @@ fn effective<R>(read: impl FnOnce(&[Arc<Frame>]) -> R) -> R {
 /// Build one with [`EventContext::new`] (layered on the active context) or
 /// [`EventContext::root`] (a fresh start that may carry a tenant), then
 /// activate it with [`in_scope`](Self::in_scope),
-/// [`entered`](Self::entered).
+/// [`entered`](Self::entered), or, across `.await` points,
+/// [`with_event_context`](WithEventContextExt::with_event_context).
 ///
 /// Resolution walks the active contexts from the outermost to the innermost,
 /// starting at the last [`Root`] one:
@@ -85,6 +88,21 @@ fn effective<R>(read: impl FnOnce(&[Arc<Frame>]) -> R) -> R {
 ///   with is never overwritten by deeper layers,
 /// - the tenant and the command are the innermost ones set,
 /// - additional values merge key by key, the innermost winning.
+///
+/// Spawned tasks do not inherit the context of the task that spawned them:
+/// carry it over with [`EventContext::current`].
+///
+/// ```
+/// use event_sauce_core::{EventContext, WithEventContextExt};
+///
+/// # #[tokio::main(flavor = "current_thread")]
+/// # async fn main() {
+/// let work = async { /* applies events */ };
+/// tokio::spawn(work.with_event_context(EventContext::current()))
+///     .await
+///     .unwrap();
+/// # }
+/// ```
 ///
 /// A tenant can only be set on a [`Root`] context:
 ///
@@ -153,7 +171,8 @@ impl<K> EventContext<K> {
     /// Like `tracing::Span::enter`, the guard is bound to the current thread
     /// (it is not `Send`) and must not be held across an `.await`: the task
     /// may resume on another thread, leaving this one with a stale context.
-    /// Leaking the guard with `std::mem::forget` leaves the
+    /// Use [`with_event_context`](WithEventContextExt::with_event_context)
+    /// for async code. Leaking the guard with `std::mem::forget` leaves the
     /// context active on this thread for good.
     ///
     /// ```
@@ -173,10 +192,7 @@ impl<K> EventContext<K> {
     /// ```
     #[must_use = "the context is only active while the guard is alive"]
     pub fn entered(self) -> EnteredEventContext {
-        EnteredEventContext {
-            depth: push(Arc::new(self.frame)),
-            not_send: PhantomData,
-        }
+        EnteredEventContext::enter(Arc::new(self.frame))
     }
 
     /// Runs `f` with this context active, restoring the previous one
@@ -193,6 +209,12 @@ impl<K> EventContext<K> {
     pub fn in_scope<R>(self, f: impl FnOnce() -> R) -> R {
         let _guard = self.entered();
         f()
+    }
+}
+
+impl<K> EventContext<K> {
+    fn into_frame(self) -> Arc<Frame> {
+        Arc::new(self.frame)
     }
 }
 
@@ -254,7 +276,8 @@ impl EventContext<Root> {
     }
 
     /// Snapshots the effective context of the current thread as a root
-    /// context, to hand to a spawned task.
+    /// context, to hand to a spawned task (see
+    /// [`with_event_context`](WithEventContextExt::with_event_context)).
     ///
     /// The correlation path is not carried over: the snapshot restarts it at
     /// the effective correlation id.
@@ -291,6 +314,15 @@ impl EventContext<Root> {
 pub struct EnteredEventContext {
     depth: usize,
     not_send: PhantomData<*const ()>,
+}
+
+impl EnteredEventContext {
+    fn enter(frame: Arc<Frame>) -> Self {
+        Self {
+            depth: push(frame),
+            not_send: PhantomData,
+        }
+    }
 }
 
 impl Drop for EnteredEventContext {
