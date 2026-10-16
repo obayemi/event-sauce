@@ -13,7 +13,7 @@ use super::repository_ext::{
 use super::{AtomicCommit, Expectation, PreparedWrite, TransactionalStore};
 use crate::{
     Aggregate, AggregateRoot, AggregateVersion, DeletedAggregateRoot, EntityId, Loaded, Result,
-    StateStoredRepository,
+    Snapshot, StateStoredRepository,
 };
 
 /// Aggregate `A`'s persistence against a borrowed [`TransactionalStore`].
@@ -117,7 +117,12 @@ pub(super) trait Registered<T>: Send + Sync {
     /// Adds what committing `returned` takes to `commit`: its write if it
     /// has pending events, otherwise an expectation at its loaded version
     /// (nothing for a root this unit of work created and left untouched).
-    async fn stage(&self, store: &T, returned: Returned, commit: &mut AtomicCommit) -> Result<()>;
+    async fn stage(
+        &self,
+        store: &T,
+        returned: Returned,
+        commit: &mut AtomicCommit,
+    ) -> Result<Option<Snapshot>>;
 }
 
 #[async_trait]
@@ -130,7 +135,12 @@ where
         self
     }
 
-    async fn stage(&self, store: &T, returned: Returned, commit: &mut AtomicCommit) -> Result<()> {
+    async fn stage(
+        &self,
+        store: &T,
+        returned: Returned,
+        commit: &mut AtomicCommit,
+    ) -> Result<Option<Snapshot>> {
         let write = match returned.root {
             Held::Active(root) => {
                 let root: AggregateRoot<A> = downcast(root);
@@ -141,13 +151,13 @@ where
                 self.persistence.prepare_deleted(store, &root).await?
             }
         };
-        match (write, returned.loaded) {
+        Ok(match (write, returned.loaded) {
             (Some(write), _) => commit.push_write(write),
             (None, Some(version)) => {
                 commit.push_expectation(self.persistence.expect(returned.key.1, version));
+                None
             }
-            (None, None) => {}
-        }
-        Ok(())
+            (None, None) => None,
+        })
     }
 }

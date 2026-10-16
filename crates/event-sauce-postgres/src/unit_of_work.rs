@@ -172,11 +172,7 @@ impl PostgresTransactionalStore {
             mut state_expectations,
         } = commit;
 
-        let stream_commits = stream_writes
-            .into_iter()
-            .map(|write| write.commit)
-            .collect();
-        let (stream_commits, precheck_indices) = PostgresEventStore::prepare_batch(stream_commits)?;
+        let (stream_commits, precheck_indices) = PostgresEventStore::prepare_batch(stream_writes)?;
 
         state_writes.sort_by_key(|write| sort_key(&write.state.stream_id()));
         stream_expectations.sort_by_key(|(stream_id, _)| sort_key(stream_id));
@@ -228,7 +224,6 @@ mod tests {
     use event_sauce_core::{
         AggregateType, EventEnvelope, EventFilter, EventStore, EventVersion, Expectation,
         PreparedWrite, StateCommit, StateProjection, StateStore, StoredState, StreamCommit,
-        StreamWrite,
     };
     use serde_json::json;
     use sqlx::{PgConnection, PgPool};
@@ -312,16 +307,13 @@ mod tests {
         stream_id: StreamId,
         expected_version: AggregateVersion,
         events: Vec<EventEnvelope>,
-    ) -> StreamWrite {
-        StreamWrite {
-            commit: StreamCommit {
-                stream_id,
-                events,
-                expected_version,
-                claims: vec![],
-                clear_claims: false,
-            },
-            snapshot: None,
+    ) -> StreamCommit {
+        StreamCommit {
+            stream_id,
+            events,
+            expected_version,
+            claims: vec![],
+            clear_claims: false,
         }
     }
 
@@ -375,7 +367,7 @@ mod tests {
         let state_id = Uuid::new_v4();
 
         let mut commit = AtomicCommit::new();
-        commit.push_write(PreparedWrite::Stream(manual_stream_commit(
+        commit.stream_writes.push(manual_stream_commit(
             stream_id.clone(),
             AggregateVersion::initial(),
             vec![manual_event(
@@ -383,7 +375,7 @@ mod tests {
                 "Order",
                 "Order.Placed",
             )],
-        )));
+        ));
         commit.push_write(PreparedWrite::State(manual_state_commit(
             "Invoice",
             state_id,
@@ -466,7 +458,7 @@ mod tests {
             stream_id: StreamId::new("Invoice", state_id),
             version: AggregateVersion::initial(),
         });
-        commit.push_write(PreparedWrite::Stream(manual_stream_commit(
+        commit.stream_writes.push(manual_stream_commit(
             stream_id.clone(),
             AggregateVersion::initial(),
             vec![manual_event(
@@ -474,7 +466,7 @@ mod tests {
                 "Order",
                 "Order.Placed",
             )],
-        )));
+        ));
 
         let err = store.commit_atomic(commit).await.unwrap_err();
         assert!(err.is_concurrency_conflict());
@@ -513,7 +505,7 @@ mod tests {
 
         let state_id = Uuid::new_v4();
         let mut commit = AtomicCommit::new();
-        commit.push_write(PreparedWrite::Stream(manual_stream_commit(
+        commit.stream_writes.push(manual_stream_commit(
             stream_id.clone(),
             AggregateVersion::initial(),
             vec![manual_event(
@@ -521,7 +513,7 @@ mod tests {
                 "Order",
                 "Order.Stale",
             )],
-        )));
+        ));
         commit.push_write(PreparedWrite::State(manual_state_commit(
             "Invoice",
             state_id,
@@ -558,7 +550,7 @@ mod tests {
             0,
             vec![],
         )));
-        commit.push_write(PreparedWrite::Stream(manual_stream_commit(
+        commit.stream_writes.push(manual_stream_commit(
             stream_id.clone(),
             AggregateVersion::initial(),
             vec![manual_event(
@@ -566,7 +558,7 @@ mod tests {
                 "Order",
                 "Order.Placed",
             )],
-        )));
+        ));
 
         let err = store.commit_atomic(commit).await.unwrap_err();
         assert!(err.is_concurrency_conflict());
@@ -617,7 +609,7 @@ mod tests {
         let state_id = Uuid::new_v4();
 
         let mut commit = AtomicCommit::new();
-        commit.push_write(PreparedWrite::Stream(manual_stream_commit(
+        commit.stream_writes.push(manual_stream_commit(
             stream_id.clone(),
             AggregateVersion::initial(),
             vec![manual_event(
@@ -625,7 +617,7 @@ mod tests {
                 "Order",
                 "Order.Placed",
             )],
-        )));
+        ));
         commit.push_write(PreparedWrite::State(manual_state_commit(
             "Invoice",
             state_id,
@@ -654,17 +646,17 @@ mod tests {
         let stream_id = StreamId::new("Order", Uuid::new_v4());
 
         let mut commit_a = AtomicCommit::new();
-        commit_a.push_write(PreparedWrite::Stream(manual_stream_commit(
+        commit_a.stream_writes.push(manual_stream_commit(
             stream_id.clone(),
             AggregateVersion::initial(),
             vec![manual_event(stream_id.aggregate_id(), "Order", "Order.A")],
-        )));
+        ));
         let mut commit_b = AtomicCommit::new();
-        commit_b.push_write(PreparedWrite::Stream(manual_stream_commit(
+        commit_b.stream_writes.push(manual_stream_commit(
             stream_id.clone(),
             AggregateVersion::initial(),
             vec![manual_event(stream_id.aggregate_id(), "Order", "Order.B")],
-        )));
+        ));
 
         let store_a = store.clone();
         let store_b = store.clone();

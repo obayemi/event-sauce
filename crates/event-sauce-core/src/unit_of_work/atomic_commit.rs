@@ -8,9 +8,8 @@ use crate::{AggregateVersion, Snapshot, StateCommit, StreamCommit, StreamId};
 ///
 /// Carries the events to append and, when the snapshot strategy calls for
 /// one at this version, the snapshot to save best-effort once the commit is
-/// durable. Bundling them together (rather than two parallel vectors on
-/// [`AtomicCommit`]) keeps a write and its snapshot from drifting apart by
-/// index.
+/// durable. [`AtomicCommit::push_write`] splits them: backends only ever see
+/// the [`StreamCommit`].
 #[derive(Debug, Clone)]
 pub struct StreamWrite {
     /// The events to append, under optimistic concurrency.
@@ -92,7 +91,7 @@ pub enum Expectation {
 #[derive(Debug, Clone, Default)]
 pub struct AtomicCommit {
     /// Event-sourced aggregates' stream writes.
-    pub stream_writes: Vec<StreamWrite>,
+    pub stream_writes: Vec<StreamCommit>,
     /// State-stored aggregates' row writes.
     pub state_writes: Vec<StateCommit>,
     /// Read-only stream version assertions, for event-sourced aggregates the
@@ -112,11 +111,27 @@ impl AtomicCommit {
 
     /// Sorts a prepared write into `stream_writes` or `state_writes` by its
     /// variant.
-    pub fn push_write(&mut self, write: PreparedWrite) {
+    ///
+    /// Returns the stream write's snapshot, which never reaches a backend:
+    /// the caller saves it best-effort once the commit is durable.
+    pub fn push_write(&mut self, write: PreparedWrite) -> Option<Snapshot> {
         match write {
-            PreparedWrite::Stream(write) => self.stream_writes.push(write),
-            PreparedWrite::State(commit) => self.state_writes.push(commit),
+            PreparedWrite::Stream(StreamWrite { commit, snapshot }) => {
+                self.stream_writes.push(commit);
+                snapshot
+            }
+            PreparedWrite::State(commit) => {
+                self.state_writes.push(commit);
+                None
+            }
         }
+    }
+
+    /// Whether this commit has anything to write, ignoring read-only
+    /// version assertions.
+    #[must_use]
+    pub fn has_writes(&self) -> bool {
+        !self.stream_writes.is_empty() || !self.state_writes.is_empty()
     }
 
     /// Sorts a version assertion into `stream_expectations` or
@@ -204,6 +219,50 @@ mod tests {
 
         assert_eq!(commit.state_writes.len(), 1);
         assert!(commit.stream_writes.is_empty());
+    }
+
+    #[test]
+    fn push_write_returns_the_stream_snapshot_and_keeps_only_the_commit() {
+        let mut commit = AtomicCommit::new();
+        let stream_id = StreamId::new("Order", Uuid::new_v4());
+        let mut write = stream_write(stream_id.clone());
+        write.snapshot = Some(Snapshot::new(
+            stream_id.aggregate_id(),
+            "Order",
+            AggregateVersion::new(1),
+            serde_json::json!({}),
+        ));
+
+        let snapshot = commit.push_write(PreparedWrite::Stream(write));
+
+        assert_eq!(snapshot.unwrap().snapshot_version, AggregateVersion::new(1));
+        assert_eq!(commit.stream_writes[0].stream_id, stream_id);
+    }
+
+    #[test]
+    fn push_write_returns_no_snapshot_for_a_state_write() {
+        let mut commit = AtomicCommit::new();
+        let stream_id = StreamId::new("Product", Uuid::new_v4());
+
+        assert!(commit
+            .push_write(PreparedWrite::State(state_commit(&stream_id)))
+            .is_none());
+    }
+
+    #[test]
+    fn has_writes_ignores_expectations() {
+        let mut commit = AtomicCommit::new();
+        commit.push_expectation(Expectation::Stream {
+            stream_id: StreamId::new("Order", Uuid::new_v4()),
+            version: AggregateVersion::new(1),
+        });
+        assert!(!commit.has_writes());
+
+        commit.push_write(PreparedWrite::State(state_commit(&StreamId::new(
+            "Product",
+            Uuid::new_v4(),
+        ))));
+        assert!(commit.has_writes());
     }
 
     #[test]

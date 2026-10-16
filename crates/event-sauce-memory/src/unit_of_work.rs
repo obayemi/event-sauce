@@ -85,15 +85,11 @@ impl TransactionalStore for InMemoryTransactionalStore {
             stream_expectations,
             state_expectations,
         } = commit;
-        let stream_commits = stream_writes
-            .into_iter()
-            .map(|write| write.commit)
-            .collect();
         let events = &self.events;
 
         self.states
             .commit_all_then(state_writes, &state_expectations, || {
-                events.commit_with_expectations(stream_commits, &stream_expectations)
+                events.commit_with_expectations(stream_writes, &stream_expectations)
             })
             .await
     }
@@ -105,29 +101,25 @@ mod tests {
     use async_trait::async_trait;
     use event_sauce_core::{
         AggregateVersion, AtomicCommit, Error, EventEnvelope, EventStore, Result, StateCommit,
-        StateProjection, StateStore, StoredState, StreamCommit, StreamId, StreamWrite,
-        TransactionalStore,
+        StateProjection, StateStore, StoredState, StreamCommit, StreamId, TransactionalStore,
     };
     use std::sync::Arc;
     use uuid::Uuid;
 
-    fn stream_write(stream_id: &StreamId, expected_version: AggregateVersion) -> StreamWrite {
-        StreamWrite {
-            commit: StreamCommit {
-                stream_id: stream_id.clone(),
-                events: vec![EventEnvelope::new(
-                    Uuid::new_v4(),
-                    stream_id.aggregate_id(),
-                    stream_id.aggregate_type().to_string(),
-                    "Happened".to_string(),
-                    event_sauce_core::EventVersion::new(1),
-                    serde_json::json!({}),
-                )],
-                expected_version,
-                claims: vec![],
-                clear_claims: false,
-            },
-            snapshot: None,
+    fn stream_write(stream_id: &StreamId, expected_version: AggregateVersion) -> StreamCommit {
+        StreamCommit {
+            stream_id: stream_id.clone(),
+            events: vec![EventEnvelope::new(
+                Uuid::new_v4(),
+                stream_id.aggregate_id(),
+                stream_id.aggregate_type().to_string(),
+                "Happened".to_string(),
+                event_sauce_core::EventVersion::new(1),
+                serde_json::json!({}),
+            )],
+            expected_version,
+            claims: vec![],
+            clear_claims: false,
         }
     }
 

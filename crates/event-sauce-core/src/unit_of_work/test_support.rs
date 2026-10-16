@@ -120,7 +120,7 @@ impl<E: EventStore + 'static> TransactionalStore for Stores<E> {
         let stream_checks = commit
             .stream_writes
             .iter()
-            .map(|write| (&write.commit.stream_id, write.commit.expected_version))
+            .map(|write| (&write.stream_id, write.expected_version))
             .chain(commit.stream_expectations.iter().map(|(id, v)| (id, *v)));
         for (stream_id, expected) in stream_checks {
             ensure_at(self.events.get_version(stream_id.clone()).await?, expected)?;
@@ -134,8 +134,7 @@ impl<E: EventStore + 'static> TransactionalStore for Stores<E> {
         for (stream_id, expected) in state_rows {
             ensure_at(self.states.get_version(stream_id).await?, expected)?;
         }
-        for write in commit.stream_writes {
-            let c = write.commit;
+        for c in commit.stream_writes {
             self.events
                 .append(
                     c.stream_id,

@@ -143,20 +143,18 @@ impl<'s, T: TransactionalStore + 'static> UnitOfWork<'s, T> {
     pub(super) async fn commit(self) -> Result<(), UnitOfWorkError> {
         let store = self.store.store();
         let mut commit = AtomicCommit::new();
+        let mut snapshots = Vec::new();
         for returned in self.map.into_returned()? {
-            self.store
+            let snapshot = self
+                .store
                 .registered(returned.key.0)
                 .stage(store, returned, &mut commit)
                 .await?;
+            snapshots.extend(snapshot);
         }
-        if commit.stream_writes.is_empty() && commit.state_writes.is_empty() {
+        if !commit.has_writes() {
             return Ok(());
         }
-        let snapshots: Vec<_> = commit
-            .stream_writes
-            .iter_mut()
-            .filter_map(|write| write.snapshot.take())
-            .collect();
         store.commit_atomic(commit).await?;
         for snapshot in snapshots {
             crate::event_store::save_snapshot_best_effort(store.event_store(), snapshot).await;
