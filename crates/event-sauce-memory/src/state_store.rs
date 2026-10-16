@@ -122,12 +122,17 @@ struct StateData {
 }
 
 impl StateData {
+    /// The version `stream_id`'s row is currently at, or
+    /// [`AggregateVersion::initial`] when it has no row yet.
+    fn current_version(&self, stream_id: &StreamId) -> AggregateVersion {
+        self.states
+            .get(stream_id)
+            .map_or_else(AggregateVersion::initial, |state| state.version)
+    }
+
     fn stage_commit(&mut self, commit: &StateCommit) -> Result<()> {
         let key = commit.state.stream_id();
-        let current = self
-            .states
-            .get(&key)
-            .map_or_else(AggregateVersion::initial, |state| state.version);
+        let current = self.current_version(&key);
         if current != commit.expected_version {
             return Err(Error::concurrency_conflict(
                 commit.expected_version,
