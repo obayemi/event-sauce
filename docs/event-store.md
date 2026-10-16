@@ -408,60 +408,31 @@ it whether the conflict is caught by the `MAX(stream_version)` precheck or by th
 `UNIQUE(aggregate_id, aggregate_type, stream_version)` index when two transactions
 both pass the precheck and one loses the insert race. Either way you get
 `Error::ConcurrencyConflict` / `Error::is_concurrency_conflict()`, so a single
-retry loop works for every backend.
+retry policy works for every backend.
 
-The retried closure **must be idempotent**: re-derive the events from freshly
-loaded state on each attempt (re-`load` inside the loop) rather than
-replaying an aggregate command's captured result, otherwise a retry would
-re-apply stale decisions. Add jittered exponential backoff so contending
-writers do not synchronise into a thundering herd.
+With the `commands` feature, `Repository::execute` does the retrying for you.
+It reloads the aggregate on every attempt, retries only on
+`is_concurrency_conflict()`, and backs off exponentially up to a cap. Tune it
+with a `RetryPolicy`, and add jitter so contending writers do not synchronise
+into a thundering herd:
 
-```text
-use std::time::Duration;
-use event_sauce::{Error, EventSourcedRepository};
-use event_sauce::postgres::PostgresEventStore;
+```rust
+use std::{num::NonZeroU32, time::Duration};
+use event_sauce::RetryPolicy;
 
-async fn safe_update(
-    repo: &EventSourcedRepository<PostgresEventStore, Counter>,
-    counter_id: EntityId,
-    operation: impl Fn(&mut AggregateRoot<Counter>) -> Result<(), CounterError>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    const MAX_RETRIES: u32 = 5;
-    const BASE_DELAY: Duration = Duration::from_millis(20);
-    const MAX_DELAY: Duration = Duration::from_millis(500);
-
-    for attempt in 1..=MAX_RETRIES {
-        // Re-load current state on every attempt so the operation is derived
-        // from the latest committed events (idempotent retry).
-        let mut counter: AggregateRoot<Counter> = repo.load(counter_id).await?;
-
-        // Execute operation against fresh state.
-        operation(&mut counter)?;
-
-        // Try to commit.
-        match repo.save(&mut counter).await {
-            Ok(()) => return Ok(()),
-            Err(e) if e.is_concurrency_conflict() && attempt < MAX_RETRIES => {
-                // Jittered exponential backoff: base * 2^(attempt-1), capped,
-                // then randomised in [0, delay) to de-synchronise writers.
-                let exp = BASE_DELAY.saturating_mul(1u32 << (attempt - 1));
-                let capped = exp.min(MAX_DELAY);
-                let jitter = rand::random::<f64>() * capped.as_secs_f64();
-                tokio::time::sleep(Duration::from_secs_f64(jitter)).await;
-                continue;
-            }
-            Err(e) => return Err(e.into()),
-        }
-    }
-
-    Err("Max retries exceeded".into())
+fn spread(delay: Duration) -> Duration {
+    delay / 2
 }
+
+let policy = RetryPolicy::default()
+    .with_max_attempts(NonZeroU32::new(5).unwrap())
+    .with_jitter(spread);
+// repo.execute(counter_id, &command, &(), policy).await?;
 ```
 
-> The example is marked `text` (not a compiled doctest) because the jittered
-> backoff uses `rand`, which the library does not depend on. Use any jitter
-> source you already have; the important parts are looping on
-> `is_concurrency_conflict()`, re-loading inside the loop, and backing off.
+Without the `commands` feature, write the loop yourself: re-`load` inside it
+so each attempt derives its events from fresh state, loop only on
+`is_concurrency_conflict()`, and back off between attempts.
 
 ### Batch Operations
 
