@@ -269,9 +269,61 @@ impl InMemoryStateStore {
     }
 
     async fn commit_all(&self, commits: Vec<StateCommit>) -> Result<()> {
+        self.commit_all_then(commits, &[], || Ok(())).await
+    }
+
+    /// Stages `commits` and checks `state_expectations` under the store's
+    /// single write lock, then — only once every write and every expectation
+    /// has checked out — calls `before_swap` and swaps the staged data in
+    /// only if it returns `Ok`.
+    ///
+    /// `before_swap` runs synchronously, after every state-side check has
+    /// passed but before any of it is visible, so a caller can use it to
+    /// take another store's locks and apply its own writes there: if that
+    /// fails, this call returns the error and leaves the state store
+    /// untouched too, exactly as if `before_swap` had been just another
+    /// state check.
+    ///
+    /// An expectation for a stream this call also writes is checked against
+    /// the version that stream was at when the batch's *first* commit to it
+    /// was staged — the load-time version — mirroring the in-memory event
+    /// store's same rule for stream expectations: a write and an expectation
+    /// for the same stream must agree, or the disagreement itself is a
+    /// conflict. A missing row is at [`AggregateVersion::initial`]; a
+    /// deleted row is checked by its stored version like any other row,
+    /// `is_deleted` plays no part in the comparison.
+    ///
+    /// # Lock order
+    ///
+    /// Always takes this store's write lock before calling `before_swap`.
+    /// Behind the `unit-of-work` feature, the cross-store atomic commit
+    /// relies on this fixed order — state before events — matching the order
+    /// a plain save always takes its own single lock in, so the two can
+    /// never deadlock against each other.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first commit failure (version conflict, claim conflict,
+    /// or projection error), the first expectation mismatch, or whatever
+    /// `before_swap` returns; on error nothing in `commits` is applied and
+    /// `before_swap`'s own effects, if any, are its own responsibility to
+    /// roll back.
+    pub(crate) async fn commit_all_then(
+        &self,
+        commits: Vec<StateCommit>,
+        state_expectations: &[(StreamId, AggregateVersion)],
+        before_swap: impl FnOnce() -> Result<()>,
+    ) -> Result<()> {
         let mut data = self.inner.data.write().await;
         let mut staged = data.clone();
+        let mut load_versions: HashMap<StreamId, AggregateVersion> = HashMap::new();
+
         for commit in &commits {
+            let stream_id = commit.state.stream_id();
+            load_versions
+                .entry(stream_id.clone())
+                .or_insert_with(|| staged.current_version(&stream_id));
+
             staged.stage_commit(commit)?;
             for projection in &self.inner.projections {
                 let filter = projection.filter();
@@ -288,6 +340,19 @@ impl InMemoryStateStore {
                 }
             }
         }
+
+        for (stream_id, expected) in state_expectations {
+            let actual = load_versions
+                .get(stream_id)
+                .copied()
+                .unwrap_or_else(|| staged.current_version(stream_id));
+            if actual != *expected {
+                return Err(Error::concurrency_conflict(*expected, actual));
+            }
+        }
+
+        before_swap()?;
+
         *data = staged;
         Ok(())
     }
@@ -645,6 +710,146 @@ mod tests {
         let stream_id = StreamId::new("Test", Uuid::new_v4());
         assert!(!store1.exists(stream_id.clone()).await.unwrap());
         assert!(!store2.exists(stream_id).await.unwrap());
+    }
+
+    /// An expectation alone (no writes), matching the row's current version,
+    /// succeeds and applies nothing.
+    #[tokio::test]
+    async fn test_commit_all_then_accepts_a_matching_read_only_expectation() {
+        let store = InMemoryStateStore::new();
+        let aggregate_id = Uuid::new_v4();
+        store
+            .save(commit_for(aggregate_id, 1, vec![]))
+            .await
+            .unwrap();
+        let stream_id = StreamId::new("Test", aggregate_id);
+
+        store
+            .commit_all_then(vec![], &[(stream_id, AggregateVersion::new(1))], || Ok(()))
+            .await
+            .expect("a matching expectation must be accepted");
+    }
+
+    /// A missing row is at the initial version: an expectation for any other
+    /// version on a stream with no row conflicts.
+    #[tokio::test]
+    async fn test_commit_all_then_rejects_an_expectation_on_a_missing_row() {
+        let store = InMemoryStateStore::new();
+        let stream_id = StreamId::new("Test", Uuid::new_v4());
+
+        let error = store
+            .commit_all_then(vec![], &[(stream_id, AggregateVersion::new(1))], || Ok(()))
+            .await
+            .expect_err("an expectation on a row that does not exist must conflict");
+        assert!(error.is_concurrency_conflict());
+    }
+
+    /// An expectation on a deleted row is checked against its stored
+    /// version like any other row; `is_deleted` plays no part in it.
+    #[tokio::test]
+    async fn test_commit_all_then_checks_a_deleted_row_by_its_version() {
+        let store = InMemoryStateStore::new();
+        let aggregate_id = Uuid::new_v4();
+        let mut tombstone = commit_for(aggregate_id, 1, vec![]);
+        tombstone.state.is_deleted = true;
+        store.save(tombstone).await.unwrap();
+        let stream_id = StreamId::new("Test", aggregate_id);
+
+        store
+            .commit_all_then(
+                vec![],
+                &[(stream_id.clone(), AggregateVersion::new(1))],
+                || Ok(()),
+            )
+            .await
+            .expect("a deleted row's own version must satisfy a matching expectation");
+
+        let error = store
+            .commit_all_then(vec![], &[(stream_id, AggregateVersion::new(2))], || Ok(()))
+            .await
+            .expect_err("a deleted row at the wrong version must still conflict");
+        assert!(error.is_concurrency_conflict());
+    }
+
+    /// An expectation for a stream this call also writes, agreeing with the
+    /// write's own `expected_version`, is redundant but harmless.
+    #[tokio::test]
+    async fn test_commit_all_then_accepts_an_expectation_agreeing_with_its_own_write() {
+        let store = InMemoryStateStore::new();
+        let aggregate_id = Uuid::new_v4();
+        let stream_id = StreamId::new("Test", aggregate_id);
+
+        store
+            .commit_all_then(
+                vec![commit_for(aggregate_id, 1, vec![])],
+                &[(stream_id, AggregateVersion::initial())],
+                || Ok(()),
+            )
+            .await
+            .expect("an expectation agreeing with the write must be accepted");
+    }
+
+    /// An expectation for a stream this call also writes, disagreeing with
+    /// the write's own `expected_version`, is a conflict — the two were
+    /// prepared from different reads of the same stream.
+    #[tokio::test]
+    async fn test_commit_all_then_rejects_disagreement_with_its_own_write() {
+        let store = InMemoryStateStore::new();
+        let aggregate_id = Uuid::new_v4();
+        let stream_id = StreamId::new("Test", aggregate_id);
+
+        let error = store
+            .commit_all_then(
+                vec![commit_for(aggregate_id, 1, vec![])],
+                &[(stream_id.clone(), AggregateVersion::new(1))],
+                || Ok(()),
+            )
+            .await
+            .expect_err("a write and an expectation that disagree must conflict");
+        assert!(error.is_concurrency_conflict());
+
+        assert!(
+            store.load(stream_id).await.unwrap().is_none(),
+            "the write must not apply when its own expectation disagrees"
+        );
+    }
+
+    /// `before_swap` runs only after every write and every expectation has
+    /// checked out, and its own failure rolls the state writes back too.
+    #[tokio::test]
+    async fn test_commit_all_then_rolls_back_when_before_swap_fails() {
+        let store = InMemoryStateStore::new();
+        let aggregate_id = Uuid::new_v4();
+
+        let error = store
+            .commit_all_then(vec![commit_for(aggregate_id, 1, vec![])], &[], || {
+                Err(event_sauce_core::Error::Custom("boom".into()))
+            })
+            .await
+            .expect_err("a failing before_swap must fail the whole commit");
+        assert!(matches!(error, event_sauce_core::Error::Custom(_)));
+
+        let stream_id = StreamId::new("Test", aggregate_id);
+        assert!(
+            store.load(stream_id).await.unwrap().is_none(),
+            "a state write must not apply when before_swap fails"
+        );
+    }
+
+    /// `before_swap` never runs when a write or an expectation already
+    /// failed — the existing state-side checks still short-circuit it.
+    #[tokio::test]
+    async fn test_commit_all_then_skips_before_swap_when_a_write_fails() {
+        let store = InMemoryStateStore::new();
+        let aggregate_id = Uuid::new_v4();
+
+        let error = store
+            .commit_all_then(vec![commit_for(aggregate_id, 2, vec![])], &[], || {
+                panic!("before_swap must not run when a state write already conflicted")
+            })
+            .await
+            .expect_err("a stale expected_version must conflict before before_swap runs");
+        assert!(error.is_concurrency_conflict());
     }
 
     #[test]
