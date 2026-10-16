@@ -221,7 +221,8 @@ impl<S, A> Clone for StateStoredRepository<S, A> {
 mod tests {
     use super::*;
     use crate::test_fixtures::{
-        MockStateStore, SimpleTestDelete, SimpleTestEntity, SimpleTestEvent, SimpleTestInit,
+        FailNTimesStateStore, MockStateStore, SimpleTestDelete, SimpleTestEntity, SimpleTestEvent,
+        SimpleTestInit,
     };
 
     fn repo() -> (
@@ -338,48 +339,6 @@ mod tests {
             .unwrap();
         let err = repo.save(&mut second).await.unwrap_err();
         assert!(err.is_concurrency_conflict());
-    }
-
-    /// Wraps a [`MockStateStore`], failing `save`'s first `failures` calls
-    /// with `ConcurrencyConflict` before delegating to the inner store.
-    struct FailNTimesStateStore {
-        inner: Arc<MockStateStore>,
-        remaining_failures: std::sync::Mutex<usize>,
-    }
-
-    impl FailNTimesStateStore {
-        fn new(inner: Arc<MockStateStore>, failures: usize) -> Self {
-            Self {
-                inner,
-                remaining_failures: std::sync::Mutex::new(failures),
-            }
-        }
-    }
-
-    #[async_trait]
-    impl StateStore for FailNTimesStateStore {
-        async fn load(&self, stream_id: StreamId) -> Result<Option<StoredState>> {
-            self.inner.load(stream_id).await
-        }
-
-        async fn save(&self, commit: StateCommit) -> Result<()> {
-            let should_fail = {
-                let mut remaining = self.remaining_failures.lock().unwrap();
-                if *remaining > 0 {
-                    *remaining -= 1;
-                    true
-                } else {
-                    false
-                }
-            };
-            if should_fail {
-                return Err(Error::concurrency_conflict(
-                    commit.expected_version,
-                    commit.expected_version,
-                ));
-            }
-            self.inner.save(commit).await
-        }
     }
 
     /// Wraps a [`MockStateStore`] whose `save` never resolves, so a caller

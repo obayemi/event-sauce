@@ -11,7 +11,7 @@ use futures::stream;
 use serde::{Deserialize, Serialize};
 #[cfg(any(feature = "event-sourcing", feature = "state-store"))]
 use std::collections::HashMap;
-#[cfg(feature = "event-sourcing")]
+#[cfg(any(feature = "event-sourcing", feature = "state-store"))]
 use std::sync::Arc;
 #[cfg(any(feature = "event-sourcing", feature = "state-store"))]
 use std::sync::{Mutex, RwLock};
@@ -551,6 +551,129 @@ impl StateStore for MockStateStore {
         states.insert(key, commit.state.clone());
         self.commits.lock().unwrap().push(commit);
         Ok(())
+    }
+}
+
+/// How many more calls a failure-injecting test store still fails.
+#[cfg(any(
+    all(feature = "commands", feature = "event-sourcing"),
+    feature = "state-store"
+))]
+#[derive(Debug)]
+pub(crate) struct FailureBudget(Mutex<usize>);
+
+#[cfg(any(
+    all(feature = "commands", feature = "event-sourcing"),
+    feature = "state-store"
+))]
+impl FailureBudget {
+    fn new(failures: usize) -> Self {
+        Self(Mutex::new(failures))
+    }
+
+    /// Spends one failure, returning whether the call should fail.
+    fn take(&self) -> bool {
+        let mut remaining = self.0.lock().unwrap();
+        let fails = *remaining > 0;
+        *remaining = remaining.saturating_sub(1);
+        fails
+    }
+}
+
+/// Wraps a [`MockEventStore`], failing `append`'s first `failures` calls with
+/// a concurrency conflict regardless of the version actually stored, before
+/// delegating to the inner store.
+#[cfg(all(feature = "commands", feature = "event-sourcing"))]
+pub(crate) struct FailNTimesEventStore {
+    inner: Arc<MockEventStore>,
+    budget: FailureBudget,
+}
+
+#[cfg(all(feature = "commands", feature = "event-sourcing"))]
+impl FailNTimesEventStore {
+    pub(crate) fn new(inner: Arc<MockEventStore>, failures: usize) -> Self {
+        Self {
+            inner,
+            budget: FailureBudget::new(failures),
+        }
+    }
+}
+
+#[cfg(all(feature = "commands", feature = "event-sourcing"))]
+#[async_trait]
+impl EventStore for FailNTimesEventStore {
+    async fn append(
+        &self,
+        stream_id: StreamId,
+        events: Vec<EventEnvelope>,
+        expected_version: AggregateVersion,
+        claims: Vec<crate::AggregateClaim>,
+        clear_claims: bool,
+    ) -> Result<()> {
+        if self.budget.take() {
+            return Err(crate::Error::concurrency_conflict(
+                expected_version,
+                AggregateVersion::new(expected_version.as_i64() + 1),
+            ));
+        }
+        self.inner
+            .append(stream_id, events, expected_version, claims, clear_claims)
+            .await
+    }
+
+    async fn load_stream(
+        &self,
+        stream_id: StreamId,
+        from_version: AggregateVersion,
+    ) -> Result<impl futures::Stream<Item = Result<EventEnvelope>> + Send> {
+        self.inner.load_stream(stream_id, from_version).await
+    }
+
+    async fn stream_all(
+        &self,
+        from_position: Position,
+    ) -> Result<impl futures::Stream<Item = Result<EventLogEntry>> + Send> {
+        self.inner.stream_all(from_position).await
+    }
+
+    async fn get_version(&self, stream_id: StreamId) -> Result<AggregateVersion> {
+        self.inner.get_version(stream_id).await
+    }
+}
+
+/// Wraps a [`MockStateStore`], failing `save`'s first `failures` calls with a
+/// concurrency conflict before delegating to the inner store.
+#[cfg(feature = "state-store")]
+pub(crate) struct FailNTimesStateStore {
+    inner: Arc<MockStateStore>,
+    budget: FailureBudget,
+}
+
+#[cfg(feature = "state-store")]
+impl FailNTimesStateStore {
+    pub(crate) fn new(inner: Arc<MockStateStore>, failures: usize) -> Self {
+        Self {
+            inner,
+            budget: FailureBudget::new(failures),
+        }
+    }
+}
+
+#[cfg(feature = "state-store")]
+#[async_trait]
+impl StateStore for FailNTimesStateStore {
+    async fn load(&self, stream_id: StreamId) -> Result<Option<StoredState>> {
+        self.inner.load(stream_id).await
+    }
+
+    async fn save(&self, commit: StateCommit) -> Result<()> {
+        if self.budget.take() {
+            return Err(crate::Error::concurrency_conflict(
+                commit.expected_version,
+                commit.expected_version,
+            ));
+        }
+        self.inner.save(commit).await
     }
 }
 

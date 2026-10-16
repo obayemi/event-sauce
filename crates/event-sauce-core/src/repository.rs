@@ -1432,6 +1432,12 @@ mod execute_tests {
         }
     }
 
+    async fn seed_active<R: Repository<SimpleTestEntity>>(repo: &R, id: EntityId) {
+        let mut seed = AggregateRoot::<SimpleTestEntity>::new(id);
+        seed.apply(SimpleTestEvent::Created { value: 1 }).unwrap();
+        repo.save(&mut seed).await.unwrap();
+    }
+
     #[cfg(feature = "event-sourcing")]
     fn delete() -> impl Fn(
         Root<SimpleTestEntity>,
@@ -1479,84 +1485,15 @@ mod execute_tests {
     mod event_sourced {
         use super::*;
         use crate::event_store::EventStore;
-        use crate::test_fixtures::MockEventStore;
-        use crate::{AggregateClaim, EventEnvelope, EventLogEntry, Position};
-
-        /// Wraps a [`MockEventStore`], failing `append`'s first `failures`
-        /// calls with a concurrency conflict regardless of the version
-        /// actually stored, before delegating to the inner store.
-        struct FailNTimesEventStore {
-            inner: Arc<MockEventStore>,
-            remaining_failures: std::sync::Mutex<usize>,
-        }
-
-        impl FailNTimesEventStore {
-            fn new(inner: Arc<MockEventStore>, failures: usize) -> Self {
-                Self {
-                    inner,
-                    remaining_failures: std::sync::Mutex::new(failures),
-                }
-            }
-        }
-
-        #[async_trait]
-        impl EventStore for FailNTimesEventStore {
-            async fn append(
-                &self,
-                stream_id: StreamId,
-                events: Vec<EventEnvelope>,
-                expected_version: AggregateVersion,
-                claims: Vec<AggregateClaim>,
-                clear_claims: bool,
-            ) -> Result<()> {
-                let should_fail = {
-                    let mut remaining = self.remaining_failures.lock().unwrap();
-                    if *remaining > 0 {
-                        *remaining -= 1;
-                        true
-                    } else {
-                        false
-                    }
-                };
-                if should_fail {
-                    return Err(Error::concurrency_conflict(
-                        expected_version,
-                        AggregateVersion::new(expected_version.as_i64() + 1),
-                    ));
-                }
-                self.inner
-                    .append(stream_id, events, expected_version, claims, clear_claims)
-                    .await
-            }
-
-            async fn load_stream(
-                &self,
-                stream_id: StreamId,
-                from_version: AggregateVersion,
-            ) -> Result<impl futures::Stream<Item = Result<EventEnvelope>> + Send> {
-                self.inner.load_stream(stream_id, from_version).await
-            }
-
-            async fn stream_all(
-                &self,
-                from_position: Position,
-            ) -> Result<impl futures::Stream<Item = Result<EventLogEntry>> + Send> {
-                self.inner.stream_all(from_position).await
-            }
-
-            async fn get_version(&self, stream_id: StreamId) -> Result<AggregateVersion> {
-                self.inner.get_version(stream_id).await
-            }
-        }
+        use crate::test_fixtures::{FailNTimesEventStore, MockEventStore};
+        use crate::EventEnvelope;
 
         #[tokio::test]
         async fn succeeds_on_the_first_attempt() {
             let store = Arc::new(MockEventStore::new());
             let repo = store.repository::<SimpleTestEntity>();
             let id = EntityId::new();
-            let mut seed = AggregateRoot::<SimpleTestEntity>::new(id);
-            seed.apply(SimpleTestEvent::Created { value: 1 }).unwrap();
-            repo.save(&mut seed).await.unwrap();
+            seed_active(&repo, id).await;
 
             let executed = repo
                 .execute(id, &update_to(42), &(), RetryPolicy::default())
@@ -1589,9 +1526,7 @@ mod execute_tests {
             let store = Arc::new(MockEventStore::new());
             let repo = store.repository::<SimpleTestEntity>();
             let id = EntityId::new();
-            let mut seed = AggregateRoot::<SimpleTestEntity>::new(id);
-            seed.apply(SimpleTestEvent::Created { value: 1 }).unwrap();
-            repo.save(&mut seed).await.unwrap();
+            seed_active(&repo, id).await;
 
             let executed = repo
                 .execute(id, &delete(), &(), RetryPolicy::default())
@@ -1607,9 +1542,7 @@ mod execute_tests {
             let store = Arc::new(MockEventStore::new());
             let repo = store.repository::<SimpleTestEntity>();
             let id = EntityId::new();
-            let mut seed = AggregateRoot::<SimpleTestEntity>::new(id);
-            seed.apply(SimpleTestEvent::Created { value: 1 }).unwrap();
-            repo.save(&mut seed).await.unwrap();
+            seed_active(&repo, id).await;
 
             let err = repo
                 .execute(id, &reject(), &(), RetryPolicy::default())
@@ -1625,9 +1558,7 @@ mod execute_tests {
             let store = Arc::new(MockEventStore::new());
             let repo = store.repository::<SimpleTestEntity>();
             let id = EntityId::new();
-            let mut seed = AggregateRoot::<SimpleTestEntity>::new(id);
-            seed.apply(SimpleTestEvent::Created { value: 1 }).unwrap();
-            repo.save(&mut seed).await.unwrap();
+            seed_active(&repo, id).await;
 
             // Entity is active; `create_with` requires it to be missing.
             let err = repo
@@ -1649,9 +1580,7 @@ mod execute_tests {
             let inner = Arc::new(MockEventStore::new());
             let setup = inner.repository::<SimpleTestEntity>();
             let id = EntityId::new();
-            let mut seed = AggregateRoot::<SimpleTestEntity>::new(id);
-            seed.apply(SimpleTestEvent::Created { value: 1 }).unwrap();
-            setup.save(&mut seed).await.unwrap();
+            seed_active(&setup, id).await;
 
             let flaky = Arc::new(FailNTimesEventStore::new(Arc::clone(&inner), 1));
             let repo = flaky.repository::<SimpleTestEntity>();
@@ -1670,9 +1599,7 @@ mod execute_tests {
             let inner = Arc::new(MockEventStore::new());
             let setup = inner.repository::<SimpleTestEntity>();
             let id = EntityId::new();
-            let mut seed = AggregateRoot::<SimpleTestEntity>::new(id);
-            seed.apply(SimpleTestEvent::Created { value: 1 }).unwrap();
-            setup.save(&mut seed).await.unwrap();
+            seed_active(&setup, id).await;
 
             let flaky = Arc::new(FailNTimesEventStore::new(Arc::clone(&inner), usize::MAX));
             let repo = flaky.repository::<SimpleTestEntity>();
@@ -1693,9 +1620,7 @@ mod execute_tests {
             let store = Arc::new(MockEventStore::new());
             let repo = store.repository::<SimpleTestEntity>();
             let id = EntityId::new();
-            let mut seed = AggregateRoot::<SimpleTestEntity>::new(id);
-            seed.apply(SimpleTestEvent::Created { value: 1 }).unwrap();
-            repo.save(&mut seed).await.unwrap();
+            seed_active(&repo, id).await;
             // Poison the aggregate so the next save fails for a reason other
             // than a concurrency conflict.
             let mut loaded = repo.load(id).await.unwrap();
@@ -1744,9 +1669,7 @@ mod execute_tests {
             let store = Arc::new(MockEventStore::new());
             let repo = store.repository::<SimpleTestEntity>();
             let id = EntityId::new();
-            let mut seed = AggregateRoot::<SimpleTestEntity>::new(id);
-            seed.apply(SimpleTestEvent::Created { value: 1 }).unwrap();
-            repo.save(&mut seed).await.unwrap();
+            seed_active(&repo, id).await;
 
             let err = repo
                 .execute(id, &swap_identity(), &(), RetryPolicy::default())
@@ -1760,61 +1683,16 @@ mod execute_tests {
     #[cfg(feature = "state-store")]
     mod state_stored {
         use super::*;
-        use crate::test_fixtures::MockStateStore;
-        use crate::{StateCommit, StateStore, StreamId};
+        use crate::test_fixtures::{FailNTimesStateStore, MockStateStore};
+        use crate::StateStore;
         use std::sync::Arc;
-
-        /// Wraps a [`MockStateStore`], failing `save`'s first `failures`
-        /// calls with a concurrency conflict before delegating to the inner
-        /// store.
-        struct FailNTimesStateStore {
-            inner: Arc<MockStateStore>,
-            remaining_failures: std::sync::Mutex<usize>,
-        }
-
-        impl FailNTimesStateStore {
-            fn new(inner: Arc<MockStateStore>, failures: usize) -> Self {
-                Self {
-                    inner,
-                    remaining_failures: std::sync::Mutex::new(failures),
-                }
-            }
-        }
-
-        #[async_trait]
-        impl StateStore for FailNTimesStateStore {
-            async fn load(&self, stream_id: StreamId) -> Result<Option<crate::StoredState>> {
-                self.inner.load(stream_id).await
-            }
-
-            async fn save(&self, commit: StateCommit) -> Result<()> {
-                let should_fail = {
-                    let mut remaining = self.remaining_failures.lock().unwrap();
-                    if *remaining > 0 {
-                        *remaining -= 1;
-                        true
-                    } else {
-                        false
-                    }
-                };
-                if should_fail {
-                    return Err(Error::concurrency_conflict(
-                        commit.expected_version,
-                        commit.expected_version,
-                    ));
-                }
-                self.inner.save(commit).await
-            }
-        }
 
         #[tokio::test]
         async fn succeeds_on_the_first_attempt() {
             let store = Arc::new(MockStateStore::new());
             let repo = store.repository::<SimpleTestEntity>();
             let id = EntityId::new();
-            let mut seed = repo.create_with_id(id);
-            seed.apply(SimpleTestEvent::Created { value: 1 }).unwrap();
-            repo.save(&mut seed).await.unwrap();
+            seed_active(&repo, id).await;
 
             let executed = repo
                 .execute(id, &update_to(42), &(), RetryPolicy::default())
@@ -1830,9 +1708,7 @@ mod execute_tests {
             let inner = Arc::new(MockStateStore::new());
             let setup = inner.repository::<SimpleTestEntity>();
             let id = EntityId::new();
-            let mut seed = setup.create_with_id(id);
-            seed.apply(SimpleTestEvent::Created { value: 1 }).unwrap();
-            setup.save(&mut seed).await.unwrap();
+            seed_active(&setup, id).await;
 
             let flaky = Arc::new(FailNTimesStateStore::new(Arc::clone(&inner), 1));
             let repo = flaky.repository::<SimpleTestEntity>();
@@ -1850,9 +1726,7 @@ mod execute_tests {
             let inner = Arc::new(MockStateStore::new());
             let setup = inner.repository::<SimpleTestEntity>();
             let id = EntityId::new();
-            let mut seed = setup.create_with_id(id);
-            seed.apply(SimpleTestEvent::Created { value: 1 }).unwrap();
-            setup.save(&mut seed).await.unwrap();
+            seed_active(&setup, id).await;
 
             let flaky = Arc::new(FailNTimesStateStore::new(Arc::clone(&inner), usize::MAX));
             let repo = flaky.repository::<SimpleTestEntity>();
