@@ -109,11 +109,13 @@ root and the context: no side effects outside the aggregate.
 
 ## modify
 
-`Repository::modify` is the closure form of the same loop: it loads, runs the
-closure against the active aggregate, saves, and retries on conflict. It is
-built on `execute`, with the same behaviour as before. Reach for `modify` for
-a one-off change at a call site, and for `Command` when the operation has a
-name, a lifecycle precondition, or deserves to be tested on its own.
+`Repository::modify` is the closure form of a single attempt: it loads, runs
+the closure once against the active aggregate and saves. A concurrency
+conflict comes back as `ModifyError::Save` and is not retried, because a
+`FnOnce` closure cannot be run twice. Reach for `modify` for a one-off change
+at a call site, and for `Command` with `execute` and a `RetryPolicy` when the
+operation has a name, a lifecycle precondition, needs automatic retries, or
+deserves to be tested on its own.
 
 ## Where to go next
 
