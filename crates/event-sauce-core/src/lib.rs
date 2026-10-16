@@ -71,7 +71,7 @@ mod entity;
 mod entity_id;
 mod error;
 mod event_applicator;
-mod event_context;
+pub mod event_context;
 mod event_envelope;
 mod event_filter;
 /// Event log query types and trait for paginated, filtered audit log access.
@@ -157,7 +157,7 @@ pub use entity::{DefaultEntity, Entity};
 pub use entity_id::EntityId;
 pub use error::{ClaimConflict, Error, Result};
 pub use event_applicator::EventApplicator;
-pub use event_context::{display, ContextValue, DisplayValue};
+pub use event_context::{display, ContextValue, DisplayValue, EnteredEventContext, EventContext};
 pub use event_envelope::{EventEnvelope, EventMetadata};
 pub use event_filter::EventFilter;
 #[cfg(feature = "event-sourcing")]
