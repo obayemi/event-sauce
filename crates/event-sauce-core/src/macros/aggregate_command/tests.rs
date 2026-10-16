@@ -261,7 +261,7 @@ aggregate_command! {
 }
 
 #[test]
-fn test_command_handler_increment() {
+fn test_aggregate_command_increment() {
     let mut root = AggregateRoot::<TestAggregate>::new(EntityId::new());
 
     // Test that generated command method works through AggregateRoot
@@ -274,7 +274,7 @@ fn test_command_handler_increment() {
 }
 
 #[test]
-fn test_command_handler_decrement() {
+fn test_aggregate_command_decrement() {
     let mut root = AggregateRoot::<TestAggregate>::new(EntityId::new());
     root.increment(10).unwrap();
 
@@ -287,7 +287,7 @@ fn test_command_handler_decrement() {
 }
 
 #[test]
-fn test_command_handler_reset() {
+fn test_aggregate_command_reset() {
     let mut root = AggregateRoot::<TestAggregate>::new(EntityId::new());
     root.increment(10).unwrap();
 
@@ -300,7 +300,7 @@ fn test_command_handler_reset() {
 }
 
 #[test]
-fn test_command_handler_validation() {
+fn test_aggregate_command_validation() {
     let mut root = AggregateRoot::<TestAggregate>::new(EntityId::new());
 
     // Test that validation is applied through the generated command
@@ -312,7 +312,7 @@ fn test_command_handler_validation() {
 }
 
 #[test]
-fn test_command_handler_timestamp() {
+fn test_aggregate_command_timestamp() {
     let mut root = AggregateRoot::<TestAggregate>::new(EntityId::new());
     let before = Utc::now();
 
@@ -329,7 +329,7 @@ fn test_command_handler_timestamp() {
 }
 
 #[test]
-fn test_command_handler_multiple_commands() {
+fn test_aggregate_command_multiple_commands() {
     let mut root = AggregateRoot::<TestAggregate>::new(EntityId::new());
 
     // Test multiple commands in sequence
@@ -345,7 +345,7 @@ fn test_command_handler_multiple_commands() {
 }
 
 #[test]
-fn test_command_handler_return_type() {
+fn test_aggregate_command_return_type() {
     let mut root = AggregateRoot::<TestAggregate>::new(EntityId::new());
 
     // Verify the return type is Result<(), TestError>
@@ -355,7 +355,7 @@ fn test_command_handler_return_type() {
 }
 
 #[test]
-fn test_command_handler_event_helper() {
+fn test_aggregate_command_event_helper() {
     let root = AggregateRoot::<TestAggregate>::new(EntityId::new());
 
     // Event helpers are available on the entity via Deref
@@ -366,7 +366,7 @@ fn test_command_handler_event_helper() {
 // ===== aggregate_command! Event Helper Function Tests =====
 
 #[test]
-fn test_command_handler_generates_event_helper_functions() {
+fn test_aggregate_command_generates_event_helper_functions() {
     // Test that <command>_event helper functions are generated
     let aggregate = TestAggregate::new(EntityId::new());
 
@@ -416,7 +416,7 @@ fn test_event_helper_adds_timestamp() {
 }
 
 #[test]
-fn test_command_handler_init_creates_aggregate() {
+fn test_aggregate_command_init_creates_aggregate() {
     let root = TestAggregate::create(9).unwrap();
 
     assert_eq!(root.value(), 9);
@@ -424,7 +424,7 @@ fn test_command_handler_init_creates_aggregate() {
 }
 
 #[test]
-fn test_command_handler_init_creates_aggregate_with_explicit_id() {
+fn test_aggregate_command_init_creates_aggregate_with_explicit_id() {
     let id = EntityId::new();
     let root = TestAggregate::create_with_id(id, 3).unwrap();
 
@@ -433,7 +433,7 @@ fn test_command_handler_init_creates_aggregate_with_explicit_id() {
 }
 
 #[test]
-fn test_command_handler_init_commands_trait_on_uninit_root() {
+fn test_aggregate_command_init_commands_trait_on_uninit_root() {
     let id = EntityId::new();
     let root = crate::UninitAggregateRoot::<TestAggregate>::new(id)
         .create(11)
@@ -444,7 +444,7 @@ fn test_command_handler_init_commands_trait_on_uninit_root() {
 }
 
 #[test]
-fn test_command_handler_delete_closes_aggregate() {
+fn test_aggregate_command_delete_closes_aggregate() {
     let root = AggregateRoot::<TestAggregate>::new(EntityId::new());
     let deleted = root.close().unwrap();
 

@@ -1034,7 +1034,7 @@ aggregate_command! {
 }
 
 #[test]
-fn test_init_command_handler_event_helper_is_associated_fn() {
+fn test_init_aggregate_command_event_helper_is_associated_fn() {
     // Init event helper is an associated function (no &self)
     let event = Account::open_account_event("Alice".to_string(), 100);
     assert_eq!(event.name, "Alice");
@@ -1042,7 +1042,7 @@ fn test_init_command_handler_event_helper_is_associated_fn() {
 }
 
 #[test]
-fn test_init_command_handler_init_command_on_uninit() {
+fn test_init_aggregate_command_init_command_on_uninit() {
     let uninit = crate::UninitAggregateRoot::<Account>::new(EntityId::new());
     let id = uninit.entity_id();
     let agg = uninit.open_account("Alice".to_string(), 100).unwrap();
@@ -1054,7 +1054,7 @@ fn test_init_command_handler_init_command_on_uninit() {
 }
 
 #[test]
-fn test_init_command_handler_init_validation_fails() {
+fn test_init_aggregate_command_init_validation_fails() {
     let uninit = crate::UninitAggregateRoot::<Account>::new(EntityId::new());
     let result = uninit.open_account(String::new(), 0);
     assert!(result.is_err());
@@ -1062,7 +1062,7 @@ fn test_init_command_handler_init_validation_fails() {
 }
 
 #[test]
-fn test_init_command_handler_regular_event_helper() {
+fn test_init_aggregate_command_regular_event_helper() {
     let account = Account {
         id: EntityId::new(),
         name: "Alice".to_string(),
@@ -1074,7 +1074,7 @@ fn test_init_command_handler_regular_event_helper() {
 }
 
 #[test]
-fn test_init_command_handler_regular_command_on_aggregate_root() {
+fn test_init_aggregate_command_regular_command_on_aggregate_root() {
     let uninit = crate::UninitAggregateRoot::<Account>::new(EntityId::new());
     let mut agg = uninit.open_account("Alice".to_string(), 100).unwrap();
 
@@ -1084,7 +1084,7 @@ fn test_init_command_handler_regular_command_on_aggregate_root() {
 }
 
 #[test]
-fn test_init_command_handler_full_lifecycle() {
+fn test_init_aggregate_command_full_lifecycle() {
     let uninit = crate::UninitAggregateRoot::<Account>::new(EntityId::new());
     let mut agg = uninit.open_account("Alice".to_string(), 100).unwrap();
 
@@ -1097,7 +1097,7 @@ fn test_init_command_handler_full_lifecycle() {
 }
 
 #[test]
-fn test_init_command_handler_regular_post_validation() {
+fn test_init_aggregate_command_regular_post_validation() {
     let uninit = crate::UninitAggregateRoot::<Account>::new(EntityId::new());
     let mut agg = uninit.open_account("Alice".to_string(), 10).unwrap();
 

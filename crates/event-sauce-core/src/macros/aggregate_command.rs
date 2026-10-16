@@ -148,7 +148,7 @@ macro_rules! aggregate_command {
             $($rest:tt)*
         }
     ) => {
-        $crate::__command_handler_init_internal! {
+        $crate::__aggregate_command_internal! {
             @munch [$aggregate]
             init_commands: []
             regular_commands: []
@@ -181,7 +181,7 @@ macro_rules! command_handler {
 /// instants included, and nothing here reads a clock.
 #[macro_export]
 #[doc(hidden)]
-macro_rules! __command_handler_event {
+macro_rules! __aggregate_command_event {
     (clock: [now] $evt:ident { $($field:ident: $value:expr,)* }) => {
         $evt {
             $($field: $value,)*
@@ -223,7 +223,7 @@ macro_rules! __command_handler_event {
 ///   and `Aggregate::cmd_with_id(id, params) -> Result<AggregateRoot<A>, Error>`
 #[doc(hidden)]
 #[macro_export]
-macro_rules! __command_handler_init_internal {
+macro_rules! __aggregate_command_internal {
     // ---- TT muncher: parse @init @actor(Type) command ----
     (
         @munch [$aggregate:ty]
@@ -242,7 +242,7 @@ macro_rules! __command_handler_init_internal {
             -> $event_struct:ident { $($field:ident),* $(,)? }
         $(; $($rest:tt)*)?
     ) => {
-        $crate::__command_handler_init_internal! {
+        $crate::__aggregate_command_internal! {
             @munch [$aggregate]
             init_commands: [ $($i_acc)* ]
             regular_commands: [ $($r_acc)* ]
@@ -269,7 +269,7 @@ macro_rules! __command_handler_init_internal {
             -> $event_struct:ident { $($field:ident),* $(,)? }
         $(; $($rest:tt)*)?
     ) => {
-        $crate::__command_handler_init_internal! {
+        $crate::__aggregate_command_internal! {
             @munch [$aggregate]
             init_commands: [ $($i_acc)* ]
             regular_commands: [ $($r_acc)* ]
@@ -298,7 +298,7 @@ macro_rules! __command_handler_init_internal {
             -> $event_struct:ident { $($field:ident),* $(,)? }
         $(; $($rest:tt)*)?
     ) => {
-        $crate::__command_handler_init_internal! {
+        $crate::__aggregate_command_internal! {
             @munch [$aggregate]
             init_commands: [ $($i_acc)* { attrs: [$($attr),*] cmd: $command ($($param: $param_ty),*) -> $event_struct { $($field),* } clock: [now] } ]
             regular_commands: [ $($r_acc)* ]
@@ -324,7 +324,7 @@ macro_rules! __command_handler_init_internal {
             -> $event_struct:ident { $($field:ident),* $(,)? }
         $(; $($rest:tt)*)?
     ) => {
-        $crate::__command_handler_init_internal! {
+        $crate::__aggregate_command_internal! {
             @munch [$aggregate]
             init_commands: [ $($i_acc)* { attrs: [$($attr),*] cmd: $command ($($param: $param_ty),*) -> $event_struct { $($field),* } clock: [none] } ]
             regular_commands: [ $($r_acc)* ]
@@ -354,7 +354,7 @@ macro_rules! __command_handler_init_internal {
             -> $event_struct:ident { $($field:ident),* $(,)? }
         $(; $($rest:tt)*)?
     ) => {
-        $crate::__command_handler_init_internal! {
+        $crate::__aggregate_command_internal! {
             @munch [$aggregate]
             init_commands: [ $($i_acc)* ]
             regular_commands: [ $($r_acc)* ]
@@ -381,7 +381,7 @@ macro_rules! __command_handler_init_internal {
             -> $event_struct:ident { $($field:ident),* $(,)? }
         $(; $($rest:tt)*)?
     ) => {
-        $crate::__command_handler_init_internal! {
+        $crate::__aggregate_command_internal! {
             @munch [$aggregate]
             init_commands: [ $($i_acc)* ]
             regular_commands: [ $($r_acc)* ]
@@ -410,7 +410,7 @@ macro_rules! __command_handler_init_internal {
             -> $event_struct:ident { $($field:ident),* $(,)? }
         $(; $($rest:tt)*)?
     ) => {
-        $crate::__command_handler_init_internal! {
+        $crate::__aggregate_command_internal! {
             @munch [$aggregate]
             init_commands: [ $($i_acc)* ]
             regular_commands: [ $($r_acc)* ]
@@ -436,7 +436,7 @@ macro_rules! __command_handler_init_internal {
             -> $event_struct:ident { $($field:ident),* $(,)? }
         $(; $($rest:tt)*)?
     ) => {
-        $crate::__command_handler_init_internal! {
+        $crate::__aggregate_command_internal! {
             @munch [$aggregate]
             init_commands: [ $($i_acc)* ]
             regular_commands: [ $($r_acc)* ]
@@ -465,7 +465,7 @@ macro_rules! __command_handler_init_internal {
             -> $event_struct:ident { $($field:ident),* $(,)? }
         $(; $($rest:tt)*)?
     ) => {
-        $crate::__command_handler_init_internal! {
+        $crate::__aggregate_command_internal! {
             @munch [$aggregate]
             init_commands: [ $($i_acc)* ]
             regular_commands: [ $($r_acc)* ]
@@ -491,7 +491,7 @@ macro_rules! __command_handler_init_internal {
             -> $event_struct:ident { $($field:ident),* $(,)? }
         $(; $($rest:tt)*)?
     ) => {
-        $crate::__command_handler_init_internal! {
+        $crate::__aggregate_command_internal! {
             @munch [$aggregate]
             init_commands: [ $($i_acc)* ]
             regular_commands: [ $($r_acc)* ]
@@ -519,7 +519,7 @@ macro_rules! __command_handler_init_internal {
             -> $event_struct:ident { $($field:ident),* $(,)? }
         $(; $($rest:tt)*)?
     ) => {
-        $crate::__command_handler_init_internal! {
+        $crate::__aggregate_command_internal! {
             @munch [$aggregate]
             init_commands: [ $($i_acc)* ]
             regular_commands: [ $($r_acc)* { attrs: [$($attr),*] cmd: $command ($($param: $param_ty),*) -> $event_struct { $($field),* } clock: [now] } ]
@@ -544,7 +544,7 @@ macro_rules! __command_handler_init_internal {
             -> $event_struct:ident { $($field:ident),* $(,)? }
         $(; $($rest:tt)*)?
     ) => {
-        $crate::__command_handler_init_internal! {
+        $crate::__aggregate_command_internal! {
             @munch [$aggregate]
             init_commands: [ $($i_acc)* ]
             regular_commands: [ $($r_acc)* { attrs: [$($attr),*] cmd: $command ($($param: $param_ty),*) -> $event_struct { $($field),* } clock: [none] } ]
@@ -573,7 +573,7 @@ macro_rules! __command_handler_init_internal {
                     $(#[$i_attr])*
                     #[allow(missing_docs)]
                     pub fn [<$i_cmd _event>]($($i_param: $i_param_ty),*) -> $i_evt {
-                        $crate::__command_handler_event! {
+                        $crate::__aggregate_command_event! {
                             clock: [$i_clock] $i_evt { $($i_field: $i_param,)* }
                             }
                     }
@@ -588,7 +588,7 @@ macro_rules! __command_handler_init_internal {
                     $(#[$ai_attr])*
                     #[allow(missing_docs)]
                     pub fn [<$ai_cmd _event>]($($ai_param: $ai_param_ty),*) -> $ai_evt {
-                        $crate::__command_handler_event! {
+                        $crate::__aggregate_command_event! {
                             clock: [$ai_clock] $ai_evt { $($ai_field: $ai_param,)* }
                             }
                     }
@@ -603,7 +603,7 @@ macro_rules! __command_handler_init_internal {
                     $(#[$r_attr])*
                     #[allow(missing_docs)]
                     pub fn [<$r_cmd _event>](&self, $($r_param: $r_param_ty),*) -> $r_evt {
-                        $crate::__command_handler_event! {
+                        $crate::__aggregate_command_event! {
                             clock: [$r_clock] $r_evt { $($r_field: $r_param,)* }
                             }
                     }
@@ -618,7 +618,7 @@ macro_rules! __command_handler_init_internal {
                     $(#[$a_attr])*
                     #[allow(missing_docs)]
                     pub fn [<$a_cmd _event>](&self, $($a_param: $a_param_ty),*) -> $a_evt {
-                        $crate::__command_handler_event! {
+                        $crate::__aggregate_command_event! {
                             clock: [$a_clock] $a_evt { $($a_field: $a_param,)* }
                             }
                     }
@@ -779,7 +779,7 @@ macro_rules! __command_handler_init_internal {
                     $(#[$d_attr])*
                     #[allow(missing_docs)]
                     pub fn [<$d_cmd _event>](&self, $($d_param: $d_param_ty),*) -> $d_evt {
-                        $crate::__command_handler_event! {
+                        $crate::__aggregate_command_event! {
                             clock: [$d_clock] $d_evt { $($d_field: $d_param,)* }
                             }
                     }
@@ -794,7 +794,7 @@ macro_rules! __command_handler_init_internal {
                     $(#[$ad_attr])*
                     #[allow(missing_docs)]
                     pub fn [<$ad_cmd _event>](&self, $($ad_param: $ad_param_ty),*) -> $ad_evt {
-                        $crate::__command_handler_event! {
+                        $crate::__aggregate_command_event! {
                             clock: [$ad_clock] $ad_evt { $($ad_field: $ad_param,)* }
                             }
                     }

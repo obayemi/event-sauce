@@ -8,6 +8,6 @@
 //! [`specification`](crate::specification) and `policy!` beside
 //! [`policy`](crate::policy) instead, since that is what each one generates.
 
-mod command_handler;
+mod aggregate_command;
 mod define_events;
 mod validation;
