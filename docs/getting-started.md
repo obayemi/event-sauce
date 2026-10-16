@@ -48,10 +48,10 @@ define_events! {
     }
 }
 
-// 4. Implement commands (generates CounterCommands trait on AggregateRoot<Counter>).
+// 4. Implement aggregate commands (generates CounterCommands trait on AggregateRoot<Counter>).
 // @clock stamps `timestamp` from the wall clock; without it a command takes
 // its instant as an explicit parameter instead.
-command_handler! {
+aggregate_command! {
     impl Counter {
         @clock fn increment(amount: i32) -> IncrementedEvent { amount };
         @clock fn decrement(amount: i32) -> DecrementedEvent { amount };
@@ -59,13 +59,13 @@ command_handler! {
 }
 ```
 
-That's it! You now have a fully functional event-sourced aggregate with validation, event replay, and type safety.
+That's it! You now have a fully functional event-sourced aggregate with validation, event replay, and type safety. (`aggregate_command!` was formerly named `command_handler!`, which is now deprecated.)
 
 ## Complete Examples
 
 Want to see full working examples? Check out:
 
-- **[postgres-quickstart.rs](../crates/event-sauce/examples/postgres-quickstart.rs)** - Demonstrates User and Order aggregates (both with init events), creation functions, commands, transactional projections (`run_postgres_projection`), and the PostgreSQL backend. Uses `define_events!` and `command_handler!` macros.
+- **[postgres-quickstart.rs](../crates/event-sauce/examples/postgres-quickstart.rs)** - Demonstrates User and Order aggregates (both with init events), creation functions, commands, transactional projections (`run_postgres_projection`), and the PostgreSQL backend. Uses `define_events!` and `aggregate_command!` macros.
   ```bash
   cargo run --example postgres-quickstart --all-features
   ```
@@ -175,11 +175,11 @@ define_events! {
 ### Step 4: Implement Business Logic
 
 ```rust
-use event_sauce::command_handler;
+use event_sauce::aggregate_command;
 
 // Auto-generate command methods on AggregateRoot<Counter>
 // This generates a CounterCommands trait implemented on AggregateRoot<Counter>
-command_handler! {
+aggregate_command! {
     impl Counter {
         @clock fn increment(amount: i32) -> IncrementedEvent { amount };
         @clock fn decrement(amount: i32) -> DecrementedEvent { amount };
@@ -403,7 +403,7 @@ struct Order {
 }
 
 // 3. Define commands — @init commands generate creation functions
-command_handler! {
+aggregate_command! {
     impl Order {
         @clock @init fn create_order(user_id: EntityId) -> CreatedEvent { user_id };
         @clock fn complete() -> CompletedEvent { };
@@ -424,7 +424,7 @@ order.complete()?;
 
 ## Common Patterns
 
-### Command Handler Pattern
+### Service Command Handler Pattern
 
 ```rust
 async fn handle_increment_command<R: Repository<Counter>>(

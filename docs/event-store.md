@@ -153,7 +153,7 @@ where
 let store = InMemoryEventStore::new();
 let mut counter = AggregateRoot::<Counter>::new(EntityId::new());
 
-// Execute commands (generates events)
+// Execute aggregate commands (generates events)
 counter.increment(5)?;
 counter.decrement(2)?;
 
@@ -358,7 +358,7 @@ repo.save(&mut counter).await?;
 
 ### Event Sourcing Loop
 
-Typical command handling pattern:
+Typical service command handling pattern:
 
 ```rust
 async fn handle_counter_command(
@@ -369,7 +369,7 @@ async fn handle_counter_command(
     // Load aggregate
     let mut counter: AggregateRoot<Counter> = repo.load(counter_id).await?;
 
-    // Execute command
+    // Execute service command
     match command {
         CounterCommand::Increment(amount) => counter.increment(amount)?,
         CounterCommand::Decrement(amount) => counter.decrement(amount)?,
@@ -395,10 +395,10 @@ both pass the precheck and one loses the insert race. Either way you get
 retry loop works for every backend.
 
 The retried closure **must be idempotent**: re-derive the events from freshly
-loaded state on each attempt (re-`load` inside the loop) rather than replaying a
-captured command result, otherwise a retry would re-apply stale decisions. Add
-jittered exponential backoff so contending writers do not synchronise into a
-thundering herd.
+loaded state on each attempt (re-`load` inside the loop) rather than replaying
+a captured service command's result, otherwise a retry would re-apply stale
+decisions. Add jittered exponential backoff so contending writers do not
+synchronise into a thundering herd.
 
 ```text
 use std::time::Duration;

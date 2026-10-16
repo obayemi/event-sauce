@@ -74,7 +74,7 @@ Event sourcing is a pattern where you store all changes to application state as 
 
 1. **Aggregates** - Business entities that enforce consistency rules
 2. **Events** - Facts about what happened (past tense)
-3. **Commands** - Requests to do something (can fail)
+3. **Aggregate Commands** - Requests to do something (can fail)
 4. **Event Store** - Append-only log of events
 5. **Projections** - Read models built from events
 
@@ -91,10 +91,10 @@ We recommend following this path:
 
 ## Common Patterns
 
-### The Command Pattern
+### The Service Command Handler Pattern
 
 ```rust
-// Command: Request to do something
+// Service command: a request to do something
 pub async fn handle_add_item_command<R: Repository<ShoppingCart>>(
     repo: &R,
     cart_id: EntityId,

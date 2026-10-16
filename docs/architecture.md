@@ -24,12 +24,12 @@ Event sourcing is a pattern where state changes are stored as a sequence of even
 
 ### CQRS
 
-event-sauce is CQRS-oriented: commands and queries take separate paths.
-Aggregates are the **write model** — consistency boundaries that validate
-commands and emit events. They are deliberately poor read models: small,
-normalized around invariants, and loaded one at a time. Queries never touch
-aggregates; they go through **projections**, read models denormalized for
-reading and kept up to date from the emitted events.
+event-sauce is CQRS-oriented: service commands and queries take separate
+paths. Aggregates are the **write model** — consistency boundaries that
+validate aggregate commands and emit events. They are deliberately poor read
+models: small, normalized around invariants, and loaded one at a time.
+Queries never touch aggregates; they go through **projections**, read models
+denormalized for reading and kept up to date from the emitted events.
 
 ### Key Components
 
@@ -37,7 +37,7 @@ reading and kept up to date from the emitted events.
 ┌──────────────────────────────────────────────────────────────┐
 │                      Application Layer                        │
 │   aggregates · events · commands · define_events! ·           │
-│   command_handler! · code written against R: Repository<A>    │
+│   aggregate_command! · code written against R: Repository<A>  │
 └──────────────────────────────┬───────────────────────────────┘
                                │  trait Repository<A>
              ┌─────────────────┴──────────────────┐
@@ -83,7 +83,7 @@ persistence style pluggable:
   an optimistic-lock row version.
 
 Everything above the `Repository` trait — aggregates, events, commands, the
-`define_events!` and `command_handler!` macros, validation — is identical in
+`define_events!` and `aggregate_command!` macros, validation — is identical in
 both modes; everything below it is a persistence detail chosen once, at the
 composition root.
 
@@ -223,22 +223,22 @@ serde = { version = "1", features = ["derive"] }
 ```
 
 `serde` (with `derive`) is the one companion dependency a caller of
-`define_events!`/`command_handler!` needs directly — see
+`define_events!`/`aggregate_command!` needs directly — see
 [event-sauce's crate docs](https://docs.rs/event-sauce) for why `chrono`,
 `pastey`, `uuid`, `serde_json` and `async-trait` don't need their own line.
 
 ## Event Sourcing Flow
 
-### 1. Command Execution
+### 1. Service Command Execution
 
 ```
-User Command
+Service Command (from a user)
     ↓
-Command Handler
+Service Command Handler
     ↓
 Load Aggregate (from EventStore)
     ↓
-Execute Business Logic
+Run Aggregate Commands (business logic)
     ↓
 Generate Domain Events
     ↓

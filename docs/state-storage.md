@@ -8,9 +8,9 @@ same domain layer can be persisted **state-stored** (one row of current
 state per aggregate, CRUD-style) instead of event-sourced.
 
 The promise is strict: **application code is identical in both modes.**
-Aggregates, events, commands, `define_events!`, `command_handler!`, and every
-call through the `Repository` trait are byte-for-byte the same. The only
-thing that changes is which store you construct at the composition root.
+Aggregates, events, aggregate commands, `define_events!`, `aggregate_command!`,
+and every call through the `Repository` trait are byte-for-byte the same. The
+only thing that changes is which store you construct at the composition root.
 
 Everything on this page ships today: the `Repository` trait with its
 `EventSourcedRepository` and `StateStoredRepository` implementations, the
@@ -93,7 +93,7 @@ column's gaps are structural, not roadmap items:
 
 | Capability | Event-sourced | State-stored |
 |---|---|---|
-| Aggregates, events, commands, `define_events!`, `command_handler!` | ✅ | ✅ |
+| Aggregates, events, commands, `define_events!`, `aggregate_command!` | ✅ | ✅ |
 | `Repository` trait (`load` / `save` / `modify` / `create_*`) | ✅ | ✅ |
 | Optimistic concurrency (`ConcurrencyConflict`) | ✅ | ✅ |
 | Claims (cross-aggregate uniqueness) | ✅ | ✅ |

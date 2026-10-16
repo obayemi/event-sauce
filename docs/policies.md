@@ -1,6 +1,6 @@
 # Policies - Cross-Aggregate Event Orchestration
 
-Policies handle events by issuing commands on other aggregates. When one aggregate produces an event that should trigger effects on other aggregates, policies provide the orchestration.
+Policies handle events by issuing aggregate commands on other aggregates. When one aggregate produces an event that should trigger effects on other aggregates, policies provide the orchestration.
 
 ## Overview
 

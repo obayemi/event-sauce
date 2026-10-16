@@ -14,7 +14,7 @@ This guide shows how to use TDD (Test-Driven Development) when building event-so
 
 Event sourcing and TDD are a perfect match:
 
-1. **Events are facts** - Easy to test: given events, when command, then events
+1. **Events are facts** - Easy to test: given events, when aggregate command, then events
 2. **No mocking needed** - Use in-memory store for fast tests
 3. **Behavior-focused** - Tests describe what the system does
 4. **Regression prevention** - Events provide complete test data
@@ -107,8 +107,8 @@ define_events! {
     }
 }
 
-// Use command_handler! for command methods
-command_handler! {
+// Use aggregate_command! for command methods
+aggregate_command! {
     impl ShoppingCart {
         @clock fn add_item(product_id: EntityId, name: String, price: i64, quantity: u32)
             -> ItemAddedEvent { product_id, name, price, quantity };
@@ -308,7 +308,7 @@ define_events! {
     }
 }
 
-command_handler! {
+aggregate_command! {
     impl ShoppingCart {
         @clock fn add_item(product_id: EntityId, name: String, price: i64, quantity: u32)
             -> ItemAddedEvent { product_id, name, price, quantity };
@@ -438,7 +438,7 @@ define_events! {
     }
 }
 
-command_handler! {
+aggregate_command! {
     impl ShoppingCart {
         @clock fn add_item(product_id: EntityId, name: String, price: i64, quantity: u32)
             -> ItemAddedEvent { product_id, name, price, quantity };

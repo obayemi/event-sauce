@@ -266,11 +266,11 @@ User clicks "Kick Member" button
 - **`causation_id`** — the immediate parent event (changes at each step)
 - **`causation_chain`** — full ancestry from root to direct parent, ordered chronologically
 
-These fields are populated automatically by `PolicyContext`. Direct user commands have no causation metadata (they *are* the root cause).
+These fields are populated automatically by `PolicyContext`. Direct user service commands have no causation metadata (they *are* the root cause).
 
 ## Best Practices
 
-1. **Use actor events** for commands that should be attributed to a user — the `@actor(Type)` annotation handles `created_by` automatically
+1. **Use actor events** for aggregate commands that should be attributed to a user — the `@actor(Type)` annotation handles `created_by` automatically
 2. **Use policies** for cross-aggregate reactions — causation metadata is injected automatically
 3. **Store context in `additional`** — IP addresses, tenant IDs, and session info belong in `EventMetadata::additional`, not in event data
 4. **Query by correlation_id** to find all events in a causal chain — this is the most useful debugging tool for understanding cascading effects

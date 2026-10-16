@@ -552,14 +552,15 @@ WHERE schemaname = 'event_sauce';
 
 ### Read Replicas
 
-**Command-side loads and appends must go to the primary.** A replica lags
-the primary by a variable, unbounded amount, so an aggregate loaded from a
-replica can be stale: a command validated against that stale state and then
-appended (necessarily to the primary — replicas are read-only) either
-produces a decision based on facts that no longer hold, or simply loses the
-optimistic-concurrency race against whatever *did* reach the primary in the
-meantime, over and over, under load. The same staleness applies to a
-replica-backed [`CryptoKeyStore`](https://docs.rs/event-sauce-core/latest/event_sauce_core/trait.CryptoKeyStore.html):
+**Loads and appends behind aggregate commands must go to the primary.** A
+replica lags the primary by a variable, unbounded amount, so an aggregate
+loaded from a replica can be stale: a command validated against that stale
+state and then appended (necessarily to the primary — replicas are
+read-only) either produces a decision based on facts that no longer hold,
+or simply loses the optimistic-concurrency race against whatever *did*
+reach the primary in the meantime, over and over, under load. The same
+staleness applies to a replica-backed
+[`CryptoKeyStore`](https://docs.rs/event-sauce-core/latest/event_sauce_core/trait.CryptoKeyStore.html):
 a key rotated or deleted (crypto-shredded) on the primary may not have
 replicated yet, so a load could transiently succeed with a key that should
 already be gone.
@@ -572,7 +573,7 @@ source of truth:
 use sqlx::PgPool;
 use event_sauce::postgres::{PostgresEventStore, PostgresEventLogQuery};
 
-// Primary pool — all command-side loads, saves, and appends
+// Primary pool — all loads, saves, and appends behind aggregate commands
 let primary_pool = PgPool::connect(&primary_url).await?;
 let store = std::sync::Arc::new(PostgresEventStore::new(primary_pool));
 let repo = store.repository::<Order>();

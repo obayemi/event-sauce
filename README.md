@@ -13,14 +13,14 @@
 
 You model your domain as **event-driven aggregates**: every state change is
 an explicit event that is validated, applied, and observable. Modeling
-stays light — `define_events!` and `command_handler!` generate the
+stays light — `define_events!` and `aggregate_command!` generate the
 boilerplate, so an aggregate is little more than its state, its events,
 and the business rules that guard them.
 
 Storage is just as hands-off: aggregates are loaded and saved through the
-`Repository` trait, so command handlers read as plain domain code — load,
-apply a command, save — while the store takes care of concurrency control,
-uniqueness claims, and event propagation.
+`Repository` trait, so service command handlers read as plain domain code —
+load, apply an aggregate command, save — while the store takes care of
+concurrency control, uniqueness claims, and event propagation.
 
 The library is **CQRS-oriented** throughout: aggregates are the write
 model — consistency boundaries that guard commands, and deliberately poor
@@ -32,7 +32,7 @@ read models kept up to date from the very events your aggregates emit.
 ### Event-driven core
 
 - 🎯 **Type-Safe Events**: `ApplyEvent` trait for self-contained event logic — validate → apply → post-validate
-- 📝 **Declarative Macros**: `define_events!` (events with inline validation), `command_handler!` (command methods), `#[aggregate]`, `#[derive(Event)]`, `#[derive(AggregateId)]`, `#[derive(AggregateError)]`, `#[specification]`
+- 📝 **Declarative Macros**: `define_events!` (events with inline validation), `aggregate_command!` (command methods), `#[aggregate]`, `#[derive(Event)]`, `#[derive(AggregateId)]`, `#[derive(AggregateError)]`, `#[specification]`
 - 🏗️ **Repository Pattern**: persistence-agnostic `Repository` trait with `EventSourcedRepository` and `StateStoredRepository` implementations
 - 🔀 **CQRS-Oriented**: aggregates are the write model; queries go through projections built from your events
 - 🛡️ **Rich Validation**: Aggregate-specific errors with business rule enforcement
@@ -118,9 +118,9 @@ define_events! {
 // 5. Generate command methods — @clock stamps `timestamp` from the wall
 // clock; without it a command takes its instant as a parameter instead
 // (see docs/events.md).
-use event_sauce::command_handler;
+use event_sauce::aggregate_command;
 
-command_handler! {
+aggregate_command! {
     impl Counter {
         @clock fn increment(amount: i32) -> IncrementedEvent { amount };
         @clock fn decrement(amount: i32) -> DecrementedEvent { amount };
@@ -173,7 +173,7 @@ That's it! Pair your aggregate with a store and start issuing commands:
 #         },
 #     }
 # }
-# event_sauce::command_handler! {
+# event_sauce::aggregate_command! {
 #     impl Counter {
 #         @clock fn increment(amount: i32) -> IncrementedEvent { amount };
 #         @clock fn decrement(amount: i32) -> DecrementedEvent { amount };
@@ -231,7 +231,7 @@ define_events! {
     }
 }
 
-command_handler! {
+aggregate_command! {
     impl Order {
         @clock @init fn create_order(order_id: String) -> CreatedEvent { order_id };
         @clock fn complete() -> CompletedEvent {};
@@ -268,7 +268,7 @@ define_events! {
     }
 }
 
-command_handler! {
+aggregate_command! {
     impl Document {
         @clock @actor(User) fn update_content(content: String) -> ContentUpdatedEvent { content };
     }
@@ -511,7 +511,7 @@ event-sauce = "0.1"
 # With specific features
 event-sauce = { version = "0.1", features = ["postgres"] }
 
-# The one companion dependency every caller of define_events!/command_handler!
+# The one companion dependency every caller of define_events!/aggregate_command!
 # needs: the generated event structs derive Serialize/Deserialize themselves.
 serde = { version = "1", features = ["derive"] }
 ```

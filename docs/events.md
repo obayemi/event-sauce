@@ -155,13 +155,16 @@ impl From<ItemAddedEvent> for OrderEvent { /* ... */ }
 impl From<CompletedEvent> for OrderEvent { /* ... */ }
 ```
 
-**Usage in aggregate with `command_handler!` macro (Recommended):**
+**Generating aggregate commands with `aggregate_command!` (Recommended):**
+
+`aggregate_command!` was formerly named `command_handler!`, which remains
+available as a deprecated alias.
 
 ```rust
-use event_sauce::command_handler;
+use event_sauce::aggregate_command;
 
 // Auto-generate command methods — supports both regular and @init commands
-command_handler! {
+aggregate_command! {
     impl Order {
         // @init commands generate creation functions + UninitAggregateRoot methods
         // @clock stamps `timestamp` from the wall clock; without it a command
@@ -185,7 +188,7 @@ order.add_item("item-1".to_string(), 2, 500)?;
 order.complete()?;
 ```
 
-**What `command_handler!` generates for `@init` commands:**
+**What `aggregate_command!` generates for `@init` commands:**
 
 ```rust
 // Event helper associated function (no &self — aggregate doesn't exist yet)
@@ -206,7 +209,7 @@ impl Order {
 }
 ```
 
-**What `command_handler!` generates for regular commands:**
+**What `aggregate_command!` generates for regular commands:**
 
 ```rust
 // Event helper functions on Order (the entity)
@@ -262,13 +265,13 @@ define_events! {
 }
 ```
 
-Pair an `@occurred_at` variant with a `command_handler!` command that has no
+Pair an `@occurred_at` variant with an `aggregate_command!` command that has no
 `@clock` (an `@clock` command would set a `timestamp` field the variant no
 longer has), so the caller supplies both instants directly. A variant with
 no marker keeps its `timestamp` field and works with either form:
 
 ```rust
-command_handler! {
+aggregate_command! {
     impl Sensor {
         fn measure(
             measured_at: DateTime<Utc>,
@@ -382,10 +385,10 @@ define_events! {
 }
 ```
 
-Each `@init` variant generates its own `InitEvent<A>` implementation with independent validation and construction logic. The `command_handler!` macro also supports multiple `@init` commands:
+Each `@init` variant generates its own `InitEvent<A>` implementation with independent validation and construction logic. The `aggregate_command!` macro also supports multiple `@init` commands:
 
 ```rust
-command_handler! {
+aggregate_command! {
     impl Member {
         @clock @init fn create_admin(email: String, name: String)
             -> AdminCreatedEvent { email, name };
@@ -407,10 +410,10 @@ This pattern is useful for:
 
 ### Manual Event Creation
 
-For complex scenarios requiring fine-grained control (conditional events, saga orchestration, multi-event transactions), you can bypass `command_handler!` and create events manually:
+For complex scenarios requiring fine-grained control (conditional events, saga orchestration, multi-event transactions), you can bypass `aggregate_command!` and create events manually:
 
 ```rust
-// Advanced escape hatch — use when command_handler! isn't flexible enough.
+// Advanced escape hatch — use when aggregate_command! isn't flexible enough.
 // AggregateRoot is defined in event-sauce-core, so reach it through an
 // extension trait rather than a plain (orphan-rule-violating) inherent impl.
 trait OrderCommands {
@@ -432,7 +435,7 @@ impl OrderCommands for AggregateRoot<Order> {
 }
 ```
 
-Prefer `command_handler!` for standard patterns; use manual event creation for complex cases.
+Prefer `aggregate_command!` for standard patterns; use manual event creation for complex cases.
 
 ### Manual Event Definition
 

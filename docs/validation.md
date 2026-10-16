@@ -16,7 +16,7 @@ This guide explains validation strategies in event-sauce, including when to vali
 
 ## Validation Basics
 
-Validation ensures business rules and invariants are enforced before state changes occur. In event-sauce, validation happens at **command time**, not during event application.
+Validation ensures business rules and invariants are enforced before state changes occur. In event-sauce, validation happens at **aggregate command time**, not during event application.
 
 ### Key Principles
 
