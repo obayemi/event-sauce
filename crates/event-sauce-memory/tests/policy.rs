@@ -348,7 +348,7 @@ async fn test_causation_tracking() {
         .expect("Policy should inject metadata");
 
     assert_eq!(meta.causation_id, Some(kick.id));
-    assert_eq!(meta.correlation_id, Some(kick.id));
+    assert_eq!(meta.correlation_id, Some(kick.id.to_string()));
     assert_eq!(meta.causation_chain, vec![kick.id]);
 }
 
@@ -430,7 +430,7 @@ async fn test_cascading_reactions() {
 
     let notification_meta = notification.metadata.as_ref().unwrap();
     assert_eq!(notification_meta.causation_id, Some(removal.id));
-    assert_eq!(notification_meta.correlation_id, Some(kick.id));
+    assert_eq!(notification_meta.correlation_id, Some(kick.id.to_string()));
     assert_eq!(notification_meta.causation_chain.len(), 2);
     assert_eq!(notification_meta.causation_chain[0], kick.id);
     assert_eq!(notification_meta.causation_chain[1], removal.id);
@@ -771,7 +771,7 @@ async fn test_correlation_id_defaults_to_source_id() {
 
     // Without parent correlation_id, correlation_id defaults to source event's id
     let meta = removal.metadata.as_ref().unwrap();
-    assert_eq!(meta.correlation_id, Some(kick.id));
+    assert_eq!(meta.correlation_id, Some(kick.id.to_string()));
     assert_eq!(meta.causation_id, Some(kick.id));
 }
 

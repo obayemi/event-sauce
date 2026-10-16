@@ -12,10 +12,9 @@ fn test_metadata_new() {
 
 #[test]
 fn test_metadata_with_correlation_id() {
-    let correlation_id = Uuid::new_v4();
-    let metadata = EventMetadata::new().with_correlation_id(correlation_id);
+    let metadata = EventMetadata::new().with_correlation_id("req-123");
 
-    assert_eq!(metadata.correlation_id, Some(correlation_id));
+    assert_eq!(metadata.correlation_id.as_deref(), Some("req-123"));
 }
 
 #[test]
@@ -36,16 +35,15 @@ fn test_metadata_with_additional() {
 
 #[test]
 fn test_metadata_builder_chain() {
-    let correlation_id = Uuid::new_v4();
     let causation_id = Uuid::new_v4();
     let additional = json!({"test": true});
 
     let metadata = EventMetadata::new()
-        .with_correlation_id(correlation_id)
+        .with_correlation_id("req-123")
         .with_causation_id(causation_id)
         .with_additional(additional.clone());
 
-    assert_eq!(metadata.correlation_id, Some(correlation_id));
+    assert_eq!(metadata.correlation_id.as_deref(), Some("req-123"));
     assert_eq!(metadata.causation_id, Some(causation_id));
     assert_eq!(metadata.additional, Some(additional));
 }
@@ -61,7 +59,7 @@ fn test_metadata_default() {
 #[test]
 fn test_metadata_serialization() {
     let metadata = EventMetadata::new()
-        .with_correlation_id(Uuid::nil())
+        .with_correlation_id("req-123")
         .with_causation_id(Uuid::nil());
 
     let json = serde_json::to_string(&metadata).unwrap();
@@ -231,12 +229,11 @@ fn test_metadata_cascade_depth_empty() {
 #[test]
 fn test_metadata_child_metadata() {
     let parent_event_id = Uuid::new_v4();
-    let correlation_id = Uuid::new_v4();
-    let parent = EventMetadata::new().with_correlation_id(correlation_id);
+    let parent = EventMetadata::new().with_correlation_id("req-123");
 
     let child = parent.child_metadata(parent_event_id);
 
-    assert_eq!(child.correlation_id, Some(correlation_id));
+    assert_eq!(child.correlation_id.as_deref(), Some("req-123"));
     assert_eq!(child.causation_id, Some(parent_event_id));
     assert_eq!(child.causation_chain.len(), 1);
     assert_eq!(child.causation_chain[0], parent_event_id);
@@ -249,7 +246,7 @@ fn test_metadata_child_metadata_without_correlation_uses_parent_id() {
 
     let child = parent.child_metadata(parent_event_id);
 
-    assert_eq!(child.correlation_id, Some(parent_event_id));
+    assert_eq!(child.correlation_id, Some(parent_event_id.to_string()));
     assert_eq!(child.causation_id, Some(parent_event_id));
 }
 
@@ -275,7 +272,7 @@ fn test_metadata_child_metadata_extends_chain() {
 fn test_metadata_causation_chain_serialization() {
     let chain = vec![Uuid::nil(), Uuid::new_v4()];
     let metadata = EventMetadata::new()
-        .with_correlation_id(Uuid::nil())
+        .with_correlation_id("req-123")
         .with_causation_chain(chain.clone());
 
     let json = serde_json::to_string(&metadata).unwrap();
@@ -303,9 +300,28 @@ fn test_metadata_deserialize_without_causation_chain() {
 }
 
 #[test]
+fn test_metadata_deserialize_legacy_uuid_correlation_id() {
+    let id = Uuid::new_v4();
+    let json = format!(
+        r#"{{"correlation_id":"{id}","causation_id":null,"timestamp":"2024-01-01T00:00:00Z"}}"#
+    );
+    let metadata: EventMetadata = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(metadata.correlation_id, Some(id.to_string()));
+}
+
+#[test]
+fn test_metadata_deserialize_null_correlation_id() {
+    let json = r#"{"correlation_id":null,"causation_id":null,"timestamp":"2024-01-01T00:00:00Z"}"#;
+    let metadata: EventMetadata = serde_json::from_str(json).unwrap();
+
+    assert_eq!(metadata.correlation_id, None);
+}
+
+#[test]
 fn test_event_envelope_with_causation() {
     let causation_id = Uuid::new_v4();
-    let correlation_id = Uuid::new_v4();
+    let correlation_id = "req-123";
     let chain = vec![Uuid::new_v4(), causation_id];
 
     let envelope = EventEnvelope::new(
@@ -320,14 +336,14 @@ fn test_event_envelope_with_causation() {
 
     let metadata = envelope.metadata.unwrap();
     assert_eq!(metadata.causation_id, Some(causation_id));
-    assert_eq!(metadata.correlation_id, Some(correlation_id));
+    assert_eq!(metadata.correlation_id.as_deref(), Some(correlation_id));
     assert_eq!(metadata.causation_chain, chain);
 }
 
 #[test]
 fn test_event_envelope_with_causation_preserves_existing_metadata() {
     let causation_id = Uuid::new_v4();
-    let correlation_id = Uuid::new_v4();
+    let correlation_id = "req-123";
     let additional = json!({"key": "value"});
 
     let envelope = EventEnvelope::new(
@@ -343,7 +359,7 @@ fn test_event_envelope_with_causation_preserves_existing_metadata() {
 
     let metadata = envelope.metadata.unwrap();
     assert_eq!(metadata.causation_id, Some(causation_id));
-    assert_eq!(metadata.correlation_id, Some(correlation_id));
+    assert_eq!(metadata.correlation_id.as_deref(), Some(correlation_id));
     assert_eq!(metadata.additional, Some(additional));
 }
 

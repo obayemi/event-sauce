@@ -468,7 +468,7 @@ fn test_mixed_actor_and_non_actor_events() {
 fn test_aggregate_root_apply_with_metadata() {
     let mut counter = AggregateRoot::<CounterEntity>::new(EntityId::new());
     let metadata = crate::EventMetadata::new()
-        .with_correlation_id(uuid::Uuid::new_v4())
+        .with_correlation_id("req-123")
         .with_causation_id(uuid::Uuid::new_v4());
 
     counter
@@ -496,7 +496,7 @@ fn test_set_pending_metadata() {
     counter.increment(5).unwrap();
     counter.increment(3).unwrap();
 
-    let metadata = crate::EventMetadata::new().with_correlation_id(uuid::Uuid::new_v4());
+    let metadata = crate::EventMetadata::new().with_correlation_id("req-123");
 
     counter.set_pending_metadata(&metadata);
 
@@ -521,7 +521,7 @@ fn test_set_pending_metadata_does_not_overwrite_existing() {
         .unwrap();
     counter.increment(3).unwrap();
 
-    let new_metadata = crate::EventMetadata::new().with_correlation_id(uuid::Uuid::new_v4());
+    let new_metadata = crate::EventMetadata::new().with_correlation_id("req-123");
 
     counter.set_pending_metadata(&new_metadata);
 

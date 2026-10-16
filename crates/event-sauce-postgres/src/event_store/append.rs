@@ -244,9 +244,9 @@ impl PostgresEventStore {
             events.iter().map(|e| e.event_data.clone()).collect();
         let stream_versions: Vec<i64> = (expected_version.as_i64()..).take(events.len()).collect();
         let created_bys: Vec<Option<uuid::Uuid>> = events.iter().map(|e| e.created_by).collect();
-        let correlation_ids: Vec<Option<uuid::Uuid>> = events
+        let correlation_ids: Vec<Option<String>> = events
             .iter()
-            .map(|e| e.metadata.as_ref().and_then(|m| m.correlation_id))
+            .map(|e| e.metadata.as_ref().and_then(|m| m.correlation_id.clone()))
             .collect();
         let causation_ids: Vec<Option<uuid::Uuid>> = events
             .iter()
@@ -274,7 +274,7 @@ impl PostgresEventStore {
             )
             SELECT * FROM UNNEST(
                 $1::uuid[], $2::uuid[], $3::text[], $4::text[], $5::bigint[],
-                $6::jsonb[], $7::bigint[], $8::uuid[], $9::uuid[], $10::uuid[], $11::jsonb[], $12::jsonb[]
+                $6::jsonb[], $7::bigint[], $8::uuid[], $9::text[], $10::uuid[], $11::jsonb[], $12::jsonb[]
             )
             RETURNING id"
         );

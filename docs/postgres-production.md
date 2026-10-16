@@ -812,7 +812,7 @@ Event-sauce provides built-in audit trail:
 let event = EventEnvelope {
     created_by: Some(user_id),           // Who created the event
     metadata: Some(EventMetadata {
-        correlation_id: Some(request_id), // Request tracking
+        correlation_id: Some(request_id.to_string()), // Request tracking (free-form string)
         causation_id: Some(parent_event_id), // Causality chain
         timestamp: Utc::now(),            // When it happened
         additional: Some(json!({

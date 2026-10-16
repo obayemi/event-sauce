@@ -374,7 +374,7 @@ mod tests {
             false,
         );
 
-        let metadata = crate::EventMetadata::new().with_correlation_id(uuid::Uuid::new_v4());
+        let metadata = crate::EventMetadata::new().with_correlation_id("req-123");
         deleted.set_pending_metadata(&metadata);
 
         let with_actors = deleted.pending_events_with_actors();
@@ -409,7 +409,7 @@ mod tests {
             false,
         );
 
-        let new_metadata = crate::EventMetadata::new().with_correlation_id(uuid::Uuid::new_v4());
+        let new_metadata = crate::EventMetadata::new().with_correlation_id("req-123");
         deleted.set_pending_metadata(&new_metadata);
 
         let with_actors = deleted.pending_events_with_actors();

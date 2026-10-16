@@ -675,7 +675,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if let Some(causation_id) = meta.causation_id {
                     println!("    causation_id: {causation_id}");
                 }
-                if let Some(correlation_id) = meta.correlation_id {
+                if let Some(correlation_id) = &meta.correlation_id {
                     println!("    correlation_id: {correlation_id}");
                 }
                 if !meta.causation_chain.is_empty() {

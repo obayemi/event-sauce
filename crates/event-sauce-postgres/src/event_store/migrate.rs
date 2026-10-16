@@ -57,6 +57,7 @@ impl PostgresEventStore {
         self.migrate_crypto_keys_shredded_at(migrations_table)
             .await?;
         self.migrate_causation_chain(migrations_table).await?;
+        self.migrate_correlation_id_text(migrations_table).await?;
         Ok(())
     }
 
@@ -243,6 +244,46 @@ impl PostgresEventStore {
         )
         .await
     }
+
+    /// Migration 7: widens `events.correlation_id` from `UUID` to `TEXT`.
+    ///
+    /// Correlation ids are free-form strings, so a request id or a trace id
+    /// fits next to an event id. Existing values keep their canonical text
+    /// form. The conversion rewrites the table under an `ACCESS EXCLUSIVE`
+    /// lock and is skipped when the column is already `TEXT`.
+    async fn migrate_correlation_id_text(&self, migrations_table: &str) -> Result<()> {
+        let events_table = self.qualify_table("events");
+        crate::migrations::apply_once(
+            &self.pool,
+            migrations_table,
+            20_261_018_000_000_i64,
+            "events_correlation_id_text",
+            move |pool| async move {
+                let convert = format!(
+                    "DO $$
+                    BEGIN
+                        IF EXISTS (
+                            SELECT 1 FROM pg_attribute
+                            WHERE attrelid = '{events_table}'::regclass
+                              AND attname = 'correlation_id'
+                              AND atttypid = 'uuid'::regtype
+                        ) THEN
+                            ALTER TABLE {events_table}
+                                ALTER COLUMN correlation_id TYPE TEXT
+                                USING correlation_id::text;
+                        END IF;
+                    END
+                    $$"
+                );
+                sqlx::query(&convert)
+                    .execute(pool)
+                    .await
+                    .map_err(|e| Error::backend("Failed to convert correlation_id to text", e))?;
+                Ok(())
+            },
+        )
+        .await
+    }
 }
 
 #[cfg(test)]
@@ -357,5 +398,68 @@ mod tests {
             )
             .await;
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_migrate_converts_legacy_uuid_correlation_id_column() {
+        let (_container, connection_string) = crate::test_support::start_postgres_url().await;
+        let pool = PgPool::connect(&connection_string).await.unwrap();
+        sqlx::query(
+            "CREATE TABLE public.events (
+                id BIGSERIAL PRIMARY KEY,
+                event_id UUID NOT NULL UNIQUE,
+                aggregate_id UUID NOT NULL,
+                aggregate_type VARCHAR(255) NOT NULL,
+                event_type VARCHAR(255) NOT NULL,
+                event_version BIGINT NOT NULL,
+                event_data JSONB NOT NULL,
+                stream_version BIGINT NOT NULL,
+                created_by UUID,
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                correlation_id UUID,
+                causation_id UUID,
+                metadata JSONB,
+                UNIQUE(aggregate_id, aggregate_type, stream_version)
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let correlation_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO public.events
+                (event_id, aggregate_id, aggregate_type, event_type, event_version,
+                 event_data, stream_version, correlation_id)
+             VALUES ($1, $2, 'User', 'UserCreated', 1, '{}'::jsonb, 1, $3)",
+        )
+        .bind(Uuid::new_v4())
+        .bind(Uuid::new_v4())
+        .bind(correlation_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let store = PostgresEventStore::builder()
+            .pool(pool.clone())
+            .schema("public")
+            .build()
+            .expect("pool was set");
+        store.migrate().await.unwrap();
+        store.migrate().await.unwrap();
+
+        let data_type: String = sqlx::query_scalar(
+            "SELECT data_type FROM information_schema.columns
+             WHERE table_name = 'events' AND column_name = 'correlation_id'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let kept: String = sqlx::query_scalar("SELECT correlation_id FROM public.events")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+        assert_eq!(data_type, "text");
+        assert_eq!(kept, correlation_id.to_string());
     }
 }

@@ -10,6 +10,14 @@ explicitly rather than gated behind a major version bump.
 
 ### Breaking Changes
 
+- **Correlation ids are strings.** `EventMetadata::correlation_id` is now
+  `Option<String>`, `with_correlation_id` and `EventEnvelope::with_causation`
+  take `impl Into<String>`, and `child_metadata` falls back to the parent
+  event id rendered as a string. Stored JSON with a UUID-shaped or null
+  `correlation_id` still deserializes. On Postgres, `migrate()` converts
+  the `events.correlation_id` column from `UUID` to `TEXT`, which rewrites
+  the events table under an `ACCESS EXCLUSIVE` lock: run it in a
+  maintenance window on a large table.
 - **`PolicyRunner::process_pending` returns `PolicyRunOutcome`, not
   `usize`.** `process_pending` now takes a per-policy lease (see Fixed,
   below), and a standby worker that currently holds none of them needs to

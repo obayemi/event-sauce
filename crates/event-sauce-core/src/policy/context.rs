@@ -327,7 +327,7 @@ mod tests {
     #[test]
     fn test_policy_context_build_causation_metadata() {
         let store = Arc::new(MockEventStore::new());
-        let correlation_id = Uuid::new_v4();
+        let correlation_id = "req-123";
         let metadata = EventMetadata::new().with_correlation_id(correlation_id);
         let envelope = test_envelope("TestEvent", "TestAggregate").with_metadata(metadata);
         let source_id = envelope.id;
@@ -335,7 +335,7 @@ mod tests {
 
         let child = ctx.build_causation_metadata().unwrap();
 
-        assert_eq!(child.correlation_id, Some(correlation_id));
+        assert_eq!(child.correlation_id.as_deref(), Some(correlation_id));
         assert_eq!(child.causation_id, Some(source_id));
         assert_eq!(child.causation_chain.len(), 1);
         assert_eq!(child.causation_chain[0], source_id);
@@ -350,7 +350,7 @@ mod tests {
 
         let child = ctx.build_causation_metadata().unwrap();
 
-        assert_eq!(child.correlation_id, Some(source_id));
+        assert_eq!(child.correlation_id, Some(source_id.to_string()));
         assert_eq!(child.causation_id, Some(source_id));
         assert_eq!(child.causation_chain, vec![source_id]);
     }
@@ -360,7 +360,7 @@ mod tests {
         let store = Arc::new(MockEventStore::new());
         let root_id = Uuid::new_v4();
         let parent_id = Uuid::new_v4();
-        let correlation_id = Uuid::new_v4();
+        let correlation_id = "req-123";
 
         let metadata = EventMetadata::new()
             .with_correlation_id(correlation_id)
@@ -373,7 +373,7 @@ mod tests {
 
         let child = ctx.build_causation_metadata().unwrap();
 
-        assert_eq!(child.correlation_id, Some(correlation_id));
+        assert_eq!(child.correlation_id.as_deref(), Some(correlation_id));
         assert_eq!(child.causation_id, Some(source_id));
         assert_eq!(child.causation_chain.len(), 3);
         assert_eq!(child.causation_chain[0], root_id);
@@ -459,7 +459,7 @@ mod tests {
             .as_ref()
             .expect("Should have metadata");
         assert_eq!(meta.causation_id, Some(source_id));
-        assert_eq!(meta.correlation_id, Some(source_id));
+        assert_eq!(meta.correlation_id, Some(source_id.to_string()));
         assert_eq!(meta.causation_chain, vec![source_id]);
     }
 
@@ -528,7 +528,7 @@ mod tests {
     #[tokio::test]
     async fn test_policy_context_commit_preserves_existing_metadata() {
         let store = Arc::new(MockEventStore::new());
-        let correlation_id = Uuid::new_v4();
+        let correlation_id = "req-123";
         let parent_metadata = EventMetadata::new().with_correlation_id(correlation_id);
         let envelope = test_envelope("TestEvent", "TestAggregate").with_metadata(parent_metadata);
         let source_id = envelope.id;
@@ -553,7 +553,7 @@ mod tests {
 
         let meta1 = stored[1].metadata.as_ref().unwrap();
         assert_eq!(meta1.causation_id, Some(source_id));
-        assert_eq!(meta1.correlation_id, Some(correlation_id));
+        assert_eq!(meta1.correlation_id.as_deref(), Some(correlation_id));
         assert_eq!(meta1.causation_chain, vec![source_id]);
     }
 

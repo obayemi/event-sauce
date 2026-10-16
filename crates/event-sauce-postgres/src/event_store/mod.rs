@@ -615,7 +615,7 @@ pub(crate) struct EventRow {
     event_data: serde_json::Value,
     created_by: Option<uuid::Uuid>,
     created_at: chrono::DateTime<chrono::Utc>,
-    correlation_id: Option<uuid::Uuid>,
+    correlation_id: Option<String>,
     causation_id: Option<uuid::Uuid>,
     metadata: Option<serde_json::Value>,
     causation_chain: Option<sqlx::types::Json<Vec<uuid::Uuid>>>,
@@ -896,6 +896,38 @@ mod tests {
 
         assert_eq!(metadata.causation_chain, chain);
         assert_eq!(metadata.cascade_depth(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_non_uuid_correlation_id_round_trips() {
+        let db = TestDatabase::new().await.unwrap();
+        let store = db.store();
+        let aggregate_id = Uuid::new_v4();
+        let stream_id = StreamId::new("User", aggregate_id);
+        let event = create_test_envelope("UserCreated", aggregate_id)
+            .with_metadata(event_sauce_core::EventMetadata::new().with_correlation_id("req-123"));
+
+        store
+            .append(
+                stream_id.clone(),
+                vec![event],
+                AggregateVersion::initial(),
+                vec![],
+                false,
+            )
+            .await
+            .unwrap();
+
+        let mut stream = store
+            .load_stream(stream_id, AggregateVersion::initial())
+            .await
+            .unwrap();
+        let loaded = stream.next().await.unwrap().unwrap();
+
+        assert_eq!(
+            loaded.metadata.unwrap().correlation_id.as_deref(),
+            Some("req-123")
+        );
     }
 
     #[tokio::test]

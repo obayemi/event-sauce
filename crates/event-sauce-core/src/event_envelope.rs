@@ -31,7 +31,7 @@ use crate::{AggregateType, EventVersion};
 /// use uuid::Uuid;
 ///
 /// let metadata = EventMetadata::new()
-///     .with_correlation_id(Uuid::new_v4())
+///     .with_correlation_id("req-123")
 ///     .with_causation_id(Uuid::new_v4());
 ///
 /// assert!(metadata.correlation_id.is_some());
@@ -40,7 +40,7 @@ use crate::{AggregateType, EventVersion};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EventMetadata {
     /// Correlation ID for tracing related events across the system.
-    pub correlation_id: Option<Uuid>,
+    pub correlation_id: Option<String>,
 
     /// Causation ID - the event or service command that caused this event.
     pub causation_id: Option<Uuid>,
@@ -85,21 +85,22 @@ impl EventMetadata {
 
     /// Sets the correlation ID.
     ///
+    /// Correlation ids are free-form strings, so a request id, a trace id or
+    /// an event id all fit.
+    ///
     /// # Examples
     ///
     /// ```
     /// use event_sauce_core::EventMetadata;
-    /// use uuid::Uuid;
     ///
-    /// let correlation_id = Uuid::new_v4();
     /// let metadata = EventMetadata::new()
-    ///     .with_correlation_id(correlation_id);
+    ///     .with_correlation_id("req-123");
     ///
-    /// assert_eq!(metadata.correlation_id, Some(correlation_id));
+    /// assert_eq!(metadata.correlation_id.as_deref(), Some("req-123"));
     /// ```
     #[must_use]
-    pub fn with_correlation_id(mut self, id: Uuid) -> Self {
-        self.correlation_id = Some(id);
+    pub fn with_correlation_id(mut self, id: impl Into<String>) -> Self {
+        self.correlation_id = Some(id.into());
         self
     }
 
@@ -184,7 +185,7 @@ impl EventMetadata {
     /// Creates child metadata for a reaction event.
     ///
     /// The child metadata inherits the correlation ID (or uses the parent's
-    /// event ID if none), sets the causation ID to the parent event ID,
+    /// event ID, as a string, if none), sets the causation ID to the parent event ID,
     /// and extends the causation chain.
     ///
     /// # Examples
@@ -195,7 +196,7 @@ impl EventMetadata {
     ///
     /// let parent_event_id = Uuid::new_v4();
     /// let parent_metadata = EventMetadata::new()
-    ///     .with_correlation_id(Uuid::new_v4());
+    ///     .with_correlation_id("req-123");
     ///
     /// let child = parent_metadata.child_metadata(parent_event_id);
     ///
@@ -206,7 +207,10 @@ impl EventMetadata {
     /// ```
     #[must_use]
     pub fn child_metadata(&self, parent_event_id: Uuid) -> Self {
-        let correlation_id = self.correlation_id.unwrap_or(parent_event_id);
+        let correlation_id = self
+            .correlation_id
+            .clone()
+            .unwrap_or_else(|| parent_event_id.to_string());
         let mut chain = self.causation_chain.clone();
         chain.push(parent_event_id);
 
@@ -353,7 +357,7 @@ impl EventEnvelope {
     pub fn with_causation(
         mut self,
         causation_id: Uuid,
-        correlation_id: Uuid,
+        correlation_id: impl Into<String>,
         causation_chain: Vec<Uuid>,
     ) -> Self {
         let metadata = self

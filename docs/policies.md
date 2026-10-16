@@ -123,7 +123,7 @@ let depth = ctx.cascade_depth();    // Current depth in causation chain
 Every event produced by a policy carries metadata:
 
 - **`causation_id`**: The ID of the event that directly caused this one
-- **`correlation_id`**: The ID of the root event that started the chain
+- **`correlation_id`**: A string identifying the whole chain: the incoming correlation id, or the root event ID (as a string) when there is none
 - **`causation_chain`**: Full list of event IDs from root to direct parent
 
 For example, in a cascade `A -> B -> C`:
