@@ -13,121 +13,94 @@ use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// Validates and applies a batch of [`StreamCommit`]s against the event
-/// store's already-locked `streams`/`global_events` state, so a whole batch
-/// can be checked before anything in it is mutated — the batch either fully
-/// applies or leaves the state untouched.
+type Streams = HashMap<StreamId, Vec<Arc<EventEnvelope>>>;
+type GlobalEvents = Vec<(Position, Arc<EventEnvelope>)>;
+
+/// Validates every commit's `expected_version` against the stream's
+/// current length, then every expectation's version against the same
+/// state, without mutating anything, so a whole batch is checked before
+/// anything in it is applied.
 ///
-/// Built once per [`EventStore::append_batch`] call over the write-locked
-/// maps (the same locks a single [`EventStore::append`] takes), so a later
-/// slice that must commit event streams and in-memory projected state
-/// together under one critical section can drive the same check/apply split
-/// without taking its own, separate locks.
-struct CommitGuard<'a> {
-    streams: &'a mut HashMap<StreamId, Vec<Arc<EventEnvelope>>>,
-    global_events: &'a mut Vec<(Position, Arc<EventEnvelope>)>,
+/// Commits to the same stream within the batch chain: a later commit's
+/// `expected_version` is checked against the version the previous commit
+/// to that stream in this batch leaves it at, not against the stream's
+/// currently committed version — mirroring the PostgreSQL backend's
+/// `plan_version_chain_checks`. An empty-events commit still has its
+/// version checked and still occupies its slot in the chain (it just
+/// does not advance it), matching `append`'s existing behaviour for a
+/// single empty commit.
+///
+/// An expectation is checked against the committed version of its stream,
+/// which for a stream the batch also writes is the version its *first*
+/// commit was prepared from — the load-time version — not the version later
+/// commits in the chain leave it at. A write and an expectation for the
+/// same stream therefore agree only when they were prepared from the same
+/// read; if they disagree, that disagreement is itself a conflict.
+///
+/// # Errors
+///
+/// Returns `Error::ConcurrencyConflict` on the first commit or
+/// expectation whose version doesn't match.
+fn check(
+    streams: &Streams,
+    commits: &[StreamCommit],
+    expectations: &[(StreamId, AggregateVersion)],
+) -> Result<()> {
+    let mut next_required: HashMap<&StreamId, AggregateVersion> = HashMap::new();
+
+    for commit in commits {
+        let current_version = next_required
+            .get(&commit.stream_id)
+            .copied()
+            .unwrap_or_else(|| committed_version(streams, &commit.stream_id));
+
+        if current_version != commit.expected_version {
+            return Err(Error::concurrency_conflict(
+                commit.expected_version,
+                current_version,
+            ));
+        }
+
+        #[allow(clippy::cast_possible_wrap)]
+        let leaves_at =
+            AggregateVersion::new(commit.expected_version.as_i64() + commit.events.len() as i64);
+        next_required.insert(&commit.stream_id, leaves_at);
+    }
+
+    for (stream_id, version) in expectations {
+        let current_version = committed_version(streams, stream_id);
+
+        if current_version != *version {
+            return Err(Error::concurrency_conflict(*version, current_version));
+        }
+    }
+
+    Ok(())
 }
 
-impl<'a> CommitGuard<'a> {
-    fn new(
-        streams: &'a mut HashMap<StreamId, Vec<Arc<EventEnvelope>>>,
-        global_events: &'a mut Vec<(Position, Arc<EventEnvelope>)>,
-    ) -> Self {
-        Self {
-            streams,
-            global_events,
-        }
-    }
-
-    /// Validates every commit's `expected_version` against the stream's
-    /// current length, then every expectation's version against the same
-    /// state, without mutating anything.
-    ///
-    /// Commits to the same stream within the batch chain: a later commit's
-    /// `expected_version` is checked against the version the previous commit
-    /// to that stream in this batch leaves it at, not against the stream's
-    /// currently committed version — mirroring the PostgreSQL backend's
-    /// `plan_version_chain_checks`. An empty-events commit still has its
-    /// version checked and still occupies its slot in the chain (it just
-    /// does not advance it), matching `append`'s existing behaviour for a
-    /// single empty commit.
-    ///
-    /// An expectation for a stream this batch also writes is checked against
-    /// the version that stream was at when the batch's *first* commit to it
-    /// was prepared — the load-time version — not against the version later
-    /// commits in the chain leave it at. A write and an expectation for the
-    /// same stream therefore agree only when they were prepared from the
-    /// same read; if they disagree, that disagreement is itself a conflict.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Error::ConcurrencyConflict` on the first commit or
-    /// expectation whose version doesn't match.
-    fn check(
-        &self,
-        commits: &[StreamCommit],
-        expectations: &[(StreamId, AggregateVersion)],
-    ) -> Result<()> {
-        let mut next_required: HashMap<&StreamId, AggregateVersion> = HashMap::new();
-
-        for commit in commits {
-            let current_version = next_required
-                .get(&commit.stream_id)
-                .copied()
-                .unwrap_or_else(|| Self::committed_version(self.streams, &commit.stream_id));
-
-            if current_version != commit.expected_version {
-                return Err(Error::concurrency_conflict(
-                    commit.expected_version,
-                    current_version,
-                ));
-            }
-
+/// Appends every commit's events, assigning global positions in batch
+/// order. Must only run after [`check`] accepted the same batch — it does
+/// not re-validate versions.
+fn apply(streams: &mut Streams, global_events: &mut GlobalEvents, commits: Vec<StreamCommit>) {
+    for commit in commits {
+        let stream = streams.entry(commit.stream_id).or_default();
+        for event in commit.events {
+            let shared = Arc::new(event);
+            stream.push(Arc::clone(&shared));
             #[allow(clippy::cast_possible_wrap)]
-            let leaves_at = AggregateVersion::new(
-                commit.expected_version.as_i64() + commit.events.len() as i64,
-            );
-            next_required.insert(&commit.stream_id, leaves_at);
-        }
-
-        for (stream_id, version) in expectations {
-            let current_version = Self::committed_version(self.streams, stream_id);
-
-            if current_version != *version {
-                return Err(Error::concurrency_conflict(*version, current_version));
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Appends every commit's events, assigning global positions in batch
-    /// order. Must only run after [`Self::check`] accepted the same batch —
-    /// it does not re-validate versions.
-    fn apply(&mut self, commits: Vec<StreamCommit>) {
-        for commit in commits {
-            let stream = self.streams.entry(commit.stream_id).or_default();
-            for event in commit.events {
-                let shared = Arc::new(event);
-                stream.push(Arc::clone(&shared));
-                #[allow(clippy::cast_possible_wrap)]
-                let position = Position::new(self.global_events.len() as i64 + 1);
-                self.global_events.push((position, shared));
-            }
+            let position = Position::new(global_events.len() as i64 + 1);
+            global_events.push((position, shared));
         }
     }
+}
 
-    #[allow(clippy::cast_possible_wrap)]
-    fn committed_version(
-        streams: &HashMap<StreamId, Vec<Arc<EventEnvelope>>>,
-        stream_id: &StreamId,
-    ) -> AggregateVersion {
-        streams
-            .get(stream_id)
-            .map_or(AggregateVersion::initial(), |stream| {
-                AggregateVersion::new(stream.len() as i64)
-            })
-    }
+#[allow(clippy::cast_possible_wrap)]
+fn committed_version(streams: &Streams, stream_id: &StreamId) -> AggregateVersion {
+    streams
+        .get(stream_id)
+        .map_or(AggregateVersion::initial(), |stream| {
+            AggregateVersion::new(stream.len() as i64)
+        })
 }
 
 /// In-memory event store for testing and development.
@@ -381,9 +354,8 @@ impl InMemoryEventStore {
         let mut streams = self.inner.streams.write();
         let mut global_events = self.inner.global_events.write();
 
-        let mut guard = CommitGuard::new(&mut streams, &mut global_events);
-        guard.check(&commits, expectations)?;
-        guard.apply(commits);
+        check(&streams, &commits, expectations)?;
+        apply(&mut streams, &mut global_events, commits);
 
         Ok(())
     }
