@@ -359,9 +359,10 @@ repo.save(&mut counter).await?;
 ### Event Sourcing Loop
 
 A typed [`Command`](../crates/event-sauce-core/src/commands/mod.rs) (behind
-the `commands` feature) replaces the load/match/save loop above with one call
-to [`Repository::execute`](../crates/event-sauce-core/src/repository.rs),
-which also retries the whole command on a concurrency conflict:
+the `commands` feature) turns the load / run aggregate command / save cycle
+into one call to
+[`Repository::execute`](../crates/event-sauce-core/src/repository.rs), which
+also retries the whole command on a concurrency conflict:
 
 ```rust
 use event_sauce::{Command, CommandError, RetryPolicy, Root};
