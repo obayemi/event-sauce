@@ -26,7 +26,150 @@ use crate::{
     EntityIdFor, InitEvent, Loaded, Result, UninitAggregateRoot,
 };
 #[cfg(feature = "commands")]
-use crate::{Command, Error, ExecuteError, Executed, RetryPolicy, Root};
+use crate::{Command, Error, ExecuteError, Executed, Lifecycle, RetryPolicy, Root};
+
+/// Adapts a one-shot [`Repository::modify`] closure into a [`Command`], so
+/// `modify` can be driven by [`Repository::execute`] with
+/// [`RetryPolicy::none()`] instead of duplicating the load/apply/save cycle.
+///
+/// `execute` never retries under [`RetryPolicy::none()`], so
+/// [`handle`](Command::handle) runs at most once; the `Mutex`es exist only to
+/// let a `&self` call move the `FnOnce` out and hand its result back, not for
+/// real contention.
+#[cfg(feature = "commands")]
+struct ModifyCommand<F, R> {
+    f: std::sync::Mutex<Option<F>>,
+    result: std::sync::Mutex<Option<R>>,
+}
+
+#[cfg(feature = "commands")]
+impl<F, R> ModifyCommand<F, R> {
+    fn new(f: F) -> Self {
+        Self {
+            f: std::sync::Mutex::new(Some(f)),
+            result: std::sync::Mutex::new(None),
+        }
+    }
+
+    fn take_result(&self) -> R {
+        self.result
+            .lock()
+            .unwrap()
+            .take()
+            .expect("execute() calls handle() exactly once before returning Ok")
+    }
+}
+
+#[cfg(feature = "commands")]
+impl<A, F, R> Command<A> for ModifyCommand<F, R>
+where
+    A: Aggregate,
+    F: FnOnce(&mut AggregateRoot<A>) -> std::result::Result<R, A::Error> + Send,
+    R: Send,
+{
+    fn handle(
+        &self,
+        root: Root<A>,
+        _ctx: &(),
+    ) -> std::result::Result<Root<A>, crate::CommandError<A::Error>> {
+        let mut active = root.active()?;
+        let f = self
+            .f
+            .lock()
+            .unwrap()
+            .take()
+            .expect("ModifyCommand::handle is only ever called once");
+        let result = f(&mut active)?;
+        *self.result.lock().unwrap() = Some(result);
+        Ok(active.into())
+    }
+}
+
+/// The [`modify_deleted`](Repository::modify_deleted) counterpart of
+/// [`ModifyCommand`], narrowing to [`Root::Deleted`] instead of
+/// [`Root::Active`].
+#[cfg(feature = "commands")]
+struct ModifyDeletedCommand<F, R> {
+    f: std::sync::Mutex<Option<F>>,
+    result: std::sync::Mutex<Option<R>>,
+}
+
+#[cfg(feature = "commands")]
+impl<F, R> ModifyDeletedCommand<F, R> {
+    fn new(f: F) -> Self {
+        Self {
+            f: std::sync::Mutex::new(Some(f)),
+            result: std::sync::Mutex::new(None),
+        }
+    }
+
+    fn take_result(&self) -> R {
+        self.result
+            .lock()
+            .unwrap()
+            .take()
+            .expect("execute() calls handle() exactly once before returning Ok")
+    }
+}
+
+#[cfg(feature = "commands")]
+impl<A, F, R> Command<A> for ModifyDeletedCommand<F, R>
+where
+    A: Aggregate,
+    F: FnOnce(&mut DeletedAggregateRoot<A>) -> std::result::Result<R, A::Error> + Send,
+    R: Send,
+{
+    fn handle(
+        &self,
+        root: Root<A>,
+        _ctx: &(),
+    ) -> std::result::Result<Root<A>, crate::CommandError<A::Error>> {
+        let mut deleted = root.deleted()?;
+        let f = self
+            .f
+            .lock()
+            .unwrap()
+            .take()
+            .expect("ModifyDeletedCommand::handle is only ever called once");
+        let result = f(&mut deleted)?;
+        *self.result.lock().unwrap() = Some(result);
+        Ok(deleted.into())
+    }
+}
+
+/// Reconstructs the `Error` [`Repository::modify`] and
+/// [`Repository::modify_deleted`] have always returned for a lifecycle
+/// mismatch — `execute()` only knows the mismatch, not the request that
+/// caused it, so the specific `Error` is rebuilt here from `entity_id` and
+/// the lifecycle actually found.
+#[cfg(feature = "commands")]
+fn modify_lifecycle_error<A: Aggregate>(entity_id: EntityId, found: Lifecycle) -> Error {
+    match found {
+        Lifecycle::Missing => Error::not_found(A::aggregate_type().as_str(), entity_id.to_string()),
+        Lifecycle::Deleted => {
+            Error::aggregate_deleted(A::aggregate_type().to_string(), entity_id.to_string())
+        }
+        Lifecycle::Active => Error::invalid_state("Aggregate is not deleted"),
+    }
+}
+
+/// Maps an [`ExecuteError`] onto the [`ModifyError`](crate::ModifyError)
+/// `modify`/`modify_deleted` have always returned, preserving every variant's
+/// prior meaning exactly.
+#[cfg(feature = "commands")]
+fn map_modify_error<A: Aggregate>(
+    entity_id: EntityId,
+    err: ExecuteError<A::Error>,
+) -> crate::ModifyError<A::Error> {
+    match err {
+        ExecuteError::Domain(e) => crate::ModifyError::Domain(e),
+        ExecuteError::Lifecycle { found, .. } => {
+            crate::ModifyError::Load(modify_lifecycle_error::<A>(entity_id, found))
+        }
+        ExecuteError::Load(e) => crate::ModifyError::Load(e),
+        ExecuteError::Save(e) => crate::ModifyError::Save(e),
+    }
+}
 
 /// Persistence-style-agnostic aggregate persistence.
 ///
@@ -361,12 +504,24 @@ pub trait Repository<A: Aggregate>: Send + Sync {
         F: FnOnce(&mut AggregateRoot<A>) -> std::result::Result<R, A::Error> + Send,
         R: Send,
     {
-        let mut aggregate = self.load(id).await.map_err(crate::ModifyError::Load)?;
-        let result = f(&mut aggregate).map_err(crate::ModifyError::Domain)?;
-        self.save(&mut aggregate)
-            .await
-            .map_err(crate::ModifyError::Save)?;
-        Ok(result)
+        #[cfg(feature = "commands")]
+        {
+            let entity_id = id.entity_id();
+            let command = ModifyCommand::new(f);
+            self.execute(entity_id, &command, &(), RetryPolicy::none())
+                .await
+                .map(|_executed| command.take_result())
+                .map_err(|e| map_modify_error::<A>(entity_id, e))
+        }
+        #[cfg(not(feature = "commands"))]
+        {
+            let mut aggregate = self.load(id).await.map_err(crate::ModifyError::Load)?;
+            let result = f(&mut aggregate).map_err(crate::ModifyError::Domain)?;
+            self.save(&mut aggregate)
+                .await
+                .map_err(crate::ModifyError::Save)?;
+            Ok(result)
+        }
     }
 
     /// Loads a deleted aggregate, applies a closure, and saves any new pending changes.
@@ -398,15 +553,27 @@ pub trait Repository<A: Aggregate>: Send + Sync {
         F: FnOnce(&mut DeletedAggregateRoot<A>) -> std::result::Result<R, A::Error> + Send,
         R: Send,
     {
-        let mut deleted = self
-            .load_deleted(id)
-            .await
-            .map_err(crate::ModifyError::Load)?;
-        let result = f(&mut deleted).map_err(crate::ModifyError::Domain)?;
-        self.save_deleted(&mut deleted)
-            .await
-            .map_err(crate::ModifyError::Save)?;
-        Ok(result)
+        #[cfg(feature = "commands")]
+        {
+            let entity_id = id.entity_id();
+            let command = ModifyDeletedCommand::new(f);
+            self.execute(entity_id, &command, &(), RetryPolicy::none())
+                .await
+                .map(|_executed| command.take_result())
+                .map_err(|e| map_modify_error::<A>(entity_id, e))
+        }
+        #[cfg(not(feature = "commands"))]
+        {
+            let mut deleted = self
+                .load_deleted(id)
+                .await
+                .map_err(crate::ModifyError::Load)?;
+            let result = f(&mut deleted).map_err(crate::ModifyError::Domain)?;
+            self.save_deleted(&mut deleted)
+                .await
+                .map_err(crate::ModifyError::Save)?;
+            Ok(result)
+        }
     }
 
     /// Creates an uninitialized aggregate root with a random `EntityId`.
