@@ -41,6 +41,8 @@ read models kept up to date from the very events your aggregates emit.
 - 👤 **Actor Events**: Permission validation tied to actor identity
 - 🔒 **Uniqueness Claims**: Cross-aggregate uniqueness constraints enforced transactionally (e.g., unique emails)
 - 📦 **Optimistic Concurrency**: Version-checked writes with typed `ConcurrencyConflict` errors
+- ⚙️ **Typed Commands**: lifecycle-aware `Command` handlers over a `Root`, run with `Repository::execute` and a `RetryPolicy` that retries concurrency conflicts (`commands` feature)
+- 🔗 **Units of Work**: atomic commits across event-sourced and state-stored aggregates with `UnitOfWorkStore`, backed by the in-memory and Postgres `TransactionalStore` (`unit-of-work` feature)
 - 🗄️ **Multiple Backends**: PostgreSQL, in-memory
 - 🧪 **Testing First-Class**: In-memory backend for fast tests; 🚀 latest stable dependencies (Tokio 1.48, SQLx 0.8); strict TDD with property-based testing
 
@@ -797,6 +799,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 - **[Getting Started Guide](docs/getting-started.md)** - Your first event-driven application
 - **[State Storage](docs/state-storage.md)** - Choosing between the two storage options: event sourcing vs log-free state storage
+- **[Commands](docs/commands.md)** - Typed lifecycle-aware commands, `Repository::execute` and retry policies
+- **[Unit of Work](docs/unit-of-work.md)** - Atomic operations across several aggregates and stores
 - **[Events Guide](docs/events.md)** - Event definitions, init events, actor events, and validation
 - **[Aggregates Guide](docs/aggregates.md)** - Aggregate design, type-state construction
 - **[Validation Guide](docs/validation.md)** - Business rule validation and specification pattern
@@ -827,6 +831,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
   - **[policy.rs](crates/event-sauce/examples/policy.rs)** - Cross-aggregate event orchestration with causation tracking
   - **[save-all.rs](crates/event-sauce/examples/save-all.rs)** - Multi-aggregate atomic writes with `Repository::save_all`
   - **[state-stored-order.rs](crates/event-sauce/examples/state-stored-order.rs)** - The same aggregate against both `EventStore` and `StateStore` (requires `memory` + `state-store` + `event-sourcing`)
+  - **[commands.rs](crates/event-sauce/examples/commands.rs)** - Typed commands run with `Repository::execute` and a retry policy (requires `memory` + `commands` + `event-sourcing`)
+  - **[unit-of-work.rs](crates/event-sauce/examples/unit-of-work.rs)** - One command committing several aggregates atomically (requires `memory` + `unit-of-work`)
   - **[upcasting.rs](crates/event-sauce/examples/upcasting.rs)** - On-load schema migration for historical event payloads
   - **[projection-worker.rs](crates/event-sauce/examples/projection-worker.rs)** - Running a postgres-backed projection as its own worker process (requires `postgres`; needs Docker)
 - **CLAUDE.md** - Development guidelines and principles
@@ -840,7 +846,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 - [x] **Phase 3: PostgreSQL backend (event-sauce-postgres)** - ✅ 129 tests
 - [x] **Phase 4: Derive macros (event-sauce-macros)** - ✅ 121 tests
 - [x] **Phase 5: Event consumption primitives (event-sauce-core)** - ✅ Integrated into core (`CheckpointStore`, `EventFilter`)
-- [x] **Phase 6: Examples and documentation** - ✅ 11 examples, comprehensive guides
+- [x] **Phase 6: Examples and documentation** - ✅ 13 examples, comprehensive guides
 - [x] **Phase 7: Correctness hardening** - ✅ all 30 audit findings in [ISSUES.md](ISSUES.md) fixed with regression tests
 - [x] **Phase 7.5: Domain/persistence split** - ✅ `Repository` trait, state-stored persistence (`StateStore`, in-transaction projections, transactional outbox), feature flags
 - [ ] Phase 8: v0.1.0 release
