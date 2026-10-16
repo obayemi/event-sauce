@@ -27,6 +27,7 @@ events.
 - **[Projections](projections.md)** - Building read models with transactional, durable delivery
 - **[Policies](policies.md)** - Cross-aggregate event orchestration with causation tracking
 - **[Audit Log](audit-log.md)** - Event log queries, actor tracking, and causation tracing
+- **[Event Context](event-context.md)** - Ambient tenant, correlation id and extra keys that tag every applied event
 
 ## Production Deployment
 

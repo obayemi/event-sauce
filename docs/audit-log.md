@@ -31,7 +31,7 @@ Every event stored by event-sauce automatically captures audit information: who 
 | `event_type` | `String` | What happened (e.g., "User.Registered") |
 | `created_by` | `Option<Uuid>` | Who triggered the event (actor ID) |
 | `created_at` | `DateTime<Utc>` | When the event was created |
-| `metadata` | `Option<EventMetadata>` | Causation chain, correlation ID, custom data |
+| `metadata` | `Option<EventMetadata>` | Causation chain, correlation ID, tenant, command, custom data |
 
 ## What Gets Tracked
 
@@ -91,7 +91,11 @@ This is fully automatic — `PolicyContext::commit()` builds the causation chain
 
 ### Custom Metadata
 
-Attach application-specific data using `EventMetadata::additional`:
+Tenant, correlation id and command are typed fields of `EventMetadata`
+(`tenant`, `correlation_id`, `correlation_path`, `command`), filled
+automatically from the ambient [event context](event-context.md) when an event
+is applied inside one. Attach any other application-specific data using
+`EventMetadata::additional`:
 
 ```rust
 use event_sauce::EventMetadata;
@@ -101,8 +105,8 @@ let metadata = EventMetadata::new()
     .with_additional(json!({
         "ip_address": "192.168.1.1",
         "user_agent": "Mozilla/5.0",
-        "tenant_id": "acme-corp",
-    }));
+    }))
+    .with_tenant("acme-corp");
 
 // Apply event with metadata
 aggregate.apply_with_metadata(some_event, metadata)?;
@@ -262,7 +266,7 @@ User clicks "Kick Member" button
 
 **Fields:**
 
-- **`correlation_id`** — the root event that started the entire chain (stays the same throughout)
+- **`correlation_id`** — a string identifying the entire chain: the id the flow arrived with (see [Event Context](event-context.md)), or the root event id when there is none (stays the same throughout)
 - **`causation_id`** — the immediate parent event (changes at each step)
 - **`causation_chain`** — full ancestry from root to direct parent, ordered chronologically
 
@@ -272,7 +276,7 @@ These fields are populated automatically by `PolicyContext`. Events from a servi
 
 1. **Use actor events** for aggregate commands that should be attributed to a user — the `@actor(Type)` annotation handles `created_by` automatically
 2. **Use policies** for cross-aggregate reactions — causation metadata is injected automatically
-3. **Store context in `additional`** — IP addresses, tenant IDs, and session info belong in `EventMetadata::additional`, not in event data
+3. **Store context in metadata** — the tenant goes in `EventMetadata::tenant` (set it through an [event context](event-context.md)); IP addresses and session info belong in `EventMetadata::additional`, not in event data
 4. **Query by correlation_id** to find all events in a causal chain — this is the most useful debugging tool for understanding cascading effects
 5. **Set reasonable page sizes** — default is 50, but adjust for your UI needs
 

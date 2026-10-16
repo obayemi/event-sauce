@@ -54,6 +54,12 @@ impl<T: TransactionalStore + 'static> UnitOfWorkCommand<T> for PlaceOrder {
 let executed = store.execute(&place, &(), RetryPolicy::default()).await?;
 ```
 
+`UnitOfWorkCommand::name()` returns `None` by default; override it to record the
+command's name as the `command` of every event the unit of work produces.
+`execute` also runs the handler in an [event context](event-context.md) and
+adds a correlation id (a fresh UUID string) unless an enclosing scope already
+provides one, so every event of one command shares it.
+
 The handler never saves. Once it returns `Ok`, `execute` commits every change;
 returning `Err` discards all of them. Domain errors and `CommandError`s
 convert into `UnitOfWorkError` with `?`.

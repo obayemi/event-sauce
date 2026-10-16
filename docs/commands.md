@@ -77,6 +77,26 @@ runs the command, and saves whichever root it returned: `save` for `Active`,
 `save_deleted` for `Deleted`, nothing for `Missing`. It returns `Executed`,
 carrying the final `Root` and the number of attempts.
 
+`execute` runs the command in an [event context](event-context.md): the events
+it produces carry the command's `name()` as their `command`, and a correlation
+id is added (a fresh UUID string) unless an enclosing scope already provides
+one. `name()` returns `None` by default, so a command is anonymous until it
+overrides it:
+
+```rust
+impl Command<Account> for Deposit {
+    fn handle(&self, root: Root<Account>, _ctx: &()) -> Outcome {
+        let mut account = root.active()?;
+        account.deposit(self.0)?;
+        Ok(account.into())
+    }
+
+    fn name(&self) -> Option<&str> {
+        Some("Deposit")
+    }
+}
+```
+
 Failures come back as `ExecuteError`:
 
 - `Load`: loading failed for a reason other than "nothing saved yet"
@@ -113,7 +133,8 @@ root and the context: no side effects outside the aggregate.
 the closure once against the active aggregate and saves. A concurrency
 conflict comes back as `ModifyError::Save` and is not retried, because a
 `FnOnce` closure cannot be run twice. Reach for `modify` for a one-off change
-at a call site, and for `Command` with `execute` and a `RetryPolicy` when the
+at a call site (it adds the correlation id like `execute`, but has no command
+name), and for `Command` with `execute` and a `RetryPolicy` when the
 operation has a name, a lifecycle precondition, needs automatic retries, or
 deserves to be tested on its own.
 

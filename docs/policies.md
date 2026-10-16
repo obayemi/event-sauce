@@ -129,6 +129,12 @@ Every event produced by a policy carries metadata:
 For example, in a cascade `A -> B -> C`:
 - Event C has `causation_id = B.id`, `correlation_id = A.id`, `causation_chain = [A.id, B.id]`
 
+A reaction also inherits the [event context](event-context.md) of its source
+event. It runs in a root context seeded with the source event's tenant,
+correlation id and correlation path, so a cascade stays in one tenant and one
+flow without any code in the handler. The events it produces record the
+policy's `name()` as their `command`.
+
 ## PolicyRunner
 
 The `PolicyRunner` manages policy registration, event routing, and checkpoint-based resumption:

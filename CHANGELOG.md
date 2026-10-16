@@ -188,6 +188,22 @@ explicitly rather than gated behind a major version bump.
 
 ### Added
 
+- Ambient event context. `EventContext` (a `Root` context starts a new flow
+  and may carry a tenant, a nested one cannot), the `event_context!` macro,
+  the `#[with_event_context]` attribute, `WithEventContextExt::with_event_context`
+  for futures, `EventContext::current` to hand the context to a spawned task,
+  and `entered`/`in_scope` for synchronous code. Events applied inside a scope
+  get `tenant`, `correlation_id`, `correlation_path`, `command` and
+  `additional` on their `EventMetadata`. `ContextValue` makes values
+  infallible to convert, and the `%` sigil stores any `Display` type. See
+  `docs/event-context.md`.
+- `Command::name` and `UnitOfWorkCommand::name` record a command's name on
+  the events it produces. `Repository::execute`, `Repository::modify` and
+  `UnitOfWorkStore::execute` also add a correlation id when no scope
+  provides one, and policy reactions run in a root context seeded from the
+  source event.
+- Postgres persists `causation_chain`, `tenant`, `command` and
+  `correlation_path`.
 - `EventStore::fetch_batch` — fetches up to `limit` events after a
   position and drops the underlying stream before returning, for
   consumers (like `PolicyRunner`) that need a bounded, already-materialized

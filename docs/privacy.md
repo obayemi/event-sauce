@@ -289,6 +289,14 @@ Each encrypted aggregate instance gets its own unique encryption key. This means
 - Keys are generated automatically on first `commit()`, unless the aggregate was shredded
 - Keys are stored in the configured `CryptoKeyStore`
 
+### Event Metadata Is Plain Text
+
+Encryption covers event data and snapshots, not event metadata. The fields an
+[event context](event-context.md) records (`tenant`, `correlation_id`,
+`correlation_path`, `command` and the `additional` keys) are stored in plain
+text, next to the causation fields, and survive crypto-shredding of the
+aggregate's key. Never put personal data in them; use opaque identifiers.
+
 ### Non-Encrypted Aggregates Are Unaffected
 
 Aggregates without `encrypted` (the default) continue to store plaintext data. The encryption system only activates when `Aggregate::is_encrypted()` returns `true`.

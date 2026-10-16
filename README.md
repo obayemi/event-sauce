@@ -441,10 +441,11 @@ let page = log_query.query_events(params).await?;
 **Built-in traceability:**
 - **Actor tracking** — `created_by` field on every event, populated automatically from actor events
 - **Causation chain** — `causation_id`, `correlation_id`, and full `causation_chain` trace policy cascades back to the root cause
-- **Extensible metadata** — attach application-specific data (IP address, tenant ID, etc.) via `EventMetadata::additional`
+- **Ambient event context** — enter an `event_context!` (or `#[with_event_context]`) once at the edge and every applied event carries its tenant, correlation id and extra keys
+- **Extensible metadata** — attach application-specific data (IP address, session, etc.) via `EventMetadata::additional`
 - **Filterable queries** — filter by aggregate type, event type, aggregate ID, actor, and time range
 
-See the **[Audit Log Guide](docs/audit-log.md)** for full details.
+See the **[Audit Log Guide](docs/audit-log.md)** and the **[Event Context Guide](docs/event-context.md)** for full details.
 
 ### Building Projections (Read Models)
 

@@ -333,6 +333,21 @@ CREATE TABLE IF NOT EXISTS event_sauce.events (...);
 CREATE TABLE IF NOT EXISTS event_sauce.snapshots (...);
 ```
 
+The `events` table stores the metadata of the [event context](event-context.md)
+in dedicated columns: `correlation_id` (`TEXT`), `causation_id`,
+`causation_chain` (`JSONB`), `tenant` (`TEXT`), `command` (`TEXT`),
+`correlation_path` (`JSONB`) and the `additional` JSONB document. Rows written
+before the columns existed read back as `NULL`: no tenant, no command, an empty
+path and an empty causation chain.
+
+**Upgrade warning:** `migrate()` converts `events.correlation_id` from `UUID` to
+`TEXT`, because correlation ids are free-form strings. Changing a column's type
+rewrites the whole table under an `ACCESS EXCLUSIVE` lock, which blocks every
+read and write on `events` until it finishes. On a large table, run `migrate()`
+in a maintenance window, before rolling out the new application version. The
+new `tenant`, `command`, `correlation_path` and `causation_chain` columns are
+nullable additions and do not rewrite the table.
+
 ### CI/CD Integration
 
 **Option 1: Application-managed (recommended):**
@@ -814,15 +829,22 @@ let event = EventEnvelope {
     metadata: Some(EventMetadata {
         correlation_id: Some(request_id.to_string()), // Request tracking (free-form string)
         causation_id: Some(parent_event_id), // Causality chain
+        tenant: Some("acme".to_string()),    // Tenant the event belongs to
+        command: Some("Deposit".to_string()), // Command that produced it
         timestamp: Utc::now(),            // When it happened
         additional: Some(json!({
             "ip": "192.168.1.1",
             "user_agent": "...",
         })),
+        ..EventMetadata::new()
     }),
     ..event
 };
 ```
+
+You rarely build this by hand: apply events inside an
+[event context](event-context.md) and the tenant, correlation id and extra keys
+are recorded for you.
 
 Query audit trail:
 ```sql
