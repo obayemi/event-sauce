@@ -282,3 +282,25 @@ fn an_execution_context_keeps_the_active_correlation_id() {
         });
     });
 }
+
+#[test]
+fn with_accepts_any_json_convertible_value() {
+    EventContext::new()
+        .with("flag", true)
+        .with("count", 2_u32)
+        .with("tags", vec!["a", "b"])
+        .with("none", None::<String>)
+        .with("shown", display(7))
+        .in_scope(|| {
+            assert_eq!(
+                snapshot().additional,
+                Some(json!({
+                    "flag": true,
+                    "count": 2,
+                    "tags": ["a", "b"],
+                    "none": null,
+                    "shown": "7",
+                }))
+            );
+        });
+}

@@ -172,39 +172,40 @@ A `tenant` field without `root` does not compile.
 
 ## Context values
 
-Extra keys accept any `ContextValue`. The trait has one method,
-`to_json(&self) -> serde_json::Value`, and it is **infallible**: a context is
-ambient metadata, and attaching a value must never be able to fail a command.
-That is why there is no blanket implementation over `serde::Serialize`, whose
-serialization can fail.
+Extra keys accept anything that implements `Into<serde_json::Value>`. The
+conversion is **infallible**: a context is ambient metadata, and attaching a
+value must never be able to fail a command. That is why there is no blanket
+implementation over `serde::Serialize`, whose serialization can fail.
 
-Implemented for: `bool`, every integer and float type (non-finite floats become
-`null`), `char`, `str`, `String`, `Cow<str>`, `Uuid`, `DateTime<Utc>`,
-`serde_json::Value`, `Option<T>`, slices and `Vec<T>` of values, and references
-to any of them.
+serde_json provides it for `bool`, every integer up to 64 bits, `isize`,
+`usize`, `f32`, `f64` (non-finite floats become `null`), `String`, `&str`,
+`Cow<str>`, `Map`, `Vec<T>`, arrays, slices and `Option<T>` of values, and
+`serde_json::Value` itself. It does not provide it for references such as
+`&String` (use `.as_str()` or a clone), nor for `i128`, `u128`, `char`, `Uuid`
+or `DateTime`.
 
 For anything else that implements `Display`, use the `%` sigil, which stores
 the value as a string through `display()`:
 
 ```rust
-use event_sauce::{display, ContextValue};
-use serde_json::json;
+use event_sauce::display;
+use serde_json::{json, Value};
 
-assert_eq!(display(std::net::Ipv4Addr::LOCALHOST).to_json(), json!("127.0.0.1"));
+let value: Value = display(std::net::Ipv4Addr::LOCALHOST).into();
+assert_eq!(value, json!("127.0.0.1"));
 ```
 
-Implement `ContextValue` yourself for a domain type when a structured value
-reads better than its string form:
+Implement `From<YourType> for serde_json::Value` for a domain type when a
+structured value reads better than its string form:
 
 ```rust
-use event_sauce::ContextValue;
 use serde_json::{json, Value};
 
 struct Region(&'static str);
 
-impl ContextValue for Region {
-    fn to_json(&self) -> Value {
-        json!({ "name": self.0 })
+impl From<Region> for Value {
+    fn from(region: Region) -> Self {
+        json!({ "name": region.0 })
     }
 }
 ```

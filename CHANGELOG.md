@@ -194,8 +194,11 @@ explicitly rather than gated behind a major version bump.
   for futures, `EventContext::current` to hand the context to a spawned task,
   and `entered`/`in_scope` for synchronous code. Events applied inside a scope
   get `tenant`, `correlation_id`, `correlation_path`, `command` and
-  `additional` on their `EventMetadata`. `ContextValue` makes values
-  infallible to convert, and the `%` sigil stores any `Display` type. See
+  `additional` on their `EventMetadata`. Values convert through
+  `Into<serde_json::Value>`, and the `%` sigil stores any `Display` type.
+  `Uuid` goes through `%id`, `DateTime` needs `%at` or
+  `at.to_rfc3339()`, `i128`, `u128` and `char` need `%`, and references
+  such as `&String` need `.as_str()` or a clone. See
   `docs/event-context.md`.
 - `Command::name` and `UnitOfWorkCommand::name` record a command's name on
   the events it produces. `Repository::execute`, `Repository::modify` and

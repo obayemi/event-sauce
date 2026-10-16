@@ -28,7 +28,7 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 pub use future::{WithEventContext, WithEventContextExt};
-pub use value::{display, ContextValue, DisplayValue};
+pub use value::{display, DisplayValue};
 
 /// Marker of an [`EventContext`] that starts a fresh context: it inherits
 /// nothing from the contexts around it and may carry a tenant.
@@ -153,8 +153,8 @@ impl<K> EventContext<K> {
     /// ctx.in_scope(|| ());
     /// ```
     #[must_use]
-    pub fn with(mut self, key: impl Into<String>, value: impl ContextValue) -> Self {
-        self.frame.additional.insert(key.into(), value.to_json());
+    pub fn with(mut self, key: impl Into<String>, value: impl Into<serde_json::Value>) -> Self {
+        self.frame.additional.insert(key.into(), value.into());
         self
     }
 
