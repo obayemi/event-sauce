@@ -1095,3 +1095,99 @@ mod proptests {
         }
     }
 }
+
+// === Ambient event context ===
+
+fn increment_event() -> IncrementedEvent {
+    IncrementedEvent {
+        amount: 1,
+        timestamp: Utc::now(),
+    }
+}
+
+fn ambient() -> crate::EventContext<crate::event_context::Root> {
+    crate::EventContext::root()
+        .tenant("acme")
+        .correlation_id("req-1")
+        .with("region", "eu")
+}
+
+fn assert_tagged(metadata: Option<&crate::EventMetadata>) {
+    let metadata = metadata.expect("ambient context tags the event");
+    assert_eq!(metadata.tenant.as_deref(), Some("acme"));
+    assert_eq!(metadata.correlation_id.as_deref(), Some("req-1"));
+    assert_eq!(metadata.correlation_path, ["req-1"]);
+    assert_eq!(
+        metadata.additional,
+        Some(serde_json::json!({"region": "eu"}))
+    );
+}
+
+#[test]
+fn applied_events_carry_the_ambient_context() {
+    let mut counter = AggregateRoot::<CounterEntity>::new(EntityId::new());
+    ambient().in_scope(|| counter.apply(increment_event()).unwrap());
+    assert_tagged(counter.pending_events_with_actors()[0].metadata.as_ref());
+}
+
+#[test]
+fn actor_events_carry_the_ambient_context() {
+    let mut counter = AggregateRoot::<CounterEntity>::new(EntityId::new());
+    ambient().in_scope(|| {
+        counter
+            .apply_with_actor(increment_event(), EntityId::new())
+            .unwrap();
+    });
+    assert_tagged(counter.pending_events_with_actors()[0].metadata.as_ref());
+}
+
+#[test]
+fn delete_events_carry_the_ambient_context() {
+    let counter = AggregateRoot::<CounterEntity>::new(EntityId::new());
+    let deleted = ambient().in_scope(|| {
+        counter
+            .apply_delete(ClosedEvent {
+                timestamp: Utc::now(),
+            })
+            .unwrap()
+    });
+    assert_tagged(deleted.pending_events_with_actors()[0].metadata.as_ref());
+}
+
+#[test]
+fn events_outside_any_scope_carry_no_metadata() {
+    let mut counter = AggregateRoot::<CounterEntity>::new(EntityId::new());
+    counter.apply(increment_event()).unwrap();
+    assert_eq!(counter.pending_events_with_actors()[0].metadata, None);
+}
+
+#[test]
+fn explicit_metadata_wins_over_the_ambient_context() {
+    let mut counter = AggregateRoot::<CounterEntity>::new(EntityId::new());
+    let explicit = crate::EventMetadata::new()
+        .with_correlation_id("explicit")
+        .with_tenant("globex");
+    ambient().in_scope(|| {
+        counter
+            .apply_with_metadata(increment_event(), explicit)
+            .unwrap();
+    });
+    let metadata = counter.pending_events_with_actors()[0]
+        .metadata
+        .clone()
+        .unwrap();
+    assert_eq!(metadata.correlation_id.as_deref(), Some("explicit"));
+    assert_eq!(metadata.tenant.as_deref(), Some("globex"));
+    assert_eq!(
+        metadata.additional,
+        Some(serde_json::json!({"region": "eu"}))
+    );
+}
+
+#[test]
+fn replayed_events_ignore_the_ambient_context() {
+    let mut counter = AggregateRoot::<CounterEntity>::new(EntityId::new());
+    let event = CounterEvent::Incremented(increment_event());
+    ambient().in_scope(|| counter.apply_unchecked(&event));
+    assert!(counter.pending_events_with_actors().is_empty());
+}

@@ -359,6 +359,19 @@ pub(crate) struct ContextSnapshot {
     pub additional: Option<Value>,
 }
 
+impl From<ContextSnapshot> for crate::EventMetadata {
+    fn from(snapshot: ContextSnapshot) -> Self {
+        Self {
+            correlation_id: snapshot.correlation_id,
+            tenant: snapshot.tenant,
+            command: snapshot.command,
+            correlation_path: snapshot.correlation_path,
+            additional: snapshot.additional,
+            ..Self::new()
+        }
+    }
+}
+
 pub(crate) fn current_snapshot() -> Option<ContextSnapshot> {
     let snapshot = effective(|frames| {
         let mut correlation_path: Vec<String> = Vec::new();

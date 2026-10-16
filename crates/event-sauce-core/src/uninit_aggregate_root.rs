@@ -143,6 +143,22 @@ mod tests {
         assert_eq!(pending[0].actor_id, Some(actor_id));
     }
 
+    #[test]
+    fn init_events_carry_the_ambient_context() {
+        use crate::test_fixtures::SimpleTestInit;
+
+        let uninit = UninitAggregateRoot::<SimpleTestEntity>::new(EntityId::new());
+        let agg = crate::EventContext::root()
+            .tenant("acme")
+            .correlation_id("req-1")
+            .in_scope(|| uninit.apply_init(SimpleTestInit { value: 7 }).unwrap());
+
+        let metadata = agg.pending_events_with_actors()[0].metadata.as_ref();
+        let metadata = metadata.expect("ambient context tags the init event");
+        assert_eq!(metadata.tenant.as_deref(), Some("acme"));
+        assert_eq!(metadata.correlation_id.as_deref(), Some("req-1"));
+    }
+
     #[cfg(feature = "event-sourcing")]
     #[test]
     fn test_apply_init_unchecked_replays_the_init_event_at_the_first_version() {
