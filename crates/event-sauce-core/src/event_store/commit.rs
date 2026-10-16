@@ -132,7 +132,15 @@ pub(crate) async fn flush_prepared_batch<S: EventStore + ?Sized>(
 ///
 /// A snapshot is a cache of already-durably-committed events, so a failure to
 /// save it is never fatal to the commit that triggered it.
-async fn save_snapshot_best_effort<S: EventStore + ?Sized>(store: &S, snapshot: Snapshot) {
+///
+/// Crate-visible so other code that persists a [`PreparedCommit`]'s snapshot
+/// outside of [`flush_prepared`] or [`flush_prepared_batch`] (e.g. the
+/// unit-of-work contract) can reuse this best-effort policy instead of
+/// duplicating it.
+pub(crate) async fn save_snapshot_best_effort<S: EventStore + ?Sized>(
+    store: &S,
+    snapshot: Snapshot,
+) {
     let aggregate_type = snapshot.aggregate_type.clone();
     let aggregate_id = snapshot.aggregate_id;
     if let Err(e) = store.save_snapshot(snapshot).await {
