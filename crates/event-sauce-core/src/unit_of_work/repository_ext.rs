@@ -74,6 +74,19 @@ where
         }))
 }
 
+/// Prepares a state-stored root's row write, shared by
+/// [`StateStoredRepository`] and the unit of work's own registry.
+pub(super) fn prepare_state_write<S, A, R>(root: &R) -> Result<Option<PreparedWrite>>
+where
+    S: StateStore + 'static,
+    A: Aggregate + serde::Serialize + serde::de::DeserializeOwned,
+    A::DeletedState: serde::Serialize + serde::de::DeserializeOwned,
+    A::Event: serde::Serialize + serde::de::DeserializeOwned,
+    R: CommitSource<A>,
+{
+    Ok(StateStoredRepository::<S, A>::prepare(root)?.map(PreparedWrite::State))
+}
+
 /// Asserts an event-sourced aggregate's stream is still at `version`.
 pub(super) fn stream_expectation<A: Aggregate>(
     id: EntityId,
@@ -129,14 +142,14 @@ where
     A::Event: serde::Serialize + serde::de::DeserializeOwned,
 {
     async fn prepare(&self, root: &AggregateRoot<A>) -> Result<Option<PreparedWrite>> {
-        Ok(Self::prepare(root)?.map(PreparedWrite::State))
+        prepare_state_write::<S, A, _>(root)
     }
 
     async fn prepare_deleted(
         &self,
         root: &DeletedAggregateRoot<A>,
     ) -> Result<Option<PreparedWrite>> {
-        Ok(Self::prepare(root)?.map(PreparedWrite::State))
+        prepare_state_write::<S, A, _>(root)
     }
 
     fn expect(&self, id: EntityId, version: AggregateVersion) -> Expectation {

@@ -1,4 +1,4 @@
-//! The unit-of-work storage contract.
+//! Units of work: commands that change several aggregates atomically.
 //!
 //! A unit of work loads aggregates of several types — some event-sourced,
 //! some state-stored — lets a command modify them, then commits every
@@ -17,15 +17,35 @@
 //!   [`StateStore`]) a backend commits an [`AtomicCommit`] against,
 //!   atomically.
 //!
-//! The unit of work itself and the registry that builds a
-//! [`TransactionalStore`] from a pair of stores are a later addition; this
-//! module only defines the storage contract they build on.
+//! On top of that contract sits the unit of work itself:
+//!
+//! - [`UnitOfWorkStore`] — a [`TransactionalStore`] plus the registry of
+//!   aggregate types it holds, each registered as event-sourced or
+//!   state-stored; it runs [`UnitOfWorkCommand`]s, retrying on conflict.
+//! - [`UnitOfWork`] — one attempt of a command: loads, creates and peeks at
+//!   aggregates, then commits every change atomically.
+//! - [`Tracked`] — an aggregate checked out of a unit of work.
+//! - [`UnitOfWorkError`] — everything a unit of work can fail with.
 
 mod atomic_commit;
+mod command;
+mod erased;
+mod error;
+mod identity_map;
 mod repository_ext;
+mod store;
+#[cfg(test)]
+mod test_support;
+mod tracked;
+mod uow;
 
 pub use atomic_commit::{AtomicCommit, Expectation, PreparedWrite, StreamWrite};
+pub use command::UnitOfWorkCommand;
+pub use error::UnitOfWorkError;
 pub use repository_ext::UnitOfWorkRepository;
+pub use store::{UnitOfWorkExecuted, UnitOfWorkStore};
+pub use tracked::Tracked;
+pub use uow::UnitOfWork;
 
 use async_trait::async_trait;
 

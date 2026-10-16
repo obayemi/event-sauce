@@ -11,6 +11,8 @@ mod encryption;
 mod load;
 mod snapshot;
 
+#[cfg(feature = "unit-of-work")]
+pub(crate) use commit::save_snapshot_best_effort;
 pub(crate) use commit::{flush_prepared, flush_prepared_batch, prepare_commit, PreparedCommit};
 pub(crate) use load::{count_events, load, load_any, load_deleted};
 pub use snapshot::Snapshot;
@@ -384,7 +386,7 @@ pub trait EventStore: Send + Sync {
 }
 
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 
 #[cfg(test)]
 #[allow(clippy::map_unwrap_or)]
