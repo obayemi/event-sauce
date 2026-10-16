@@ -221,8 +221,8 @@ impl<S, A> Clone for StateStoredRepository<S, A> {
 mod tests {
     use super::*;
     use crate::test_fixtures::{
-        FailNTimesStateStore, MockStateStore, SimpleTestDelete, SimpleTestEntity, SimpleTestEvent,
-        SimpleTestInit,
+        ClaimConflictStateStore, FailNTimesStateStore, MockStateStore, SimpleTestDelete,
+        SimpleTestEntity, SimpleTestEvent, SimpleTestInit,
     };
 
     fn repo() -> (
@@ -541,28 +541,6 @@ mod tests {
                 );
             }
             other => panic!("expected ModifyError::Load, got {other:?}"),
-        }
-    }
-
-    /// Wraps a [`MockStateStore`], delegating loads but always failing `save`
-    /// with a claim conflict — for pinning that `Repository::modify` surfaces
-    /// a save-time claim conflict through `ModifyError::Save` unchanged.
-    struct ClaimConflictStateStore {
-        inner: Arc<MockStateStore>,
-    }
-
-    #[async_trait]
-    impl StateStore for ClaimConflictStateStore {
-        async fn load(&self, stream_id: StreamId) -> Result<Option<StoredState>> {
-            self.inner.load(stream_id).await
-        }
-
-        async fn save(&self, _commit: StateCommit) -> Result<()> {
-            Err(Error::claim_conflict(
-                "Profile.email",
-                serde_json::json!("taken@example.com"),
-                None,
-            ))
         }
     }
 

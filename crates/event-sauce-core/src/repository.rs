@@ -750,7 +750,8 @@ impl<S, A> Clone for EventSourcedRepository<S, A> {
 mod tests {
     use super::*;
     use crate::test_fixtures::{
-        MockEventStore, SimpleTestDelete, SimpleTestEntity, SimpleTestEvent, SimpleTestInit,
+        ClaimConflictEventStore, MockEventStore, SimpleTestDelete, SimpleTestEntity,
+        SimpleTestEvent, SimpleTestInit,
     };
     use crate::EntityId;
 
@@ -1148,51 +1149,6 @@ mod tests {
                 );
             }
             other => panic!("expected ModifyError::Load, got {other:?}"),
-        }
-    }
-
-    /// Wraps a [`MockEventStore`], delegating loads but always failing
-    /// `append` with a claim conflict — for pinning that `Repository::modify`
-    /// surfaces a save-time claim conflict through `ModifyError::Save`
-    /// unchanged.
-    struct ClaimConflictEventStore {
-        inner: Arc<MockEventStore>,
-    }
-
-    #[async_trait]
-    impl EventStore for ClaimConflictEventStore {
-        async fn append(
-            &self,
-            _stream_id: StreamId,
-            _events: Vec<crate::EventEnvelope>,
-            _expected_version: AggregateVersion,
-            _claims: Vec<crate::AggregateClaim>,
-            _clear_claims: bool,
-        ) -> Result<()> {
-            Err(crate::Error::claim_conflict(
-                "Profile.email",
-                serde_json::json!("taken@example.com"),
-                None,
-            ))
-        }
-
-        async fn load_stream(
-            &self,
-            stream_id: StreamId,
-            from_version: AggregateVersion,
-        ) -> Result<impl futures::Stream<Item = Result<crate::EventEnvelope>> + Send> {
-            self.inner.load_stream(stream_id, from_version).await
-        }
-
-        async fn stream_all(
-            &self,
-            from_position: crate::Position,
-        ) -> Result<impl futures::Stream<Item = Result<crate::EventLogEntry>> + Send> {
-            self.inner.stream_all(from_position).await
-        }
-
-        async fn get_version(&self, stream_id: StreamId) -> Result<AggregateVersion> {
-            self.inner.get_version(stream_id).await
         }
     }
 

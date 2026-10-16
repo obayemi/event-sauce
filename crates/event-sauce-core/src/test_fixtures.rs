@@ -725,6 +725,77 @@ impl crate::CryptoProvider for AadCheckingCryptoProvider {
     }
 }
 
+#[cfg(feature = "event-sourcing")]
+/// Wraps a [`MockEventStore`], delegating loads but always failing
+/// `append` with a claim conflict — for pinning that `Repository::modify`
+/// surfaces a save-time claim conflict through `ModifyError::Save`
+/// unchanged.
+pub(crate) struct ClaimConflictEventStore {
+    pub(crate) inner: Arc<MockEventStore>,
+}
+
+#[cfg(feature = "event-sourcing")]
+#[async_trait]
+impl EventStore for ClaimConflictEventStore {
+    async fn append(
+        &self,
+        _stream_id: StreamId,
+        _events: Vec<crate::EventEnvelope>,
+        _expected_version: AggregateVersion,
+        _claims: Vec<crate::AggregateClaim>,
+        _clear_claims: bool,
+    ) -> Result<()> {
+        Err(crate::Error::claim_conflict(
+            "Profile.email",
+            serde_json::json!("taken@example.com"),
+            None,
+        ))
+    }
+
+    async fn load_stream(
+        &self,
+        stream_id: StreamId,
+        from_version: AggregateVersion,
+    ) -> Result<impl futures::Stream<Item = Result<crate::EventEnvelope>> + Send> {
+        self.inner.load_stream(stream_id, from_version).await
+    }
+
+    async fn stream_all(
+        &self,
+        from_position: crate::Position,
+    ) -> Result<impl futures::Stream<Item = Result<crate::EventLogEntry>> + Send> {
+        self.inner.stream_all(from_position).await
+    }
+
+    async fn get_version(&self, stream_id: StreamId) -> Result<AggregateVersion> {
+        self.inner.get_version(stream_id).await
+    }
+}
+
+#[cfg(feature = "state-store")]
+/// Wraps a [`MockStateStore`], delegating loads but always failing `save`
+/// with a claim conflict — for pinning that `Repository::modify` surfaces
+/// a save-time claim conflict through `ModifyError::Save` unchanged.
+pub(crate) struct ClaimConflictStateStore {
+    pub(crate) inner: Arc<MockStateStore>,
+}
+
+#[cfg(feature = "state-store")]
+#[async_trait]
+impl StateStore for ClaimConflictStateStore {
+    async fn load(&self, stream_id: StreamId) -> Result<Option<StoredState>> {
+        self.inner.load(stream_id).await
+    }
+
+    async fn save(&self, _commit: StateCommit) -> Result<()> {
+        Err(crate::Error::claim_conflict(
+            "Profile.email",
+            serde_json::json!("taken@example.com"),
+            None,
+        ))
+    }
+}
+
 #[cfg(all(test, feature = "event-sourcing"))]
 mod tests {
     use super::*;
