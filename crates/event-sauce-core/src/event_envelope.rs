@@ -20,6 +20,10 @@ use crate::{AggregateType, EventVersion};
 ///
 /// - **`correlation_id`** — Links related events across services for distributed tracing.
 /// - **`causation_id`** — Identifies the service command or event that caused this event.
+/// - **`tenant`** — The tenant the event belongs to.
+/// - **`command`** — The name of the command that produced this event.
+/// - **`correlation_path`** — The ordered labels of the scopes the event was
+///   produced in, from the outermost to the innermost.
 /// - **`timestamp`** — When the metadata was created (set automatically).
 /// - **`additional`** — Arbitrary JSON for application-specific data (e.g., user ID,
 ///   IP address, tenant ID).
@@ -53,6 +57,18 @@ pub struct EventMetadata {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub causation_chain: Vec<Uuid>,
 
+    /// Tenant the event belongs to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant: Option<String>,
+
+    /// Name of the command that produced this event.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+
+    /// Labels of the scopes the event was produced in, outermost first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub correlation_path: Vec<String>,
+
     /// When this metadata was created.
     pub timestamp: DateTime<Utc>,
 
@@ -78,6 +94,9 @@ impl EventMetadata {
             correlation_id: None,
             causation_id: None,
             causation_chain: Vec::new(),
+            tenant: None,
+            command: None,
+            correlation_path: Vec::new(),
             timestamp: Utc::now(),
             additional: None,
         }
@@ -101,6 +120,58 @@ impl EventMetadata {
     #[must_use]
     pub fn with_correlation_id(mut self, id: impl Into<String>) -> Self {
         self.correlation_id = Some(id.into());
+        self
+    }
+
+    /// Sets the tenant.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use event_sauce_core::EventMetadata;
+    ///
+    /// let metadata = EventMetadata::new().with_tenant("acme");
+    ///
+    /// assert_eq!(metadata.tenant.as_deref(), Some("acme"));
+    /// ```
+    #[must_use]
+    pub fn with_tenant(mut self, tenant: impl Into<String>) -> Self {
+        self.tenant = Some(tenant.into());
+        self
+    }
+
+    /// Sets the name of the command that produced the event.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use event_sauce_core::EventMetadata;
+    ///
+    /// let metadata = EventMetadata::new().with_command("PlaceOrder");
+    ///
+    /// assert_eq!(metadata.command.as_deref(), Some("PlaceOrder"));
+    /// ```
+    #[must_use]
+    pub fn with_command(mut self, command: impl Into<String>) -> Self {
+        self.command = Some(command.into());
+        self
+    }
+
+    /// Sets the correlation path.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use event_sauce_core::EventMetadata;
+    ///
+    /// let metadata = EventMetadata::new()
+    ///     .with_correlation_path(vec!["import".to_string(), "row-7".to_string()]);
+    ///
+    /// assert_eq!(metadata.correlation_path, vec!["import", "row-7"]);
+    /// ```
+    #[must_use]
+    pub fn with_correlation_path(mut self, path: Vec<String>) -> Self {
+        self.correlation_path = path;
         self
     }
 
@@ -186,7 +257,8 @@ impl EventMetadata {
     ///
     /// The child metadata inherits the correlation ID (or uses the parent's
     /// event ID, as a string, if none), sets the causation ID to the parent event ID,
-    /// and extends the causation chain.
+    /// and extends the causation chain. The tenant and the correlation path
+    /// carry over; the command and the additional data do not.
     ///
     /// # Examples
     ///
@@ -214,10 +286,70 @@ impl EventMetadata {
         let mut chain = self.causation_chain.clone();
         chain.push(parent_event_id);
 
-        Self::new()
+        let mut child = Self::new()
             .with_correlation_id(correlation_id)
             .with_causation_id(parent_event_id)
             .with_causation_chain(chain)
+            .with_correlation_path(self.correlation_path.clone());
+        child.tenant.clone_from(&self.tenant);
+        child
+    }
+
+    /// Fills every field this metadata leaves unset from `other`.
+    ///
+    /// The receiver wins field by field:
+    ///
+    /// - `correlation_id`, `tenant` and `command` come from `other` only when
+    ///   unset.
+    /// - `correlation_path` comes from `other` only when empty.
+    /// - `causation_id` and `causation_chain` move together, from `other`,
+    ///   only when the receiver has neither.
+    /// - `additional` merges key by key when both are JSON objects, the
+    ///   receiver's keys winning; it comes from `other` when unset and is
+    ///   kept otherwise.
+    /// - `timestamp` always stays the receiver's.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use event_sauce_core::EventMetadata;
+    ///
+    /// let mut metadata = EventMetadata::new().with_tenant("acme");
+    /// let other = EventMetadata::new()
+    ///     .with_tenant("globex")
+    ///     .with_command("PlaceOrder");
+    ///
+    /// metadata.fill_missing_from(&other);
+    ///
+    /// assert_eq!(metadata.tenant.as_deref(), Some("acme"));
+    /// assert_eq!(metadata.command.as_deref(), Some("PlaceOrder"));
+    /// ```
+    pub fn fill_missing_from(&mut self, other: &EventMetadata) {
+        fill_option(&mut self.correlation_id, other.correlation_id.as_ref());
+        fill_option(&mut self.tenant, other.tenant.as_ref());
+        fill_option(&mut self.command, other.command.as_ref());
+        if self.correlation_path.is_empty() {
+            self.correlation_path.clone_from(&other.correlation_path);
+        }
+        if self.causation_id.is_none() && self.causation_chain.is_empty() {
+            self.causation_id = other.causation_id;
+            self.causation_chain.clone_from(&other.causation_chain);
+        }
+        match (&mut self.additional, &other.additional) {
+            (Some(serde_json::Value::Object(mine)), Some(serde_json::Value::Object(theirs))) => {
+                for (key, value) in theirs {
+                    mine.entry(key.clone()).or_insert_with(|| value.clone());
+                }
+            }
+            (own @ None, theirs) => own.clone_from(theirs),
+            _ => {}
+        }
+    }
+}
+
+fn fill_option<T: Clone>(own: &mut Option<T>, other: Option<&T>) {
+    if own.is_none() {
+        *own = other.cloned();
     }
 }
 

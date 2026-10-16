@@ -58,6 +58,7 @@ impl PostgresEventStore {
             .await?;
         self.migrate_causation_chain(migrations_table).await?;
         self.migrate_correlation_id_text(migrations_table).await?;
+        self.migrate_tenant_command_path(migrations_table).await?;
         Ok(())
     }
 
@@ -279,6 +280,37 @@ impl PostgresEventStore {
                     .execute(pool)
                     .await
                     .map_err(|e| Error::backend("Failed to convert correlation_id to text", e))?;
+                Ok(())
+            },
+        )
+        .await
+    }
+
+    /// Migration 8: adds the `tenant`, `command` and `correlation_path`
+    /// columns to `events`.
+    ///
+    /// Existing rows read back as `NULL`: no tenant, no command, an empty
+    /// path.
+    async fn migrate_tenant_command_path(&self, migrations_table: &str) -> Result<()> {
+        let events_table = self.qualify_table("events");
+        crate::migrations::apply_once(
+            &self.pool,
+            migrations_table,
+            20_261_019_000_000_i64,
+            "add_events_tenant_command_path",
+            move |pool| async move {
+                let alter = format!(
+                    "ALTER TABLE {events_table}
+                        ADD COLUMN IF NOT EXISTS tenant TEXT,
+                        ADD COLUMN IF NOT EXISTS command TEXT,
+                        ADD COLUMN IF NOT EXISTS correlation_path JSONB"
+                );
+                sqlx::query(&alter).execute(pool).await.map_err(|e| {
+                    Error::backend(
+                        "Failed to add tenant, command and correlation_path columns",
+                        e,
+                    )
+                })?;
                 Ok(())
             },
         )

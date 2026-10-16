@@ -600,7 +600,7 @@ impl PostgresEventStore {
 /// the log-query filters), so a query can never omit one.
 pub(crate) const EVENT_COLUMNS: &str = "id, event_id, aggregate_id, aggregate_type, event_type, \
      event_version, event_data, created_by, created_at, correlation_id, causation_id, metadata, \
-     causation_chain";
+     causation_chain, tenant, command, correlation_path";
 
 // Database row types
 #[derive(sqlx::FromRow)]
@@ -619,6 +619,9 @@ pub(crate) struct EventRow {
     causation_id: Option<uuid::Uuid>,
     metadata: Option<serde_json::Value>,
     causation_chain: Option<sqlx::types::Json<Vec<uuid::Uuid>>>,
+    tenant: Option<String>,
+    command: Option<String>,
+    correlation_path: Option<sqlx::types::Json<Vec<String>>>,
 }
 
 impl EventRow {
@@ -636,15 +639,22 @@ impl EventRow {
 impl From<EventRow> for EventEnvelope {
     fn from(row: EventRow) -> Self {
         let causation_chain = row.causation_chain.map(|chain| chain.0).unwrap_or_default();
+        let correlation_path = row.correlation_path.map(|path| path.0).unwrap_or_default();
         let metadata = if row.correlation_id.is_some()
             || row.causation_id.is_some()
             || row.metadata.is_some()
+            || row.tenant.is_some()
+            || row.command.is_some()
             || !causation_chain.is_empty()
+            || !correlation_path.is_empty()
         {
             Some(event_sauce_core::EventMetadata {
                 correlation_id: row.correlation_id,
                 causation_id: row.causation_id,
                 causation_chain,
+                tenant: row.tenant,
+                command: row.command,
+                correlation_path,
                 timestamp: row.created_at,
                 additional: row.metadata,
             })
@@ -928,6 +938,42 @@ mod tests {
             loaded.metadata.unwrap().correlation_id.as_deref(),
             Some("req-123")
         );
+    }
+
+    #[tokio::test]
+    async fn test_tenant_command_and_correlation_path_round_trip() {
+        let db = TestDatabase::new().await.unwrap();
+        let store = db.store();
+        let aggregate_id = Uuid::new_v4();
+        let stream_id = StreamId::new("User", aggregate_id);
+        let path = vec!["import".to_string(), "row-7".to_string()];
+        let event = create_test_envelope("UserCreated", aggregate_id).with_metadata(
+            event_sauce_core::EventMetadata::new()
+                .with_tenant("acme")
+                .with_command("RegisterUser")
+                .with_correlation_path(path.clone()),
+        );
+
+        store
+            .append(
+                stream_id.clone(),
+                vec![event],
+                AggregateVersion::initial(),
+                vec![],
+                false,
+            )
+            .await
+            .unwrap();
+
+        let mut stream = store
+            .load_stream(stream_id, AggregateVersion::initial())
+            .await
+            .unwrap();
+        let metadata = stream.next().await.unwrap().unwrap().metadata.unwrap();
+
+        assert_eq!(metadata.tenant.as_deref(), Some("acme"));
+        assert_eq!(metadata.command.as_deref(), Some("RegisterUser"));
+        assert_eq!(metadata.correlation_path, path);
     }
 
     #[tokio::test]

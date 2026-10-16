@@ -261,6 +261,23 @@ impl PostgresEventStore {
                     .map(|m| serde_json::json!(m.causation_chain))
             })
             .collect();
+        let tenants: Vec<Option<String>> = events
+            .iter()
+            .map(|e| e.metadata.as_ref().and_then(|m| m.tenant.clone()))
+            .collect();
+        let commands: Vec<Option<String>> = events
+            .iter()
+            .map(|e| e.metadata.as_ref().and_then(|m| m.command.clone()))
+            .collect();
+        let correlation_paths: Vec<Option<serde_json::Value>> = events
+            .iter()
+            .map(|e| {
+                e.metadata
+                    .as_ref()
+                    .filter(|m| !m.correlation_path.is_empty())
+                    .map(|m| serde_json::json!(m.correlation_path))
+            })
+            .collect();
         let metadatas: Vec<Option<serde_json::Value>> = events
             .iter()
             .map(|e| e.metadata.as_ref().and_then(|m| m.additional.clone()))
@@ -270,11 +287,12 @@ impl PostgresEventStore {
             "INSERT INTO {events_table} (
                 event_id, aggregate_id, aggregate_type, event_type, event_version,
                 event_data, stream_version, created_by, correlation_id, causation_id, metadata,
-                causation_chain
+                causation_chain, tenant, command, correlation_path
             )
             SELECT * FROM UNNEST(
                 $1::uuid[], $2::uuid[], $3::text[], $4::text[], $5::bigint[],
-                $6::jsonb[], $7::bigint[], $8::uuid[], $9::text[], $10::uuid[], $11::jsonb[], $12::jsonb[]
+                $6::jsonb[], $7::bigint[], $8::uuid[], $9::text[], $10::uuid[], $11::jsonb[], $12::jsonb[],
+                $13::text[], $14::text[], $15::jsonb[]
             )
             RETURNING id"
         );
@@ -292,6 +310,9 @@ impl PostgresEventStore {
             .bind(causation_ids)
             .bind(metadatas)
             .bind(causation_chains)
+            .bind(tenants)
+            .bind(commands)
+            .bind(correlation_paths)
             .fetch_all(conn)
             .await;
 
