@@ -3,7 +3,8 @@
 //! Derive macros for event-sauce to reduce boilerplate.
 //!
 //! Provides: `#[derive(Entity)]`, `#[aggregate]`, `#[derive(Event)]`,
-//! `#[derive(AggregateError)]`, `#[aggregate_error]`, `#[specification]`
+//! `#[derive(AggregateError)]`, `#[aggregate_error]`, `#[specification]`,
+//! `#[with_event_context]`
 
 #![deny(missing_docs)]
 #![deny(clippy::all)]
@@ -15,6 +16,8 @@ use proc_macro::TokenStream;
 use proc_macro_crate::{crate_name, FoundCrate};
 use quote::quote;
 use std::sync::OnceLock;
+mod with_event_context;
+
 use syn::{parse_macro_input, Attribute, Data, DeriveInput, Fields, Ident, Meta};
 
 /// Path prefix the generated code uses to reach the core traits and types.
@@ -1590,4 +1593,52 @@ fn extract_aggregate_id_type(attrs: &[Attribute]) -> Result<String, TokenStream>
     )
     .to_compile_error()
     .into())
+}
+
+/// Runs the annotated function inside an event context.
+///
+/// The arguments use the grammar of `event_context!`: an optional leading
+/// `root`, then `tenant = expr` (after `root` only), `correlation_id = expr`,
+/// `key = expr`, `key = %expr` (stored through `Display`), `"some.key" = expr`
+/// and the shorthands `ident` and `%ident`, in any order.
+///
+/// - a sync function runs its body in `EventContext::in_scope`; `return` and
+///   `?` keep returning from the function
+/// - an `async fn` awaits its body wrapped in `with_event_context`, so the
+///   context follows the future across awaits and threads while the body
+///   keeps borrowing the parameters
+/// - on a method of an `#[async_trait]` impl the attribute goes on the method
+///   itself, whatever its position relative to `#[async_trait]` on the impl
+///   (the macro recognises the boxed future `#[async_trait]` expands to)
+///
+/// The context arguments are evaluated when the function is called, before
+/// the body runs. A function returning `impl Trait` is supported but its
+/// return type is not used to infer the body's `?` conversions.
+///
+/// # Examples
+///
+/// ```
+/// use event_sauce_macros::with_event_context;
+///
+/// #[with_event_context(root, tenant = "acme", correlation_id = "req-1", %attempt)]
+/// fn handle(attempt: u32) -> u32 {
+///     if attempt > 3 {
+///         return 0;
+///     }
+///     attempt
+/// }
+///
+/// assert_eq!(handle(2), 2);
+/// assert_eq!(handle(9), 0);
+/// ```
+///
+/// ```compile_fail
+/// use event_sauce_macros::with_event_context;
+///
+/// #[with_event_context(tenant = "acme")]
+/// fn handle() {}
+/// ```
+#[proc_macro_attribute]
+pub fn with_event_context(args: TokenStream, item: TokenStream) -> TokenStream {
+    with_event_context::expand(&core_path(), &args.into(), item.into()).into()
 }

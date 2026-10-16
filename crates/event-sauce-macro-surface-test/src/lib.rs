@@ -205,6 +205,14 @@ event_sauce::policy! {
     }
 }
 
+#[event_sauce::with_event_context(root, tenant = "acme", correlation_id = "req-1", %attempt, attempt)]
+fn attributed(attempt: u32) -> u32 {
+    if attempt == 0 {
+        return 0;
+    }
+    attempt
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -330,6 +338,12 @@ mod tests {
         let operator = an_operator();
         vault.lock(&operator).unwrap();
         assert!(vault.empty("no longer needed".to_string()).is_err());
+    }
+
+    #[test]
+    fn with_event_context_surface_compiles_and_runs() {
+        assert_eq!(attributed(0), 0);
+        assert_eq!(attributed(4), 4);
     }
 
     #[test]
