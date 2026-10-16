@@ -21,6 +21,8 @@
 //! - `state-store` (default): the current-state persistence style —
 //!   `StateStore`, `StateStoredRepository`, and in-transaction
 //!   `StateProjection`s.
+//! - `commands`: typed `Command`/`Root` aggregate-lifecycle handling and
+//!   `RetryPolicy`, independent of persistence style.
 //!
 //! The domain layer (entities, aggregates, events, aggregate commands, the
 //! `Repository` trait, and the macros) is always available; application code
@@ -46,6 +48,9 @@ mod apply_event;
 mod checkpoint;
 /// Aggregate claims for cross-aggregate uniqueness constraints.
 pub mod claims;
+/// Typed `Command`/`Root` aggregate-lifecycle handling and retry policies.
+#[cfg(feature = "commands")]
+pub mod commands;
 #[cfg(any(feature = "event-sourcing", feature = "state-store"))]
 mod commit_source;
 /// Cryptographic traits and helpers for encrypted aggregate encryption (crypto-shredding).
@@ -126,6 +131,8 @@ pub use apply_event::ApplyEvent;
 #[cfg(feature = "event-sourcing")]
 pub use checkpoint::{wait_for_checkpoint, CheckpointStore};
 pub use claims::AggregateClaim;
+#[cfg(feature = "commands")]
+pub use commands::{Command, CommandError, Lifecycle, RetryPolicy, Root};
 #[cfg(feature = "event-sourcing")]
 pub use crypto::{CryptoKeyStore, CryptoProvider};
 pub use delete_event::DeleteEvent;

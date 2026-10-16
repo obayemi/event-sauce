@@ -37,6 +37,8 @@ state-store = [
     "event-sauce-core/state-store",
     "event-sauce-memory?/state-store",
 ]
+# Typed `Command`/`Root` aggregate-lifecycle handling and retry policies.
+commands = ["event-sauce-core/commands"]
 # The read graph between published payloads and the aggregates they read.
 # `event_sauce::dependencies`, and its items at the root, come through the core
 # re-export; the flag is all the facade adds.
@@ -49,6 +51,7 @@ full = [
     "event-sourcing",
     "state-store",
     "dependencies",
+    "commands",
 ]
 
 [dev-dependencies]
