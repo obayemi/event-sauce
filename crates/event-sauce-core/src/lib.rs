@@ -23,6 +23,10 @@
 //!   `StateProjection`s.
 //! - `commands`: typed `Command`/`Root` aggregate-lifecycle handling and
 //!   `RetryPolicy`, independent of persistence style.
+//! - `unit-of-work`: the unit-of-work storage contract (`TransactionalStore`,
+//!   `AtomicCommit`, `UnitOfWorkRepository`) for committing aggregates of
+//!   several persistence styles in one atomic write. Implies `commands`,
+//!   `event-sourcing`, and `state-store`.
 //!
 //! The domain layer (entities, aggregates, events, aggregate commands, the
 //! `Repository` trait, and the macros) is always available; application code
@@ -95,6 +99,11 @@ mod state_repository;
 mod state_store;
 mod types;
 mod uninit_aggregate_root;
+/// The unit-of-work storage contract: preparing writes from event-sourced and
+/// state-stored repositories alike and committing them atomically against a
+/// paired [`TransactionalStore`](unit_of_work::TransactionalStore).
+#[cfg(feature = "unit-of-work")]
+pub mod unit_of_work;
 mod version;
 
 #[cfg(test)]
@@ -178,4 +187,8 @@ pub use state_store::{StateCommit, StateStore, StoredState};
 pub use types::{CheckpointStoreRef, CryptoKeyStoreRef, CryptoProviderRef};
 pub use types::{Position, StreamId};
 pub use uninit_aggregate_root::UninitAggregateRoot;
+#[cfg(feature = "unit-of-work")]
+pub use unit_of_work::{
+    AtomicCommit, Expectation, PreparedWrite, StreamWrite, TransactionalStore, UnitOfWorkRepository,
+};
 pub use version::{AggregateVersion, EventVersion, InvalidStoredVersion, StoredVersion};

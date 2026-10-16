@@ -43,6 +43,10 @@ commands = ["event-sauce-core/commands"]
 # `event_sauce::dependencies`, and its items at the root, come through the core
 # re-export; the flag is all the facade adds.
 dependencies = ["event-sauce-core/dependencies"]
+# The unit-of-work storage contract for committing aggregates of several
+# persistence styles in one atomic write. Backend implementations land in a
+# later release; this flag only brings in the core contract today.
+unit-of-work = ["commands", "event-sourcing", "state-store", "event-sauce-core/unit-of-work"]
 full = [
     "macros",
     "memory",
@@ -52,6 +56,7 @@ full = [
     "state-store",
     "dependencies",
     "commands",
+    "unit-of-work",
 ]
 
 [dev-dependencies]

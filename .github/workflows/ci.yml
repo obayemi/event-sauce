@@ -205,6 +205,7 @@ jobs:
           - commands
           - commands,state-store
           - commands,event-sourcing
+          - unit-of-work
 
     steps:
       - name: Checkout code

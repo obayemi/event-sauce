@@ -21,6 +21,10 @@ commands = ["dep:tokio"]
 # Pure declaration and lookup: no I/O, no transport, and nothing that knows what
 # a "payload" is. See `dependencies`.
 dependencies = ["dep:futures", "dep:inventory"]
+# The unit-of-work storage contract: preparing writes from event-sourced and
+# state-stored repositories alike and committing them atomically against a
+# paired `TransactionalStore`, without ever branching on persistence kind.
+unit-of-work = ["commands", "event-sourcing", "state-store"]
 
 [dependencies]
 async-trait.workspace = true
