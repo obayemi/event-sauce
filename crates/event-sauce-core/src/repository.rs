@@ -18,7 +18,8 @@ use async_trait::async_trait;
 
 #[cfg(feature = "commands")]
 use crate::{
-    commands::run_with_retry, Command, Error, ExecuteError, Executed, Lifecycle, RetryPolicy, Root,
+    commands::run_with_retry, Command, CommandError, Error, ExecuteError, Executed, Lifecycle,
+    RetryPolicy, Root,
 };
 #[cfg(feature = "event-sourcing")]
 use crate::{
@@ -30,113 +31,42 @@ use crate::{
     EntityIdFor, InitEvent, Loaded, Result, UninitAggregateRoot,
 };
 
-/// Adapts a one-shot [`Repository::modify`] closure into a [`Command`], so
-/// `modify` can be driven by [`Repository::execute`] with
-/// [`RetryPolicy::none()`] instead of duplicating the load/apply/save cycle.
+/// Runs one load → handle → save cycle for `id`, without retrying.
 ///
-/// `execute` never retries under [`RetryPolicy::none()`], so
-/// [`handle`](Command::handle) runs at most once; the `Mutex`es exist only to
-/// let a `&self` call move the `FnOnce` out and hand its result back, not for
-/// real contention.
+/// The cycle [`Repository::execute`] repeats under its [`RetryPolicy`] and
+/// [`Repository::modify`] runs once; `handle` is a [`FnOnce`] so a closure
+/// can move its captures in and report results through them.
 #[cfg(feature = "commands")]
-struct ModifyCommand<F, R> {
-    f: std::sync::Mutex<Option<F>>,
-    result: std::sync::Mutex<Option<R>>,
-}
-
-#[cfg(feature = "commands")]
-impl<F, R> ModifyCommand<F, R> {
-    fn new(f: F) -> Self {
-        Self {
-            f: std::sync::Mutex::new(Some(f)),
-            result: std::sync::Mutex::new(None),
-        }
-    }
-
-    fn take_result(&self) -> R {
-        self.result
-            .lock()
-            .unwrap()
-            .take()
-            .expect("execute() calls handle() exactly once before returning Ok")
-    }
-}
-
-#[cfg(feature = "commands")]
-impl<A, F, R> Command<A> for ModifyCommand<F, R>
+async fn attempt<A, R>(
+    repo: &R,
+    id: EntityId,
+    handle: impl FnOnce(Root<A>) -> std::result::Result<Root<A>, CommandError<A::Error>> + Send,
+) -> std::result::Result<Root<A>, ExecuteError<A::Error>>
 where
     A: Aggregate,
-    F: FnOnce(&mut AggregateRoot<A>) -> std::result::Result<R, A::Error> + Send,
-    R: Send,
+    R: Repository<A>,
 {
-    fn handle(
-        &self,
-        root: Root<A>,
-        _ctx: &(),
-    ) -> std::result::Result<Root<A>, crate::CommandError<A::Error>> {
-        let mut active = root.active()?;
-        let f = self
-            .f
-            .lock()
-            .unwrap()
-            .take()
-            .expect("ModifyCommand::handle is only ever called once");
-        let result = f(&mut active)?;
-        *self.result.lock().unwrap() = Some(result);
-        Ok(active.into())
-    }
-}
+    let root = match repo.load_any_by_id(id).await {
+        Ok(loaded) => loaded.into(),
+        Err(e) if e.is_not_found() => Root::Missing(repo.create_uninit_with_id(id)),
+        Err(e) => return Err(ExecuteError::Load(e)),
+    };
+    let mut outcome = handle(root)?;
 
-/// The [`modify_deleted`](Repository::modify_deleted) counterpart of
-/// [`ModifyCommand`], narrowing to [`Root::Deleted`] instead of
-/// [`Root::Active`].
-#[cfg(feature = "commands")]
-struct ModifyDeletedCommand<F, R> {
-    f: std::sync::Mutex<Option<F>>,
-    result: std::sync::Mutex<Option<R>>,
-}
-
-#[cfg(feature = "commands")]
-impl<F, R> ModifyDeletedCommand<F, R> {
-    fn new(f: F) -> Self {
-        Self {
-            f: std::sync::Mutex::new(Some(f)),
-            result: std::sync::Mutex::new(None),
-        }
+    if outcome.entity_id() != id {
+        return Err(ExecuteError::Save(Error::invalid_state(format!(
+            "command returned aggregate {} for requested id {id}",
+            outcome.entity_id()
+        ))));
     }
 
-    fn take_result(&self) -> R {
-        self.result
-            .lock()
-            .unwrap()
-            .take()
-            .expect("execute() calls handle() exactly once before returning Ok")
+    match &mut outcome {
+        Root::Active(root) => repo.save(root).await,
+        Root::Deleted(root) => repo.save_deleted(root).await,
+        Root::Missing(_) => Ok(()),
     }
-}
-
-#[cfg(feature = "commands")]
-impl<A, F, R> Command<A> for ModifyDeletedCommand<F, R>
-where
-    A: Aggregate,
-    F: FnOnce(&mut DeletedAggregateRoot<A>) -> std::result::Result<R, A::Error> + Send,
-    R: Send,
-{
-    fn handle(
-        &self,
-        root: Root<A>,
-        _ctx: &(),
-    ) -> std::result::Result<Root<A>, crate::CommandError<A::Error>> {
-        let mut deleted = root.deleted()?;
-        let f = self
-            .f
-            .lock()
-            .unwrap()
-            .take()
-            .expect("ModifyDeletedCommand::handle is only ever called once");
-        let result = f(&mut deleted)?;
-        *self.result.lock().unwrap() = Some(result);
-        Ok(deleted.into())
-    }
+    .map_err(ExecuteError::Save)?;
+    Ok(outcome)
 }
 
 /// Reconstructs the `Error` [`Repository::modify`] and
@@ -404,29 +334,7 @@ pub trait Repository<A: Aggregate>: Send + Sync {
         let id = id.entity_id();
         let (root, attempts) = run_with_retry(
             &retry,
-            || async {
-                let root = match self.load_any_by_id(id).await {
-                    Ok(loaded) => loaded.into(),
-                    Err(e) if e.is_not_found() => Root::Missing(self.create_uninit_with_id(id)),
-                    Err(e) => return Err(ExecuteError::Load(e)),
-                };
-                let mut outcome = command.handle(root, ctx)?;
-
-                if outcome.entity_id() != id {
-                    return Err(ExecuteError::Save(Error::invalid_state(format!(
-                        "command returned aggregate {} for requested id {id}",
-                        outcome.entity_id()
-                    ))));
-                }
-
-                match &mut outcome {
-                    Root::Active(root) => self.save(root).await,
-                    Root::Deleted(root) => self.save_deleted(root).await,
-                    Root::Missing(_) => Ok(()),
-                }
-                .map_err(ExecuteError::Save)?;
-                Ok(outcome)
-            },
+            || attempt(self, id, |root| command.handle(root, ctx)),
             ExecuteError::is_concurrency_conflict,
         )
         .await?;
@@ -491,11 +399,15 @@ pub trait Repository<A: Aggregate>: Send + Sync {
         #[cfg(feature = "commands")]
         {
             let entity_id = id.entity_id();
-            let command = ModifyCommand::new(f);
-            self.execute(entity_id, &command, &(), RetryPolicy::none())
-                .await
-                .map(|_executed| command.take_result())
-                .map_err(|e| map_modify_error::<A>(entity_id, e))
+            let mut result = None;
+            attempt(self, entity_id, |root| {
+                let mut active = root.active()?;
+                result = Some(f(&mut active)?);
+                Ok(active.into())
+            })
+            .await
+            .map_err(|e| map_modify_error::<A>(entity_id, e))?;
+            Ok(result.expect("a successful attempt ran the closure"))
         }
         #[cfg(not(feature = "commands"))]
         {
@@ -540,11 +452,15 @@ pub trait Repository<A: Aggregate>: Send + Sync {
         #[cfg(feature = "commands")]
         {
             let entity_id = id.entity_id();
-            let command = ModifyDeletedCommand::new(f);
-            self.execute(entity_id, &command, &(), RetryPolicy::none())
-                .await
-                .map(|_executed| command.take_result())
-                .map_err(|e| map_modify_error::<A>(entity_id, e))
+            let mut result = None;
+            attempt(self, entity_id, |root| {
+                let mut deleted = root.deleted()?;
+                result = Some(f(&mut deleted)?);
+                Ok(deleted.into())
+            })
+            .await
+            .map_err(|e| map_modify_error::<A>(entity_id, e))?;
+            Ok(result.expect("a successful attempt ran the closure"))
         }
         #[cfg(not(feature = "commands"))]
         {
