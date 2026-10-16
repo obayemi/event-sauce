@@ -7,6 +7,7 @@ use std::num::NonZeroU32;
 
 use super::erased::{EventSourced, Persistence, Registered, Registration, StateStored};
 use super::{TransactionalStore, UnitOfWork, UnitOfWorkCommand, UnitOfWorkError};
+use crate::commands::run_with_retry;
 use crate::{Aggregate, RetryPolicy};
 
 /// The outcome of a successful [`UnitOfWorkStore::execute`].
@@ -170,22 +171,20 @@ impl<T: TransactionalStore + 'static> UnitOfWorkStore<T> {
         C: UnitOfWorkCommand<T, Ctx> + ?Sized,
         Ctx: Sync,
     {
-        let mut attempts = NonZeroU32::MIN;
-        loop {
-            let uow = UnitOfWork::new(self);
-            command.handle(&uow, ctx).await?;
-            match uow.commit().await {
-                Ok(()) => return Ok(UnitOfWorkExecuted { attempts }),
-                Err(e) if e.is_concurrency_conflict() && attempts < retry.max_attempts() => {
-                    let backoff = retry.backoff(attempts.get());
-                    attempts = attempts.saturating_add(1);
-                    if !backoff.is_zero() {
-                        tokio::time::sleep(backoff).await;
-                    }
+        let (handled, attempts) = run_with_retry(
+            &retry,
+            || async {
+                let uow = UnitOfWork::new(self);
+                match command.handle(&uow, ctx).await {
+                    Ok(()) => uow.commit().await.map(Ok),
+                    Err(e) => Ok(Err(e)),
                 }
-                Err(e) => return Err(e),
-            }
-        }
+            },
+            UnitOfWorkError::is_concurrency_conflict,
+        )
+        .await?;
+        handled?;
+        Ok(UnitOfWorkExecuted { attempts })
     }
 
     /// `A`'s registered persistence.

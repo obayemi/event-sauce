@@ -16,6 +16,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
+#[cfg(feature = "commands")]
+use crate::{
+    commands::run_with_retry, Command, Error, ExecuteError, Executed, Lifecycle, RetryPolicy, Root,
+};
 #[cfg(feature = "event-sourcing")]
 use crate::{
     event_store::{count_events, load, load_any, load_deleted},
@@ -25,8 +29,6 @@ use crate::{
     Aggregate, AggregateRoot, AggregateVersion, DefaultEntity, DeletedAggregateRoot, EntityId,
     EntityIdFor, InitEvent, Loaded, Result, UninitAggregateRoot,
 };
-#[cfg(feature = "commands")]
-use crate::{Command, Error, ExecuteError, Executed, Lifecycle, RetryPolicy, Root};
 
 /// Adapts a one-shot [`Repository::modify`] closure into a [`Command`], so
 /// `modify` can be driven by [`Repository::execute`] with
@@ -400,49 +402,35 @@ pub trait Repository<A: Aggregate>: Send + Sync {
         Self: Sized,
     {
         let id = id.entity_id();
-        let max_attempts = retry.max_attempts().get();
-        let mut attempt = 1u32;
+        let (root, attempts) = run_with_retry(
+            &retry,
+            || async {
+                let root = match self.load_any_by_id(id).await {
+                    Ok(loaded) => loaded.into(),
+                    Err(e) if e.is_not_found() => Root::Missing(self.create_uninit_with_id(id)),
+                    Err(e) => return Err(ExecuteError::Load(e)),
+                };
+                let mut outcome = command.handle(root, ctx)?;
 
-        loop {
-            let root = match self.load_any_by_id(id).await {
-                Ok(loaded) => loaded.into(),
-                Err(e) if e.is_not_found() => Root::Missing(self.create_uninit_with_id(id)),
-                Err(e) => return Err(ExecuteError::Load(e)),
-            };
-
-            let mut outcome = command.handle(root, ctx)?;
-
-            if outcome.entity_id() != id {
-                return Err(ExecuteError::Save(Error::invalid_state(format!(
-                    "command returned aggregate {} for requested id {id}",
-                    outcome.entity_id()
-                ))));
-            }
-
-            let saved = match &mut outcome {
-                Root::Active(root) => self.save(root).await,
-                Root::Deleted(root) => self.save_deleted(root).await,
-                Root::Missing(_) => Ok(()),
-            };
-
-            match saved {
-                Ok(()) => {
-                    return Ok(Executed {
-                        root: outcome,
-                        attempts: std::num::NonZeroU32::new(attempt)
-                            .expect("attempt starts at 1 and only grows"),
-                    });
+                if outcome.entity_id() != id {
+                    return Err(ExecuteError::Save(Error::invalid_state(format!(
+                        "command returned aggregate {} for requested id {id}",
+                        outcome.entity_id()
+                    ))));
                 }
-                Err(e) if e.is_concurrency_conflict() && attempt < max_attempts => {
-                    let backoff = retry.backoff(attempt);
-                    attempt += 1;
-                    if !backoff.is_zero() {
-                        tokio::time::sleep(backoff).await;
-                    }
+
+                match &mut outcome {
+                    Root::Active(root) => self.save(root).await,
+                    Root::Deleted(root) => self.save_deleted(root).await,
+                    Root::Missing(_) => Ok(()),
                 }
-                Err(e) => return Err(ExecuteError::Save(e)),
-            }
-        }
+                .map_err(ExecuteError::Save)?;
+                Ok(outcome)
+            },
+            ExecuteError::is_concurrency_conflict,
+        )
+        .await?;
+        Ok(Executed { root, attempts })
     }
 
     /// Loads an aggregate, applies a closure that mutates it, and saves the result.

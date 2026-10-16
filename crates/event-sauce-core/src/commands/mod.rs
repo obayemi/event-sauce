@@ -12,8 +12,9 @@
 //!
 //! [`RetryPolicy`] is the data half of retrying a command on a transient
 //! failure (a concurrency conflict, say): how many attempts, and how long to
-//! wait between them. It computes delays only — the retry loop itself is a
-//! [`Repository`](crate::Repository) concern, built on top of this module.
+//! wait between them. The retry loop that applies it is shared by
+//! [`Repository::execute`](crate::Repository::execute) and the unit-of-work
+//! engine.
 
 mod error;
 mod execute;
@@ -22,6 +23,7 @@ mod root;
 
 pub use error::CommandError;
 pub use execute::{ExecuteError, Executed};
+pub(crate) use retry::run_with_retry;
 pub use retry::RetryPolicy;
 pub use root::Root;
 
