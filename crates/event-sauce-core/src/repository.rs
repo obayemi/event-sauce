@@ -301,7 +301,10 @@ pub trait Repository<A: Aggregate>: Send + Sync {
     ///         root: Root<Counter>,
     ///         _ctx: &(),
     ///     ) -> Result<Root<Counter>, CommandError<CounterError>> {
-    ///         let mut root = root.active()?;
+    ///         let mut root = match root {
+    ///             Root::Missing(missing) => AggregateRoot::<Counter>::new(missing.entity_id()),
+    ///             other => other.active()?,
+    ///         };
     ///         root.apply(CounterEvent::Incremented { amount: self.0 })?;
     ///         Ok(root.into())
     ///     }
