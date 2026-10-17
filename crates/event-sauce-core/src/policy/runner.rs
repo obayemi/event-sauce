@@ -2394,7 +2394,7 @@ mod tests {
         on_error: OnError,
         failures: usize,
     ) -> (EventEnvelope, crate::EventMetadata) {
-        use crate::{EventContext, WithEventContextExt};
+        use crate::EventContext;
 
         let store = Arc::new(MockEventStore::new());
         let runner = PolicyRunner::new(Arc::clone(&store), test_checkpoint_store())
