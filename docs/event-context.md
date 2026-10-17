@@ -71,13 +71,13 @@ across `.await` points. Wrap the future instead:
 ```rust
 use event_sauce::{EventContext, WithEventContextExt};
 
-# async fn run() {
-let work = async {
-    // apply events, `.await` freely
-};
-work.with_event_context(EventContext::root().tenant("acme").correlation_id("req-42"))
-    .await;
-# }
+async fn run() {
+    let work = async {
+        // apply events, `.await` freely
+    };
+    work.with_event_context(EventContext::root().tenant("acme").correlation_id("req-42"))
+        .await;
+}
 ```
 
 The wrapper activates the context on every poll, so it holds wherever the task
@@ -92,14 +92,14 @@ begins with no active context, whatever the spawning task had. Snapshot it with
 ```rust
 use event_sauce::{EventContext, WithEventContextExt};
 
-# async fn run() {
-let work = async {
-    // events applied here keep the tenant, correlation path and extra keys
-};
-tokio::spawn(work.with_event_context(EventContext::current()))
-    .await
-    .unwrap();
-# }
+async fn run() {
+    let work = async {
+        // events applied here keep the tenant, correlation path and extra keys
+    };
+    tokio::spawn(work.with_event_context(EventContext::current()))
+        .await
+        .unwrap();
+}
 ```
 
 `current()` returns a root context holding the tenant, command, extra keys and
@@ -267,13 +267,16 @@ correlation id.
   as the events' `command`, and adds a fresh correlation id (a UUID string)
   when no scope already provides one. An outer scope's correlation id and
   tenant therefore apply to the command's events.
-- **`Repository::modify`** adds the correlation id the same way; a closure has
-  no name, so `command` stays empty.
+- **`Repository::modify` and `Repository::modify_deleted`** add the correlation
+  id the same way; a closure has no name, so `command` stays empty.
 - **Policies.** A policy reaction runs in a root context seeded from its source
   event: the tenant, the correlation id and the correlation path of the event
   that triggered it, with `command` set to the policy's `name()`. A cascade
-  therefore stays in one tenant and one flow with no code in the handler. See
-  [Policies](policies.md).
+  therefore stays in one tenant and one flow with no code in the handler. The
+  source event's `command` and extra keys are not carried over, and any ambient
+  context around the `PolicyRunner` is ignored: the reaction always starts from
+  a fresh root. A source event with no metadata correlates its reactions to its
+  own id, as a string. See [Policies](policies.md).
 
 ```rust
 use event_sauce::{event_context, RetryPolicy, WithEventContextExt};
@@ -307,11 +310,12 @@ data out of tenant, correlation ids and extra keys. See
 [Privacy](privacy.md).
 
 On PostgreSQL the fields live in the `tenant`, `command` and `correlation_path`
-columns, alongside `correlation_id` and `causation_chain`; see
+columns, alongside `correlation_id` and `causation_chain`; the extra keys live
+in the `metadata` JSONB column; see
 [PostgreSQL Production Setup](postgres-production.md).
 
 ## See also
 
-- [Audit Log](audit-log.md): querying events by correlation id and tenant
+- [Audit Log](audit-log.md): causation chains and correlation ids
 - [Commands](commands.md) and [Unit of Work](unit-of-work.md): command names
 - [Policies](policies.md): reactions inherit the source event's context

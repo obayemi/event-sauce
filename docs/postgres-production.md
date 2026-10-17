@@ -336,7 +336,7 @@ CREATE TABLE IF NOT EXISTS event_sauce.snapshots (...);
 The `events` table stores the metadata of the [event context](event-context.md)
 in dedicated columns: `correlation_id` (`TEXT`), `causation_id`,
 `causation_chain` (`JSONB`), `tenant` (`TEXT`), `command` (`TEXT`),
-`correlation_path` (`JSONB`) and the `additional` JSONB object. A `metadata`
+`correlation_path` (`JSONB`) and the `metadata` JSONB column holding `EventMetadata::additional`. A `metadata`
 value that is not an object, written by an earlier version, reads back as
 `{"value": <that value>}`. Rows written
 before the columns existed read back as `NULL`: no tenant, no command, an empty
