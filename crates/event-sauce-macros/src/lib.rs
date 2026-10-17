@@ -1598,8 +1598,9 @@ fn extract_aggregate_id_type(attrs: &[Attribute]) -> Result<String, TokenStream>
 /// Runs the annotated function inside an event context.
 ///
 /// The arguments use the grammar of `event_context!`: an optional leading
-/// `root`, then `tenant = expr` (after `root` only), `correlation_id = expr`,
-/// `key = expr`, `key = %expr` (stored through `Display`), `"some.key" = expr`
+/// `root`, then `tenant = expr` or bare `tenant` (after `root` only),
+/// `correlation_id = expr` or bare `correlation_id`, `key = expr`,
+/// `key = %expr` (stored through `Display`), `"some.key" = expr`
 /// and the shorthands `ident` and `%ident`, in any order.
 ///
 /// - a sync function runs its body in `EventContext::in_scope`; `return` and

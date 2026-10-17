@@ -44,6 +44,22 @@ fn correlation_id_sets_the_correlation_id() {
 }
 
 #[test]
+fn bare_tenant_sets_the_tenant_not_an_extra_key() {
+    let tenant = "acme";
+    let snapshot = snapshot_of(event_context!(root, tenant)).unwrap();
+    assert_eq!(snapshot.tenant.as_deref(), Some("acme"));
+    assert!(snapshot.additional.is_none());
+}
+
+#[test]
+fn bare_correlation_id_sets_the_correlation_id_not_an_extra_key() {
+    let correlation_id = "req-1";
+    let snapshot = snapshot_of(event_context!(correlation_id)).unwrap();
+    assert_eq!(snapshot.correlation_id.as_deref(), Some("req-1"));
+    assert!(snapshot.additional.is_none());
+}
+
+#[test]
 fn identifier_key_stores_the_value() {
     let snapshot = snapshot_of(event_context!(region = "eu")).unwrap();
     assert_eq!(

@@ -18,6 +18,8 @@
 /// |--------------------------|----------------------------------------------|
 /// | `tenant = expr`          | `.tenant(expr)`, only valid after `root`     |
 /// | `correlation_id = expr`  | `.correlation_id(expr)`                      |
+/// | `tenant`                 | `.tenant(tenant)`, only valid after `root`   |
+/// | `correlation_id`         | `.correlation_id(correlation_id)`            |
 /// | `key = expr`             | `.with("key", expr)`                         |
 /// | `key = %expr`            | `.with("key", display(expr))`                |
 /// | `"some.key" = expr`      | `.with("some.key", expr)`                    |
@@ -43,6 +45,15 @@
 /// use event_sauce_core::event_context;
 ///
 /// let _ = event_context!(tenant = "acme");
+/// ```
+///
+/// So does the bare `tenant` shorthand:
+///
+/// ```compile_fail
+/// use event_sauce_core::event_context;
+///
+/// let tenant = "acme";
+/// let _ = event_context!(tenant);
 /// ```
 #[macro_export]
 macro_rules! event_context {
@@ -81,7 +92,20 @@ macro_rules! event_context {
         $crate::event_context!(@fields $mode, $ctx.with(stringify!($key), $crate::display($key)); $($($rest)*)?)
     };
     (@fields $mode:ident, $ctx:expr; $key:ident $(, $($rest:tt)*)?) => {
-        $crate::event_context!(@fields $mode, $ctx.with(stringify!($key), $key); $($($rest)*)?)
+        $crate::event_context!(@bare $mode, $key, $key, $ctx; $($($rest)*)?)
+    };
+
+    (@bare root, tenant, $value:ident, $ctx:expr; $($rest:tt)*) => {
+        $crate::event_context!(@fields root, $ctx.tenant($value); $($rest)*)
+    };
+    (@bare nested, tenant, $value:ident, $ctx:expr; $($rest:tt)*) => {
+        compile_error!("`tenant` is only valid after `root`: use `event_context!(root, tenant)`")
+    };
+    (@bare $mode:ident, correlation_id, $value:ident, $ctx:expr; $($rest:tt)*) => {
+        $crate::event_context!(@fields $mode, $ctx.correlation_id($value); $($rest)*)
+    };
+    (@bare $mode:ident, $key:ident, $value:ident, $ctx:expr; $($rest:tt)*) => {
+        $crate::event_context!(@fields $mode, $ctx.with(stringify!($key), $value); $($rest)*)
     };
 
     ($($fields:tt)+) => {

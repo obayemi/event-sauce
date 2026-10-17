@@ -144,6 +144,8 @@ comma:
 |--------------------------|---------------------------------------------|
 | `tenant = expr`          | `.tenant(expr)`, only valid after `root`    |
 | `correlation_id = expr`  | `.correlation_id(expr)`                     |
+| `tenant`                 | `.tenant(tenant)`, only valid after `root`  |
+| `correlation_id`         | `.correlation_id(correlation_id)`           |
 | `key = expr`             | `.with("key", expr)`                        |
 | `key = %expr`            | `.with("key", display(expr))`               |
 | `"some.key" = expr`      | `.with("some.key", expr)`                   |
@@ -168,7 +170,7 @@ let ctx = event_context!(
 ctx.in_scope(|| ());
 ```
 
-A `tenant` field without `root` does not compile.
+A `tenant` field, bare or assigned, without `root` does not compile.
 
 ## Context values
 
