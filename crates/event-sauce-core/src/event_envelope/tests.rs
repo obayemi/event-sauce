@@ -1,12 +1,5 @@
 use super::*;
-use serde_json::{json, Map, Value};
-
-fn object(value: Value) -> Map<String, Value> {
-    let Value::Object(map) = value else {
-        panic!("not an object");
-    };
-    map
-}
+use serde_json::json;
 
 #[test]
 fn test_event_envelope_new() {
@@ -149,51 +142,6 @@ fn test_event_envelope_with_complex_data() {
 
     assert_eq!(envelope.event_data, complex_data);
 }
-#[test]
-fn test_event_envelope_with_causation() {
-    let causation_id = Uuid::new_v4();
-    let correlation_id = "req-123";
-    let chain = vec![Uuid::new_v4(), causation_id];
-
-    let envelope = EventEnvelope::new(
-        Uuid::new_v4(),
-        Uuid::new_v4(),
-        "Test".to_string(),
-        "TestEvent".to_string(),
-        crate::EventVersion::new(1),
-        json!({}),
-    )
-    .with_causation(causation_id, correlation_id, chain.clone());
-
-    let metadata = envelope.metadata.unwrap();
-    assert_eq!(metadata.causation_id, Some(causation_id));
-    assert_eq!(metadata.correlation_id.as_deref(), Some(correlation_id));
-    assert_eq!(metadata.causation_chain, chain);
-}
-
-#[test]
-fn test_event_envelope_with_causation_preserves_existing_metadata() {
-    let causation_id = Uuid::new_v4();
-    let correlation_id = "req-123";
-    let additional = object(json!({"key": "value"}));
-
-    let envelope = EventEnvelope::new(
-        Uuid::new_v4(),
-        Uuid::new_v4(),
-        "Test".to_string(),
-        "TestEvent".to_string(),
-        crate::EventVersion::new(1),
-        json!({}),
-    )
-    .with_metadata(EventMetadata::new().with_additional(additional.clone()))
-    .with_causation(causation_id, correlation_id, vec![]);
-
-    let metadata = envelope.metadata.unwrap();
-    assert_eq!(metadata.causation_id, Some(causation_id));
-    assert_eq!(metadata.correlation_id.as_deref(), Some(correlation_id));
-    assert_eq!(metadata.additional, Some(additional));
-}
-
 #[test]
 fn test_version_in_envelope() {
     let v1_envelope = EventEnvelope::new(

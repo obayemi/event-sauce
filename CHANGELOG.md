@@ -17,9 +17,11 @@ explicitly rather than gated behind a major version bump.
   tenant, command, correlation path, additional keys, and the causation id
   and chain together, the latter only when it set neither.
 - **Correlation ids are strings.** `EventMetadata::correlation_id` is now
-  `Option<String>`, `with_correlation_id` and `EventEnvelope::with_causation`
-  take `impl Into<String>`, and `child_metadata` falls back to the parent
-  event id rendered as a string. Stored JSON with a UUID-shaped or null
+  `Option<String>`, `with_correlation_id` takes `impl Into<String>`, and
+  `child_metadata` falls back to the parent event id rendered as a string.
+  `EventEnvelope::with_causation` is removed in favour of
+  `EventMetadata::child_metadata` / `fill_missing_from` (or
+  `with_metadata(..)`). Stored JSON with a UUID-shaped or null
   `correlation_id` still deserializes. On Postgres, `migrate()` converts
   the `events.correlation_id` column from `UUID` to `TEXT`, which rewrites
   the events table under an `ACCESS EXCLUSIVE` lock: run it in a

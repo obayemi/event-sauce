@@ -133,28 +133,6 @@ impl EventEnvelope {
         self.created_at = timestamp;
         self
     }
-
-    /// Sets causation tracking fields on the metadata.
-    ///
-    /// Creates or updates the metadata with causation ID, correlation ID,
-    /// and the full causation chain. Used by the policy system to propagate
-    /// causation tracking through event reactions.
-    #[must_use]
-    pub fn with_causation(
-        mut self,
-        causation_id: Uuid,
-        correlation_id: impl Into<String>,
-        causation_chain: Vec<Uuid>,
-    ) -> Self {
-        let metadata = self
-            .metadata
-            .unwrap_or_default()
-            .with_causation_id(causation_id)
-            .with_correlation_id(correlation_id)
-            .with_causation_chain(causation_chain);
-        self.metadata = Some(metadata);
-        self
-    }
 }
 
 #[cfg(test)]
