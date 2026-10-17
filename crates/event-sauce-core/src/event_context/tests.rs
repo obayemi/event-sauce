@@ -267,35 +267,3 @@ fn with_accepts_any_json_convertible_value() {
             );
         });
 }
-
-#[test]
-fn with_ambient_keeps_explicit_metadata_outside_any_scope() {
-    assert_eq!(with_ambient(None), None);
-    let explicit = crate::EventMetadata::new().with_tenant("acme");
-    assert_eq!(with_ambient(Some(explicit.clone())), Some(explicit));
-}
-
-#[test]
-fn with_ambient_builds_metadata_from_the_context_when_none_is_given() {
-    EventContext::root()
-        .tenant("acme")
-        .command("place-order")
-        .in_scope(|| {
-            let metadata = with_ambient(None).expect("metadata from the context");
-            assert_eq!(metadata.tenant.as_deref(), Some("acme"));
-            assert_eq!(metadata.command.as_deref(), Some("place-order"));
-        });
-}
-
-#[test]
-fn with_ambient_lets_explicit_metadata_win_and_fills_the_gaps() {
-    EventContext::root()
-        .tenant("acme")
-        .command("place-order")
-        .in_scope(|| {
-            let explicit = crate::EventMetadata::new().with_tenant("globex");
-            let metadata = with_ambient(Some(explicit)).expect("merged metadata");
-            assert_eq!(metadata.tenant.as_deref(), Some("globex"));
-            assert_eq!(metadata.command.as_deref(), Some("place-order"));
-        });
-}

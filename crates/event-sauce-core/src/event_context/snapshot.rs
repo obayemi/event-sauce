@@ -59,21 +59,6 @@ pub(crate) fn current_snapshot() -> Option<ContextSnapshot> {
     (snapshot != ContextSnapshot::default()).then_some(snapshot)
 }
 
-/// Merges the ambient context into `metadata`.
-///
-/// Explicit metadata wins field by field and the context fills the gaps;
-/// outside any scope `metadata` is returned unchanged.
-pub(crate) fn with_ambient(metadata: Option<crate::EventMetadata>) -> Option<crate::EventMetadata> {
-    match (metadata, current_snapshot()) {
-        (explicit, None) => explicit,
-        (None, Some(ambient)) => Some(ambient.into()),
-        (Some(mut explicit), Some(ambient)) => {
-            explicit.fill_missing_from(&ambient.into());
-            Some(explicit)
-        }
-    }
-}
-
 pub(crate) fn has_correlation_id() -> bool {
     effective(|frames| {
         frames

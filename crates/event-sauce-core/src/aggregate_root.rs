@@ -33,11 +33,15 @@ impl<E> PendingEvent<E> {
         actor_id: Option<EntityId>,
         metadata: Option<EventMetadata>,
     ) -> Self {
-        Self {
+        let mut pending = Self {
             event,
             actor_id,
-            metadata: crate::event_context::with_ambient(metadata),
+            metadata,
+        };
+        if let Some(ambient) = crate::event_context::current_snapshot() {
+            pending.fill_metadata(&ambient.into());
         }
+        pending
     }
 
     /// Completes the pending event's metadata with `metadata`.
@@ -45,7 +49,6 @@ impl<E> PendingEvent<E> {
     /// An event recorded without metadata takes a clone; one recorded with
     /// metadata keeps its own fields and only gains the ones it lacks, see
     /// [`EventMetadata::fill_missing_from`].
-    #[cfg(any(test, feature = "event-sourcing"))]
     pub(crate) fn fill_metadata(&mut self, metadata: &EventMetadata) {
         match &mut self.metadata {
             Some(existing) => existing.fill_missing_from(metadata),

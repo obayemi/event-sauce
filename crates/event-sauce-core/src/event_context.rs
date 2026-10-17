@@ -34,7 +34,7 @@ pub(crate) use scopes::execution_context;
 pub(crate) use scopes::reaction_context;
 #[cfg(test)]
 pub(crate) use snapshot::ContextSnapshot;
-pub(crate) use snapshot::{current_snapshot, has_correlation_id, with_ambient};
+pub(crate) use snapshot::{current_snapshot, has_correlation_id};
 pub use stack::EnteredEventContext;
 pub use value::{display, DisplayValue};
 
