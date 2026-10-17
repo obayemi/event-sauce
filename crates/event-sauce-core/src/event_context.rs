@@ -169,6 +169,7 @@ impl<K: Scope> EventContext<K> {
         self
     }
 
+    #[cfg(any(test, feature = "event-sourcing"))]
     #[must_use]
     pub(crate) fn command(mut self, name: impl Into<String>) -> Self {
         self.frame.command = Some(name.into());

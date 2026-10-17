@@ -1,24 +1,25 @@
 use super::sealed::Boundary;
 use super::stack::{effective, Frame};
 use crate::EventMetadata;
-use serde_json::Map;
+use serde_json::{Map, Value};
 
 pub(crate) fn current_snapshot() -> Option<EventMetadata> {
     effective(|frames| {
-        let mut correlation_path: Vec<String> = Vec::new();
-        for id in frames
+        let mut correlation_path: Vec<String> = frames
             .iter()
-            .map(|f| &f.frame)
-            .flat_map(|f| f.correlation_path.iter().chain(f.correlation_id.iter()))
-        {
-            if correlation_path.last() != Some(id) {
-                correlation_path.push(id.clone());
-            }
-        }
-        let mut additional = Map::new();
-        for frame in frames {
-            additional.extend(frame.frame.additional.clone());
-        }
+            .flat_map(|f| {
+                f.frame
+                    .correlation_path
+                    .iter()
+                    .chain(&f.frame.correlation_id)
+            })
+            .cloned()
+            .collect();
+        correlation_path.dedup();
+        let additional: Map<String, Value> = frames
+            .iter()
+            .flat_map(|f| f.frame.additional.clone())
+            .collect();
         let tenant = match frames.first().map(|f| &f.boundary) {
             Some(Boundary::Root { tenant }) => tenant.clone(),
             _ => None,
