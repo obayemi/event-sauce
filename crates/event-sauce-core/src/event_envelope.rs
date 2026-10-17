@@ -102,6 +102,40 @@ impl EventMetadata {
         }
     }
 
+    /// Whether any field other than the timestamp holds data.
+    ///
+    /// Destructures every field, so adding one to [`EventMetadata`] fails to
+    /// compile until it is accounted for here.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use event_sauce_core::EventMetadata;
+    ///
+    /// assert!(!EventMetadata::new().carries_data());
+    /// assert!(EventMetadata::new().with_tenant("acme").carries_data());
+    /// ```
+    #[must_use]
+    pub fn carries_data(&self) -> bool {
+        let Self {
+            correlation_id,
+            causation_id,
+            causation_chain,
+            tenant,
+            command,
+            correlation_path,
+            additional,
+            timestamp: _,
+        } = self;
+        correlation_id.is_some()
+            || causation_id.is_some()
+            || !causation_chain.is_empty()
+            || tenant.is_some()
+            || command.is_some()
+            || !correlation_path.is_empty()
+            || additional.is_some()
+    }
+
     /// Sets the correlation ID.
     ///
     /// Correlation ids are free-form strings, so a request id, a trace id or

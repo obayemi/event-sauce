@@ -640,26 +640,15 @@ impl From<EventRow> for EventEnvelope {
     fn from(row: EventRow) -> Self {
         let causation_chain = row.causation_chain.map(|chain| chain.0).unwrap_or_default();
         let correlation_path = row.correlation_path.map(|path| path.0).unwrap_or_default();
-        let metadata = if row.correlation_id.is_some()
-            || row.causation_id.is_some()
-            || row.metadata.is_some()
-            || row.tenant.is_some()
-            || row.command.is_some()
-            || !causation_chain.is_empty()
-            || !correlation_path.is_empty()
-        {
-            Some(event_sauce_core::EventMetadata {
-                correlation_id: row.correlation_id,
-                causation_id: row.causation_id,
-                causation_chain,
-                tenant: row.tenant,
-                command: row.command,
-                correlation_path,
-                timestamp: row.created_at,
-                additional: row.metadata,
-            })
-        } else {
-            None
+        let metadata = event_sauce_core::EventMetadata {
+            correlation_id: row.correlation_id,
+            causation_id: row.causation_id,
+            causation_chain,
+            tenant: row.tenant,
+            command: row.command,
+            correlation_path,
+            timestamp: row.created_at,
+            additional: row.metadata,
         };
 
         EventEnvelope {
@@ -671,7 +660,7 @@ impl From<EventRow> for EventEnvelope {
             event_data: row.event_data,
             created_by: row.created_by,
             created_at: row.created_at,
-            metadata,
+            metadata: Some(metadata).filter(event_sauce_core::EventMetadata::carries_data),
         }
     }
 }
