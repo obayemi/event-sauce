@@ -636,7 +636,8 @@ mod tests {
     use super::append::append_lock_key;
     use super::*;
     use event_sauce_core::{
-        AggregateVersion, EventEnvelope, EventStore, EventVersion, Position, Snapshot, StreamId,
+        AggregateVersion, EventEnvelope, EventMetadata, EventStore, EventVersion, Position,
+        Snapshot, StreamId,
     };
     use futures::StreamExt;
     use serde_json::json;
@@ -794,18 +795,11 @@ mod tests {
         assert_eq!(loaded.event_type, "UserCreated");
     }
 
-    #[tokio::test]
-    async fn test_causation_chain_round_trips() {
-        let db = TestDatabase::new().await.unwrap();
-        let store = db.store();
+    /// Appends one event carrying `metadata` to a fresh stream and returns the metadata read back.
+    async fn round_trip(store: &PostgresEventStore, metadata: EventMetadata) -> EventMetadata {
         let aggregate_id = Uuid::new_v4();
         let stream_id = StreamId::new("User", aggregate_id);
-        let chain = vec![Uuid::new_v4(), Uuid::new_v4()];
-        let event = create_test_envelope("UserCreated", aggregate_id).with_metadata(
-            event_sauce_core::EventMetadata::new()
-                .with_causation_id(chain[1])
-                .with_causation_chain(chain.clone()),
-        );
+        let event = create_test_envelope("UserCreated", aggregate_id).with_metadata(metadata);
 
         store
             .append(
@@ -823,7 +817,20 @@ mod tests {
             .await
             .unwrap();
         let loaded = stream.next().await.unwrap().unwrap();
-        let metadata = loaded.metadata.expect("metadata is stored");
+        loaded.metadata.expect("metadata is stored")
+    }
+
+    #[tokio::test]
+    async fn test_causation_chain_round_trips() {
+        let db = TestDatabase::new().await.unwrap();
+        let chain = vec![Uuid::new_v4(), Uuid::new_v4()];
+        let metadata = round_trip(
+            &db.store(),
+            EventMetadata::new()
+                .with_causation_id(chain[1])
+                .with_causation_chain(chain.clone()),
+        )
+        .await;
 
         assert_eq!(metadata.causation_chain, chain);
         assert_eq!(metadata.cascade_depth(), 2);
@@ -832,65 +839,27 @@ mod tests {
     #[tokio::test]
     async fn test_non_uuid_correlation_id_round_trips() {
         let db = TestDatabase::new().await.unwrap();
-        let store = db.store();
-        let aggregate_id = Uuid::new_v4();
-        let stream_id = StreamId::new("User", aggregate_id);
-        let event = create_test_envelope("UserCreated", aggregate_id)
-            .with_metadata(event_sauce_core::EventMetadata::new().with_correlation_id("req-123"));
+        let metadata = round_trip(
+            &db.store(),
+            EventMetadata::new().with_correlation_id("req-123"),
+        )
+        .await;
 
-        store
-            .append(
-                stream_id.clone(),
-                vec![event],
-                AggregateVersion::initial(),
-                vec![],
-                false,
-            )
-            .await
-            .unwrap();
-
-        let mut stream = store
-            .load_stream(stream_id, AggregateVersion::initial())
-            .await
-            .unwrap();
-        let loaded = stream.next().await.unwrap().unwrap();
-
-        assert_eq!(
-            loaded.metadata.unwrap().correlation_id.as_deref(),
-            Some("req-123")
-        );
+        assert_eq!(metadata.correlation_id.as_deref(), Some("req-123"));
     }
 
     #[tokio::test]
     async fn test_tenant_command_and_correlation_path_round_trip() {
         let db = TestDatabase::new().await.unwrap();
-        let store = db.store();
-        let aggregate_id = Uuid::new_v4();
-        let stream_id = StreamId::new("User", aggregate_id);
         let path = vec!["import".to_string(), "row-7".to_string()];
-        let event = create_test_envelope("UserCreated", aggregate_id).with_metadata(
-            event_sauce_core::EventMetadata::new()
+        let metadata = round_trip(
+            &db.store(),
+            EventMetadata::new()
                 .with_tenant("acme")
                 .with_command("RegisterUser")
                 .with_correlation_path(path.clone()),
-        );
-
-        store
-            .append(
-                stream_id.clone(),
-                vec![event],
-                AggregateVersion::initial(),
-                vec![],
-                false,
-            )
-            .await
-            .unwrap();
-
-        let mut stream = store
-            .load_stream(stream_id, AggregateVersion::initial())
-            .await
-            .unwrap();
-        let metadata = stream.next().await.unwrap().unwrap().metadata.unwrap();
+        )
+        .await;
 
         assert_eq!(metadata.tenant.as_deref(), Some("acme"));
         assert_eq!(metadata.command.as_deref(), Some("RegisterUser"));
