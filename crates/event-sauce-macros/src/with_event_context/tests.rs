@@ -24,8 +24,8 @@ fn sync_fn_runs_its_body_in_scope_with_the_declared_return_type() {
         squeezed(&out),
         squeezed(
             "fn f(x: u8) -> u8 { \
-             let __event_context = ::event_sauce::event_context!(root, tenant = \"acme\"); \
-             let __event_context_ret: u8 = __event_context.in_scope(|| { x }); \
+             let __event_context_ret: u8 = \
+             ::event_sauce::event_context!(root, tenant = \"acme\").in_scope(|| { x }); \
              __event_context_ret }"
         )
     );
@@ -53,7 +53,7 @@ fn opaque_return_type_is_left_unannotated() {
             }
         ),
     );
-    assert!(!out.contains("__event_context_ret"), "{out}");
+    assert!(!out.contains("__event_context_ret :"), "{out}");
     assert!(out.contains("in_scope"), "{out}");
 }
 
@@ -71,9 +71,8 @@ fn async_fn_awaits_its_body_wrapped_in_the_context() {
         squeezed(&out),
         squeezed(
             "async fn f(x: &str) -> usize { \
-             let __event_context = ::event_sauce::event_context!(correlation_id = \"c\"); \
              let __event_context_ret: usize = \
-             ::event_sauce::WithEventContextExt::with_event_context(async { x.len() }, __event_context).await; \
+             ::event_sauce::WithEventContextExt::with_event_context(async { x.len() }, ::event_sauce::event_context!(correlation_id = \"c\")).await; \
              __event_context_ret }"
         )
     );

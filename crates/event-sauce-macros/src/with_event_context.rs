@@ -20,35 +20,29 @@ pub(crate) fn expand(core: &TokenStream, args: &TokenStream, item: TokenStream) 
     let context = quote!(#core::event_context!(#args));
     let block = &function.block;
     let body = if function.sig.asyncness.is_some() {
-        let wrapped = quote!(#core::WithEventContextExt::with_event_context(async #block, __event_context).await);
-        annotated(&function.sig.output, &context, &wrapped)
+        let wrapped =
+            quote!(#core::WithEventContextExt::with_event_context(async #block, #context).await);
+        annotated(&function.sig.output, &wrapped)
     } else if let Some(body) = boxed_async_body(block, core, &context) {
         body
     } else {
-        let scoped = quote!(__event_context.in_scope(|| #block));
-        annotated(&function.sig.output, &context, &scoped)
+        let scoped = quote!(#context.in_scope(|| #block));
+        annotated(&function.sig.output, &scoped)
     };
     *function.block = body;
     quote!(#function)
 }
 
-fn annotated(output: &ReturnType, context: &TokenStream, value: &TokenStream) -> Block {
-    let typed_tail = match output {
-        ReturnType::Default => Some(quote!(())),
-        ReturnType::Type(_, ty) if !has_opaque_type(ty) => Some(quote!(#ty)),
-        ReturnType::Type(..) => None,
+fn annotated(output: &ReturnType, value: &TokenStream) -> Block {
+    let ascription = match output {
+        ReturnType::Default => quote!(: ()),
+        ReturnType::Type(_, ty) if !has_opaque_type(ty) => quote!(: #ty),
+        ReturnType::Type(..) => quote!(),
     };
-    match typed_tail {
-        Some(ty) => parse_quote!({
-            let __event_context = #context;
-            let __event_context_ret: #ty = #value;
-            __event_context_ret
-        }),
-        None => parse_quote!({
-            let __event_context = #context;
-            #value
-        }),
-    }
+    parse_quote!({
+        let __event_context_ret #ascription = #value;
+        __event_context_ret
+    })
 }
 
 fn has_opaque_type(ty: &Type) -> bool {
