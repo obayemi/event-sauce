@@ -78,12 +78,14 @@ When [policies](policies.md) react to events, causation metadata is automaticall
 // Source event: UserKickedEvent (id = "aaa")
 //   → Policy produces: GroupMemberRemovedEvent
 //       causation_id: "aaa"           (direct cause)
-//       correlation_id: "aaa"         (root cause)
+//       correlation_id: "req-1"       (the flow's correlation id: from the event
+//                                      context, or the root event id when the root
+//                                      carried none)
 //       causation_chain: ["aaa"]      (full ancestry)
 //
 //   → That triggers another policy: NotificationSentEvent
 //       causation_id: "bbb"           (direct cause = GroupMemberRemovedEvent)
-//       correlation_id: "aaa"         (root cause = original UserKickedEvent)
+//       correlation_id: "req-1"       (unchanged at every step)
 //       causation_chain: ["aaa", "bbb"]  (full ancestry)
 ```
 
@@ -261,10 +263,12 @@ Causation chains let you trace exactly why an event happened, all the way back t
 
 ```
 User clicks "Kick Member" button
-  └─ UserKickedEvent (id=aaa, correlation_id=aaa)
-       └─ [KickPolicy] GroupMemberRemovedEvent (causation_id=aaa, correlation_id=aaa, chain=[aaa])
-            └─ [NotifyPolicy] NotificationSentEvent (causation_id=bbb, correlation_id=aaa, chain=[aaa, bbb])
+  └─ UserKickedEvent (id=aaa, correlation_id=req-1)
+       └─ [KickPolicy] GroupMemberRemovedEvent (causation_id=aaa, correlation_id=req-1, chain=[aaa])
+            └─ [NotifyPolicy] NotificationSentEvent (causation_id=bbb, correlation_id=req-1, chain=[aaa, bbb])
 ```
+
+An event with no correlation id hands its own id to its reactions.
 
 **Fields:**
 

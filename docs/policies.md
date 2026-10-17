@@ -127,7 +127,7 @@ Every event produced by a policy carries metadata:
 - **`causation_chain`**: Full list of event IDs from root to direct parent
 
 For example, in a cascade `A -> B -> C`:
-- Event C has `causation_id = B.id`, `correlation_id = A.id`, `causation_chain = [A.id, B.id]`
+- Event C has `causation_id = B.id`, `correlation_id` = A's correlation id (A.id as a string when A carries none), `causation_chain = [A.id, B.id]`
 
 A reaction also inherits the [event context](event-context.md) of its source
 event. It runs in a root context seeded with the source event's tenant,
