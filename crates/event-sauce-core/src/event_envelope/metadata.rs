@@ -17,8 +17,9 @@ use uuid::Uuid;
 /// - **`causation_id`** — Identifies the service command or event that caused this event.
 /// - **`tenant`** — The tenant the event belongs to.
 /// - **`command`** — The name of the command that produced this event.
-/// - **`correlation_path`** — The ordered labels of the scopes the event was
-///   produced in, from the outermost to the innermost.
+/// - **`correlation_path`** — Every correlation id of the flow that produced the
+///   event, outermost first; `correlation_id` is its first entry. Filled from
+///   the ambient `EventContext`.
 /// - **`timestamp`** — When the metadata was created (set automatically).
 /// - **`additional`** — Arbitrary JSON for application-specific data (e.g., user ID,
 ///   IP address, session id); the tenant has its own field.
@@ -60,7 +61,9 @@ pub struct EventMetadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
 
-    /// Labels of the scopes the event was produced in, outermost first.
+    /// Every correlation id of the flow that produced the event, outermost
+    /// first; `correlation_id` is its first entry. Filled from the ambient
+    /// `EventContext`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub correlation_path: Vec<String>,
 
