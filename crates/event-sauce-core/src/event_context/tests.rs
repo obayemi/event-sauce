@@ -246,57 +246,6 @@ fn current_keeps_the_full_correlation_path() {
     });
 }
 
-#[cfg(feature = "event-sourcing")]
-#[test]
-fn a_root_built_from_metadata_carries_tenant_id_and_path() {
-    let metadata = crate::EventMetadata::new()
-        .with_correlation_id("req")
-        .with_correlation_path(vec!["req".into(), "import".into()]);
-    let metadata = crate::EventMetadata {
-        tenant: Some("acme".into()),
-        ..metadata
-    };
-    EventContext::from_metadata(&metadata).in_scope(|| {
-        let snap = snapshot();
-        assert_eq!(snap.tenant.as_deref(), Some("acme"));
-        assert_eq!(snap.correlation_id(), Some("req"));
-        assert_eq!(snap.correlation_path, ["req", "import"]);
-    });
-}
-
-#[cfg(feature = "event-sourcing")]
-#[test]
-fn a_root_built_from_metadata_without_a_path_starts_it_at_the_id() {
-    let metadata = crate::EventMetadata::new().with_correlation_id("req");
-    EventContext::from_metadata(&metadata).in_scope(|| {
-        assert_eq!(snapshot().correlation_path, ["req"]);
-    });
-}
-
-#[test]
-fn an_execution_context_generates_a_correlation_id_when_none_is_active() {
-    let context = execution_context(Some("place-order"));
-    context.in_scope(|| {
-        let snap = snapshot();
-        assert_eq!(snap.command.as_deref(), Some("place-order"));
-        assert_eq!(snap.correlation_path.len(), 1);
-        assert_eq!(
-            snap.correlation_id(),
-            snap.correlation_path.first().map(String::as_str)
-        );
-    });
-}
-
-#[test]
-fn an_execution_context_keeps_the_active_correlation_id() {
-    EventContext::new().correlation_id("req-1").in_scope(|| {
-        execution_context(None).in_scope(|| {
-            assert_eq!(snapshot().correlation_path, ["req-1"]);
-            assert_eq!(snapshot().command, None);
-        });
-    });
-}
-
 #[test]
 fn with_accepts_any_json_convertible_value() {
     EventContext::new()

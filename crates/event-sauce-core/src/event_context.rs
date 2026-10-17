@@ -20,6 +20,7 @@
 //! ```
 
 mod future;
+mod scopes;
 mod snapshot;
 mod stack;
 mod value;
@@ -28,6 +29,9 @@ use stack::{Frame, StackFrame};
 use std::sync::Arc;
 
 pub use future::{WithEventContext, WithEventContextExt};
+pub(crate) use scopes::execution_context;
+#[cfg(feature = "event-sourcing")]
+pub(crate) use scopes::reaction_context;
 #[cfg(test)]
 pub(crate) use snapshot::ContextSnapshot;
 pub(crate) use snapshot::{current_snapshot, has_correlation_id};
@@ -294,38 +298,6 @@ impl EventContext<Root> {
         let tenant = snapshot.tenant.clone();
         Self::from_parts(snapshot.into(), Root { tenant })
     }
-
-    #[cfg(feature = "event-sourcing")]
-    pub(crate) fn from_metadata(metadata: &crate::EventMetadata) -> Self {
-        let correlation_path = if metadata.correlation_path.is_empty() {
-            metadata.correlation_id.iter().cloned().collect()
-        } else {
-            metadata.correlation_path.clone()
-        };
-        let frame = Frame {
-            correlation_path,
-            ..Frame::default()
-        };
-        Self::from_parts(
-            frame,
-            Root {
-                tenant: metadata.tenant.clone(),
-            },
-        )
-    }
-}
-
-/// The context a command execution runs in: it names the command when it
-/// has a name and starts a correlation id unless one is already active.
-pub(crate) fn execution_context(command: Option<&str>) -> EventContext {
-    let mut context = EventContext::new();
-    if let Some(name) = command {
-        context = context.command(name);
-    }
-    if !has_correlation_id() {
-        context = context.correlation_id(uuid::Uuid::new_v4().to_string());
-    }
-    context
 }
 
 #[cfg(test)]

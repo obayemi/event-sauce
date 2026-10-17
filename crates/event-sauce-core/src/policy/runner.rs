@@ -7,10 +7,8 @@ use std::time::Duration;
 use super::context::PolicyContext;
 use super::on_error::{OnError, OnRetryExhausted, RetryConfig, RetryLimit};
 use super::Policy;
-use crate::{
-    CheckpointStoreRef, EventContext, EventEnvelope, EventStore, Position, Result,
-    WithEventContextExt,
-};
+use crate::event_context::reaction_context;
+use crate::{CheckpointStoreRef, EventEnvelope, EventStore, Position, Result, WithEventContextExt};
 
 /// Default duration a [`PolicyRunner`] leases each policy for while draining
 /// pending events (see [`PolicyRunner::with_lease_duration`]).
@@ -417,16 +415,9 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
             envelope.clone(),
             self.max_cascade_depth,
         );
-        let source_metadata = envelope
-            .metadata
-            .clone()
-            .unwrap_or_default()
-            .child_metadata(envelope.id);
         policy
             .handle(envelope, &ctx)
-            .with_event_context(
-                EventContext::from_metadata(&source_metadata).command(policy.name()),
-            )
+            .with_event_context(reaction_context(envelope, policy.name()))
             .await?;
         ctx.flush().await
     }
