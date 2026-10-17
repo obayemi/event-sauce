@@ -1,5 +1,5 @@
 use super::*;
-use event_sauce_core::EventEnvelope;
+use event_sauce_core::{EventEnvelope, EventMetadata, EventVersion, StreamCommit};
 use sqlx::types::Json;
 
 fn bare_row() -> EventRow {
@@ -88,4 +88,98 @@ fn any_single_metadata_column_yields_metadata() {
         set(&mut row);
         assert!(EventEnvelope::from(row).metadata.is_some());
     }
+}
+
+fn commit_of(events: Vec<EventEnvelope>, expected_version: i64) -> StreamCommit {
+    StreamCommit {
+        stream_id: event_sauce_core::StreamId::new("Order", uuid::Uuid::new_v4()),
+        events,
+        expected_version: event_sauce_core::AggregateVersion::new(expected_version),
+        claims: vec![],
+        clear_claims: false,
+    }
+}
+
+fn envelope(stream: &StreamCommit, metadata: Option<EventMetadata>) -> EventEnvelope {
+    let mut event = EventEnvelope::new(
+        uuid::Uuid::new_v4(),
+        stream.stream_id.aggregate_id(),
+        "Order".to_owned(),
+        "Created".to_owned(),
+        EventVersion::new(2),
+        serde_json::json!({"k": 1}),
+    );
+    event.metadata = metadata;
+    event
+}
+
+#[test]
+fn columns_number_stream_versions_from_the_expected_version() {
+    let mut commit = commit_of(vec![], 3);
+    commit.events = vec![envelope(&commit, None), envelope(&commit, None)];
+
+    let columns = EventColumns::from_commit(&commit);
+
+    assert_eq!(columns.stream_versions, vec![3, 4]);
+    assert_eq!(columns.event_versions, vec![2, 2]);
+    assert_eq!(columns.aggregate_types, vec!["Order", "Order"]);
+    assert_eq!(columns.event_ids.len(), 2);
+}
+
+#[test]
+fn columns_of_events_without_metadata_are_all_null() {
+    let mut commit = commit_of(vec![], 0);
+    commit.events = vec![envelope(&commit, None)];
+
+    let columns = EventColumns::from_commit(&commit);
+
+    assert_eq!(columns.correlation_ids, vec![None]);
+    assert_eq!(columns.causation_ids, vec![None]);
+    assert!(columns.metadatas[0].is_none());
+    assert!(columns.causation_chains[0].is_none());
+    assert_eq!(columns.tenants, vec![None]);
+    assert_eq!(columns.commands, vec![None]);
+    assert!(columns.correlation_paths[0].is_none());
+}
+
+#[test]
+fn columns_project_every_metadata_field() {
+    let cause = uuid::Uuid::new_v4();
+    let mut metadata = EventMetadata::new();
+    metadata.correlation_id = Some("corr".to_owned());
+    metadata.causation_id = Some(cause);
+    metadata.causation_chain = vec![cause];
+    metadata.tenant = Some("acme".to_owned());
+    metadata.command = Some("Place".to_owned());
+    metadata.correlation_path = vec!["root".to_owned()];
+    metadata.additional = serde_json::json!({"k": 1}).as_object().cloned();
+    let mut commit = commit_of(vec![], 0);
+    commit.events = vec![envelope(&commit, Some(metadata))];
+
+    let columns = EventColumns::from_commit(&commit);
+
+    assert_eq!(columns.correlation_ids, vec![Some("corr".to_owned())]);
+    assert_eq!(columns.causation_ids, vec![Some(cause)]);
+    assert_eq!(columns.causation_chains[0].as_ref().unwrap().0, vec![cause]);
+    assert_eq!(columns.tenants, vec![Some("acme".to_owned())]);
+    assert_eq!(columns.commands, vec![Some("Place".to_owned())]);
+    assert_eq!(
+        columns.correlation_paths[0].as_ref().unwrap().0,
+        vec!["root".to_owned()]
+    );
+    assert_eq!(
+        columns.metadatas[0].as_ref().unwrap().0,
+        serde_json::json!({"k": 1}).as_object().cloned().unwrap()
+    );
+}
+
+#[test]
+fn empty_chains_are_written_as_null() {
+    let mut commit = commit_of(vec![], 0);
+    commit.events = vec![envelope(&commit, Some(EventMetadata::new()))];
+
+    let columns = EventColumns::from_commit(&commit);
+
+    assert!(columns.causation_chains[0].is_none());
+    assert!(columns.correlation_paths[0].is_none());
 }
