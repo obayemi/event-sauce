@@ -98,15 +98,21 @@ is applied inside one. Attach any other application-specific data using
 `EventMetadata::additional`:
 
 ```rust
-use event_sauce::EventMetadata;
-let metadata = EventMetadata::new()
-    .with_additional_entry("ip_address", "192.168.1.1")
-    .with_additional_entry("user_agent", "Mozilla/5.0")
-    .with_tenant("acme-corp");
+use event_sauce::event_context;
 
-// Apply event with metadata
-aggregate.apply_with_metadata(some_event, metadata)?;
+event_context!(
+    root,
+    tenant = "acme-corp",
+    ip_address = "192.168.1.1",
+    user_agent = "Mozilla/5.0",
+)
+.in_scope(|| aggregate.apply(some_event))?;
 ```
+
+Here `tenant` fills `EventMetadata::tenant`, while `ip_address` and
+`user_agent` end up in `EventMetadata::additional`. For explicit, one-off
+metadata, `apply_with_metadata` remains available, with the
+[caveats](validation.md#when-does-a-failed-command-poison-the-aggregateroot) (it skips `validate_only`).
 
 The `additional` field is stored as JSONB in PostgreSQL, so it's queryable and flexible.
 
