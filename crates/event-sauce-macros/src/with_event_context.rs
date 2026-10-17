@@ -2,7 +2,10 @@
 
 use proc_macro2::{TokenStream, TokenTree};
 use quote::quote;
-use syn::{parse_quote, Block, Expr, ExprCall, ExprPath, ItemFn, ReturnType, Stmt, Type};
+use syn::{
+    parse_quote, Block, Expr, ExprCall, ExprPath, ItemFn, Local, LocalInit, Pat, ReturnType, Stmt,
+    Type,
+};
 
 /// Rewrites the function so its body runs inside the event context built by
 /// `event_context!(args)`.
@@ -10,7 +13,8 @@ use syn::{parse_quote, Block, Expr, ExprCall, ExprPath, ItemFn, ReturnType, Stmt
 /// A sync function becomes `ctx.in_scope(|| body)`. An `async fn` awaits its
 /// body wrapped with `with_event_context`, so the context follows the future
 /// across awaits and threads. A method already expanded by `#[async_trait]`
-/// (a sync fn whose tail is `Box::pin(async ..)`) gets its inner async block
+/// (a sync fn whose tail is `Box::pin(async ..)`, preceded only by
+/// plain rebindings such as `let __self = self;`) gets its inner async block
 /// wrapped the same way.
 pub(crate) fn expand(core: &TokenStream, args: &TokenStream, item: TokenStream) -> TokenStream {
     let mut function = match syn::parse2::<ItemFn>(item) {
@@ -51,10 +55,30 @@ fn has_opaque_type(ty: &Type) -> bool {
         .any(|token| matches!(token, TokenTree::Ident(ident) if ident == "impl"))
 }
 
+fn is_rebinding(stmt: &Stmt) -> bool {
+    let Stmt::Local(Local {
+        pat: Pat::Ident(_),
+        init:
+            Some(LocalInit {
+                expr,
+                diverge: None,
+                ..
+            }),
+        ..
+    }) = stmt
+    else {
+        return false;
+    };
+    matches!(expr.as_ref(), Expr::Path(_))
+}
+
 fn boxed_async_body(block: &Block, core: &TokenStream, context: &TokenStream) -> Option<Block> {
     let (Stmt::Expr(Expr::Call(call), None), leading) = block.stmts.split_last()? else {
         return None;
     };
+    if !leading.iter().all(is_rebinding) {
+        return None;
+    }
     let ExprCall { func, args, .. } = call;
     let Expr::Path(ExprPath { path, .. }) = func.as_ref() else {
         return None;

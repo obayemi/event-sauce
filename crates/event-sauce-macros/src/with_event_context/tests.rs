@@ -123,3 +123,17 @@ fn non_function_input_is_a_compile_error() {
     );
     assert!(out.contains("compile_error"), "{out}");
 }
+
+#[test]
+fn boxed_async_tail_after_side_effecting_statements_runs_them_in_scope() {
+    let out = expanded(
+        &quote!(correlation_id = "c"),
+        quote!(
+            fn f(acc: &mut Root) -> Pin<Box<dyn Future<Output = ()> + '_>> {
+                acc.deposit(1).unwrap();
+                Box::pin(async {})
+            }
+        ),
+    );
+    assert!(out.contains("in_scope"), "{out}");
+}
