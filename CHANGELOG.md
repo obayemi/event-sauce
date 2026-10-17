@@ -32,7 +32,10 @@ explicitly rather than gated behind a major version bump.
   `correlation_id` still deserializes. On Postgres, `migrate()` converts
   the `events.correlation_id` column from `UUID` to `TEXT`, which rewrites
   the events table under an `ACCESS EXCLUSIVE` lock: run it in a
-  maintenance window on a large table.
+  maintenance window on a large table. The previous release cannot decode
+  a `TEXT` `correlation_id`, so every read of an old instance fails once
+  the column is converted: stop the old instances before `migrate()`, then
+  start the new version, or first roll out a version that decodes both.
 - **`PolicyRunner::process_pending` returns `PolicyRunOutcome`, not
   `usize`.** `process_pending` now takes a per-policy lease (see Fixed,
   below), and a standby worker that currently holds none of them needs to

@@ -346,8 +346,16 @@ path and an empty causation chain.
 `TEXT`, because correlation ids are free-form strings. Changing a column's type
 rewrites the whole table under an `ACCESS EXCLUSIVE` lock, which blocks every
 read and write on `events` until it finishes. On a large table, run `migrate()`
-in a maintenance window, before rolling out the new application version. The
-new `tenant`, `command`, `correlation_path` and `causation_chain` columns are
+in a maintenance window.
+
+The previous release decodes `correlation_id` as `UUID`, and Postgres rejects
+that decode once the column is `TEXT`: every `load_stream`, `stream_all`,
+event-log query and policy drain of an old instance fails, while its writes
+still succeed. Never run `migrate()` while an old instance is serving. Stop
+every old reader and writer, run `migrate()`, then start the new version. To
+avoid the downtime, ship an intermediate version that decodes `correlation_id`
+as either text or `UUID` first, and migrate once it has fully replaced the old
+one. The new `tenant`, `command`, `correlation_path` and `causation_chain` columns are
 nullable additions and do not rewrite the table.
 
 ### CI/CD Integration
