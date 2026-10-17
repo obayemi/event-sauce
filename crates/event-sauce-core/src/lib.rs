@@ -160,7 +160,7 @@ pub use event_applicator::EventApplicator;
 pub use event_context::{
     display, DisplayValue, EnteredEventContext, EventContext, WithEventContext, WithEventContextExt,
 };
-pub use event_envelope::{EventEnvelope, EventMetadata};
+pub use event_envelope::{additional_from_value, EventEnvelope, EventMetadata};
 pub use event_filter::EventFilter;
 #[cfg(feature = "event-sourcing")]
 pub use event_log::{EventLogEntry, EventLogOrder, EventLogPage, EventLogParams, EventLogQuery};

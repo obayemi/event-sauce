@@ -16,6 +16,13 @@ explicitly rather than gated behind a major version bump.
   keeps every field it set and gains the ones it lacks: correlation id,
   tenant, command, correlation path, additional keys, and the causation id
   and chain together, the latter only when it set neither.
+- **`EventMetadata::additional` is an object map.** Its type is
+  `Option<serde_json::Map<String, Value>>`, so its root is always a string to
+  value map and the keys of an event context sit directly at that root. Data
+  written by older code with a non-object value loads as
+  `{"value": <original>}` on every path (JSON deserialization and the
+  Postgres read path alike), and `null` loads as `None`;
+  `additional_from_value` applies that rule.
 - **`EventMetadata` gained public fields.** `tenant`, `command` and
   `correlation_path` are new, and the struct is not `#[non_exhaustive]`:
   code that builds it with a struct literal must add

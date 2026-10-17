@@ -95,7 +95,11 @@ impl sealed::Sealed for Nested {
 /// - the correlation id is the first one set, so the id a request arrived
 ///   with is never overwritten by deeper layers,
 /// - the tenant and the command are the innermost ones set,
-/// - additional values merge key by key, the innermost winning.
+/// - additional values merge shallowly by top-level key, the innermost
+///   winning: an inner value replaces the outer one whole, nested objects are
+///   never merged. An outer `foo = "bar", test = {"a": 1}` under an inner
+///   `home = "/home", test = {"b": 2}` yields
+///   `{"foo": "bar", "home": "/home", "test": {"b": 2}}`.
 ///
 /// Spawned tasks do not inherit the context of the task that spawned them:
 /// carry it over with [`EventContext::current`].
@@ -154,6 +158,11 @@ impl<K: Scope> EventContext<K> {
     }
 
     /// Adds an additional value under `key`, replacing one set on this context.
+    ///
+    /// The key sits at the root of `additional`. Across nested contexts the
+    /// merge is shallow by key: an inner context's value replaces the outer
+    /// one whole, so `{"a": 1}` under `test` is replaced by `{"b": 2}`, not
+    /// merged into `{"a": 1, "b": 2}`.
     ///
     /// # Examples
     ///

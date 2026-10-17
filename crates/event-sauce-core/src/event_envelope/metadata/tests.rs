@@ -399,3 +399,54 @@ fn test_with_additional_entry_accumulates_keys() {
         Some(json!({"a": 1, "b": "two"}))
     );
 }
+
+fn metadata_json_with(additional: Option<Value>) -> Value {
+    let mut json = serde_json::to_value(EventMetadata::new()).unwrap();
+    if let Some(additional) = additional {
+        json["additional"] = additional;
+    }
+    json
+}
+
+#[test]
+fn test_deserialize_wraps_non_object_additional_under_value() {
+    for legacy in [json!("x"), json!([1]), json!(5), json!(true)] {
+        let metadata: EventMetadata =
+            serde_json::from_value(metadata_json_with(Some(legacy.clone()))).unwrap();
+
+        assert_eq!(metadata.additional, Some(object(json!({"value": legacy}))));
+    }
+}
+
+#[test]
+fn test_deserialize_reads_null_or_missing_additional_as_none() {
+    for json in [
+        metadata_json_with(None),
+        metadata_json_with(Some(Value::Null)),
+    ] {
+        let metadata: EventMetadata = serde_json::from_value(json).unwrap();
+
+        assert!(metadata.additional.is_none());
+    }
+}
+
+#[test]
+fn test_deserialize_keeps_an_object_additional_as_is() {
+    let metadata: EventMetadata =
+        serde_json::from_value(metadata_json_with(Some(json!({"region": "eu"})))).unwrap();
+
+    assert_eq!(metadata.additional, Some(object(json!({"region": "eu"}))));
+}
+
+#[test]
+fn test_additional_from_value_follows_the_wrapping_rule() {
+    assert_eq!(additional_from_value(Value::Null), None);
+    assert_eq!(
+        additional_from_value(json!("x")),
+        Some(object(json!({"value": "x"})))
+    );
+    assert_eq!(
+        additional_from_value(json!({"a": 1})),
+        Some(object(json!({"a": 1})))
+    );
+}

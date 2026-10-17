@@ -8,7 +8,7 @@ use uuid::Uuid;
 ///
 /// `EventMetadata` is an **extension point** for attaching cross-cutting concerns
 /// to events without modifying the domain event types themselves. It is stored
-/// alongside the event in the [`EventEnvelope`] and is entirely optional — the
+/// alongside the event in the [`EventEnvelope`](super::EventEnvelope) and is entirely optional — the
 /// core event sourcing flow works without it.
 ///
 /// # Built-in Fields
@@ -70,9 +70,56 @@ pub struct EventMetadata {
     /// When this metadata was created.
     pub timestamp: DateTime<Utc>,
 
-    /// Additional metadata as a JSON object.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Additional metadata, always a JSON object at its root.
+    ///
+    /// The keys set on an event context land directly at this root. Data
+    /// written by older code may hold any JSON value: on every read path a
+    /// non-object loads as `{"value": <original>}` and `null` as `None`.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_additional",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub additional: Option<serde_json::Map<String, serde_json::Value>>,
+}
+
+/// Reads a stored JSON value as additional metadata, whose root is always an
+/// object.
+///
+/// An object is kept as is and `null` reads as no metadata. Any other value,
+/// written by code that allowed arbitrary JSON, is kept under the reserved key
+/// `"value"`.
+///
+/// # Examples
+///
+/// ```
+/// use event_sauce_core::additional_from_value;
+/// use serde_json::json;
+///
+/// assert_eq!(additional_from_value(json!(null)), None);
+/// assert_eq!(
+///     additional_from_value(json!([1])).unwrap()["value"],
+///     json!([1])
+/// );
+/// ```
+#[must_use]
+pub fn additional_from_value(
+    value: serde_json::Value,
+) -> Option<serde_json::Map<String, serde_json::Value>> {
+    match value {
+        serde_json::Value::Object(map) => Some(map),
+        serde_json::Value::Null => None,
+        other => Some(serde_json::Map::from_iter([("value".to_owned(), other)])),
+    }
+}
+
+fn deserialize_additional<'de, D>(
+    deserializer: D,
+) -> Result<Option<serde_json::Map<String, serde_json::Value>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    serde_json::Value::deserialize(deserializer).map(additional_from_value)
 }
 
 impl EventMetadata {

@@ -47,21 +47,6 @@ impl EventRow {
     }
 }
 
-/// Reads a stored `metadata` value as an additional-metadata object.
-///
-/// Rows written before the column was constrained to objects may hold any
-/// JSON value; a non-object is kept under the reserved key `"value"` and a
-/// JSON `null` reads as no metadata.
-fn additional_object(
-    value: serde_json::Value,
-) -> Option<serde_json::Map<String, serde_json::Value>> {
-    match value {
-        serde_json::Value::Object(map) => Some(map),
-        serde_json::Value::Null => None,
-        other => Some(serde_json::Map::from_iter([("value".to_owned(), other)])),
-    }
-}
-
 impl From<EventRow> for EventEnvelope {
     fn from(row: EventRow) -> Self {
         let causation_chain = row.causation_chain.map(|chain| chain.0).unwrap_or_default();
@@ -74,7 +59,9 @@ impl From<EventRow> for EventEnvelope {
             command: row.command,
             correlation_path,
             timestamp: row.created_at,
-            additional: row.metadata.and_then(additional_object),
+            additional: row
+                .metadata
+                .and_then(event_sauce_core::additional_from_value),
         };
 
         EventEnvelope {

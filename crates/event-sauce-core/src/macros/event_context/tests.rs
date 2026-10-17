@@ -143,3 +143,27 @@ fn value_expressions_may_contain_commas_and_calls() {
         json!({"sum": 2, "other": "x"})
     );
 }
+
+#[test]
+fn json_values_stay_as_is_at_the_root_of_additional() {
+    let snapshot = snapshot_of(event_context!(
+        foo = "bar",
+        home = "/home",
+        test = json!({"a": 1})
+    ))
+    .unwrap();
+    assert_eq!(
+        Value::Object(snapshot.additional.unwrap()),
+        json!({"foo": "bar", "home": "/home", "test": {"a": 1}})
+    );
+}
+
+#[test]
+fn nested_macro_contexts_merge_shallowly_with_the_innermost_winning() {
+    let merged = event_context!(foo = "bar", test = json!({"a": 1}))
+        .in_scope(|| snapshot_of(event_context!(home = "/home", test = json!({"b": 2}))).unwrap());
+    assert_eq!(
+        Value::Object(merged.additional.unwrap()),
+        json!({"foo": "bar", "home": "/home", "test": {"b": 2}})
+    );
+}

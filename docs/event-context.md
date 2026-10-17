@@ -30,6 +30,22 @@ context into the event's `EventMetadata`:
 
 Outside any scope an applied event carries no context metadata at all.
 
+The keys of a context sit directly at the root of `additional`, which is always
+an object. Metadata written by older code with a non-object `additional` loads
+as `{"value": <original>}` on every path, and `null` loads as no `additional`.
+
+Nested contexts merge `additional` **shallowly by top-level key**, the innermost
+winning: an inner value replaces the outer one whole, nested objects are never
+merged.
+
+```rust
+event_context!(foo = "bar", test = serde_json::json!({"a": 1})).in_scope(|| {
+    event_context!(home = "/home", test = serde_json::json!({"b": 2})).in_scope(|| {
+        // additional: {"foo": "bar", "home": "/home", "test": {"b": 2}}
+    });
+});
+```
+
 ## API
 
 | API                                       | Use it to                                                              |

@@ -11,7 +11,7 @@ use crate::{AggregateType, EventVersion};
 
 mod metadata;
 
-pub use metadata::EventMetadata;
+pub use metadata::{additional_from_value, EventMetadata};
 
 /// Event envelope wrapping a serialized event with metadata.
 ///

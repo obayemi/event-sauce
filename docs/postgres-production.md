@@ -338,7 +338,8 @@ in dedicated columns: `correlation_id` (`TEXT`), `causation_id`,
 `causation_chain` (`JSONB`), `tenant` (`TEXT`), `command` (`TEXT`),
 `correlation_path` (`JSONB`) and the `metadata` JSONB column holding `EventMetadata::additional`. A `metadata`
 value that is not an object, written by an earlier version, reads back as
-`{"value": <that value>}`. Rows written
+`{"value": <that value>}`, as it does when deserializing `EventMetadata` from
+JSON on any other path. Rows written
 before the columns existed read back as `NULL`: no tenant, no command, an empty
 path and an empty causation chain.
 
