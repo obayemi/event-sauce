@@ -5,70 +5,10 @@ use std::sync::Arc;
 
 use event_sauce::memory::InMemoryEventStore;
 use event_sauce::prelude::*;
-use event_sauce::{AggregateVersion, EventMetadata, StreamId};
-use futures::StreamExt;
-use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-#[aggregate_error(aggregate = "Account")]
-#[derive(Debug, thiserror::Error)]
-enum AccountError {}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct Account {
-    id: EntityId,
-    balance: i64,
-}
-
-impl Entity for Account {
-    fn entity_id(&self) -> EntityId {
-        self.id
-    }
-}
-
-impl Aggregate for Account {
-    type Event = AccountEvent;
-    type Error = AccountError;
-    type DeletedState = Self;
-}
-
-define_events! {
-    enum AccountEvent for Account {
-        Opened {}
-        @init
-        => |id, _event| {
-            Account { id, balance: 0 }
-        },
-
-        Deposited {
-            amount: i64,
-        }
-        => |account, event| {
-            account.balance += event.amount;
-        },
-    }
-}
-
-aggregate_command! {
-    impl Account {
-        @clock @init fn open() -> OpenedEvent { };
-        @clock fn deposit(amount: i64) -> DepositedEvent { amount };
-    }
-}
-
-async fn stored_metadata(store: &InMemoryEventStore, id: EntityId) -> Vec<EventMetadata> {
-    let stream = store
-        .load_stream(
-            StreamId::new("Account", id.as_uuid()),
-            AggregateVersion::initial(),
-        )
-        .await
-        .unwrap();
-    stream
-        .map(|envelope| envelope.unwrap().metadata.unwrap())
-        .collect()
-        .await
-}
+mod account_fixture;
+use account_fixture::{stored_metadata, Account, AccountCommands};
 
 #[tokio::test]
 async fn events_applied_in_a_scope_are_stored_with_its_context() {
@@ -92,6 +32,7 @@ async fn events_applied_in_a_scope_are_stored_with_its_context() {
     let metadata = stored_metadata(&store, id).await;
     assert_eq!(metadata.len(), 2);
     for metadata in metadata {
+        let metadata = metadata.expect("event carries context metadata");
         assert_eq!(metadata.tenant.as_deref(), Some("acme"));
         assert_eq!(metadata.correlation_id.as_deref(), Some("req-1"));
         assert_eq!(metadata.correlation_path, ["req-1"]);

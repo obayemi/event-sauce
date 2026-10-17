@@ -4,80 +4,26 @@
 use async_trait::async_trait;
 use event_sauce::memory::InMemoryEventStore;
 use event_sauce::prelude::*;
-use event_sauce::{with_event_context, AggregateVersion, EventMetadata, StreamId};
-use futures::StreamExt;
-use serde::{Deserialize, Serialize};
+use event_sauce::{with_event_context, EventMetadata};
 use serde_json::json;
+
+mod account_fixture;
+use account_fixture::{Account, AccountCommands};
 
 type Root = AggregateRoot<Account>;
 
-#[aggregate_error(aggregate = "Account")]
-#[derive(Debug, thiserror::Error)]
-enum AccountError {}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct Account {
-    id: EntityId,
-    balance: i64,
-}
-
-impl Entity for Account {
-    fn entity_id(&self) -> EntityId {
-        self.id
-    }
-}
-
-impl Aggregate for Account {
-    type Event = AccountEvent;
-    type Error = AccountError;
-    type DeletedState = Self;
-}
-
-define_events! {
-    enum AccountEvent for Account {
-        Opened {}
-        @init
-        => |id, _event| {
-            Account { id, balance: 0 }
-        },
-
-        Deposited {
-            amount: i64,
-        }
-        => |account, event| {
-            account.balance += event.amount;
-        },
-    }
-}
-
-aggregate_command! {
-    impl Account {
-        @clock @init fn open() -> OpenedEvent { };
-        @clock fn deposit(amount: i64) -> DepositedEvent { amount };
-    }
-}
-
-async fn stored_metadata(mut account: Root) -> Vec<Option<EventMetadata>> {
+async fn save_and_load(mut account: Root) -> Vec<Option<EventMetadata>> {
     let store = std::sync::Arc::new(InMemoryEventStore::builder().build());
     store
         .repository::<Account>()
         .save(&mut account)
         .await
         .unwrap();
-    store
-        .load_stream(
-            StreamId::new("Account", account.entity_id().as_uuid()),
-            AggregateVersion::initial(),
-        )
-        .await
-        .unwrap()
-        .map(|envelope| envelope.unwrap().metadata)
-        .collect()
-        .await
+    account_fixture::stored_metadata(&store, account.entity_id()).await
 }
 
 async fn only_metadata(account: Root) -> EventMetadata {
-    let mut all = stored_metadata(account).await;
+    let mut all = save_and_load(account).await;
     assert_eq!(all.len(), 1);
     all.remove(0).expect("event carries context metadata")
 }
@@ -162,14 +108,14 @@ async fn sync_fn_tags_events_applied_in_its_body() {
 async fn events_applied_outside_the_fn_have_no_metadata() {
     sync_open();
     let account = Account::open().unwrap();
-    assert_eq!(stored_metadata(account).await, [None]);
+    assert_eq!(save_and_load(account).await, [None]);
 }
 
 #[tokio::test]
 async fn early_return_keeps_the_context_and_the_value() {
-    let skipped = stored_metadata(early_return(true)).await;
+    let skipped = save_and_load(early_return(true)).await;
     assert_eq!(skipped.len(), 1);
-    let full = stored_metadata(early_return(false)).await;
+    let full = save_and_load(early_return(false)).await;
     assert_eq!(full.len(), 2);
     for metadata in skipped.into_iter().chain(full) {
         let metadata = metadata.unwrap();
@@ -182,7 +128,7 @@ async fn early_return_keeps_the_context_and_the_value() {
 async fn question_mark_works_in_a_sync_fn() {
     let account = fallible("41").unwrap();
     assert_eq!(account.balance, 41);
-    let metadata = stored_metadata(account).await;
+    let metadata = save_and_load(account).await;
     assert!(metadata
         .iter()
         .all(|m| m.as_ref().unwrap().correlation_id.as_deref() == Some("fallible")));
@@ -225,7 +171,7 @@ async fn async_fn_borrows_its_parameters_and_keeps_the_context_across_awaits() {
 async fn question_mark_works_in_an_async_fn() {
     let account = async_fallible("7").await.unwrap();
     assert_eq!(account.balance, 7);
-    assert!(stored_metadata(account).await.iter().all(|m| m
+    assert!(save_and_load(account).await.iter().all(|m| m
         .as_ref()
         .unwrap()
         .correlation_id
