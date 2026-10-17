@@ -4,7 +4,6 @@
 //! for any type implementing `Aggregate`. Access entity fields via `Deref`
 //! (read-only); state changes must go through `apply()`.
 
-use crate::event_context::current_snapshot;
 use crate::{
     Aggregate, AggregateVersion, DefaultEntity, DeleteEvent, DeletedAggregateRoot, EntityId,
     EventApplicator, EventMetadata, StoredVersion,
@@ -34,18 +33,10 @@ impl<E> PendingEvent<E> {
         actor_id: Option<EntityId>,
         metadata: Option<EventMetadata>,
     ) -> Self {
-        let metadata = match (metadata, current_snapshot()) {
-            (explicit, None) => explicit,
-            (None, Some(ambient)) => Some(ambient.into()),
-            (Some(mut explicit), Some(ambient)) => {
-                explicit.fill_missing_from(&ambient.into());
-                Some(explicit)
-            }
-        };
         Self {
             event,
             actor_id,
-            metadata,
+            metadata: crate::event_context::with_ambient(metadata),
         }
     }
 
