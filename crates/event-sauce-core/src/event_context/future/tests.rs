@@ -22,7 +22,7 @@ impl Future for YieldOnce {
 }
 
 fn correlation() -> Option<String> {
-    current_snapshot().and_then(|s| s.correlation_id)
+    current_snapshot().and_then(|s| s.correlation_id().map(str::to_owned))
 }
 
 fn assert_send<T: Send>() {}

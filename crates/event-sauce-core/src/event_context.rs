@@ -335,10 +335,7 @@ impl EventContext<Root> {
             correlation_id: None,
             correlation_path: snapshot.correlation_path,
             command: snapshot.command,
-            additional: match snapshot.additional {
-                Some(Value::Object(map)) => map,
-                _ => Map::new(),
-            },
+            additional: snapshot.additional,
         };
         Self::from_parts(
             frame,
@@ -398,20 +395,27 @@ impl Drop for EnteredEventContext {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct ContextSnapshot {
     pub tenant: Option<String>,
-    pub correlation_id: Option<String>,
     pub correlation_path: Vec<String>,
     pub command: Option<String>,
-    pub additional: Option<Value>,
+    pub additional: Map<String, Value>,
+}
+
+impl ContextSnapshot {
+    #[cfg(test)]
+    pub fn correlation_id(&self) -> Option<&str> {
+        self.correlation_path.first().map(String::as_str)
+    }
 }
 
 impl From<ContextSnapshot> for crate::EventMetadata {
     fn from(snapshot: ContextSnapshot) -> Self {
         Self {
-            correlation_id: snapshot.correlation_id,
+            correlation_id: snapshot.correlation_path.first().cloned(),
             tenant: snapshot.tenant,
             command: snapshot.command,
             correlation_path: snapshot.correlation_path,
-            additional: snapshot.additional,
+            additional: (!snapshot.additional.is_empty())
+                .then_some(Value::Object(snapshot.additional)),
             ..Self::new()
         }
     }
@@ -438,10 +442,9 @@ pub(crate) fn current_snapshot() -> Option<ContextSnapshot> {
                 Some(Boundary::Root { tenant }) => tenant.clone(),
                 _ => None,
             },
-            correlation_id: correlation_path.first().cloned(),
             correlation_path,
             command: frames.iter().rev().find_map(|f| f.frame.command.clone()),
-            additional: (!additional.is_empty()).then_some(Value::Object(additional)),
+            additional,
         }
     });
     (snapshot != ContextSnapshot::default()).then_some(snapshot)
