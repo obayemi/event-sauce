@@ -144,14 +144,14 @@ comma:
 |--------------------------|---------------------------------------------|
 | `tenant = expr`          | `.tenant(expr)`, only valid after `root`    |
 | `correlation_id = expr`  | `.correlation_id(expr)`                     |
-| `tenant`                 | `.tenant(tenant)`, only valid after `root`  |
-| `correlation_id`         | `.correlation_id(correlation_id)`           |
+| `tenant`                 | `.tenant(tenant.clone())`, only after `root`|
+| `correlation_id`         | `.correlation_id(correlation_id.clone())`  |
 | `key = expr`             | `.with("key", expr)`                        |
-| `key = %expr`            | `.with("key", display(expr))`               |
+| `key = %expr`            | `.with("key", display(&expr))`              |
 | `"some.key" = expr`      | `.with("some.key", expr)`                   |
-| `"some.key" = %expr`     | `.with("some.key", display(expr))`          |
-| `ident`                  | `.with("ident", ident)`                     |
-| `%ident`                 | `.with("ident", display(ident))`            |
+| `"some.key" = %expr`     | `.with("some.key", display(&expr))`         |
+| `ident`                  | `.with("ident", ident.clone())`             |
+| `%ident`                 | `.with("ident", display(&ident))`           |
 
 ```rust
 use event_sauce::event_context;
@@ -169,6 +169,10 @@ let ctx = event_context!(
 );
 ctx.in_scope(|| ());
 ```
+
+The `ident` shorthands clone the variable and `%` fields borrow it, so a
+non-`Copy` parameter named in `#[with_event_context]` stays usable in the
+body.
 
 A `tenant` field, bare or assigned, without `root` does not compile.
 

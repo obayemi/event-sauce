@@ -66,6 +66,11 @@ fn arguments_see_parameters(name: &str, attempt: u32) -> Root {
     Account::open().unwrap()
 }
 
+#[with_event_context(%user, attempt)]
+fn owned_parameters_stay_usable(user: String, attempt: String) -> usize {
+    user.len() + attempt.len()
+}
+
 #[with_event_context(correlation_id = "async")]
 async fn async_open(text: &str) -> (usize, Root) {
     tokio::task::yield_now().await;
@@ -84,6 +89,7 @@ async fn async_fallible(input: &str) -> std::result::Result<Root, std::num::Pars
 #[async_trait]
 trait Service {
     async fn handle(&self, text: &str) -> (usize, Root);
+    async fn owned(&self, user: String) -> usize;
 }
 
 struct Handler;
@@ -94,6 +100,11 @@ impl Service for Handler {
     async fn handle(&self, text: &str) -> (usize, Root) {
         tokio::task::yield_now().await;
         (text.len(), Account::open().unwrap())
+    }
+
+    #[with_event_context(%user)]
+    async fn owned(&self, user: String) -> usize {
+        user.len()
     }
 }
 
@@ -187,4 +198,14 @@ async fn async_trait_method_runs_inside_the_context() {
     let metadata = only_metadata(account).await;
     assert_eq!(metadata.tenant.as_deref(), Some("acme"));
     assert_eq!(metadata.correlation_id.as_deref(), Some("trait"));
+}
+
+#[test]
+fn sync_fn_keeps_owned_parameters_usable_in_its_body() {
+    assert_eq!(owned_parameters_stay_usable("ada".into(), "42".into()), 5);
+}
+
+#[tokio::test]
+async fn async_trait_method_keeps_owned_parameters_usable_in_its_body() {
+    assert_eq!(Handler.owned("ada".into()).await, 3);
 }

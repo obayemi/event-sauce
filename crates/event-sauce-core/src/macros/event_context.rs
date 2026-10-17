@@ -16,16 +16,16 @@
 ///
 /// | field                    | expands to                                   |
 /// |--------------------------|----------------------------------------------|
-/// | `tenant = expr`          | `.tenant(expr)`, only valid after `root`     |
-/// | `correlation_id = expr`  | `.correlation_id(expr)`                      |
-/// | `tenant`                 | `.tenant(tenant)`, only valid after `root`   |
-/// | `correlation_id`         | `.correlation_id(correlation_id)`            |
-/// | `key = expr`             | `.with("key", expr)`                         |
-/// | `key = %expr`            | `.with("key", display(expr))`                |
-/// | `"some.key" = expr`      | `.with("some.key", expr)`                    |
-/// | `"some.key" = %expr`     | `.with("some.key", display(expr))`           |
-/// | `ident`                  | `.with("ident", ident)`                      |
-/// | `%ident`                 | `.with("ident", display(ident))`             |
+/// | `tenant = expr`          | `.tenant(expr)`, only valid after `root`       |
+/// | `correlation_id = expr`  | `.correlation_id(expr)`                        |
+/// | `tenant`                 | `.tenant(tenant.clone())`, only after `root`   |
+/// | `correlation_id`         | `.correlation_id(correlation_id.clone())`      |
+/// | `key = expr`             | `.with("key", expr)`                           |
+/// | `key = %expr`            | `.with("key", display(&expr))`                 |
+/// | `"some.key" = expr`      | `.with("some.key", expr)`                      |
+/// | `"some.key" = %expr`     | `.with("some.key", display(&expr))`            |
+/// | `ident`                  | `.with("ident", ident.clone())`                |
+/// | `%ident`                 | `.with("ident", display(&ident))`              |
 ///
 /// # Examples
 ///
@@ -76,10 +76,10 @@ macro_rules! event_context {
     };
 
     (@fields $mode:ident, $ctx:expr; $key:ident = % $value:expr $(, $($rest:tt)*)?) => {
-        $crate::event_context!(@fields $mode, $ctx.with(stringify!($key), $crate::display($value)); $($($rest)*)?)
+        $crate::event_context!(@fields $mode, $ctx.with(stringify!($key), $crate::display(&$value)); $($($rest)*)?)
     };
     (@fields $mode:ident, $ctx:expr; $key:literal = % $value:expr $(, $($rest:tt)*)?) => {
-        $crate::event_context!(@fields $mode, $ctx.with($key, $crate::display($value)); $($($rest)*)?)
+        $crate::event_context!(@fields $mode, $ctx.with($key, $crate::display(&$value)); $($($rest)*)?)
     };
     (@fields $mode:ident, $ctx:expr; $key:ident = $value:expr $(, $($rest:tt)*)?) => {
         $crate::event_context!(@fields $mode, $ctx.with(stringify!($key), $value); $($($rest)*)?)
@@ -89,23 +89,23 @@ macro_rules! event_context {
     };
 
     (@fields $mode:ident, $ctx:expr; % $key:ident $(, $($rest:tt)*)?) => {
-        $crate::event_context!(@fields $mode, $ctx.with(stringify!($key), $crate::display($key)); $($($rest)*)?)
+        $crate::event_context!(@fields $mode, $ctx.with(stringify!($key), $crate::display(&$key)); $($($rest)*)?)
     };
     (@fields $mode:ident, $ctx:expr; $key:ident $(, $($rest:tt)*)?) => {
         $crate::event_context!(@bare $mode, $key, $key, $ctx; $($($rest)*)?)
     };
 
     (@bare root, tenant, $value:ident, $ctx:expr; $($rest:tt)*) => {
-        $crate::event_context!(@fields root, $ctx.tenant($value); $($rest)*)
+        $crate::event_context!(@fields root, $ctx.tenant(::core::clone::Clone::clone(&$value)); $($rest)*)
     };
     (@bare nested, tenant, $value:ident, $ctx:expr; $($rest:tt)*) => {
         compile_error!("`tenant` is only valid after `root`: use `event_context!(root, tenant)`")
     };
     (@bare $mode:ident, correlation_id, $value:ident, $ctx:expr; $($rest:tt)*) => {
-        $crate::event_context!(@fields $mode, $ctx.correlation_id($value); $($rest)*)
+        $crate::event_context!(@fields $mode, $ctx.correlation_id(::core::clone::Clone::clone(&$value)); $($rest)*)
     };
     (@bare $mode:ident, $key:ident, $value:ident, $ctx:expr; $($rest:tt)*) => {
-        $crate::event_context!(@fields $mode, $ctx.with(stringify!($key), $value); $($rest)*)
+        $crate::event_context!(@fields $mode, $ctx.with(stringify!($key), ::core::clone::Clone::clone(&$value)); $($rest)*)
     };
 
     ($($fields:tt)+) => {
