@@ -2,7 +2,7 @@ use crate::event_context::{current_snapshot, ContextSnapshot};
 use crate::EventContext;
 use serde_json::json;
 
-fn snapshot_of(ctx: EventContext<impl Sized>) -> Option<ContextSnapshot> {
+fn snapshot_of(ctx: EventContext<impl crate::event_context::Scope>) -> Option<ContextSnapshot> {
     ctx.in_scope(current_snapshot)
 }
 

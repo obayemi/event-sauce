@@ -30,19 +30,59 @@ use std::sync::Arc;
 pub use future::{WithEventContext, WithEventContextExt};
 pub use value::{display, DisplayValue};
 
-/// Marker of an [`EventContext`] that starts a fresh context: it inherits
-/// nothing from the contexts around it and may carry a tenant.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Root;
+/// Kind of an [`EventContext`]: [`Root`] or [`Nested`]. Sealed.
+pub trait Scope: sealed::Sealed {}
 
-/// Marker of an [`EventContext`] layered on top of the active context.
+mod sealed {
+    #[derive(Debug, Clone)]
+    pub enum Boundary {
+        Root { tenant: Option<String> },
+        Nested,
+    }
+
+    pub trait Sealed {
+        fn into_boundary(self) -> Boundary;
+    }
+}
+
+use sealed::Boundary;
+
+/// Scope of an [`EventContext`] that starts a fresh context: it inherits
+/// nothing from the contexts around it and may carry a tenant.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Root {
+    tenant: Option<String>,
+}
+
+/// Scope of an [`EventContext`] layered on top of the active context.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Nested;
 
+impl Scope for Root {}
+impl Scope for Nested {}
+
+impl sealed::Sealed for Root {
+    fn into_boundary(self) -> Boundary {
+        Boundary::Root {
+            tenant: self.tenant,
+        }
+    }
+}
+
+impl sealed::Sealed for Nested {
+    fn into_boundary(self) -> Boundary {
+        Boundary::Nested
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct StackFrame {
+    boundary: Boundary,
+    frame: Frame,
+}
+
 #[derive(Debug, Clone, Default)]
 struct Frame {
-    root: bool,
-    tenant: Option<String>,
     correlation_id: Option<String>,
     correlation_path: Vec<String>,
     command: Option<String>,
@@ -50,10 +90,10 @@ struct Frame {
 }
 
 thread_local! {
-    static STACK: RefCell<Vec<Arc<Frame>>> = const { RefCell::new(Vec::new()) };
+    static STACK: RefCell<Vec<Arc<StackFrame>>> = const { RefCell::new(Vec::new()) };
 }
 
-fn push(frame: Arc<Frame>) -> usize {
+fn push(frame: Arc<StackFrame>) -> usize {
     STACK.with(|stack| {
         let mut stack = stack.borrow_mut();
         let depth = stack.len();
@@ -66,10 +106,13 @@ fn truncate(depth: usize) {
     let _ = STACK.try_with(|stack| stack.borrow_mut().truncate(depth));
 }
 
-fn effective<R>(read: impl FnOnce(&[Arc<Frame>]) -> R) -> R {
+fn effective<R>(read: impl FnOnce(&[Arc<StackFrame>]) -> R) -> R {
     STACK.with(|stack| {
         let stack = stack.borrow();
-        let start = stack.iter().rposition(|frame| frame.root).unwrap_or(0);
+        let start = stack
+            .iter()
+            .rposition(|f| matches!(f.boundary, Boundary::Root { .. }))
+            .unwrap_or(0);
         read(&stack[start..])
     })
 }
@@ -113,17 +156,14 @@ fn effective<R>(read: impl FnOnce(&[Arc<Frame>]) -> R) -> R {
 /// let _ = EventContext::new().tenant("acme");
 /// ```
 #[derive(Debug, Clone)]
-pub struct EventContext<K = Nested> {
+pub struct EventContext<K: Scope = Nested> {
     frame: Frame,
-    kind: PhantomData<K>,
+    scope: K,
 }
 
-impl<K> EventContext<K> {
-    fn from_frame(frame: Frame) -> Self {
-        Self {
-            frame,
-            kind: PhantomData,
-        }
+impl<K: Scope> EventContext<K> {
+    fn from_parts(frame: Frame, scope: K) -> Self {
+        Self { frame, scope }
     }
 
     /// Sets the correlation id.
@@ -190,7 +230,7 @@ impl<K> EventContext<K> {
     /// ```
     #[must_use = "the context is only active while the guard is alive"]
     pub fn entered(self) -> EnteredEventContext {
-        EnteredEventContext::enter(Arc::new(self.frame))
+        EnteredEventContext::enter(self.into_frame())
     }
 
     /// Runs `f` with this context active, restoring the previous one
@@ -210,9 +250,12 @@ impl<K> EventContext<K> {
     }
 }
 
-impl<K> EventContext<K> {
-    fn into_frame(self) -> Arc<Frame> {
-        Arc::new(self.frame)
+impl<K: Scope> EventContext<K> {
+    pub(crate) fn into_frame(self) -> Arc<StackFrame> {
+        Arc::new(StackFrame {
+            boundary: sealed::Sealed::into_boundary(self.scope),
+            frame: self.frame,
+        })
     }
 }
 
@@ -228,7 +271,7 @@ impl EventContext<Nested> {
     /// ```
     #[must_use]
     pub fn new() -> Self {
-        Self::from_frame(Frame::default())
+        Self::from_parts(Frame::default(), Nested)
     }
 }
 
@@ -252,10 +295,7 @@ impl EventContext<Root> {
     /// ```
     #[must_use]
     pub fn root() -> Self {
-        Self::from_frame(Frame {
-            root: true,
-            ..Frame::default()
-        })
+        Self::from_parts(Frame::default(), Root::default())
     }
 
     /// Sets the tenant. Only a root context can carry one.
@@ -269,7 +309,7 @@ impl EventContext<Root> {
     /// ```
     #[must_use]
     pub fn tenant(mut self, tenant: impl Into<String>) -> Self {
-        self.frame.tenant = Some(tenant.into());
+        self.scope.tenant = Some(tenant.into());
         self
     }
 
@@ -291,9 +331,7 @@ impl EventContext<Root> {
     #[must_use]
     pub fn current() -> Self {
         let snapshot = current_snapshot().unwrap_or_default();
-        Self::from_frame(Frame {
-            root: true,
-            tenant: snapshot.tenant,
+        let frame = Frame {
             correlation_id: None,
             correlation_path: snapshot.correlation_path,
             command: snapshot.command,
@@ -301,7 +339,13 @@ impl EventContext<Root> {
                 Some(Value::Object(map)) => map,
                 _ => Map::new(),
             },
-        })
+        };
+        Self::from_parts(
+            frame,
+            Root {
+                tenant: snapshot.tenant,
+            },
+        )
     }
 }
 
@@ -313,12 +357,16 @@ impl EventContext<Root> {
         } else {
             metadata.correlation_path.clone()
         };
-        Self::from_frame(Frame {
-            root: true,
-            tenant: metadata.tenant.clone(),
+        let frame = Frame {
             correlation_path,
             ..Frame::default()
-        })
+        };
+        Self::from_parts(
+            frame,
+            Root {
+                tenant: metadata.tenant.clone(),
+            },
+        )
     }
 }
 
@@ -333,7 +381,7 @@ pub struct EnteredEventContext {
 }
 
 impl EnteredEventContext {
-    fn enter(frame: Arc<Frame>) -> Self {
+    fn enter(frame: Arc<StackFrame>) -> Self {
         Self {
             depth: push(frame),
             not_send: PhantomData,
@@ -374,6 +422,7 @@ pub(crate) fn current_snapshot() -> Option<ContextSnapshot> {
         let mut correlation_path: Vec<String> = Vec::new();
         for id in frames
             .iter()
+            .map(|f| &f.frame)
             .flat_map(|f| f.correlation_path.iter().chain(f.correlation_id.iter()))
         {
             if correlation_path.last() != Some(id) {
@@ -382,13 +431,16 @@ pub(crate) fn current_snapshot() -> Option<ContextSnapshot> {
         }
         let mut additional = Map::new();
         for frame in frames {
-            additional.extend(frame.additional.clone());
+            additional.extend(frame.frame.additional.clone());
         }
         ContextSnapshot {
-            tenant: frames.iter().rev().find_map(|f| f.tenant.clone()),
+            tenant: match frames.first().map(|f| &f.boundary) {
+                Some(Boundary::Root { tenant }) => tenant.clone(),
+                _ => None,
+            },
             correlation_id: correlation_path.first().cloned(),
             correlation_path,
-            command: frames.iter().rev().find_map(|f| f.command.clone()),
+            command: frames.iter().rev().find_map(|f| f.frame.command.clone()),
             additional: (!additional.is_empty()).then_some(Value::Object(additional)),
         }
     });
@@ -399,7 +451,7 @@ pub(crate) fn has_correlation_id() -> bool {
     effective(|frames| {
         frames
             .iter()
-            .any(|f| f.correlation_id.is_some() || !f.correlation_path.is_empty())
+            .any(|f| f.frame.correlation_id.is_some() || !f.frame.correlation_path.is_empty())
     })
 }
 

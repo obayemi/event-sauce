@@ -1,4 +1,4 @@
-use super::{EnteredEventContext, EventContext, Frame};
+use super::{EnteredEventContext, EventContext, Scope, StackFrame};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -12,7 +12,7 @@ use std::task::{Context, Poll};
 #[derive(Debug)]
 pub struct WithEventContext<F> {
     inner: Pin<Box<F>>,
-    frame: Arc<Frame>,
+    frame: Arc<StackFrame>,
 }
 
 impl<F: Future> Future for WithEventContext<F> {
@@ -46,7 +46,7 @@ impl<F: Future> Future for WithEventContext<F> {
 pub trait WithEventContextExt: Future + Sized {
     /// Wraps the future so `ctx` is active on every poll, wherever the task
     /// runs.
-    fn with_event_context<K>(self, ctx: EventContext<K>) -> WithEventContext<Self> {
+    fn with_event_context<K: Scope>(self, ctx: EventContext<K>) -> WithEventContext<Self> {
         WithEventContext {
             inner: Box::pin(self),
             frame: ctx.into_frame(),
