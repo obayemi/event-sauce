@@ -1032,30 +1032,20 @@ disk.
 > `@aliases(...)` for the old name *and* an `@upcast` clause keyed on the
 > stored `event_version` if the fields also changed.
 
-### Event Correlation
+### Correlation and request context
 
-Link related events using correlation IDs:
-
-```rust
-struct OrderPlaced {
-    correlation_id: Uuid,  // Links to parent process
-    timestamp: DateTime<Utc>,
-}
-```
-
-### Event Enrichment
-
-Add contextual data to events:
+Correlation ids, tenant, command name and per-request keys such as the IP
+address or user agent belong on `EventMetadata`, not in the event payload.
+Enter an `event_context!` (or `#[with_event_context]`) scope and every event
+recorded inside it is stamped automatically:
 
 ```rust
-struct UserRegistered {
-    email: String,
-    // Enrichment data
-    ip_address: String,
-    user_agent: String,
-    timestamp: DateTime<Utc>,
-}
+event_context!(root, tenant = "acme", correlation_id = request_id, ip = %addr)
+    .in_scope(|| user.register(email));
 ```
+
+See [event-context.md](event-context.md) and
+[Event Metadata Is Plain Text](privacy.md#event-metadata-is-plain-text).
 
 ## Summary
 
