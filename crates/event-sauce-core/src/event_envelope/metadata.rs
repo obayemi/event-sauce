@@ -21,7 +21,7 @@ use uuid::Uuid;
 ///   produced in, from the outermost to the innermost.
 /// - **`timestamp`** — When the metadata was created (set automatically).
 /// - **`additional`** — Arbitrary JSON for application-specific data (e.g., user ID,
-///   IP address, tenant ID).
+///   IP address, session id); the tenant has its own field.
 ///
 /// # Examples
 ///
