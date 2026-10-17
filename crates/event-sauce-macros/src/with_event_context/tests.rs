@@ -23,8 +23,9 @@ fn sync_fn_runs_its_body_in_scope_with_the_declared_return_type() {
     assert_eq!(
         squeezed(&out),
         squeezed(
-            "fn f(x: u8) -> u8 { let __event_context_ret: u8 = \
-             ::event_sauce::event_context!(root, tenant = \"acme\").in_scope(|| { x }); \
+            "fn f(x: u8) -> u8 { \
+             let __event_context = ::event_sauce::event_context!(root, tenant = \"acme\"); \
+             let __event_context_ret: u8 = __event_context.in_scope(|| { x }); \
              __event_context_ret }"
         )
     );

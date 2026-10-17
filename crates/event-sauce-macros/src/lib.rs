@@ -16,9 +16,9 @@ use proc_macro::TokenStream;
 use proc_macro_crate::{crate_name, FoundCrate};
 use quote::quote;
 use std::sync::OnceLock;
-mod with_event_context;
-
 use syn::{parse_macro_input, Attribute, Data, DeriveInput, Fields, Ident, Meta};
+
+mod with_event_context;
 
 /// Path prefix the generated code uses to reach the core traits and types.
 ///

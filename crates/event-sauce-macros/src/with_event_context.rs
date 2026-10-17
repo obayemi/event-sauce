@@ -21,35 +21,31 @@ pub(crate) fn expand(core: &TokenStream, args: &TokenStream, item: TokenStream) 
     let block = &function.block;
     let body = if function.sig.asyncness.is_some() {
         let wrapped = quote!(#core::WithEventContextExt::with_event_context(async #block, __event_context).await);
-        annotated(&function.sig.output, &wrapped, Some(&context))
+        annotated(&function.sig.output, &context, &wrapped)
     } else if let Some(body) = boxed_async_body(block, core, &context) {
         body
     } else {
-        annotated(
-            &function.sig.output,
-            &quote!(#context.in_scope(|| #block)),
-            None,
-        )
+        let scoped = quote!(__event_context.in_scope(|| #block));
+        annotated(&function.sig.output, &context, &scoped)
     };
     *function.block = body;
     quote!(#function)
 }
 
-fn annotated(output: &ReturnType, value: &TokenStream, binding: Option<&TokenStream>) -> Block {
-    let binding = binding.map(|context| quote!(let __event_context = #context;));
-    let result = match output {
+fn annotated(output: &ReturnType, context: &TokenStream, value: &TokenStream) -> Block {
+    let typed_tail = match output {
         ReturnType::Default => Some(quote!(())),
         ReturnType::Type(_, ty) if !has_opaque_type(ty) => Some(quote!(#ty)),
         ReturnType::Type(..) => None,
     };
-    match result {
+    match typed_tail {
         Some(ty) => parse_quote!({
-            #binding
+            let __event_context = #context;
             let __event_context_ret: #ty = #value;
             __event_context_ret
         }),
         None => parse_quote!({
-            #binding
+            let __event_context = #context;
             #value
         }),
     }
@@ -73,9 +69,10 @@ fn boxed_async_body(block: &Block, core: &TokenStream, context: &TokenStream) ->
     let [.., boxed, pin] = segments.as_slice() else {
         return None;
     };
-    let (true, Some(Expr::Async(block)), 1) =
-        (boxed == "Box" && pin == "pin", args.first(), args.len())
-    else {
+    if boxed != "Box" || pin != "pin" || args.len() != 1 {
+        return None;
+    }
+    let Some(Expr::Async(block)) = args.first() else {
         return None;
     };
     Some(parse_quote!({
