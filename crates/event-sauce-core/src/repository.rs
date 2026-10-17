@@ -316,6 +316,11 @@ pub trait Repository<A: Aggregate>: Send + Sync {
     /// each time, up to `retry`'s attempt budget; every other failure returns
     /// immediately.
     ///
+    /// Runs inside a nested [`EventContext`](crate::EventContext): events produced
+    /// carry [`Command::name()`](crate::Command::name) as `command`, and a fresh
+    /// UUID-string correlation id is added unless an enclosing scope already
+    /// provides one.
+    ///
     /// Accepts both raw `EntityId` and typed IDs implementing `EntityIdFor<A>`.
     ///
     /// # Errors
@@ -445,6 +450,10 @@ pub trait Repository<A: Aggregate>: Send + Sync {
     /// to the `From<ModifyError<E>> for Error` blanket, which flattens the error
     /// transparently.
     ///
+    /// Runs inside a nested [`EventContext`](crate::EventContext) with no command
+    /// name: events produced carry no `command`, and a fresh UUID-string
+    /// correlation id is added unless an enclosing scope already provides one.
+    ///
     /// Accepts both raw `EntityId` and typed IDs implementing `EntityIdFor<A>`.
     ///
     /// # Errors
@@ -494,6 +503,10 @@ pub trait Repository<A: Aggregate>: Send + Sync {
     /// Returns `Result<R, ModifyError<A::Error>>` with the same failure-mode
     /// split as [`modify`](Self::modify); `ModifyError::Load` also covers
     /// `Error::InvalidState` when the aggregate is still active.
+    ///
+    /// Runs inside a nested [`EventContext`](crate::EventContext) with no command
+    /// name: events produced carry no `command`, and a fresh UUID-string
+    /// correlation id is added unless an enclosing scope already provides one.
     ///
     /// Accepts both raw `EntityId` and typed IDs implementing `EntityIdFor<A>`.
     ///

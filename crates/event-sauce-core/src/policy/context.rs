@@ -23,6 +23,10 @@ use crate::{
 /// 2. `causation_id` = source event's id
 /// 3. `causation_chain` = source event's chain + source event's id
 /// 4. Depth check: `chain.len()` < `max_cascade_depth`
+/// 5. `tenant` and `correlation_path` carry over from the source event
+/// 6. Any field an event already set (through `apply_with_metadata` or the
+///    ambient context) is kept; `causation_id` and `causation_chain` are
+///    filled together, only when the event set neither
 ///
 /// # Examples
 ///

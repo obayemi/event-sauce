@@ -90,6 +90,8 @@ pub trait Policy<S: EventStore + 'static>: Send + Sync {
     ///
     /// Used for checkpoint tracking, so each policy resumes
     /// from where it left off after restarts.
+    ///
+    /// Also recorded as the `command` of every event a reaction produces.
     fn name(&self) -> &str;
 
     /// Which events this policy handles.
@@ -101,6 +103,10 @@ pub trait Policy<S: EventStore + 'static>: Send + Sync {
     ///
     /// Use `ctx` to load aggregates and commit changes. The context
     /// automatically injects causation metadata into all produced events.
+    ///
+    /// Runs in a root [`EventContext`](crate::EventContext) seeded from the source
+    /// event (tenant, correlation id and path); the ambient context of the
+    /// runner is ignored.
     ///
     /// # Errors
     ///

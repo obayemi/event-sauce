@@ -158,6 +158,10 @@ impl<T: TransactionalStore + 'static> UnitOfWorkStore<T> {
     /// changed, retrying the whole command on a concurrency conflict as
     /// `retry` allows.
     ///
+    /// Runs inside a nested [`EventContext`](crate::EventContext): events produced
+    /// carry `UnitOfWorkCommand::name()` as `command`, and a fresh UUID-string
+    /// correlation id is added unless an enclosing scope already provides one.
+    ///
     /// # Errors
     ///
     /// Returns the command's own error without committing anything, or the
