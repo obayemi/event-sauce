@@ -71,6 +71,83 @@ where
     Ok(outcome)
 }
 
+/// Runs [`Repository::modify`] without its event context scope.
+async fn modify_active<A, Repo, I, F, R>(
+    repo: &Repo,
+    id: I,
+    f: F,
+) -> std::result::Result<R, crate::ModifyError<A::Error>>
+where
+    A: Aggregate,
+    Repo: Repository<A>,
+    I: EntityIdFor<A> + Send,
+    F: FnOnce(&mut AggregateRoot<A>) -> std::result::Result<R, A::Error> + Send,
+    R: Send,
+{
+    #[cfg(feature = "commands")]
+    {
+        let entity_id = id.entity_id();
+        let mut result = None;
+        attempt(repo, entity_id, |root| {
+            let mut active = root.active()?;
+            result = Some(f(&mut active)?);
+            Ok(active.into())
+        })
+        .await
+        .map_err(|e| map_modify_error::<A>(entity_id, e))?;
+        Ok(result.expect("a successful attempt ran the closure"))
+    }
+    #[cfg(not(feature = "commands"))]
+    {
+        let mut aggregate = repo.load(id).await.map_err(crate::ModifyError::Load)?;
+        let result = f(&mut aggregate).map_err(crate::ModifyError::Domain)?;
+        repo.save(&mut aggregate)
+            .await
+            .map_err(crate::ModifyError::Save)?;
+        Ok(result)
+    }
+}
+
+/// Runs [`Repository::modify_deleted`] without its event context scope.
+async fn modify_deleted_root<A, Repo, I, F, R>(
+    repo: &Repo,
+    id: I,
+    f: F,
+) -> std::result::Result<R, crate::ModifyError<A::Error>>
+where
+    A: Aggregate,
+    Repo: Repository<A>,
+    I: EntityIdFor<A> + Send,
+    F: FnOnce(&mut DeletedAggregateRoot<A>) -> std::result::Result<R, A::Error> + Send,
+    R: Send,
+{
+    #[cfg(feature = "commands")]
+    {
+        let entity_id = id.entity_id();
+        let mut result = None;
+        attempt(repo, entity_id, |root| {
+            let mut deleted = root.deleted()?;
+            result = Some(f(&mut deleted)?);
+            Ok(deleted.into())
+        })
+        .await
+        .map_err(|e| map_modify_error::<A>(entity_id, e))?;
+        Ok(result.expect("a successful attempt ran the closure"))
+    }
+    #[cfg(not(feature = "commands"))]
+    {
+        let mut deleted = repo
+            .load_deleted(id)
+            .await
+            .map_err(crate::ModifyError::Load)?;
+        let result = f(&mut deleted).map_err(crate::ModifyError::Domain)?;
+        repo.save_deleted(&mut deleted)
+            .await
+            .map_err(crate::ModifyError::Save)?;
+        Ok(result)
+    }
+}
+
 /// Reconstructs the `Error` [`Repository::modify`] and
 /// [`Repository::modify_deleted`] have always returned for a lifecycle
 /// mismatch — `execute()` only knows the mismatch, not the request that
@@ -402,34 +479,9 @@ pub trait Repository<A: Aggregate>: Send + Sync {
         F: FnOnce(&mut AggregateRoot<A>) -> std::result::Result<R, A::Error> + Send,
         R: Send,
     {
-        async move {
-            #[cfg(feature = "commands")]
-            {
-                let entity_id = id.entity_id();
-                let mut result = None;
-                attempt(self, entity_id, |root| {
-                    let mut active = root.active()?;
-                    result = Some(f(&mut active)?);
-                    Ok(active.into())
-                })
-                .await
-                .map_err(|e| map_modify_error::<A>(entity_id, e))?;
-                Ok::<R, crate::ModifyError<A::Error>>(
-                    result.expect("a successful attempt ran the closure"),
-                )
-            }
-            #[cfg(not(feature = "commands"))]
-            {
-                let mut aggregate = self.load(id).await.map_err(crate::ModifyError::Load)?;
-                let result = f(&mut aggregate).map_err(crate::ModifyError::Domain)?;
-                self.save(&mut aggregate)
-                    .await
-                    .map_err(crate::ModifyError::Save)?;
-                Ok::<R, crate::ModifyError<A::Error>>(result)
-            }
-        }
-        .with_event_context(execution_context(None))
-        .await
+        modify_active(self, id, f)
+            .with_event_context(execution_context(None))
+            .await
     }
 
     /// Loads a deleted aggregate, applies a closure, and saves any new pending changes.
@@ -461,37 +513,9 @@ pub trait Repository<A: Aggregate>: Send + Sync {
         F: FnOnce(&mut DeletedAggregateRoot<A>) -> std::result::Result<R, A::Error> + Send,
         R: Send,
     {
-        async move {
-            #[cfg(feature = "commands")]
-            {
-                let entity_id = id.entity_id();
-                let mut result = None;
-                attempt(self, entity_id, |root| {
-                    let mut deleted = root.deleted()?;
-                    result = Some(f(&mut deleted)?);
-                    Ok(deleted.into())
-                })
-                .await
-                .map_err(|e| map_modify_error::<A>(entity_id, e))?;
-                Ok::<R, crate::ModifyError<A::Error>>(
-                    result.expect("a successful attempt ran the closure"),
-                )
-            }
-            #[cfg(not(feature = "commands"))]
-            {
-                let mut deleted = self
-                    .load_deleted(id)
-                    .await
-                    .map_err(crate::ModifyError::Load)?;
-                let result = f(&mut deleted).map_err(crate::ModifyError::Domain)?;
-                self.save_deleted(&mut deleted)
-                    .await
-                    .map_err(crate::ModifyError::Save)?;
-                Ok::<R, crate::ModifyError<A::Error>>(result)
-            }
-        }
-        .with_event_context(execution_context(None))
-        .await
+        modify_deleted_root(self, id, f)
+            .with_event_context(execution_context(None))
+            .await
     }
 
     /// Creates an uninitialized aggregate root with a random `EntityId`.
