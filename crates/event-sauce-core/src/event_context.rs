@@ -20,14 +20,18 @@
 //! ```
 
 mod future;
+mod snapshot;
+mod stack;
 mod value;
 
-use serde_json::{Map, Value};
-use std::cell::RefCell;
-use std::marker::PhantomData;
+use stack::{Frame, StackFrame};
 use std::sync::Arc;
 
 pub use future::{WithEventContext, WithEventContextExt};
+#[cfg(test)]
+pub(crate) use snapshot::ContextSnapshot;
+pub(crate) use snapshot::{current_snapshot, has_correlation_id};
+pub use stack::EnteredEventContext;
 pub use value::{display, DisplayValue};
 
 /// Kind of an [`EventContext`]: [`Root`] or [`Nested`]. Sealed.
@@ -73,48 +77,6 @@ impl sealed::Sealed for Nested {
     fn into_boundary(self) -> Boundary {
         Boundary::Nested
     }
-}
-
-#[derive(Debug)]
-pub(crate) struct StackFrame {
-    boundary: Boundary,
-    frame: Frame,
-}
-
-#[derive(Debug, Clone, Default)]
-struct Frame {
-    correlation_id: Option<String>,
-    correlation_path: Vec<String>,
-    command: Option<String>,
-    additional: Map<String, Value>,
-}
-
-thread_local! {
-    static STACK: RefCell<Vec<Arc<StackFrame>>> = const { RefCell::new(Vec::new()) };
-}
-
-fn push(frame: Arc<StackFrame>) -> usize {
-    STACK.with(|stack| {
-        let mut stack = stack.borrow_mut();
-        let depth = stack.len();
-        stack.push(frame);
-        depth
-    })
-}
-
-fn truncate(depth: usize) {
-    let _ = STACK.try_with(|stack| stack.borrow_mut().truncate(depth));
-}
-
-fn effective<R>(read: impl FnOnce(&[Arc<StackFrame>]) -> R) -> R {
-    STACK.with(|stack| {
-        let stack = stack.borrow();
-        let start = stack
-            .iter()
-            .rposition(|f| matches!(f.boundary, Boundary::Root { .. }))
-            .unwrap_or(0);
-        read(&stack[start..])
-    })
 }
 
 /// A set of ambient values attached to the events applied while it is active.
@@ -164,6 +126,13 @@ pub struct EventContext<K: Scope = Nested> {
 impl<K: Scope> EventContext<K> {
     fn from_parts(frame: Frame, scope: K) -> Self {
         Self { frame, scope }
+    }
+
+    pub(crate) fn into_frame(self) -> Arc<StackFrame> {
+        Arc::new(StackFrame {
+            boundary: sealed::Sealed::into_boundary(self.scope),
+            frame: self.frame,
+        })
     }
 
     /// Sets the correlation id.
@@ -250,15 +219,6 @@ impl<K: Scope> EventContext<K> {
     }
 }
 
-impl<K: Scope> EventContext<K> {
-    pub(crate) fn into_frame(self) -> Arc<StackFrame> {
-        Arc::new(StackFrame {
-            boundary: sealed::Sealed::into_boundary(self.scope),
-            frame: self.frame,
-        })
-    }
-}
-
 impl EventContext<Nested> {
     /// Creates an empty context layered on the active one.
     ///
@@ -331,22 +291,10 @@ impl EventContext<Root> {
     #[must_use]
     pub fn current() -> Self {
         let snapshot = current_snapshot().unwrap_or_default();
-        let frame = Frame {
-            correlation_id: None,
-            correlation_path: snapshot.correlation_path,
-            command: snapshot.command,
-            additional: snapshot.additional,
-        };
-        Self::from_parts(
-            frame,
-            Root {
-                tenant: snapshot.tenant,
-            },
-        )
+        let tenant = snapshot.tenant.clone();
+        Self::from_parts(snapshot.into(), Root { tenant })
     }
-}
 
-impl EventContext<Root> {
     #[cfg(feature = "event-sourcing")]
     pub(crate) fn from_metadata(metadata: &crate::EventMetadata) -> Self {
         let correlation_path = if metadata.correlation_path.is_empty() {
@@ -365,96 +313,6 @@ impl EventContext<Root> {
             },
         )
     }
-}
-
-/// Guard returned by [`EventContext::entered`]: the context stays active until
-/// it is dropped.
-///
-/// It is not `Send`: it must be dropped on the thread that created it.
-#[derive(Debug)]
-pub struct EnteredEventContext {
-    depth: usize,
-    not_send: PhantomData<*const ()>,
-}
-
-impl EnteredEventContext {
-    fn enter(frame: Arc<StackFrame>) -> Self {
-        Self {
-            depth: push(frame),
-            not_send: PhantomData,
-        }
-    }
-}
-
-impl Drop for EnteredEventContext {
-    fn drop(&mut self) {
-        truncate(self.depth);
-    }
-}
-
-#[derive(Debug, Clone, Default, PartialEq)]
-pub(crate) struct ContextSnapshot {
-    pub tenant: Option<String>,
-    pub correlation_path: Vec<String>,
-    pub command: Option<String>,
-    pub additional: Map<String, Value>,
-}
-
-impl ContextSnapshot {
-    #[cfg(test)]
-    pub fn correlation_id(&self) -> Option<&str> {
-        self.correlation_path.first().map(String::as_str)
-    }
-}
-
-impl From<ContextSnapshot> for crate::EventMetadata {
-    fn from(snapshot: ContextSnapshot) -> Self {
-        Self {
-            correlation_id: snapshot.correlation_path.first().cloned(),
-            tenant: snapshot.tenant,
-            command: snapshot.command,
-            correlation_path: snapshot.correlation_path,
-            additional: (!snapshot.additional.is_empty()).then_some(snapshot.additional),
-            ..Self::new()
-        }
-    }
-}
-
-pub(crate) fn current_snapshot() -> Option<ContextSnapshot> {
-    let snapshot = effective(|frames| {
-        let mut correlation_path: Vec<String> = Vec::new();
-        for id in frames
-            .iter()
-            .map(|f| &f.frame)
-            .flat_map(|f| f.correlation_path.iter().chain(f.correlation_id.iter()))
-        {
-            if correlation_path.last() != Some(id) {
-                correlation_path.push(id.clone());
-            }
-        }
-        let mut additional = Map::new();
-        for frame in frames {
-            additional.extend(frame.frame.additional.clone());
-        }
-        ContextSnapshot {
-            tenant: match frames.first().map(|f| &f.boundary) {
-                Some(Boundary::Root { tenant }) => tenant.clone(),
-                _ => None,
-            },
-            correlation_path,
-            command: frames.iter().rev().find_map(|f| f.frame.command.clone()),
-            additional,
-        }
-    });
-    (snapshot != ContextSnapshot::default()).then_some(snapshot)
-}
-
-pub(crate) fn has_correlation_id() -> bool {
-    effective(|frames| {
-        frames
-            .iter()
-            .any(|f| f.frame.correlation_id.is_some() || !f.frame.correlation_path.is_empty())
-    })
 }
 
 /// The context a command execution runs in: it names the command when it

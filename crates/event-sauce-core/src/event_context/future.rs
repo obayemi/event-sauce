@@ -1,4 +1,5 @@
-use super::{EnteredEventContext, EventContext, Scope, StackFrame};
+use super::stack::StackFrame;
+use super::{EnteredEventContext, EventContext, Scope};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
