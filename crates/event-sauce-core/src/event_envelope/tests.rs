@@ -1,5 +1,12 @@
 use super::*;
-use serde_json::json;
+use serde_json::{json, Map, Value};
+
+fn object(value: Value) -> Map<String, Value> {
+    let Value::Object(map) = value else {
+        panic!("not an object");
+    };
+    map
+}
 
 #[test]
 fn test_metadata_new() {
@@ -27,7 +34,7 @@ fn test_metadata_with_causation_id() {
 
 #[test]
 fn test_metadata_with_additional() {
-    let additional = json!({"key": "value"});
+    let additional = object(json!({"key": "value"}));
     let metadata = EventMetadata::new().with_additional(additional.clone());
 
     assert_eq!(metadata.additional, Some(additional));
@@ -36,7 +43,7 @@ fn test_metadata_with_additional() {
 #[test]
 fn test_metadata_builder_chain() {
     let causation_id = Uuid::new_v4();
-    let additional = json!({"test": true});
+    let additional = object(json!({"test": true}));
 
     let metadata = EventMetadata::new()
         .with_correlation_id("req-123")
@@ -344,7 +351,7 @@ fn test_event_envelope_with_causation() {
 fn test_event_envelope_with_causation_preserves_existing_metadata() {
     let causation_id = Uuid::new_v4();
     let correlation_id = "req-123";
-    let additional = json!({"key": "value"});
+    let additional = object(json!({"key": "value"}));
 
     let envelope = EventEnvelope::new(
         Uuid::new_v4(),
@@ -395,7 +402,7 @@ fn full_metadata() -> EventMetadata {
         .with_command("PlaceOrder")
         .with_correlation_path(vec!["root".to_string(), "leaf".to_string()])
         .with_causation_id(Uuid::new_v4())
-        .with_additional(json!({"ip": "10.0.0.1"}));
+        .with_additional(object(json!({"ip": "10.0.0.1"})));
     metadata.causation_chain = vec![Uuid::new_v4()];
     metadata
 }
@@ -452,7 +459,7 @@ fn test_fill_missing_from_keeps_every_receiver_field() {
         .with_correlation_path(vec!["x".to_string()])
         .with_causation_id(Uuid::new_v4())
         .with_causation_chain(vec![Uuid::new_v4()])
-        .with_additional(json!({"ip": "10.0.0.2"}));
+        .with_additional(object(json!({"ip": "10.0.0.2"})));
 
     receiver.fill_missing_from(&other);
 
@@ -522,42 +529,25 @@ fn test_fill_missing_from_keeps_causation_pair_when_receiver_has_a_chain() {
 
 #[test]
 fn test_fill_missing_from_merges_additional_objects_receiver_winning() {
-    let mut receiver = EventMetadata::new().with_additional(json!({"a": 1, "b": 2}));
-    let other = EventMetadata::new().with_additional(json!({"b": 9, "c": 3}));
+    let mut receiver = EventMetadata::new().with_additional(object(json!({"a": 1, "b": 2})));
+    let other = EventMetadata::new().with_additional(object(json!({"b": 9, "c": 3})));
 
     receiver.fill_missing_from(&other);
 
-    assert_eq!(receiver.additional, Some(json!({"a": 1, "b": 2, "c": 3})));
+    assert_eq!(
+        receiver.additional,
+        Some(object(json!({"a": 1, "b": 2, "c": 3})))
+    );
 }
 
 #[test]
 fn test_fill_missing_from_takes_additional_when_receiver_has_none() {
     let mut receiver = EventMetadata::new();
-    let other = EventMetadata::new().with_additional(json!({"a": 1}));
+    let other = EventMetadata::new().with_additional(object(json!({"a": 1})));
 
     receiver.fill_missing_from(&other);
 
-    assert_eq!(receiver.additional, Some(json!({"a": 1})));
-}
-
-#[test]
-fn test_fill_missing_from_keeps_non_object_additional() {
-    let mut receiver = EventMetadata::new().with_additional(json!("note"));
-    let other = EventMetadata::new().with_additional(json!({"a": 1}));
-
-    receiver.fill_missing_from(&other);
-
-    assert_eq!(receiver.additional, Some(json!("note")));
-}
-
-#[test]
-fn test_fill_missing_from_keeps_additional_when_other_is_not_an_object() {
-    let mut receiver = EventMetadata::new().with_additional(json!({"a": 1}));
-    let other = EventMetadata::new().with_additional(json!("note"));
-
-    receiver.fill_missing_from(&other);
-
-    assert_eq!(receiver.additional, Some(json!({"a": 1})));
+    assert_eq!(receiver.additional, Some(object(json!({"a": 1}))));
 }
 
 #[test]
@@ -579,7 +569,7 @@ fn test_child_metadata_carries_tenant_correlation_and_path_only() {
         .with_tenant("acme")
         .with_command("PlaceOrder")
         .with_correlation_path(vec!["root".to_string()])
-        .with_additional(json!({"ip": "10.0.0.1"}));
+        .with_additional(object(json!({"ip": "10.0.0.1"})));
 
     let child = parent.child_metadata(Uuid::new_v4());
 
@@ -588,4 +578,16 @@ fn test_child_metadata_carries_tenant_correlation_and_path_only() {
     assert_eq!(child.correlation_path, vec!["root"]);
     assert_eq!(child.command, None);
     assert_eq!(child.additional, None);
+}
+
+#[test]
+fn test_with_additional_entry_accumulates_keys() {
+    let metadata = EventMetadata::new()
+        .with_additional_entry("a", 1)
+        .with_additional_entry("b", "two");
+
+    assert_eq!(
+        metadata.additional.map(Value::Object),
+        Some(json!({"a": 1, "b": "two"}))
+    );
 }

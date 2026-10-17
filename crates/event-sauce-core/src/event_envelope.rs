@@ -72,9 +72,9 @@ pub struct EventMetadata {
     /// When this metadata was created.
     pub timestamp: DateTime<Utc>,
 
-    /// Additional metadata as JSON.
+    /// Additional metadata as a JSON object.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub additional: Option<serde_json::Value>,
+    pub additional: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 impl EventMetadata {
@@ -229,22 +229,51 @@ impl EventMetadata {
         self
     }
 
-    /// Sets additional metadata.
+    /// Sets additional metadata, replacing any set before.
     ///
     /// # Examples
     ///
     /// ```
     /// use event_sauce_core::EventMetadata;
-    /// use serde_json::json;
+    /// use serde_json::{Map, json};
     ///
-    /// let metadata = EventMetadata::new()
-    ///     .with_additional(json!({"user_id": "123", "ip": "192.168.1.1"}));
+    /// let mut additional = Map::new();
+    /// additional.insert("user_id".into(), json!("123"));
+    /// let metadata = EventMetadata::new().with_additional(additional);
     ///
     /// assert!(metadata.additional.is_some());
     /// ```
     #[must_use]
-    pub fn with_additional(mut self, additional: serde_json::Value) -> Self {
+    pub fn with_additional(
+        mut self,
+        additional: serde_json::Map<String, serde_json::Value>,
+    ) -> Self {
         self.additional = Some(additional);
+        self
+    }
+
+    /// Sets one additional metadata value under `key`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use event_sauce_core::EventMetadata;
+    ///
+    /// let metadata = EventMetadata::new()
+    ///     .with_additional_entry("user_id", "123")
+    ///     .with_additional_entry("attempt", 2);
+    ///
+    /// assert_eq!(metadata.additional.unwrap().len(), 2);
+    /// ```
+    #[must_use]
+    pub fn with_additional_entry(
+        mut self,
+        key: impl Into<String>,
+        value: impl Into<serde_json::Value>,
+    ) -> Self {
+        self.additional
+            .get_or_insert_default()
+            .insert(key.into(), value.into());
         self
     }
 
@@ -338,9 +367,7 @@ impl EventMetadata {
     /// - `correlation_path` comes from `other` only when empty.
     /// - `causation_id` and `causation_chain` move together, from `other`,
     ///   only when the receiver has neither.
-    /// - `additional` merges key by key when both are JSON objects, the
-    ///   receiver's keys winning; it comes from `other` when unset and is
-    ///   kept otherwise.
+    /// - `additional` merges key by key, the receiver's keys winning.
     /// - `timestamp` always stays the receiver's.
     ///
     /// # Examples
@@ -369,14 +396,11 @@ impl EventMetadata {
             self.causation_id = other.causation_id;
             self.causation_chain.clone_from(&other.causation_chain);
         }
-        match (&mut self.additional, &other.additional) {
-            (Some(serde_json::Value::Object(mine)), Some(serde_json::Value::Object(theirs))) => {
-                for (key, value) in theirs {
-                    mine.entry(key.clone()).or_insert_with(|| value.clone());
-                }
+        if let Some(theirs) = &other.additional {
+            let mine = self.additional.get_or_insert_default();
+            for (key, value) in theirs {
+                mine.entry(key.clone()).or_insert_with(|| value.clone());
             }
-            (own @ None, theirs) => own.clone_from(theirs),
-            _ => {}
         }
     }
 }

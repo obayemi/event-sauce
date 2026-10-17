@@ -99,13 +99,9 @@ is applied inside one. Attach any other application-specific data using
 
 ```rust
 use event_sauce::EventMetadata;
-use serde_json::json;
-
 let metadata = EventMetadata::new()
-    .with_additional(json!({
-        "ip_address": "192.168.1.1",
-        "user_agent": "Mozilla/5.0",
-    }))
+    .with_additional_entry("ip_address", "192.168.1.1")
+    .with_additional_entry("user_agent", "Mozilla/5.0")
     .with_tenant("acme-corp");
 
 // Apply event with metadata

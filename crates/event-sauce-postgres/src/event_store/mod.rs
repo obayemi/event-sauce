@@ -636,6 +636,21 @@ impl EventRow {
     }
 }
 
+/// Reads a stored `metadata` value as an additional-metadata object.
+///
+/// Rows written before the column was constrained to objects may hold any
+/// JSON value; a non-object is kept under the reserved key `"value"` and a
+/// JSON `null` reads as no metadata.
+fn additional_object(
+    value: serde_json::Value,
+) -> Option<serde_json::Map<String, serde_json::Value>> {
+    match value {
+        serde_json::Value::Object(map) => Some(map),
+        serde_json::Value::Null => None,
+        other => Some(serde_json::Map::from_iter([("value".to_owned(), other)])),
+    }
+}
+
 impl From<EventRow> for EventEnvelope {
     fn from(row: EventRow) -> Self {
         let causation_chain = row.causation_chain.map(|chain| chain.0).unwrap_or_default();
@@ -648,7 +663,7 @@ impl From<EventRow> for EventEnvelope {
             command: row.command,
             correlation_path,
             timestamp: row.created_at,
-            additional: row.metadata,
+            additional: row.metadata.and_then(additional_object),
         };
 
         EventEnvelope {
@@ -2793,6 +2808,40 @@ mod row_tests {
         row.correlation_path = Some(Json(Vec::new()));
 
         assert!(EventEnvelope::from(row).metadata.is_none());
+    }
+
+    fn additional_of(value: serde_json::Value) -> Option<serde_json::Value> {
+        let mut row = bare_row();
+        row.metadata = Some(value);
+        EventEnvelope::from(row)
+            .metadata
+            .and_then(|m| m.additional)
+            .map(serde_json::Value::Object)
+    }
+
+    #[test]
+    fn object_metadata_reads_back_unchanged() {
+        assert_eq!(
+            additional_of(serde_json::json!({"k": 1})),
+            Some(serde_json::json!({"k": 1}))
+        );
+    }
+
+    #[test]
+    fn non_object_metadata_is_kept_under_the_value_key() {
+        assert_eq!(
+            additional_of(serde_json::json!("note")),
+            Some(serde_json::json!({"value": "note"}))
+        );
+        assert_eq!(
+            additional_of(serde_json::json!([1, 2])),
+            Some(serde_json::json!({"value": [1, 2]}))
+        );
+    }
+
+    #[test]
+    fn null_metadata_reads_as_no_metadata() {
+        assert_eq!(additional_of(serde_json::Value::Null), None);
     }
 
     #[test]

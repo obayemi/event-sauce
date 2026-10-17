@@ -278,10 +278,16 @@ impl PostgresEventStore {
                     .map(|m| sqlx::types::Json(m.correlation_path.clone()))
             })
             .collect();
-        let metadatas: Vec<Option<serde_json::Value>> = events
-            .iter()
-            .map(|e| e.metadata.as_ref().and_then(|m| m.additional.clone()))
-            .collect();
+        let metadatas: Vec<Option<sqlx::types::Json<serde_json::Map<String, serde_json::Value>>>> =
+            events
+                .iter()
+                .map(|e| {
+                    e.metadata
+                        .as_ref()
+                        .and_then(|m| m.additional.clone())
+                        .map(sqlx::types::Json)
+                })
+                .collect();
 
         let insert_query = format!(
             "INSERT INTO {events_table} (

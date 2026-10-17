@@ -414,8 +414,7 @@ impl From<ContextSnapshot> for crate::EventMetadata {
             tenant: snapshot.tenant,
             command: snapshot.command,
             correlation_path: snapshot.correlation_path,
-            additional: (!snapshot.additional.is_empty())
-                .then_some(Value::Object(snapshot.additional)),
+            additional: (!snapshot.additional.is_empty()).then_some(snapshot.additional),
             ..Self::new()
         }
     }

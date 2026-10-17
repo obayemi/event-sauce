@@ -2393,7 +2393,7 @@ mod tests {
         let mut metadata = crate::EventMetadata::new()
             .with_correlation_id("req-1")
             .with_correlation_path(vec!["req-1".to_string()])
-            .with_additional(serde_json::json!({"parent": true}));
+            .with_additional_entry("parent", true);
         metadata.tenant = Some("acme".to_string());
         metadata.command = Some("ParentCommand".to_string());
         test_envelope("TestEvent", "TestAggregate").with_metadata(metadata)

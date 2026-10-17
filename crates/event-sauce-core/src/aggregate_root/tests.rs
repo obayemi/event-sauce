@@ -1118,7 +1118,7 @@ fn assert_tagged(metadata: Option<&crate::EventMetadata>) {
     assert_eq!(metadata.correlation_id.as_deref(), Some("req-1"));
     assert_eq!(metadata.correlation_path, ["req-1"]);
     assert_eq!(
-        metadata.additional,
+        metadata.additional.clone().map(serde_json::Value::Object),
         Some(serde_json::json!({"region": "eu"}))
     );
 }
@@ -1179,7 +1179,7 @@ fn explicit_metadata_wins_over_the_ambient_context() {
     assert_eq!(metadata.correlation_id.as_deref(), Some("explicit"));
     assert_eq!(metadata.tenant.as_deref(), Some("globex"));
     assert_eq!(
-        metadata.additional,
+        metadata.additional.clone().map(serde_json::Value::Object),
         Some(serde_json::json!({"region": "eu"}))
     );
 }

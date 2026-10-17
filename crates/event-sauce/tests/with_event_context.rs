@@ -207,7 +207,7 @@ async fn impl_trait_return_fn_tags_events() {
 async fn arguments_may_use_parameters() {
     let metadata = only_metadata(arguments_see_parameters("ada", 2)).await;
     assert_eq!(
-        metadata.additional,
+        metadata.additional.map(serde_json::Value::Object),
         Some(json!({"user": "ada", "attempt": 2}))
     );
 }

@@ -26,7 +26,7 @@ context into the event's `EventMetadata`:
 | `correlation_id`   | `Option<String>` | the first correlation id of the flow (outermost)        |
 | `correlation_path` | `Vec<String>`    | every correlation id of the flow, outermost first       |
 | `command`          | `Option<String>` | the innermost command name (see [Integration](#integration)) |
-| `additional`       | `Option<Value>`  | the key/value pairs, merged, innermost winning          |
+| `additional`       | `Option<Map<String, Value>>` | the key/value pairs, merged, innermost winning          |
 
 Outside any scope an applied event carries no context metadata at all.
 

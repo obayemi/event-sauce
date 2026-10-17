@@ -336,7 +336,9 @@ CREATE TABLE IF NOT EXISTS event_sauce.snapshots (...);
 The `events` table stores the metadata of the [event context](event-context.md)
 in dedicated columns: `correlation_id` (`TEXT`), `causation_id`,
 `causation_chain` (`JSONB`), `tenant` (`TEXT`), `command` (`TEXT`),
-`correlation_path` (`JSONB`) and the `additional` JSONB document. Rows written
+`correlation_path` (`JSONB`) and the `additional` JSONB object. A `metadata`
+value that is not an object, written by an earlier version, reads back as
+`{"value": <that value>}`. Rows written
 before the columns existed read back as `NULL`: no tenant, no command, an empty
 path and an empty causation chain.
 
@@ -832,11 +834,9 @@ let event = EventEnvelope {
         tenant: Some("acme".to_string()),    // Tenant the event belongs to
         command: Some("Deposit".to_string()), // Command that produced it
         timestamp: Utc::now(),            // When it happened
-        additional: Some(json!({
-            "ip": "192.168.1.1",
-            "user_agent": "...",
-        })),
         ..EventMetadata::new()
+            .with_additional_entry("ip", "192.168.1.1")
+            .with_additional_entry("user_agent", "...")
     }),
     ..event
 };

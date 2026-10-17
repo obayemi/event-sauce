@@ -95,7 +95,10 @@ async fn events_applied_in_a_scope_are_stored_with_its_context() {
         assert_eq!(metadata.tenant.as_deref(), Some("acme"));
         assert_eq!(metadata.correlation_id.as_deref(), Some("req-1"));
         assert_eq!(metadata.correlation_path, ["req-1"]);
-        assert_eq!(metadata.additional, Some(json!({"region": "eu"})));
+        assert_eq!(
+            metadata.additional.map(serde_json::Value::Object),
+            Some(json!({"region": "eu"}))
+        );
     }
     assert_eq!(repo.load(id).await.unwrap().balance, 5);
 }
