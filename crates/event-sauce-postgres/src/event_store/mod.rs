@@ -4,8 +4,8 @@
 
 use async_trait::async_trait;
 use event_sauce_core::{
-    AggregateVersion, Error, EventEnvelope, EventStore, EventVersion, Position, Result, Snapshot,
-    SnapshotConfig, StreamId,
+    AggregateVersion, Error, EventEnvelope, EventStore, Position, Result, Snapshot, SnapshotConfig,
+    StreamId,
 };
 use futures::stream::Stream;
 use futures::TryStreamExt;
@@ -15,6 +15,8 @@ mod append;
 pub(crate) use append::PlannedBatch;
 mod builder;
 mod migrate;
+mod row;
+pub(crate) use row::{EventRow, EVENT_COLUMNS};
 
 pub use builder::PostgresEventStoreBuilder;
 
@@ -592,91 +594,6 @@ impl PostgresEventStore {
 
         #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
         Ok(count as usize)
-    }
-}
-
-/// Every column [`EventRow`] decodes by name, including the global `id` —
-/// shared by every query that reads events (per-stream, the global log, and
-/// the log-query filters), so a query can never omit one.
-pub(crate) const EVENT_COLUMNS: &str = "id, event_id, aggregate_id, aggregate_type, event_type, \
-     event_version, event_data, created_by, created_at, correlation_id, causation_id, metadata, \
-     causation_chain, tenant, command, correlation_path";
-
-// Database row types
-#[derive(sqlx::FromRow)]
-pub(crate) struct EventRow {
-    /// Global BIGSERIAL position, read solely through [`EventRow::log_entry`].
-    id: i64,
-    event_id: uuid::Uuid,
-    aggregate_id: uuid::Uuid,
-    aggregate_type: String,
-    event_type: String,
-    event_version: i64,
-    event_data: serde_json::Value,
-    created_by: Option<uuid::Uuid>,
-    created_at: chrono::DateTime<chrono::Utc>,
-    correlation_id: Option<String>,
-    causation_id: Option<uuid::Uuid>,
-    metadata: Option<serde_json::Value>,
-    causation_chain: Option<sqlx::types::Json<Vec<uuid::Uuid>>>,
-    tenant: Option<String>,
-    command: Option<String>,
-    correlation_path: Option<sqlx::types::Json<Vec<String>>>,
-}
-
-impl EventRow {
-    /// Converts a row that includes the global `id` column into an
-    /// [`EventLogEntry`](event_sauce_core::EventLogEntry), pairing the
-    /// store-issued [`Position`] with the envelope.
-    pub(crate) fn log_entry(self) -> event_sauce_core::EventLogEntry {
-        event_sauce_core::EventLogEntry {
-            position: Position::new(self.id),
-            envelope: EventEnvelope::from(self),
-        }
-    }
-}
-
-/// Reads a stored `metadata` value as an additional-metadata object.
-///
-/// Rows written before the column was constrained to objects may hold any
-/// JSON value; a non-object is kept under the reserved key `"value"` and a
-/// JSON `null` reads as no metadata.
-fn additional_object(
-    value: serde_json::Value,
-) -> Option<serde_json::Map<String, serde_json::Value>> {
-    match value {
-        serde_json::Value::Object(map) => Some(map),
-        serde_json::Value::Null => None,
-        other => Some(serde_json::Map::from_iter([("value".to_owned(), other)])),
-    }
-}
-
-impl From<EventRow> for EventEnvelope {
-    fn from(row: EventRow) -> Self {
-        let causation_chain = row.causation_chain.map(|chain| chain.0).unwrap_or_default();
-        let correlation_path = row.correlation_path.map(|path| path.0).unwrap_or_default();
-        let metadata = event_sauce_core::EventMetadata {
-            correlation_id: row.correlation_id,
-            causation_id: row.causation_id,
-            causation_chain,
-            tenant: row.tenant,
-            command: row.command,
-            correlation_path,
-            timestamp: row.created_at,
-            additional: row.metadata.and_then(additional_object),
-        };
-
-        EventEnvelope {
-            id: row.event_id,
-            aggregate_id: row.aggregate_id,
-            aggregate_type: event_sauce_core::AggregateType::from_owned(row.aggregate_type),
-            event_type: row.event_type,
-            event_version: EventVersion::new(row.event_version),
-            event_data: row.event_data,
-            created_by: row.created_by,
-            created_at: row.created_at,
-            metadata: Some(metadata).filter(event_sauce_core::EventMetadata::carries_data),
-        }
     }
 }
 
@@ -2767,99 +2684,5 @@ mod tests {
             0,
             "a rejected batch must leave no events behind, not even the first commit's"
         );
-    }
-}
-
-#[cfg(test)]
-mod row_tests {
-    use super::*;
-    use sqlx::types::Json;
-
-    fn bare_row() -> EventRow {
-        EventRow {
-            id: 1,
-            event_id: uuid::Uuid::new_v4(),
-            aggregate_id: uuid::Uuid::new_v4(),
-            aggregate_type: "Order".to_string(),
-            event_type: "Created".to_string(),
-            event_version: 1,
-            event_data: serde_json::json!({}),
-            created_by: None,
-            created_at: chrono::Utc::now(),
-            correlation_id: None,
-            causation_id: None,
-            metadata: None,
-            causation_chain: None,
-            tenant: None,
-            command: None,
-            correlation_path: None,
-        }
-    }
-
-    #[test]
-    fn row_without_metadata_columns_has_no_metadata() {
-        assert!(EventEnvelope::from(bare_row()).metadata.is_none());
-    }
-
-    #[test]
-    fn row_with_empty_json_chains_has_no_metadata() {
-        let mut row = bare_row();
-        row.causation_chain = Some(Json(Vec::new()));
-        row.correlation_path = Some(Json(Vec::new()));
-
-        assert!(EventEnvelope::from(row).metadata.is_none());
-    }
-
-    fn additional_of(value: serde_json::Value) -> Option<serde_json::Value> {
-        let mut row = bare_row();
-        row.metadata = Some(value);
-        EventEnvelope::from(row)
-            .metadata
-            .and_then(|m| m.additional)
-            .map(serde_json::Value::Object)
-    }
-
-    #[test]
-    fn object_metadata_reads_back_unchanged() {
-        assert_eq!(
-            additional_of(serde_json::json!({"k": 1})),
-            Some(serde_json::json!({"k": 1}))
-        );
-    }
-
-    #[test]
-    fn non_object_metadata_is_kept_under_the_value_key() {
-        assert_eq!(
-            additional_of(serde_json::json!("note")),
-            Some(serde_json::json!({"value": "note"}))
-        );
-        assert_eq!(
-            additional_of(serde_json::json!([1, 2])),
-            Some(serde_json::json!({"value": [1, 2]}))
-        );
-    }
-
-    #[test]
-    fn null_metadata_reads_as_no_metadata() {
-        assert_eq!(additional_of(serde_json::Value::Null), None);
-    }
-
-    #[test]
-    fn any_single_metadata_column_yields_metadata() {
-        let setters: Vec<fn(&mut EventRow)> = vec![
-            |r| r.correlation_id = Some("c".to_string()),
-            |r| r.causation_id = Some(uuid::Uuid::new_v4()),
-            |r| r.metadata = Some(serde_json::json!({"k": 1})),
-            |r| r.tenant = Some("acme".to_string()),
-            |r| r.command = Some("Place".to_string()),
-            |r| r.causation_chain = Some(Json(vec![uuid::Uuid::new_v4()])),
-            |r| r.correlation_path = Some(Json(vec!["root".to_string()])),
-        ];
-
-        for set in setters {
-            let mut row = bare_row();
-            set(&mut row);
-            assert!(EventEnvelope::from(row).metadata.is_some());
-        }
     }
 }

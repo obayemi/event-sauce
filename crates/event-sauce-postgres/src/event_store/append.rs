@@ -5,6 +5,7 @@
 use event_sauce_core::{AggregateVersion, Error, Position, Result, StreamId};
 use sqlx::PgConnection;
 
+use super::row::EventColumns;
 use super::PostgresEventStore;
 
 /// Computes the stable advisory-lock key for an event log: the schema-
@@ -229,96 +230,11 @@ impl PostgresEventStore {
         events_table: &str,
         commit: &event_sauce_core::StreamCommit,
     ) -> Result<Option<Position>> {
-        let stream_id = &commit.stream_id;
         let expected_version = commit.expected_version;
-        let events = &commit.events;
-        let aggregate_id = stream_id.aggregate_id();
-        let aggregate_type = stream_id.aggregate_type().as_str().to_string();
-
-        let event_ids: Vec<uuid::Uuid> = events.iter().map(|e| e.id).collect();
-        let aggregate_ids = vec![aggregate_id; events.len()];
-        let aggregate_types = vec![aggregate_type; events.len()];
-        let event_types: Vec<String> = events.iter().map(|e| e.event_type.clone()).collect();
-        let event_versions: Vec<i64> = events.iter().map(|e| e.event_version.as_i64()).collect();
-        let event_datas: Vec<serde_json::Value> =
-            events.iter().map(|e| e.event_data.clone()).collect();
-        let stream_versions: Vec<i64> = (expected_version.as_i64()..).take(events.len()).collect();
-        let created_bys: Vec<Option<uuid::Uuid>> = events.iter().map(|e| e.created_by).collect();
-        let correlation_ids: Vec<Option<String>> = events
-            .iter()
-            .map(|e| e.metadata.as_ref().and_then(|m| m.correlation_id.clone()))
-            .collect();
-        let causation_ids: Vec<Option<uuid::Uuid>> = events
-            .iter()
-            .map(|e| e.metadata.as_ref().and_then(|m| m.causation_id))
-            .collect();
-        let causation_chains: Vec<Option<sqlx::types::Json<Vec<uuid::Uuid>>>> = events
-            .iter()
-            .map(|e| {
-                e.metadata
-                    .as_ref()
-                    .filter(|m| !m.causation_chain.is_empty())
-                    .map(|m| sqlx::types::Json(m.causation_chain.clone()))
-            })
-            .collect();
-        let tenants: Vec<Option<String>> = events
-            .iter()
-            .map(|e| e.metadata.as_ref().and_then(|m| m.tenant.clone()))
-            .collect();
-        let commands: Vec<Option<String>> = events
-            .iter()
-            .map(|e| e.metadata.as_ref().and_then(|m| m.command.clone()))
-            .collect();
-        let correlation_paths: Vec<Option<sqlx::types::Json<Vec<String>>>> = events
-            .iter()
-            .map(|e| {
-                e.metadata
-                    .as_ref()
-                    .filter(|m| !m.correlation_path.is_empty())
-                    .map(|m| sqlx::types::Json(m.correlation_path.clone()))
-            })
-            .collect();
-        let metadatas: Vec<Option<sqlx::types::Json<serde_json::Map<String, serde_json::Value>>>> =
-            events
-                .iter()
-                .map(|e| {
-                    e.metadata
-                        .as_ref()
-                        .and_then(|m| m.additional.clone())
-                        .map(sqlx::types::Json)
-                })
-                .collect();
-
-        let insert_query = format!(
-            "INSERT INTO {events_table} (
-                event_id, aggregate_id, aggregate_type, event_type, event_version,
-                event_data, stream_version, created_by, correlation_id, causation_id, metadata,
-                causation_chain, tenant, command, correlation_path
-            )
-            SELECT * FROM UNNEST(
-                $1::uuid[], $2::uuid[], $3::text[], $4::text[], $5::bigint[],
-                $6::jsonb[], $7::bigint[], $8::uuid[], $9::text[], $10::uuid[], $11::jsonb[], $12::jsonb[],
-                $13::text[], $14::text[], $15::jsonb[]
-            )
-            RETURNING id"
-        );
-
-        let insert_result = sqlx::query_scalar::<_, i64>(&insert_query)
-            .bind(event_ids)
-            .bind(aggregate_ids)
-            .bind(aggregate_types)
-            .bind(event_types)
-            .bind(event_versions)
-            .bind(event_datas)
-            .bind(stream_versions)
-            .bind(created_bys)
-            .bind(correlation_ids)
-            .bind(causation_ids)
-            .bind(metadatas)
-            .bind(causation_chains)
-            .bind(tenants)
-            .bind(commands)
-            .bind(correlation_paths)
+        let columns = EventColumns::from_commit(commit);
+        let insert_query = EventColumns::insert_sql(events_table);
+        let insert_result = columns
+            .bind_all(sqlx::query_scalar::<_, i64>(&insert_query))
             .fetch_all(conn)
             .await;
 
