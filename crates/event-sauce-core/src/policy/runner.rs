@@ -2455,6 +2455,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reactions_keep_the_explicit_correlation_id_over_a_foreign_path() {
+        let store = Arc::new(MockEventStore::new());
+        let runner = PolicyRunner::new(Arc::clone(&store), test_checkpoint_store()).register(
+            Arc::new(ReactPolicy {
+                failures: AtomicUsize::new(0),
+            }),
+        );
+        let metadata = crate::EventMetadata::new()
+            .with_correlation_id("ext-9")
+            .with_correlation_path(vec!["req-1".to_string()]);
+        let parent = test_envelope("TestEvent", "TestAggregate").with_metadata(metadata);
+
+        runner.process_event(&parent).await.unwrap();
+
+        let reaction = store.get_events()[0].metadata.clone().unwrap();
+        assert_eq!(reaction.correlation_id.as_deref(), Some("ext-9"));
+    }
+
+    #[tokio::test]
     async fn a_source_without_metadata_correlates_its_reactions_to_its_own_id() {
         let store = Arc::new(MockEventStore::new());
         let runner = PolicyRunner::new(Arc::clone(&store), test_checkpoint_store()).register(

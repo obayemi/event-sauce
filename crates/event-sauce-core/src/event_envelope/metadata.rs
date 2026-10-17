@@ -384,10 +384,14 @@ impl EventMetadata {
     /// assert_eq!(metadata.command.as_deref(), Some("PlaceOrder"));
     /// ```
     pub fn fill_missing_from(&mut self, other: &EventMetadata) {
+        let path_follows_id = self
+            .correlation_id
+            .as_ref()
+            .is_none_or(|id| other.correlation_path.first() == Some(id));
         fill_option(&mut self.correlation_id, other.correlation_id.as_ref());
         fill_option(&mut self.tenant, other.tenant.as_ref());
         fill_option(&mut self.command, other.command.as_ref());
-        if self.correlation_path.is_empty() {
+        if path_follows_id && self.correlation_path.is_empty() {
             self.correlation_path.clone_from(&other.correlation_path);
         }
         if self.causation_id.is_none() && self.causation_chain.is_empty() {

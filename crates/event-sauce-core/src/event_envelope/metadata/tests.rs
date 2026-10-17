@@ -267,6 +267,27 @@ fn test_fill_missing_from_fills_empty_options_and_path() {
 }
 
 #[test]
+fn test_fill_missing_from_drops_a_path_that_does_not_lead_with_the_receiver_id() {
+    let mut receiver = EventMetadata::new().with_correlation_id("ext-9");
+    let other = EventMetadata::new().with_correlation_path(vec!["req-1".to_string()]);
+
+    receiver.fill_missing_from(&other);
+
+    assert!(receiver.correlation_path.is_empty());
+}
+
+#[test]
+fn test_fill_missing_from_takes_a_path_that_leads_with_the_receiver_id() {
+    let mut receiver = EventMetadata::new().with_correlation_id("req-1");
+    let other =
+        EventMetadata::new().with_correlation_path(vec!["req-1".to_string(), "sub".to_string()]);
+
+    receiver.fill_missing_from(&other);
+
+    assert_eq!(receiver.correlation_path, ["req-1", "sub"]);
+}
+
+#[test]
 fn test_fill_missing_from_fills_each_option_independently() {
     let mut receiver = EventMetadata::new().with_tenant("acme");
     let other = EventMetadata::new()

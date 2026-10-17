@@ -24,14 +24,22 @@ pub(crate) fn execution_context(command: Option<&str>) -> EventContext {
 /// command.
 #[cfg(feature = "event-sourcing")]
 pub(crate) fn reaction_context(metadata: &EventMetadata, policy: &str) -> EventContext<Root> {
-    let correlation_path = if metadata.correlation_path.is_empty() {
-        metadata.correlation_id.iter().cloned().collect()
+    let path_leads_with_id = metadata.correlation_path.first().is_some_and(|first| {
+        metadata
+            .correlation_id
+            .as_ref()
+            .is_none_or(|id| id == first)
+    });
+    let frame = if path_leads_with_id {
+        Frame {
+            correlation_path: metadata.correlation_path.clone(),
+            ..Frame::default()
+        }
     } else {
-        metadata.correlation_path.clone()
-    };
-    let frame = Frame {
-        correlation_path,
-        ..Frame::default()
+        Frame {
+            correlation_id: metadata.correlation_id.clone(),
+            ..Frame::default()
+        }
     };
     EventContext::from_parts(
         frame,

@@ -50,9 +50,20 @@ pub(crate) fn has_correlation_id() -> bool {
 
 impl From<EventMetadata> for Frame {
     fn from(metadata: EventMetadata) -> Self {
+        let path_leads_with_id = metadata.correlation_path.first().is_some_and(|first| {
+            metadata
+                .correlation_id
+                .as_ref()
+                .is_none_or(|id| id == first)
+        });
+        let (correlation_id, correlation_path) = if path_leads_with_id {
+            (None, metadata.correlation_path)
+        } else {
+            (metadata.correlation_id, Vec::new())
+        };
         Self {
-            correlation_id: None,
-            correlation_path: metadata.correlation_path,
+            correlation_id,
+            correlation_path,
             command: metadata.command,
             additional: metadata.additional.unwrap_or_default(),
         }
