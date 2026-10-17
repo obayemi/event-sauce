@@ -178,23 +178,14 @@ impl PostgresEventStore {
     /// which the [`SnapshotRow`] mapper interprets as schema version `0`.
     async fn migrate_snapshot_schema_version(&self, migrations_table: &str) -> Result<()> {
         let snapshots_table = self.qualify_table("snapshots");
-        crate::migrations::apply_once(
-            &self.pool,
+        self.apply_statement_once(
             migrations_table,
             20_260_605_000_000_i64,
             "add_snapshot_schema_version_column",
-            move |pool| async move {
-                let alter = format!(
-                    "ALTER TABLE {snapshots_table} ADD COLUMN IF NOT EXISTS snapshot_schema_version BIGINT"
-                );
-                sqlx::query(&alter)
-                    .execute(pool)
-                    .await
-                    .map_err(|e| {
-                        Error::backend("Failed to add snapshot_schema_version column", e)
-                    })?;
-                Ok(())
-            },
+            format!(
+                "ALTER TABLE {snapshots_table} ADD COLUMN IF NOT EXISTS snapshot_schema_version BIGINT"
+            ),
+            "Failed to add snapshot_schema_version column",
         )
         .await
     }
@@ -227,21 +218,12 @@ impl PostgresEventStore {
     /// back as `NULL`, an empty chain.
     async fn migrate_causation_chain(&self, migrations_table: &str) -> Result<()> {
         let events_table = self.qualify_table("events");
-        crate::migrations::apply_once(
-            &self.pool,
+        self.apply_statement_once(
             migrations_table,
             20_261_017_000_000_i64,
             "add_events_causation_chain",
-            move |pool| async move {
-                let alter = format!(
-                    "ALTER TABLE {events_table} ADD COLUMN IF NOT EXISTS causation_chain JSONB"
-                );
-                sqlx::query(&alter)
-                    .execute(pool)
-                    .await
-                    .map_err(|e| Error::backend("Failed to add causation_chain column", e))?;
-                Ok(())
-            },
+            format!("ALTER TABLE {events_table} ADD COLUMN IF NOT EXISTS causation_chain JSONB"),
+            "Failed to add causation_chain column",
         )
         .await
     }
@@ -254,34 +236,27 @@ impl PostgresEventStore {
     /// lock and is skipped when the column is already `TEXT`.
     async fn migrate_correlation_id_text(&self, migrations_table: &str) -> Result<()> {
         let events_table = self.qualify_table("events");
-        crate::migrations::apply_once(
-            &self.pool,
+        self.apply_statement_once(
             migrations_table,
             20_261_018_000_000_i64,
             "events_correlation_id_text",
-            move |pool| async move {
-                let convert = format!(
-                    "DO $$
-                    BEGIN
-                        IF EXISTS (
-                            SELECT 1 FROM pg_attribute
-                            WHERE attrelid = '{events_table}'::regclass
-                              AND attname = 'correlation_id'
-                              AND atttypid = 'uuid'::regtype
-                        ) THEN
-                            ALTER TABLE {events_table}
-                                ALTER COLUMN correlation_id TYPE TEXT
-                                USING correlation_id::text;
-                        END IF;
-                    END
-                    $$"
-                );
-                sqlx::query(&convert)
-                    .execute(pool)
-                    .await
-                    .map_err(|e| Error::backend("Failed to convert correlation_id to text", e))?;
-                Ok(())
-            },
+            format!(
+                "DO $$
+                BEGIN
+                    IF EXISTS (
+                        SELECT 1 FROM pg_attribute
+                        WHERE attrelid = '{events_table}'::regclass
+                          AND attname = 'correlation_id'
+                          AND atttypid = 'uuid'::regtype
+                    ) THEN
+                        ALTER TABLE {events_table}
+                            ALTER COLUMN correlation_id TYPE TEXT
+                            USING correlation_id::text;
+                    END IF;
+                END
+                $$"
+            ),
+            "Failed to convert correlation_id to text",
         )
         .await
     }
@@ -293,24 +268,42 @@ impl PostgresEventStore {
     /// path.
     async fn migrate_tenant_command_path(&self, migrations_table: &str) -> Result<()> {
         let events_table = self.qualify_table("events");
-        crate::migrations::apply_once(
-            &self.pool,
+        self.apply_statement_once(
             migrations_table,
             20_261_019_000_000_i64,
             "add_events_tenant_command_path",
+            format!(
+                "ALTER TABLE {events_table}
+                    ADD COLUMN IF NOT EXISTS tenant TEXT,
+                    ADD COLUMN IF NOT EXISTS command TEXT,
+                    ADD COLUMN IF NOT EXISTS correlation_path JSONB"
+            ),
+            "Failed to add tenant, command and correlation_path columns",
+        )
+        .await
+    }
+
+    /// Applies one SQL statement as the migration `version`, once.
+    ///
+    /// A failure is reported as a backend error carrying `failure`.
+    async fn apply_statement_once(
+        &self,
+        migrations_table: &str,
+        version: i64,
+        name: &str,
+        sql: String,
+        failure: &'static str,
+    ) -> Result<()> {
+        crate::migrations::apply_once(
+            &self.pool,
+            migrations_table,
+            version,
+            name,
             move |pool| async move {
-                let alter = format!(
-                    "ALTER TABLE {events_table}
-                        ADD COLUMN IF NOT EXISTS tenant TEXT,
-                        ADD COLUMN IF NOT EXISTS command TEXT,
-                        ADD COLUMN IF NOT EXISTS correlation_path JSONB"
-                );
-                sqlx::query(&alter).execute(pool).await.map_err(|e| {
-                    Error::backend(
-                        "Failed to add tenant, command and correlation_path columns",
-                        e,
-                    )
-                })?;
+                sqlx::query(&sql)
+                    .execute(pool)
+                    .await
+                    .map_err(|e| Error::backend(failure, e))?;
                 Ok(())
             },
         )
