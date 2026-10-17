@@ -1,5 +1,5 @@
 use super::*;
-use crate::event_context::{current_snapshot, ContextSnapshot};
+use crate::event_context::current_snapshot;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::pin::pin;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -22,7 +22,7 @@ impl Future for YieldOnce {
 }
 
 fn correlation() -> Option<String> {
-    current_snapshot().and_then(|s| s.correlation_id().map(str::to_owned))
+    current_snapshot().and_then(|s| s.correlation_id.as_deref().map(str::to_owned))
 }
 
 fn assert_send<T: Send>() {}
@@ -84,7 +84,7 @@ fn nesting_inside_an_active_scope_layers_on_it() {
     EventContext::new().correlation_id("outer").in_scope(|| {
         let mut fut = pin!(async {
             assert_eq!(
-                current_snapshot().map(|s: ContextSnapshot| s.correlation_path),
+                current_snapshot().map(|s: crate::EventMetadata| s.correlation_path),
                 Some(vec!["outer".to_string(), "inner".to_string()])
             );
         }

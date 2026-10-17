@@ -1,9 +1,9 @@
 use super::*;
-use crate::event_context::{current_snapshot, ContextSnapshot};
+use crate::event_context::current_snapshot;
 #[cfg(feature = "event-sourcing")]
 use crate::EventEnvelope;
 
-fn snapshot() -> ContextSnapshot {
+fn snapshot() -> crate::EventMetadata {
     current_snapshot().expect("a context is active")
 }
 
@@ -36,7 +36,7 @@ fn a_reaction_context_carries_tenant_id_path_and_policy_name() {
     reaction_context(&reaction_of(&envelope_with(Some(metadata))), "notify").in_scope(|| {
         let snap = snapshot();
         assert_eq!(snap.tenant.as_deref(), Some("acme"));
-        assert_eq!(snap.correlation_id(), Some("req"));
+        assert_eq!(snap.correlation_id.as_deref(), Some("req"));
         assert_eq!(snap.correlation_path, ["req", "import"]);
         assert_eq!(snap.command.as_deref(), Some("notify"));
     });
@@ -68,7 +68,7 @@ fn an_execution_context_generates_a_correlation_id_when_none_is_active() {
         assert_eq!(snap.command.as_deref(), Some("place-order"));
         assert_eq!(snap.correlation_path.len(), 1);
         assert_eq!(
-            snap.correlation_id(),
+            snap.correlation_id.as_deref(),
             snap.correlation_path.first().map(String::as_str)
         );
     });

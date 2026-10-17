@@ -100,8 +100,7 @@ mod context {
             root: Root<SimpleTestEntity>,
             ctx: &(),
         ) -> std::result::Result<Root<SimpleTestEntity>, CommandError<SimpleTestError>> {
-            let id = current_snapshot()
-                .and_then(|snapshot| snapshot.correlation_id().map(str::to_owned));
+            let id = current_snapshot().and_then(|snapshot| snapshot.correlation_id);
             self.seen.lock().unwrap().push(id);
             update_to(5)(root, ctx)
         }

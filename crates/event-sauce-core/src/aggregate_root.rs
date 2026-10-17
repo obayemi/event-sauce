@@ -39,7 +39,7 @@ impl<E> PendingEvent<E> {
             metadata,
         };
         if let Some(ambient) = crate::event_context::current_snapshot() {
-            pending.fill_metadata(&ambient.into());
+            pending.fill_metadata(&ambient);
         }
         pending
     }

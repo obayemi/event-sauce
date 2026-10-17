@@ -1088,8 +1088,7 @@ mod tests {
             .unwrap();
         let seen = repo
             .modify(id, |_agg| {
-                Ok(crate::event_context::current_snapshot()
-                    .and_then(|s| s.correlation_id().map(str::to_owned)))
+                Ok(crate::event_context::current_snapshot().and_then(|s| s.correlation_id))
             })
             .await
             .unwrap();
@@ -1119,8 +1118,7 @@ mod tests {
 
         let seen = repo
             .modify_deleted(id, |_deleted| {
-                Ok(crate::event_context::current_snapshot()
-                    .and_then(|s| s.correlation_id().map(str::to_owned)))
+                Ok(crate::event_context::current_snapshot().and_then(|s| s.correlation_id))
             })
             .await
             .unwrap();

@@ -9,7 +9,7 @@ fn object(value: Value) -> Map<String, Value> {
     }
 }
 
-fn snapshot() -> ContextSnapshot {
+fn snapshot() -> crate::EventMetadata {
     current_snapshot().expect("a context is active")
 }
 
@@ -32,15 +32,12 @@ fn in_scope_exposes_every_field() {
         .command("place-order")
         .with("region", "eu")
         .in_scope(|| {
-            assert_eq!(
-                snapshot(),
-                ContextSnapshot {
-                    tenant: Some("acme".into()),
-                    correlation_path: vec!["req-1".into()],
-                    command: Some("place-order".into()),
-                    additional: object(json!({"region": "eu"})),
-                }
-            );
+            let snap = snapshot();
+            assert_eq!(snap.tenant.as_deref(), Some("acme"));
+            assert_eq!(snap.correlation_id.as_deref(), Some("req-1"));
+            assert_eq!(snap.correlation_path, ["req-1"]);
+            assert_eq!(snap.command.as_deref(), Some("place-order"));
+            assert_eq!(snap.additional, Some(object(json!({"region": "eu"}))));
             assert!(has_correlation_id());
         });
     assert_eq!(current_snapshot(), None);
@@ -55,7 +52,7 @@ fn in_scope_returns_the_closure_result() {
 fn the_outermost_correlation_id_wins() {
     EventContext::new().correlation_id("outer").in_scope(|| {
         EventContext::new().correlation_id("inner").in_scope(|| {
-            assert_eq!(snapshot().correlation_id(), Some("outer"));
+            assert_eq!(snapshot().correlation_id.as_deref(), Some("outer"));
         });
     });
 }
@@ -65,7 +62,7 @@ fn an_inner_frame_can_supply_the_first_correlation_id() {
     EventContext::new().with("a", 1).in_scope(|| {
         assert!(!has_correlation_id());
         EventContext::new().correlation_id("inner").in_scope(|| {
-            assert_eq!(snapshot().correlation_id(), Some("inner"));
+            assert_eq!(snapshot().correlation_id.as_deref(), Some("inner"));
             assert!(has_correlation_id());
         });
     });
@@ -113,12 +110,12 @@ fn additional_values_merge_with_the_innermost_winning() {
     EventContext::new().with("a", 1).with("b", 1).in_scope(|| {
         EventContext::new().with("b", 2).with("c", 3).in_scope(|| {
             assert_eq!(
-                Value::Object(snapshot().additional),
+                Value::Object(snapshot().additional.unwrap()),
                 json!({"a": 1, "b": 2, "c": 3})
             );
         });
         assert_eq!(
-            Value::Object(snapshot().additional),
+            Value::Object(snapshot().additional.unwrap()),
             json!({"a": 1, "b": 1})
         );
     });
@@ -137,15 +134,11 @@ fn a_root_frame_discards_everything_outside_it() {
                 .correlation_id("fresh")
                 .with("other", 2)
                 .in_scope(|| {
-                    assert_eq!(
-                        snapshot(),
-                        ContextSnapshot {
-                            tenant: None,
-                            correlation_path: vec!["fresh".into()],
-                            command: None,
-                            additional: object(json!({"other": 2})),
-                        }
-                    );
+                    let snap = snapshot();
+                    assert_eq!(snap.tenant, None);
+                    assert_eq!(snap.correlation_path, ["fresh"]);
+                    assert_eq!(snap.command, None);
+                    assert_eq!(snap.additional, Some(object(json!({"other": 2}))));
                 });
         });
 }
@@ -156,7 +149,7 @@ fn frames_nested_under_a_root_see_only_the_root_and_later_frames() {
         EventContext::root().correlation_id("base").in_scope(|| {
             EventContext::new().correlation_id("child").in_scope(|| {
                 let snap = snapshot();
-                assert_eq!(snap.correlation_id(), Some("base"));
+                assert_eq!(snap.correlation_id.as_deref(), Some("base"));
                 assert_eq!(snap.correlation_path, ["base", "child"]);
             });
         });
@@ -168,10 +161,16 @@ fn entered_guards_restore_the_previous_context() {
     let outer = EventContext::new().with("level", 1).entered();
     {
         let inner = EventContext::new().with("level", 2).entered();
-        assert_eq!(Value::Object(snapshot().additional), json!({"level": 2}));
+        assert_eq!(
+            Value::Object(snapshot().additional.unwrap()),
+            json!({"level": 2})
+        );
         drop(inner);
     }
-    assert_eq!(Value::Object(snapshot().additional), json!({"level": 1}));
+    assert_eq!(
+        Value::Object(snapshot().additional.unwrap()),
+        json!({"level": 1})
+    );
     drop(outer);
     assert_eq!(current_snapshot(), None);
 }
@@ -200,7 +199,13 @@ fn current_reproduces_the_effective_context_on_an_empty_stack() {
                 .in_scope(|| (snapshot(), EventContext::current()))
         });
     assert_eq!(current_snapshot(), None);
-    rebuilt.in_scope(|| assert_eq!(snapshot(), expected));
+    rebuilt.in_scope(|| {
+        let snap = snapshot();
+        assert_eq!(snap.tenant, expected.tenant);
+        assert_eq!(snap.correlation_path, expected.correlation_path);
+        assert_eq!(snap.command, expected.command);
+        assert_eq!(snap.additional, expected.additional);
+    });
 }
 
 #[test]
@@ -218,8 +223,8 @@ fn current_is_a_root_that_discards_the_surrounding_context() {
         .with("x", 1)
         .in_scope(|| {
             captured.in_scope(|| {
-                assert_eq!(snapshot().correlation_id(), Some("a"));
-                assert!(snapshot().additional.is_empty());
+                assert_eq!(snapshot().correlation_id.as_deref(), Some("a"));
+                assert!(snapshot().additional.is_none());
             });
         });
 }
@@ -238,7 +243,7 @@ fn current_keeps_the_full_correlation_path() {
     });
     captured.in_scope(|| {
         assert_eq!(snapshot().correlation_path, ["a", "b"]);
-        assert_eq!(snapshot().correlation_id(), Some("a"));
+        assert_eq!(snapshot().correlation_id.as_deref(), Some("a"));
         assert!(has_correlation_id());
         EventContext::new().correlation_id("c").in_scope(|| {
             assert_eq!(snapshot().correlation_path, ["a", "b", "c"]);
@@ -256,7 +261,7 @@ fn with_accepts_any_json_convertible_value() {
         .with("shown", display(7))
         .in_scope(|| {
             assert_eq!(
-                Value::Object(snapshot().additional),
+                Value::Object(snapshot().additional.unwrap()),
                 json!({
                     "flag": true,
                     "count": 2,

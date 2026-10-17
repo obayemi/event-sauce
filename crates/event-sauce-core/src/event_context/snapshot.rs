@@ -1,37 +1,10 @@
 use super::sealed::Boundary;
 use super::stack::{effective, Frame};
-use serde_json::{Map, Value};
+use crate::EventMetadata;
+use serde_json::Map;
 
-#[derive(Debug, Clone, Default, PartialEq)]
-pub(crate) struct ContextSnapshot {
-    pub tenant: Option<String>,
-    pub correlation_path: Vec<String>,
-    pub command: Option<String>,
-    pub additional: Map<String, Value>,
-}
-
-impl ContextSnapshot {
-    #[cfg(test)]
-    pub fn correlation_id(&self) -> Option<&str> {
-        self.correlation_path.first().map(String::as_str)
-    }
-}
-
-impl From<ContextSnapshot> for crate::EventMetadata {
-    fn from(snapshot: ContextSnapshot) -> Self {
-        Self {
-            correlation_id: snapshot.correlation_path.first().cloned(),
-            tenant: snapshot.tenant,
-            command: snapshot.command,
-            correlation_path: snapshot.correlation_path,
-            additional: (!snapshot.additional.is_empty()).then_some(snapshot.additional),
-            ..Self::new()
-        }
-    }
-}
-
-pub(crate) fn current_snapshot() -> Option<ContextSnapshot> {
-    let snapshot = effective(|frames| {
+pub(crate) fn current_snapshot() -> Option<EventMetadata> {
+    effective(|frames| {
         let mut correlation_path: Vec<String> = Vec::new();
         for id in frames
             .iter()
@@ -46,17 +19,24 @@ pub(crate) fn current_snapshot() -> Option<ContextSnapshot> {
         for frame in frames {
             additional.extend(frame.frame.additional.clone());
         }
-        ContextSnapshot {
-            tenant: match frames.first().map(|f| &f.boundary) {
-                Some(Boundary::Root { tenant }) => tenant.clone(),
-                _ => None,
-            },
+        let tenant = match frames.first().map(|f| &f.boundary) {
+            Some(Boundary::Root { tenant }) => tenant.clone(),
+            _ => None,
+        };
+        let command = frames.iter().rev().find_map(|f| f.frame.command.clone());
+        let is_empty = tenant.is_none()
+            && command.is_none()
+            && correlation_path.is_empty()
+            && additional.is_empty();
+        (!is_empty).then(|| EventMetadata {
+            correlation_id: correlation_path.first().cloned(),
+            tenant,
+            command,
             correlation_path,
-            command: frames.iter().rev().find_map(|f| f.frame.command.clone()),
-            additional,
-        }
-    });
-    (snapshot != ContextSnapshot::default()).then_some(snapshot)
+            additional: (!additional.is_empty()).then_some(additional),
+            ..EventMetadata::new()
+        })
+    })
 }
 
 pub(crate) fn has_correlation_id() -> bool {
@@ -67,13 +47,13 @@ pub(crate) fn has_correlation_id() -> bool {
     })
 }
 
-impl From<ContextSnapshot> for Frame {
-    fn from(snapshot: ContextSnapshot) -> Self {
+impl From<EventMetadata> for Frame {
+    fn from(metadata: EventMetadata) -> Self {
         Self {
             correlation_id: None,
-            correlation_path: snapshot.correlation_path,
-            command: snapshot.command,
-            additional: snapshot.additional,
+            correlation_path: metadata.correlation_path,
+            command: metadata.command,
+            additional: metadata.additional.unwrap_or_default(),
         }
     }
 }
