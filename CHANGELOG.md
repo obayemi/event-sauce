@@ -16,6 +16,13 @@ explicitly rather than gated behind a major version bump.
   keeps every field it set and gains the ones it lacks: correlation id,
   tenant, command, correlation path, additional keys, and the causation id
   and chain together, the latter only when it set neither.
+- **`EventMetadata` gained public fields.** `tenant`, `command` and
+  `correlation_path` are new, and the struct is not `#[non_exhaustive]`:
+  code that builds it with a struct literal must add
+  `..EventMetadata::new()`.
+- **Policy reactions ignore the ambient event context.** They run in a
+  root context seeded from the source event, whatever context surrounds
+  `PolicyRunner`.
 - **Correlation ids are strings.** `EventMetadata::correlation_id` is now
   `Option<String>`, `with_correlation_id` takes `impl Into<String>`, and
   `child_metadata` falls back to the parent event id rendered as a string.
@@ -202,13 +209,16 @@ explicitly rather than gated behind a major version bump.
   `at.to_rfc3339()`, `i128`, `u128` and `char` need `%`, and references
   such as `&String` need `.as_str()` or a clone. See
   `docs/event-context.md`.
+- `EventMetadata::with_tenant`, `with_command`, `with_correlation_path`
+  and `fill_missing_from`.
 - `Command::name` and `UnitOfWorkCommand::name` record a command's name on
-  the events it produces. `Repository::execute`, `Repository::modify` and
-  `UnitOfWorkStore::execute` also add a correlation id when no scope
+  the events it produces. `Repository::execute`, `Repository::modify`,
+  `Repository::modify_deleted` and `UnitOfWorkStore::execute` also add a correlation id when no scope
   provides one, and policy reactions run in a root context seeded from the
   source event.
 - Postgres persists `causation_chain`, `tenant`, `command` and
-  `correlation_path`.
+  `correlation_path`. `migrate()` adds the nullable `tenant`, `command`
+  and `correlation_path` columns.
 - `EventStore::fetch_batch` — fetches up to `limit` events after a
   position and drops the underlying stream before returning, for
   consumers (like `PolicyRunner`) that need a bounded, already-materialized
