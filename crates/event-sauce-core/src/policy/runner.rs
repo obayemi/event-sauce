@@ -417,7 +417,7 @@ impl<S: EventStore + 'static> PolicyRunner<S> {
         );
         policy
             .handle(envelope, &ctx)
-            .with_event_context(reaction_context(envelope, policy.name()))
+            .with_event_context(reaction_context(&ctx.reaction_metadata(), policy.name()))
             .await?;
         ctx.flush().await
     }

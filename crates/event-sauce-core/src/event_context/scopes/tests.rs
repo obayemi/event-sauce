@@ -1,5 +1,7 @@
 use super::*;
 use crate::event_context::{current_snapshot, ContextSnapshot};
+#[cfg(feature = "event-sourcing")]
+use crate::EventEnvelope;
 
 fn snapshot() -> ContextSnapshot {
     current_snapshot().expect("a context is active")
@@ -13,6 +15,15 @@ fn envelope_with(metadata: Option<crate::EventMetadata>) -> EventEnvelope {
 }
 
 #[cfg(feature = "event-sourcing")]
+fn reaction_of(envelope: &EventEnvelope) -> crate::EventMetadata {
+    envelope
+        .metadata
+        .clone()
+        .unwrap_or_default()
+        .child_metadata(envelope.id)
+}
+
+#[cfg(feature = "event-sourcing")]
 #[test]
 fn a_reaction_context_carries_tenant_id_path_and_policy_name() {
     let metadata = crate::EventMetadata::new()
@@ -22,7 +33,7 @@ fn a_reaction_context_carries_tenant_id_path_and_policy_name() {
         tenant: Some("acme".into()),
         ..metadata
     };
-    reaction_context(&envelope_with(Some(metadata)), "notify").in_scope(|| {
+    reaction_context(&reaction_of(&envelope_with(Some(metadata))), "notify").in_scope(|| {
         let snap = snapshot();
         assert_eq!(snap.tenant.as_deref(), Some("acme"));
         assert_eq!(snap.correlation_id(), Some("req"));
@@ -35,7 +46,7 @@ fn a_reaction_context_carries_tenant_id_path_and_policy_name() {
 #[test]
 fn a_reaction_context_without_a_path_starts_it_at_the_id() {
     let metadata = crate::EventMetadata::new().with_correlation_id("req");
-    reaction_context(&envelope_with(Some(metadata)), "notify").in_scope(|| {
+    reaction_context(&reaction_of(&envelope_with(Some(metadata))), "notify").in_scope(|| {
         assert_eq!(snapshot().correlation_path, ["req"]);
     });
 }
@@ -44,7 +55,7 @@ fn a_reaction_context_without_a_path_starts_it_at_the_id() {
 #[test]
 fn a_reaction_context_without_metadata_starts_at_the_source_event_id() {
     let envelope = envelope_with(None);
-    reaction_context(&envelope, "notify").in_scope(|| {
+    reaction_context(&reaction_of(&envelope), "notify").in_scope(|| {
         assert_eq!(snapshot().correlation_path, [envelope.id.to_string()]);
     });
 }

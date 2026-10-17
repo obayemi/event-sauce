@@ -262,14 +262,21 @@ impl<S: EventStore + 'static> PolicyContext<S> {
 
     // === Internal ===
 
+    /// Derives the metadata of the reaction to the source event: the
+    /// ambient scope the policy runs in and the causation stamped on its commits.
+    pub(crate) fn reaction_metadata(&self) -> EventMetadata {
+        self.source_event
+            .metadata
+            .clone()
+            .unwrap_or_default()
+            .child_metadata(self.source_event.id)
+    }
+
     /// Builds causation metadata from the source event.
     ///
     /// Returns `Error::CascadeDepthExceeded` if the chain would exceed the limit.
     fn build_causation_metadata(&self) -> Result<EventMetadata> {
-        let source_id = self.source_event.id;
-
-        let parent_metadata = self.source_event.metadata.clone().unwrap_or_default();
-        let child = parent_metadata.child_metadata(source_id);
+        let child = self.reaction_metadata();
 
         let depth = child.cascade_depth();
         if depth > self.max_cascade_depth {
@@ -322,6 +329,21 @@ mod tests {
         let ctx = PolicyContext::new(store, envelope, 10);
 
         assert_eq!(ctx.cascade_depth(), 2);
+    }
+
+    #[test]
+    fn reaction_metadata_is_the_source_metadata_one_hop_down() {
+        let store = Arc::new(MockEventStore::new());
+        let metadata = EventMetadata::new().with_correlation_id("req-1");
+        let envelope = test_envelope("TestEvent", "TestAggregate").with_metadata(metadata);
+        let source_id = envelope.id;
+        let ctx = PolicyContext::new(store, envelope, 10);
+
+        let reaction = ctx.reaction_metadata();
+
+        assert_eq!(reaction.correlation_id.as_deref(), Some("req-1"));
+        assert_eq!(reaction.causation_id, Some(source_id));
+        assert_eq!(reaction.causation_chain, vec![source_id]);
     }
 
     #[test]
