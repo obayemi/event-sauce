@@ -30,6 +30,8 @@
 
 #[cfg(feature = "event-sourcing")]
 mod checkpoint_store;
+#[cfg(any(feature = "event-sourcing", feature = "state-store"))]
+mod claims;
 #[cfg(feature = "event-sourcing")]
 mod crypto_key_store;
 #[cfg(feature = "event-sourcing")]
