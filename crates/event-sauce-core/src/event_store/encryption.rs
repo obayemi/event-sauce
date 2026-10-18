@@ -76,14 +76,18 @@ pub(super) async fn has_committed_data<S: EventStore + ?Sized>(
     Ok(event_stream.next().await.is_some())
 }
 
-/// Resolves the crypto key to use when loading an aggregate, or `None` for a
-/// plaintext one.
+/// Resolves the crypto key to use when loading an aggregate, or `None` when
+/// there is nothing to decrypt.
 ///
-/// For a fully encrypted aggregate the key must exist: `Error::KeyNotFound`
-/// otherwise. For field-level encryption the key may legitimately be absent
-/// when nothing has been committed yet — but if data already exists and the
-/// key is gone, it was crypto-shredded out from under it, so that also
-/// surfaces as `KeyNotFound`, uniformly with the fully-encrypted case.
+/// One rule covers fully encrypted and field-level aggregates alike: a key
+/// that exists is used; a key that is absent while nothing has been committed
+/// yet is legitimate (the aggregate was never created, so the load reports
+/// `Error::NotFound`) and yields `None`; a key that is absent while data
+/// exists was crypto-shredded out from under it and surfaces as
+/// `Error::KeyNotFound`.
+///
+/// A plaintext aggregate resolves to `None`, as does a field-level one without
+/// a configured key store.
 ///
 /// # Errors
 ///
@@ -95,19 +99,14 @@ pub(super) async fn resolve_crypto_key<S: EventStore + ?Sized, A: Aggregate>(
     uuid: Uuid,
     stream_id: &StreamId,
 ) -> Result<Option<Zeroizing<Vec<u8>>>> {
-    if A::is_encrypted() {
-        let key_store = require_crypto_key_store(store)?;
-        let key = key_store
-            .get_key(uuid)
-            .await?
-            .ok_or_else(|| crate::Error::key_not_found(uuid))?;
-        return Ok(Some(Zeroizing::new(key)));
-    }
-
-    if !A::Event::has_any_encrypted_fields() {
-        return Ok(None);
-    }
-    let Some(key_store) = store.crypto_key_store() else {
+    let key_store = if A::is_encrypted() {
+        require_crypto_key_store(store)?
+    } else if A::Event::has_any_encrypted_fields() {
+        let Some(key_store) = store.crypto_key_store() else {
+            return Ok(None);
+        };
+        key_store
+    } else {
         return Ok(None);
     };
     if let Some(key) = key_store.get_key(uuid).await? {

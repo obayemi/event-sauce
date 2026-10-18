@@ -1085,10 +1085,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn load_any_of_a_fully_encrypted_aggregate_with_no_key_is_key_not_found() {
+    async fn load_any_of_a_fully_encrypted_aggregate_with_no_key_and_no_data_is_not_found() {
         let (store, _key_store) = crypto_test_store();
 
         let result = load_any::<CommitTestStore, SecretThing>(&store, crate::EntityId::new()).await;
+
+        assert!(result.unwrap_err().is_not_found());
+    }
+
+    #[tokio::test]
+    async fn load_any_of_a_fully_encrypted_aggregate_with_committed_data_and_no_key_is_key_not_found(
+    ) {
+        let (store, key_store) = crypto_test_store();
+        let id = crate::EntityId::new();
+        let mut agg = AggregateRoot::<SecretThing>::new(id);
+        agg.apply(SecretCreated {
+            email: "alice@example.com".into(),
+        })
+        .unwrap();
+        store.commit(&mut agg).await.unwrap();
+        key_store.delete_key(id.as_uuid()).await.unwrap();
+
+        let result = load_any::<CommitTestStore, SecretThing>(&store, id).await;
 
         assert!(result.unwrap_err().is_key_not_found());
     }

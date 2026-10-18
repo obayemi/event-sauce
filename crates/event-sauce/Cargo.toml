@@ -119,6 +119,10 @@ name = "commands"
 required-features = ["commands"]
 
 [[test]]
+name = "encrypted_commands"
+required-features = ["commands", "crypto", "memory"]
+
+[[test]]
 name = "unit_of_work"
 required-features = ["unit-of-work", "memory"]
 

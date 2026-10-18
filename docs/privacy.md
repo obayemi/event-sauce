@@ -43,7 +43,7 @@ When you `commit()` events for an encrypted aggregate:
 When you `load()` an encrypted aggregate:
 
 1. The per-aggregate encryption key is fetched from the key store
-2. If the key is missing (deleted), `Error::KeyNotFound` is returned
+2. If the key is missing and the aggregate has committed data (it was deleted), `Error::KeyNotFound` is returned; if nothing was ever committed, the load reports `Error::NotFound` like any other missing aggregate
 3. Encrypted event data and snapshot data are decrypted transparently
 4. The aggregate is reconstructed from the decrypted events as usual
 

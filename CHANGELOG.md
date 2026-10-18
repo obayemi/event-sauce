@@ -302,6 +302,11 @@ explicitly rather than gated behind a major version bump.
 
 ### Fixed
 
+- Loading a fully encrypted aggregate that was never created reports
+  `Error::NotFound` instead of `Error::KeyNotFound`, so
+  `Repository::execute` hands such an aggregate to its create command as
+  `Root::Missing`. `KeyNotFound` is kept for an aggregate that has committed
+  data and lost its key, as with field-level encryption.
 - `PostgresEventStore` now persists `EventMetadata::causation_chain`. It
   used to store the causation id only, so a stored event read back with an
   empty chain and `PolicyRunner::max_cascade_depth` never stopped a
