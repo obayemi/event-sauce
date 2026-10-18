@@ -85,14 +85,11 @@ impl StateData {
             ));
         }
 
-        let aggregate_id = commit.state.aggregate_id;
-        if !commit.claims.is_empty() {
-            self.claims.check(aggregate_id, &commit.claims)?;
-            self.claims.upsert(aggregate_id, &commit.claims);
-        }
-        if commit.clear_claims {
-            self.claims.clear(aggregate_id);
-        }
+        self.claims.stage(
+            commit.state.aggregate_id,
+            &commit.claims,
+            commit.clear_claims,
+        )?;
 
         self.states.insert(key, commit.state.clone());
         Ok(())

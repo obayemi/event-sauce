@@ -360,3 +360,42 @@ async fn test_save_batch_is_all_or_nothing() {
     assert!(!fresh.pending_events().is_empty());
     assert_eq!(repo.load(stale_id).await.unwrap().balance, 6);
 }
+
+#[tokio::test]
+async fn test_event_sourced_claim_conflict_across_aggregates() {
+    let store = Arc::new(InMemoryEventStore::new());
+    let repo = store.repository::<Account>();
+
+    let mut holder = Account::open("frank".to_string(), 0).unwrap();
+    repo.save(&mut holder).await.unwrap();
+
+    let mut challenger = Account::open("frank".to_string(), 0).unwrap();
+    let err = repo.save(&mut challenger).await.unwrap_err();
+    match err {
+        Error::ClaimConflict {
+            claim_type,
+            claim_key,
+            held_by,
+        } => {
+            assert_eq!(claim_type, "Account.owner");
+            assert_eq!(claim_key, json!("frank"));
+            assert_eq!(held_by, Some(holder.entity_id().as_uuid()));
+        }
+        other => panic!("expected ClaimConflict, got {other:?}"),
+    }
+    assert!(!repo.exists(challenger.entity_id()).await.unwrap());
+}
+
+#[tokio::test]
+async fn test_event_sourced_delete_releases_claims() {
+    let store = Arc::new(InMemoryEventStore::new());
+    let repo = store.repository::<Account>();
+
+    let mut holder = Account::open("gina".to_string(), 0).unwrap();
+    repo.save(&mut holder).await.unwrap();
+    let mut closed = holder.close("moving on".to_string()).unwrap();
+    repo.save_deleted(&mut closed).await.unwrap();
+
+    let mut successor = Account::open("gina".to_string(), 0).unwrap();
+    repo.save(&mut successor).await.unwrap();
+}

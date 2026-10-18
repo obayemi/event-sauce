@@ -3,6 +3,7 @@
 //! Provides a fast, thread-safe in-memory implementation of `EventStore`
 //! suitable for testing and development.
 
+use crate::claims::ClaimsData;
 use crate::expectations::check_expectations;
 use async_trait::async_trait;
 use event_sauce_core::{
@@ -10,7 +11,7 @@ use event_sauce_core::{
     SnapshotConfig, StreamCommit, StreamId,
 };
 use futures::stream::{self, Stream};
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -68,6 +69,25 @@ fn check(
     check_expectations(expectations, |stream_id| {
         committed_version(streams, stream_id)
     })
+}
+
+/// Applies every commit's claims to a copy of `claims`, in batch order, so a
+/// later commit sees the claims an earlier one took or released and a
+/// conflict leaves the committed index untouched.
+///
+/// # Errors
+///
+/// Returns a claim conflict on the first claim held by another aggregate.
+fn stage_claims(claims: &ClaimsData, commits: &[StreamCommit]) -> Result<ClaimsData> {
+    let mut staged = claims.clone();
+    for commit in commits {
+        staged.stage(
+            commit.stream_id.aggregate_id(),
+            &commit.claims,
+            commit.clear_claims,
+        )?;
+    }
+    Ok(staged)
 }
 
 /// Appends every commit's events, assigning global positions in batch
@@ -144,6 +164,8 @@ struct InMemoryEventStoreInner {
     /// append write lock (so position order matches insertion order) and start
     /// at 1. Shares `Arc`s with `streams`, avoiding a second copy on append.
     global_events: RwLock<Vec<(Position, Arc<EventEnvelope>)>>,
+    /// Uniqueness claims held by stream aggregates.
+    claims: Mutex<ClaimsData>,
     /// Snapshot configuration
     snapshot_config: SnapshotConfig,
 }
@@ -337,7 +359,8 @@ impl InMemoryEventStore {
     /// # Errors
     ///
     /// Returns `Error::ConcurrencyConflict` if any commit's or any
-    /// expectation's version does not match what is currently stored.
+    /// expectation's version does not match what is currently stored, or a
+    /// claim conflict if a commit claims a value another aggregate holds.
     pub(crate) fn commit_with_expectations(
         &self,
         commits: Vec<StreamCommit>,
@@ -346,8 +369,12 @@ impl InMemoryEventStore {
         let mut streams = self.inner.streams.write();
         let mut global_events = self.inner.global_events.write();
 
+        let mut claims = self.inner.claims.lock();
+
         check(&streams, &commits, expectations)?;
+        let staged_claims = stage_claims(&claims, &commits)?;
         apply(&mut streams, &mut global_events, commits);
+        *claims = staged_claims;
 
         Ok(())
     }
@@ -481,6 +508,7 @@ impl InMemoryEventStoreBuilder {
                 streams: RwLock::new(HashMap::new()),
                 snapshots: RwLock::new(HashMap::new()),
                 global_events: RwLock::new(Vec::new()),
+                claims: Mutex::new(ClaimsData::default()),
                 snapshot_config: self
                     .snapshot_config
                     .unwrap_or_else(|| SnapshotConfig::builder().build()),
@@ -533,8 +561,9 @@ impl EventStore for InMemoryEventStore {
     /// left exactly as it was — no earlier commit in the batch survives a
     /// later one's rejection.
     ///
-    /// Claims are ignored, as [`Self::append`] has always done — this
-    /// backend has no claim store.
+    /// Claims are enforced in the same critical section: a claim held by
+    /// another aggregate rejects the whole batch with a claim conflict, and
+    /// no claim from an earlier commit in it survives.
     async fn append_batch(&self, commits: Vec<StreamCommit>) -> Result<()> {
         self.commit_with_expectations(commits, &[])
     }
@@ -1831,6 +1860,190 @@ mod tests {
                 });
                 outcome?;
             }
+        }
+    }
+
+    mod claims {
+        use super::*;
+        use event_sauce_core::AggregateClaim;
+
+        fn claiming(
+            aggregate_id: Uuid,
+            expected_version: AggregateVersion,
+            claims: Vec<AggregateClaim>,
+        ) -> StreamCommit {
+            let stream_id = StreamId::new("Account", aggregate_id);
+            StreamCommit {
+                claims,
+                ..commit(&stream_id, aggregate_id, "Registered", expected_version)
+            }
+        }
+
+        fn email(value: &str) -> Vec<AggregateClaim> {
+            vec![AggregateClaim::new("Account.email", json!(value))]
+        }
+
+        async fn append_one(store: &InMemoryEventStore, commit: StreamCommit) -> Result<(), Error> {
+            store.append_batch(vec![commit]).await
+        }
+
+        #[tokio::test]
+        async fn test_claim_held_by_another_aggregate_is_refused_and_nothing_written() {
+            let store = InMemoryEventStore::new();
+            append_one(
+                &store,
+                claiming(Uuid::new_v4(), AggregateVersion::initial(), email("a@x")),
+            )
+            .await
+            .unwrap();
+
+            let intruder = Uuid::new_v4();
+            let err = append_one(
+                &store,
+                claiming(intruder, AggregateVersion::initial(), email("a@x")),
+            )
+            .await
+            .unwrap_err();
+
+            assert!(err.is_claim_conflict());
+            assert_eq!(store.all_events().len(), 1);
+            assert_eq!(
+                store
+                    .get_version(StreamId::new("Account", intruder))
+                    .await
+                    .unwrap(),
+                AggregateVersion::initial()
+            );
+        }
+
+        #[tokio::test]
+        async fn test_conflicting_commit_rejects_the_whole_batch() {
+            let store = InMemoryEventStore::new();
+            append_one(
+                &store,
+                claiming(Uuid::new_v4(), AggregateVersion::initial(), email("taken")),
+            )
+            .await
+            .unwrap();
+
+            let first = Uuid::new_v4();
+            let err = store
+                .append_batch(vec![
+                    claiming(first, AggregateVersion::initial(), email("fresh")),
+                    claiming(Uuid::new_v4(), AggregateVersion::initial(), email("taken")),
+                ])
+                .await
+                .unwrap_err();
+
+            assert!(err.is_claim_conflict());
+            assert_eq!(store.all_events().len(), 1);
+            append_one(
+                &store,
+                claiming(Uuid::new_v4(), AggregateVersion::initial(), email("fresh")),
+            )
+            .await
+            .expect("an earlier commit's claim must not survive the rejected batch");
+        }
+
+        #[tokio::test]
+        async fn test_two_commits_in_one_batch_cannot_claim_the_same_value() {
+            let store = InMemoryEventStore::new();
+            let err = store
+                .append_batch(vec![
+                    claiming(Uuid::new_v4(), AggregateVersion::initial(), email("dup")),
+                    claiming(Uuid::new_v4(), AggregateVersion::initial(), email("dup")),
+                ])
+                .await
+                .unwrap_err();
+
+            assert!(err.is_claim_conflict());
+            assert!(store.all_events().is_empty());
+        }
+
+        #[tokio::test]
+        async fn test_same_aggregate_may_reclaim_its_own_value() {
+            let store = InMemoryEventStore::new();
+            let id = Uuid::new_v4();
+            append_one(
+                &store,
+                claiming(id, AggregateVersion::initial(), email("a@x")),
+            )
+            .await
+            .unwrap();
+
+            append_one(&store, claiming(id, AggregateVersion::new(1), email("a@x")))
+                .await
+                .unwrap();
+        }
+
+        #[tokio::test]
+        async fn test_changing_a_claim_releases_the_old_value() {
+            let store = InMemoryEventStore::new();
+            let id = Uuid::new_v4();
+            append_one(
+                &store,
+                claiming(id, AggregateVersion::initial(), email("old")),
+            )
+            .await
+            .unwrap();
+            append_one(&store, claiming(id, AggregateVersion::new(1), email("new")))
+                .await
+                .unwrap();
+
+            append_one(
+                &store,
+                claiming(Uuid::new_v4(), AggregateVersion::initial(), email("old")),
+            )
+            .await
+            .expect("the released value is free for another aggregate");
+            let err = append_one(
+                &store,
+                claiming(Uuid::new_v4(), AggregateVersion::initial(), email("new")),
+            )
+            .await
+            .unwrap_err();
+            assert!(err.is_claim_conflict());
+        }
+
+        #[tokio::test]
+        async fn test_clear_claims_releases_every_claim() {
+            let store = InMemoryEventStore::new();
+            let id = Uuid::new_v4();
+            append_one(
+                &store,
+                claiming(id, AggregateVersion::initial(), email("gone")),
+            )
+            .await
+            .unwrap();
+            let mut tombstone = claiming(id, AggregateVersion::new(1), vec![]);
+            tombstone.clear_claims = true;
+            append_one(&store, tombstone).await.unwrap();
+
+            append_one(
+                &store,
+                claiming(Uuid::new_v4(), AggregateVersion::initial(), email("gone")),
+            )
+            .await
+            .expect("cleared claims are free for another aggregate");
+        }
+
+        #[tokio::test]
+        async fn test_version_conflict_does_not_record_claims() {
+            let store = InMemoryEventStore::new();
+            let err = append_one(
+                &store,
+                claiming(Uuid::new_v4(), AggregateVersion::new(3), email("ghost")),
+            )
+            .await
+            .unwrap_err();
+            assert!(err.is_concurrency_conflict());
+
+            append_one(
+                &store,
+                claiming(Uuid::new_v4(), AggregateVersion::initial(), email("ghost")),
+            )
+            .await
+            .unwrap();
         }
     }
 }

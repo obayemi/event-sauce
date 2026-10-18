@@ -56,6 +56,29 @@ impl ClaimsData {
         }
     }
 
+    /// Applies one commit's claims: checks and upserts `claims` when
+    /// present, then releases everything the aggregate holds if
+    /// `clear_claims` is set.
+    ///
+    /// # Errors
+    ///
+    /// Returns a claim conflict when another aggregate holds one of `claims`.
+    pub(crate) fn stage(
+        &mut self,
+        aggregate_id: Uuid,
+        claims: &[AggregateClaim],
+        clear_claims: bool,
+    ) -> Result<()> {
+        if !claims.is_empty() {
+            self.check(aggregate_id, claims)?;
+            self.upsert(aggregate_id, claims);
+        }
+        if clear_claims {
+            self.clear(aggregate_id);
+        }
+        Ok(())
+    }
+
     pub(crate) fn clear(&mut self, aggregate_id: Uuid) {
         if let Some(held) = self.by_aggregate.remove(&aggregate_id) {
             for entry in held {

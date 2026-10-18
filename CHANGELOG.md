@@ -302,6 +302,13 @@ explicitly rather than gated behind a major version bump.
 
 ### Fixed
 
+- **`InMemoryEventStore` enforces uniqueness claims.** It used to accept
+  every claim, so a duplicate passed in memory but was refused by
+  PostgreSQL. `append` and `append_batch` now refuse a claim held by another
+  aggregate with a claim conflict, release a changed or cleared claim, and
+  reject a whole batch, claims included, when one commit conflicts. The
+  in-memory unit of work refuses a conflicting stream claim atomically. The
+  event store and the state store keep separate claim indexes.
 - Loading a fully encrypted aggregate that was never created reports
   `Error::NotFound` instead of `Error::KeyNotFound`, so
   `Repository::execute` hands such an aggregate to its create command as

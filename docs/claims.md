@@ -189,9 +189,9 @@ This means:
 | Backend | Claims Enforced | Notes |
 |---------|----------------|-------|
 | **PostgreSQL** | Yes | Full transactional enforcement with UNIQUE constraints |
-| **In-Memory** | No | Claims parameters are accepted but not validated |
+| **In-Memory** | Yes | Event streams and state rows each enforce claims atomically per commit or batch |
 
-The in-memory backend is intended for testing. If you need claim enforcement in tests, use the PostgreSQL backend with testcontainers.
+The in-memory event store and state store enforce claims with the same rules as PostgreSQL, so uniqueness tests need no database. Each in-memory store keeps its own claim index: unlike PostgreSQL, where both stores share the `aggregate_claims` table, a value claimed by an event stream is not visible to the state store.
 
 ## Best Practices
 

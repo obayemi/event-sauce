@@ -305,3 +305,35 @@ async fn test_plain_save_still_works_while_no_unit_of_work_runs() {
     );
     assert!(states.load(stream_id).await.unwrap().is_some());
 }
+
+#[tokio::test]
+async fn test_conflicting_stream_claim_rolls_back_the_state_write() {
+    let (store, events, states) = new_store();
+    let claim = || {
+        vec![event_sauce_core::AggregateClaim::new(
+            "Order.ref",
+            serde_json::json!("R1"),
+        )]
+    };
+    let holder = StreamId::new("Order", Uuid::new_v4());
+    let mut first = stream_write(&holder, AggregateVersion::initial());
+    first.claims = claim();
+    events.append_batch(vec![first]).await.unwrap();
+
+    let intruder = StreamId::new("Order", Uuid::new_v4());
+    let state_stream_id = StreamId::new("Product", Uuid::new_v4());
+    let mut write = stream_write(&intruder, AggregateVersion::initial());
+    write.claims = claim();
+    let mut commit = AtomicCommit::new();
+    commit.stream_writes.push(write);
+    commit.state_writes.push(state_commit(&state_stream_id, 1));
+
+    let error = store.commit_atomic(commit).await.unwrap_err();
+
+    assert!(error.is_claim_conflict());
+    assert_eq!(
+        events.get_version(intruder).await.unwrap(),
+        AggregateVersion::initial()
+    );
+    assert!(states.load(state_stream_id).await.unwrap().is_none());
+}
