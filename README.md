@@ -128,69 +128,21 @@ aggregate_command! {
         @clock fn decrement(amount: i32) -> DecrementedEvent { amount };
     }
 }
-```
 
-That's it! Pair your aggregate with a store and start issuing commands:
+// 6. Add a store and start issuing commands
+use event_sauce::memory::InMemoryEventStore;
+use std::sync::Arc;
 
-```rust
-# use event_sauce::prelude::*;
-# use event_sauce::memory::InMemoryEventStore;
-# use serde::{Deserialize, Serialize};
-# use thiserror::Error;
-# use std::sync::Arc;
-# #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, AggregateId)]
-# #[aggregate_id(Counter)]
-# struct CounterId(EntityId);
-# #[derive(AggregateError, Debug, Error)]
-# enum CounterError {
-#     #[error("Invalid amount: {0}")]
-#     InvalidAmount(i32),
-# }
-# #[aggregate(event = "CounterEvent", error = "CounterError")]
-# #[derive(Default, Debug, Serialize, Deserialize)]
-# struct Counter {
-#     #[id]
-#     id: CounterId,
-#     value: i32,
-# }
-# event_sauce::define_events! {
-#     enum CounterEvent for Counter {
-#         Incremented {
-#             amount: i32,
-#         }
-#         @validate |_counter, event| {
-#             if event.amount <= 0 {
-#                 return Err(CounterError::InvalidAmount(event.amount));
-#             }
-#             Ok(())
-#         }
-#         => |counter, event| {
-#             counter.value += event.amount;
-#         },
-#         Decremented {
-#             amount: i32,
-#         }
-#         => |counter, event| {
-#             counter.value -= event.amount;
-#         },
-#     }
-# }
-# event_sauce::aggregate_command! {
-#     impl Counter {
-#         @clock fn increment(amount: i32) -> IncrementedEvent { amount };
-#         @clock fn decrement(amount: i32) -> DecrementedEvent { amount };
-#     }
-# }
-# #[tokio::main]
-# async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
-let store = Arc::new(InMemoryEventStore::builder().build());
-let repo = store.repository::<Counter>();
+#[tokio::main]
+async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let store = Arc::new(InMemoryEventStore::builder().build());
+    let repo = store.repository::<Counter>();
 
-let mut counter = repo.create();
-counter.increment(5)?;
-repo.save(&mut counter).await?;
-# Ok(())
-# }
+    let mut counter = repo.create();
+    counter.increment(5)?;
+    repo.save(&mut counter).await?;
+    Ok(())
+}
 ```
 
 ### Init Events (Type-State Construction)
