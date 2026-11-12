@@ -145,9 +145,9 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-### Init Events (Type-State Construction)
+### Advanced Events
 
-Use `@init` events to enforce that aggregates are always constructed through a valid creation event — no more `Default` with invalid states:
+Init events make an aggregate constructible only through a valid creation event — no more `Default` with invalid states. Actor events require an actor (e.g., a `User`) at command time, with permission validation and an audit trail:
 
 ```rust,ignore
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, AggregateId)]
@@ -165,6 +165,7 @@ struct Order {
 
 define_events! {
     enum OrderEvent for Order {
+        // Init event: the only way to bring an Order into existence
         Created {
             order_id: String,
         }
@@ -179,7 +180,16 @@ define_events! {
             Order { id: id.into(), order_id: event.order_id.clone(), status: OrderStatus::Pending }
         },
 
-        Completed {} => |order, _event| {
+        // Actor event: a User must issue it, and only a clerk may
+        Completed {}
+        @actor(User)
+        @validate |_order, actor, _evt| {
+            if actor.role != Role::Clerk {
+                return Err(OrderError::PermissionDenied);
+            }
+            Ok(())
+        }
+        => |order, _event| {
             order.status = OrderStatus::Completed;
         },
     }
@@ -188,51 +198,18 @@ define_events! {
 aggregate_command! {
     impl Order {
         @clock @init fn create_order(order_id: String) -> CreatedEvent { order_id };
-        @clock fn complete() -> CompletedEvent {};
+        @clock @actor(User) fn complete() -> CompletedEvent {};
     }
 }
 
 // Creation returns AggregateRoot<Order> directly
 let mut order = Order::create_order("ORD-001".into())?;
-order.complete()?;
+// The actor is validated, then stored in EventEnvelope::created_by
+order.complete(&clerk)?;
 ```
 
-Multiple init variants are supported for different creation paths (e.g., `CreatedByAdmin` vs `CreatedByInvite`).
-
-### Actor Events (Permission Validation)
-
-Require an actor (e.g., a `User`) for specific commands, with automatic permission validation and audit trail:
-
-```rust,ignore
-define_events! {
-    pub enum DocumentEvent for Document {
-        ContentUpdated {
-            content: String,
-        }
-        @actor(User)
-        @validate |_doc, actor, _evt| {
-            if actor.role == Role::Viewer {
-                return Err(DocumentError::PermissionDenied);
-            }
-            Ok(())
-        }
-        => |doc, event| {
-            doc.content = event.content.clone();
-        },
-    }
-}
-
-aggregate_command! {
-    impl Document {
-        @clock @actor(User) fn update_content(content: String) -> ContentUpdatedEvent { content };
-    }
-}
-
-// Actor required at command time — validated, then stored in EventEnvelope::created_by
-doc.update_content(&editor, "new content".into())?;
-```
-
-Actor validation is **skipped during replay** — events are historical facts, only fresh commands validate permissions.
+- Multiple init variants are supported for different creation paths (e.g., `CreatedByAdmin` vs `CreatedByInvite`).
+- Actor validation is **skipped during replay** — events are historical facts, only fresh commands validate permissions.
 
 ### Policies (Cross-Aggregate Orchestration)
 
