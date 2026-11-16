@@ -191,7 +191,7 @@ impl LoginStore for FakeLoginStore {
 
 /// Credentials that demand a second factor when `second_factor` is set.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct SecondFactorCredentials {
+pub struct SecondFactorCredentials {
     pub(crate) second_factor: bool,
 }
 
@@ -209,4 +209,76 @@ impl HasSecondFactor for SecondFactorCredentials {
     fn requires_second_factor(&self) -> bool {
         self.second_factor
     }
+}
+
+/// A user aggregate with just enough state to tell two versions apart.
+#[cfg(feature = "moka")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CacheUser {
+    pub id: EntityId,
+    pub identity: crate::Identity<SecondFactorCredentials>,
+    pub name: String,
+}
+
+#[cfg(feature = "moka")]
+impl event_sauce_core::Entity for CacheUser {
+    fn entity_id(&self) -> EntityId {
+        self.id
+    }
+}
+
+#[cfg(feature = "moka")]
+#[derive(Debug, thiserror::Error)]
+#[error("cache user error")]
+pub struct CacheUserError;
+
+#[cfg(feature = "moka")]
+impl event_sauce_core::AggregateError for CacheUserError {}
+
+#[cfg(feature = "moka")]
+impl event_sauce_core::Aggregate for CacheUser {
+    type Event = CacheUserEvent;
+    type Error = CacheUserError;
+    type DeletedState = Self;
+}
+
+#[cfg(feature = "moka")]
+impl crate::UserAggregate for CacheUser {
+    type Credentials = SecondFactorCredentials;
+
+    fn identity(&self) -> &crate::Identity<SecondFactorCredentials> {
+        &self.identity
+    }
+}
+
+#[cfg(feature = "moka")]
+event_sauce_core::define_events! {
+    pub enum CacheUserEvent for CacheUser {
+        Renamed {
+            name: String,
+        } => |user, event| {
+            user.name.clone_from(&event.name);
+        },
+    }
+}
+
+/// A stored user at `version`, as a repository would load it.
+#[cfg(feature = "moka")]
+pub(crate) fn cache_user_at(
+    id: EntityId,
+    name: &str,
+    version: i64,
+) -> event_sauce_core::AggregateRoot<CacheUser> {
+    let version =
+        event_sauce_core::StoredVersion::try_from(event_sauce_core::AggregateVersion::new(version))
+            .expect("a stored version is positive");
+    event_sauce_core::AggregateRoot::restore(
+        version,
+        CacheUser {
+            id,
+            identity: crate::Identity::Anonymous,
+            name: name.to_owned(),
+        },
+    )
+    .expect("a user restores from itself")
 }

@@ -30,6 +30,9 @@
 //! - [`SecondFactor`] proves a login a second time, with `Totp` (feature `totp`)
 //!   ready-made, and [`TwoFactor`] holds back the logins that require one
 //!   until [`ClaimAuthenticator::complete`] finishes them.
+//! - [`UserCache`] keeps loaded users, checked against the stored version on every
+//!   read, with `MokaUserCache` (feature `moka`) and `RedisUserCache` (feature
+//!   `redis`) ready-made. [`CachedUserLoader`] resolves the current user through it.
 //! - [`Authenticator`] turns an attempt into a [`LoginOutcome`], and
 //!   [`ClaimAuthenticator`] is the generic implementation over any event store.
 //!
@@ -50,6 +53,7 @@
 #[cfg(feature = "argon2")]
 mod argon2_hasher;
 mod authenticator;
+mod cached_user_loader;
 mod capabilities;
 mod clock;
 mod credentials;
@@ -63,6 +67,8 @@ mod login_method;
 mod login_store;
 #[cfg(any(feature = "postgres", feature = "redis"))]
 mod login_ttl;
+#[cfg(feature = "moka")]
+mod moka_user_cache;
 mod non_empty;
 mod password;
 mod password_hash;
@@ -75,6 +81,8 @@ mod pending_login;
 mod postgres_login_store;
 #[cfg(feature = "redis")]
 mod redis_login_store;
+#[cfg(feature = "redis")]
+mod redis_user_cache;
 mod second_factor;
 #[cfg(test)]
 mod test_support;
@@ -82,6 +90,7 @@ mod test_support;
 mod totp;
 mod two_factor;
 mod user;
+mod user_cache;
 mod username;
 
 #[cfg(feature = "argon2")]
@@ -89,6 +98,7 @@ pub use argon2_hasher::Argon2Hasher;
 pub use authenticator::{
     AuthError, Authenticator, ClaimAuthenticator, CompleteError, LoginOutcome,
 };
+pub use cached_user_loader::CachedUserLoader;
 pub use capabilities::{HasFederated, HasPassword};
 pub use clock::{Clock, FixedClock, SystemClock};
 pub use credentials::{Credentials, Digest, Sha256};
@@ -100,6 +110,8 @@ pub use identity::{Identity, IdentityError};
 pub use login_id::LoginId;
 pub use login_method::{ClaimLocator, LocateError, LoginMethod, Rejected};
 pub use login_store::{LoginKey, LoginStore, LoginStoreError};
+#[cfg(feature = "moka")]
+pub use moka_user_cache::MokaUserCache;
 pub use non_empty::{EmptyError, NonEmpty};
 pub use password::Password;
 pub use password_hash::{PasswordHash, PasswordHashError};
@@ -112,9 +124,12 @@ pub use pending_login::{PendingLogin, PendingLoginError, PendingLoginId, Pending
 pub use postgres_login_store::{InvalidSchemaName, PostgresLoginStore};
 #[cfg(feature = "redis")]
 pub use redis_login_store::RedisLoginStore;
+#[cfg(feature = "redis")]
+pub use redis_user_cache::RedisUserCache;
 pub use second_factor::{HasSecondFactor, SecondFactor};
 #[cfg(feature = "totp")]
 pub use totp::{HasTotp, Totp, TotpSecret};
 pub use two_factor::{LoginStage, NoSecondFactor, TwoFactor};
 pub use user::UserAggregate;
+pub use user_cache::{CacheError, UserCache};
 pub use username::{Username, UsernameError};

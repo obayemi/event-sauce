@@ -13,8 +13,9 @@ categories = ["authentication"]
 [features]
 default = ["argon2", "postgres"]
 argon2 = ["dep:argon2"]
+moka = ["dep:moka"]
 postgres = ["dep:sqlx"]
-redis = ["dep:redis"]
+redis = ["dep:redis", "dep:zeroize"]
 totp = ["dep:totp-rs"]
 
 [dependencies]
@@ -23,6 +24,7 @@ argon2 = { workspace = true, optional = true }
 async-trait.workspace = true
 chrono.workspace = true
 email_address.workspace = true
+moka = { workspace = true, optional = true }
 phc.workspace = true
 redis = { workspace = true, optional = true }
 secrecy.workspace = true
@@ -32,10 +34,12 @@ sha2.workspace = true
 sqlx = { workspace = true, optional = true, features = ["postgres"] }
 thiserror.workspace = true
 totp-rs = { workspace = true, optional = true }
+tracing.workspace = true
 uuid.workspace = true
+zeroize = { workspace = true, optional = true }
 
 [dev-dependencies]
-event-sauce-memory = { path = "../event-sauce-memory", version = "0.1.0" }
+event-sauce-memory = { path = "../event-sauce-memory", version = "0.1.0", features = ["crypto"] }
 proptest.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time"] }
 testcontainers.workspace = true
@@ -57,3 +61,11 @@ required-features = ["redis"]
 [[test]]
 name = "second_factor"
 required-features = ["argon2", "totp"]
+
+[[test]]
+name = "user_cache"
+required-features = ["moka"]
+
+[[test]]
+name = "redis_user_cache"
+required-features = ["redis"]
