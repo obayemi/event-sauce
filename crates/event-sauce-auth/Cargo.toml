@@ -11,8 +11,10 @@ keywords = ["event-sourcing", "authentication", "login", "identity"]
 categories = ["authentication"]
 
 [features]
-default = ["argon2"]
+default = ["argon2", "postgres"]
 argon2 = ["dep:argon2"]
+postgres = ["dep:sqlx"]
+redis = ["dep:redis"]
 
 [dependencies]
 event-sauce-core = { path = "../event-sauce-core", version = "0.1.0" }
@@ -20,19 +22,31 @@ argon2 = { workspace = true, optional = true }
 async-trait.workspace = true
 email_address.workspace = true
 phc.workspace = true
+redis = { workspace = true, optional = true }
 secrecy.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+sqlx = { workspace = true, optional = true, features = ["postgres"] }
 thiserror.workspace = true
 
 [dev-dependencies]
 event-sauce-memory = { path = "../event-sauce-memory", version = "0.1.0" }
 chrono.workspace = true
 proptest.workspace = true
-tokio = { workspace = true, features = ["macros", "rt"] }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time"] }
+testcontainers.workspace = true
+testcontainers-modules = { workspace = true, features = ["postgres", "redis"] }
 tokio-test.workspace = true
 
 [[test]]
 name = "claim_authenticator"
 required-features = ["argon2"]
+
+[[test]]
+name = "postgres_login_store"
+required-features = ["postgres"]
+
+[[test]]
+name = "redis_login_store"
+required-features = ["redis"]

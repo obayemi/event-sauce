@@ -23,6 +23,10 @@
 //! - [`LoginMethod`] locates a user and verifies an attempt, with
 //!   [`PasswordLogin`], [`FederatedLogin`] and [`PasswordOrFederatedLogin`]
 //!   ready-made.
+//! - [`LoginStore`] keeps the short-lived state of logins in progress, with
+//!   `PostgresLoginStore` (feature `postgres`) and `RedisLoginStore` (feature
+//!   `redis`) as the only implementations: state that is not shared between
+//!   instances would break a login in progress.
 //! - [`Authenticator`] turns an attempt into a [`LoginOutcome`], and
 //!   [`ClaimAuthenticator`] is the generic implementation over any event store.
 //!
@@ -52,6 +56,9 @@ mod federated_login;
 mod identity;
 mod login_id;
 mod login_method;
+mod login_store;
+#[cfg(any(feature = "postgres", feature = "redis"))]
+mod login_ttl;
 mod non_empty;
 mod password;
 mod password_hash;
@@ -59,6 +66,10 @@ mod password_hasher;
 mod password_login;
 mod password_or_federated;
 mod password_or_federated_login;
+#[cfg(feature = "postgres")]
+mod postgres_login_store;
+#[cfg(feature = "redis")]
+mod redis_login_store;
 #[cfg(test)]
 mod test_support;
 mod user;
@@ -76,6 +87,7 @@ pub use federated_login::{FederatedLogin, VerifiedFederated};
 pub use identity::{Identity, IdentityError};
 pub use login_id::LoginId;
 pub use login_method::{ClaimLocator, LocateError, LoginMethod, Rejected};
+pub use login_store::{LoginKey, LoginStore, LoginStoreError};
 pub use non_empty::{EmptyError, NonEmpty};
 pub use password::Password;
 pub use password_hash::{PasswordHash, PasswordHashError};
@@ -83,5 +95,9 @@ pub use password_hasher::{HashError, PasswordHasher};
 pub use password_login::{PasswordAttempt, PasswordLogin};
 pub use password_or_federated::PasswordOrFederated;
 pub use password_or_federated_login::{PasswordOrFederatedAttempt, PasswordOrFederatedLogin};
+#[cfg(feature = "postgres")]
+pub use postgres_login_store::{InvalidSchemaName, PostgresLoginStore};
+#[cfg(feature = "redis")]
+pub use redis_login_store::RedisLoginStore;
 pub use user::UserAggregate;
 pub use username::{Username, UsernameError};
