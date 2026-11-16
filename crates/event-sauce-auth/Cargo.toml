@@ -1,0 +1,23 @@
+[package]
+name = "event-sauce-auth"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Pluggable credentials and login identity for event-sauce user aggregates"
+keywords = ["event-sourcing", "authentication", "login", "identity"]
+categories = ["authentication"]
+
+[dependencies]
+event-sauce-core = { path = "../event-sauce-core", version = "0.1.0" }
+email_address.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+chrono.workspace = true
+proptest.workspace = true
