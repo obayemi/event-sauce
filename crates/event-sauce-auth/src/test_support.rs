@@ -5,15 +5,20 @@ use std::{
     fmt::Write as _,
     sync::{
         atomic::{AtomicUsize, Ordering},
-        Arc,
+        Arc, Mutex,
     },
+    time::Duration,
 };
 
 use async_trait::async_trait;
 use event_sauce_core::{AggregateClaim, EntityId};
 use secrecy::{ExposeSecret, SecretString};
+use serde::{Deserialize, Serialize};
 
-use crate::{ClaimLocator, Digest, HashError, LocateError, PasswordHash, PasswordHasher, Sha256};
+use crate::{
+    ClaimLocator, Credentials, Digest, HasSecondFactor, HashError, LocateError, LoginKey,
+    LoginStore, LoginStoreError, PasswordHash, PasswordHasher, Sha256,
+};
 
 pub(crate) fn secret(raw: &str) -> SecretString {
     SecretString::from(raw)
@@ -92,4 +97,116 @@ pub(crate) fn fake_phc(password: &SecretString) -> String {
         hex
     });
     format!("$fake$c29tZXNhbHRzYWx0${hex}")
+}
+
+/// A login store held in a map that remembers the ttl of every entry.
+#[derive(Debug, Default)]
+pub(crate) struct FakeLoginStore {
+    entries: Mutex<HashMap<String, (Vec<u8>, Duration)>>,
+    broken: bool,
+}
+
+impl FakeLoginStore {
+    pub(crate) fn broken() -> Self {
+        Self {
+            broken: true,
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn ttl_of(&self, key: &LoginKey) -> Option<Duration> {
+        self.entries
+            .lock()
+            .unwrap()
+            .get(key.as_str())
+            .map(|(_, ttl)| *ttl)
+    }
+
+    #[cfg(feature = "totp")]
+    pub(crate) fn ttls(&self) -> Vec<Duration> {
+        self.entries
+            .lock()
+            .unwrap()
+            .values()
+            .map(|(_, ttl)| *ttl)
+            .collect()
+    }
+
+    #[cfg(feature = "totp")]
+    pub(crate) fn keys(&self) -> Vec<String> {
+        self.entries.lock().unwrap().keys().cloned().collect()
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.entries.lock().unwrap().len()
+    }
+
+    fn check(&self) -> Result<(), LoginStoreError> {
+        if self.broken {
+            return Err(LoginStoreError::backend(
+                "fake store",
+                std::io::Error::other("broken"),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl LoginStore for FakeLoginStore {
+    async fn put(
+        &self,
+        key: &LoginKey,
+        value: &[u8],
+        ttl: Duration,
+    ) -> Result<(), LoginStoreError> {
+        self.check()?;
+        self.entries
+            .lock()
+            .unwrap()
+            .insert(key.as_str().to_owned(), (value.to_vec(), ttl));
+        Ok(())
+    }
+
+    async fn take(&self, key: &LoginKey) -> Result<Option<Vec<u8>>, LoginStoreError> {
+        self.check()?;
+        Ok(self
+            .entries
+            .lock()
+            .unwrap()
+            .remove(key.as_str())
+            .map(|(value, _)| value))
+    }
+
+    async fn mark_once(&self, key: &LoginKey, ttl: Duration) -> Result<bool, LoginStoreError> {
+        self.check()?;
+        let mut entries = self.entries.lock().unwrap();
+        if entries.contains_key(key.as_str()) {
+            return Ok(false);
+        }
+        entries.insert(key.as_str().to_owned(), (Vec::new(), ttl));
+        Ok(true)
+    }
+}
+
+/// Credentials that demand a second factor when `second_factor` is set.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct SecondFactorCredentials {
+    pub(crate) second_factor: bool,
+}
+
+impl Credentials for SecondFactorCredentials {
+    fn claims(&self) -> Vec<AggregateClaim> {
+        Vec::new()
+    }
+
+    fn fingerprint(&self, digest: &mut Sha256) {
+        digest.update([u8::from(self.second_factor)]);
+    }
+}
+
+impl HasSecondFactor for SecondFactorCredentials {
+    fn requires_second_factor(&self) -> bool {
+        self.second_factor
+    }
 }

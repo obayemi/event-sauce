@@ -66,7 +66,7 @@ async fn verify_accepts_the_stored_password() {
         .verify(&identity, &attempt("ada@example.com", "correct-horse"))
         .await;
 
-    assert_eq!(result, Ok(()));
+    assert!(result.is_ok());
 }
 
 #[tokio::test]
@@ -79,7 +79,7 @@ async fn verify_rejects_another_password() {
         .verify(&identity, &attempt("ada@example.com", "battery-staple"))
         .await;
 
-    assert_eq!(result, Err(Rejected::Mismatch));
+    assert!(matches!(result, Err(Rejected::Mismatch)));
 }
 
 #[tokio::test]
@@ -94,7 +94,7 @@ async fn verify_rejects_an_anonymous_user_after_a_dummy_verification() {
         )
         .await;
 
-    assert_eq!(result, Err(Rejected::Mismatch));
+    assert!(matches!(result, Err(Rejected::Mismatch)));
     assert_eq!(hasher.verified(), 1);
 }
 
@@ -110,7 +110,7 @@ async fn verify_rejects_a_user_without_a_password_after_a_dummy_verification() {
         .verify(&identity, &attempt("ada@example.com", "pw"))
         .await;
 
-    assert_eq!(result, Err(Rejected::Mismatch));
+    assert!(matches!(result, Err(Rejected::Mismatch)));
     assert_eq!(hasher.verified(), 1);
 }
 
@@ -125,7 +125,7 @@ async fn verify_surfaces_a_hasher_failure() {
         .verify(&identity, &attempt("ada@example.com", "correct-horse"))
         .await;
 
-    assert_eq!(result, Err(Rejected::Hash(HashError("broken".into()))));
+    assert!(matches!(result, Err(Rejected::Hash(HashError(ref cause))) if cause == "broken"));
 }
 
 #[tokio::test]
@@ -198,5 +198,5 @@ async fn an_app_defined_credentials_type_logs_in_through_password_login() {
     });
     let attempt = PasswordAttempt::new(Username::parse("ADA").unwrap(), secret("correct-horse"));
 
-    assert_eq!(method.verify(&identity, &attempt).await, Ok(()));
+    assert!(method.verify(&identity, &attempt).await.is_ok());
 }

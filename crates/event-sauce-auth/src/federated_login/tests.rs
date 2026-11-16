@@ -57,7 +57,7 @@ async fn verify_accepts_a_linked_subject() {
         )
         .await;
 
-    assert_eq!(result, Ok(()));
+    assert!(result.is_ok());
 }
 
 #[tokio::test]
@@ -66,7 +66,7 @@ async fn verify_rejects_a_subject_that_is_not_linked() {
         .verify(&linked(&[google("g-1")]), &attempt(google("g-2")))
         .await;
 
-    assert_eq!(result, Err(Rejected::Mismatch));
+    assert!(matches!(result, Err(Rejected::Mismatch)));
 }
 
 #[tokio::test]
@@ -78,7 +78,7 @@ async fn verify_rejects_the_same_subject_at_another_provider() {
         )
         .await;
 
-    assert_eq!(result, Err(Rejected::Mismatch));
+    assert!(matches!(result, Err(Rejected::Mismatch)));
 }
 
 #[tokio::test]
@@ -87,7 +87,7 @@ async fn verify_rejects_an_anonymous_user() {
         .verify(&Identity::<Federated>::Anonymous, &attempt(google("g-1")))
         .await;
 
-    assert_eq!(result, Err(Rejected::Mismatch));
+    assert!(matches!(result, Err(Rejected::Mismatch)));
 }
 
 #[tokio::test]
@@ -102,5 +102,5 @@ async fn verify_rejects_a_user_with_no_federated_links() {
         .verify(&identity, &attempt(google("g-1")))
         .await;
 
-    assert_eq!(result, Err(Rejected::Mismatch));
+    assert!(matches!(result, Err(Rejected::Mismatch)));
 }

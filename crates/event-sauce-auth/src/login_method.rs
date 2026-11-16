@@ -3,13 +3,13 @@
 use async_trait::async_trait;
 use event_sauce_core::{AggregateClaim, EntityId, EventStore};
 
-use crate::{Credentials, HashError, Identity};
+use crate::{Credentials, HashError, Identity, LoginStoreError};
 
 /// Why a user could not be located.
 pub type LocateError = event_sauce_core::Error;
 
 /// Why a login attempt was rejected by a method.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, thiserror::Error)]
 pub enum Rejected {
     /// The attempt does not prove the identity it names.
     #[error("credentials do not match")]
@@ -17,6 +17,9 @@ pub enum Rejected {
     /// The attempt could not be checked because hashing failed.
     #[error(transparent)]
     Hash(#[from] HashError),
+    /// The attempt could not be checked because the login store failed.
+    #[error(transparent)]
+    LoginStore(#[from] LoginStoreError),
 }
 
 /// Finds the user holding a claim.

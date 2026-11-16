@@ -7,7 +7,10 @@ use async_trait::async_trait;
 use event_sauce_core::{Aggregate, AggregateRoot, EventSourcedRepository, EventStore, Repository};
 use serde::{de::DeserializeOwned, Serialize};
 
-use crate::{HashError, LoginMethod, Rejected, UserAggregate};
+use crate::{
+    HasSecondFactor, HashError, LoginMethod, LoginStage, NoSecondFactor, PendingLoginError,
+    PendingLoginId, Rejected, SecondFactor, TwoFactor, UserAggregate,
+};
 
 /// What a successful first step of a login yields.
 #[derive(Debug)]
@@ -15,6 +18,11 @@ use crate::{HashError, LoginMethod, Rejected, UserAggregate};
 pub enum LoginOutcome<U: Aggregate> {
     /// Fully authenticated: the caller may open a session.
     Authenticated(AggregateRoot<U>),
+    /// First factor accepted, a second one is required.
+    ///
+    /// No session exists yet. The caller sends the client to prove the
+    /// second factor and passes the id to [`ClaimAuthenticator::complete`].
+    SecondFactorRequired(PendingLoginId),
 }
 
 /// Why an attempt did not authenticate.
@@ -42,6 +50,9 @@ pub enum AuthError<A> {
     /// Hashing failed.
     #[error(transparent)]
     Hash(#[from] HashError),
+    /// The login store failed while the login was being held or checked.
+    #[error(transparent)]
+    Pending(#[from] PendingLoginError),
 }
 
 impl<A> From<Rejected> for AuthError<A> {
@@ -49,6 +60,42 @@ impl<A> From<Rejected> for AuthError<A> {
         match rejected {
             Rejected::Mismatch => Self::InvalidCredentials,
             Rejected::Hash(error) => Self::Hash(error),
+            Rejected::LoginStore(error) => Self::Pending(error.into()),
+        }
+    }
+}
+
+/// Why a pending login did not complete.
+#[derive(Debug, thiserror::Error)]
+pub enum CompleteError {
+    /// No such login is waiting: it is unknown, expired or already used.
+    #[error("no login is in progress")]
+    NotInProgress,
+    /// The user may no longer log in.
+    #[error("account inactive")]
+    Inactive,
+    /// The response does not prove the second factor.
+    ///
+    /// The pending login is used up: the user must start over.
+    #[error("invalid second factor response")]
+    InvalidResponse,
+    /// The user store failed.
+    #[error(transparent)]
+    Store(#[from] event_sauce_core::Error),
+    /// Hashing failed.
+    #[error(transparent)]
+    Hash(#[from] HashError),
+    /// The login store failed.
+    #[error(transparent)]
+    Pending(#[from] PendingLoginError),
+}
+
+impl From<Rejected> for CompleteError {
+    fn from(rejected: Rejected) -> Self {
+        match rejected {
+            Rejected::Mismatch => Self::InvalidResponse,
+            Rejected::Hash(error) => Self::Hash(error),
+            Rejected::LoginStore(error) => Self::Pending(error.into()),
         }
     }
 }
@@ -80,12 +127,19 @@ pub trait Authenticator<U: UserAggregate>: Send + Sync {
 ///    attempt comes back in [`AuthError::Unknown`];
 /// 3. the user is loaded, which decrypts it and replays from its snapshot;
 /// 4. an inactive user is refused, whatever the method;
-/// 5. the method verifies the attempt against the identity.
+/// 5. the method verifies the attempt against the identity;
+/// 6. when the credentials require a second factor, the login is held and
+///    [`LoginOutcome::SecondFactorRequired`] comes back, otherwise the user
+///    is authenticated.
+///
+/// Step 6 only happens once [`ClaimAuthenticator::with_second_factor`] has
+/// been called. [`ClaimAuthenticator::complete`] finishes a held login.
 #[derive(Debug)]
-pub struct ClaimAuthenticator<U, M, S> {
+pub struct ClaimAuthenticator<U, M, S, T = NoSecondFactor> {
     repository: EventSourcedRepository<S, U>,
     store: Arc<S>,
     method: M,
+    stage: T,
     user: PhantomData<fn() -> U>,
 }
 
@@ -105,19 +159,85 @@ where
             repository: EventSourcedRepository::new(store.clone()),
             store,
             method,
+            stage: NoSecondFactor,
             user: PhantomData,
         }
     }
 }
 
+impl<U, M, S> ClaimAuthenticator<U, M, S> {
+    /// Holds the logins whose credentials require a second factor, which
+    /// `stage` checks.
+    ///
+    /// Only credentials that implement [`HasSecondFactor`] can take one.
+    #[must_use]
+    pub fn with_second_factor<F>(
+        self,
+        stage: TwoFactor<F>,
+    ) -> ClaimAuthenticator<U, M, S, TwoFactor<F>>
+    where
+        U: UserAggregate,
+        U::Credentials: HasSecondFactor,
+        F: SecondFactor<U::Credentials>,
+    {
+        ClaimAuthenticator {
+            repository: self.repository,
+            store: self.store,
+            method: self.method,
+            stage,
+            user: PhantomData,
+        }
+    }
+}
+
+impl<U, M, S, F> ClaimAuthenticator<U, M, S, TwoFactor<F>>
+where
+    S: EventStore + 'static,
+    U: UserAggregate + Serialize + DeserializeOwned,
+    U::Credentials: HasSecondFactor,
+    U::DeletedState: Serialize + DeserializeOwned,
+    U::Event: Serialize + DeserializeOwned,
+    F: SecondFactor<U::Credentials>,
+{
+    /// Completes the login held under `pending` with the client's `response`
+    /// to the second factor.
+    ///
+    /// The pending login is used up as soon as it is read, so every id gets
+    /// one attempt and a wrong response ends the login. The user is reloaded
+    /// and must still be active.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CompleteError`] when the login is not in progress, the user
+    /// is inactive, or the response does not prove the second factor.
+    pub async fn complete(
+        &self,
+        pending: PendingLoginId,
+        response: &F::Response,
+    ) -> Result<AggregateRoot<U>, CompleteError> {
+        let held = self
+            .stage
+            .take::<U::Credentials>(pending)
+            .await?
+            .ok_or(CompleteError::NotInProgress)?;
+        let user = self.repository.load_by_id(held.user).await?;
+        if !user.is_active() {
+            return Err(CompleteError::Inactive);
+        }
+        self.stage.verify(user.identity(), &held, response).await?;
+        Ok(user)
+    }
+}
+
 #[async_trait]
-impl<U, M, S> Authenticator<U> for ClaimAuthenticator<U, M, S>
+impl<U, M, S, T> Authenticator<U> for ClaimAuthenticator<U, M, S, T>
 where
     S: EventStore + 'static,
     U: UserAggregate + Serialize + DeserializeOwned,
     U::DeletedState: Serialize + DeserializeOwned,
     U::Event: Serialize + DeserializeOwned,
     M: LoginMethod<U::Credentials>,
+    T: LoginStage<U::Credentials>,
 {
     type Attempt = M::Attempt;
 
@@ -134,6 +254,12 @@ where
             return Err(AuthError::Inactive);
         }
         self.method.verify(user.identity(), &attempt).await?;
-        Ok(LoginOutcome::Authenticated(user))
+        match self.stage.begin(user.entity_id(), user.identity()).await? {
+            Some(pending) => Ok(LoginOutcome::SecondFactorRequired(pending)),
+            None => Ok(LoginOutcome::Authenticated(user)),
+        }
     }
 }
+
+#[cfg(test)]
+mod tests;

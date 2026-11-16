@@ -78,7 +78,7 @@ async fn a_user_with_both_logs_in_with_either() {
         .verify(&identity, &federated(Provider::GOOGLE, "g-1"))
         .await;
 
-    assert_eq!((with_password, with_google), (Ok(()), Ok(())));
+    assert!(with_password.is_ok() && with_google.is_ok());
 }
 
 #[tokio::test]
@@ -94,10 +94,8 @@ async fn each_attempt_is_checked_by_its_own_method() {
         .verify(&identity, &federated(Provider::GOOGLE, "g-2"))
         .await;
 
-    assert_eq!(
-        (wrong_password, wrong_subject),
-        (Err(Rejected::Mismatch), Err(Rejected::Mismatch))
-    );
+    assert!(matches!(wrong_password, Err(Rejected::Mismatch)));
+    assert!(matches!(wrong_subject, Err(Rejected::Mismatch)));
 }
 
 #[tokio::test]
@@ -112,7 +110,7 @@ async fn a_federated_only_user_cannot_log_in_with_a_password() {
         .verify(&identity, &password("ada@example.com", "pw"))
         .await;
 
-    assert_eq!(result, Err(Rejected::Mismatch));
+    assert!(matches!(result, Err(Rejected::Mismatch)));
 }
 
 #[tokio::test]

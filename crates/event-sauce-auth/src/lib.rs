@@ -27,6 +27,9 @@
 //!   `PostgresLoginStore` (feature `postgres`) and `RedisLoginStore` (feature
 //!   `redis`) as the only implementations: state that is not shared between
 //!   instances would break a login in progress.
+//! - [`SecondFactor`] proves a login a second time, with `Totp` (feature `totp`)
+//!   ready-made, and [`TwoFactor`] holds back the logins that require one
+//!   until [`ClaimAuthenticator::complete`] finishes them.
 //! - [`Authenticator`] turns an attempt into a [`LoginOutcome`], and
 //!   [`ClaimAuthenticator`] is the generic implementation over any event store.
 //!
@@ -48,6 +51,7 @@
 mod argon2_hasher;
 mod authenticator;
 mod capabilities;
+mod clock;
 mod credentials;
 mod email;
 mod error;
@@ -66,19 +70,27 @@ mod password_hasher;
 mod password_login;
 mod password_or_federated;
 mod password_or_federated_login;
+mod pending_login;
 #[cfg(feature = "postgres")]
 mod postgres_login_store;
 #[cfg(feature = "redis")]
 mod redis_login_store;
+mod second_factor;
 #[cfg(test)]
 mod test_support;
+#[cfg(feature = "totp")]
+mod totp;
+mod two_factor;
 mod user;
 mod username;
 
 #[cfg(feature = "argon2")]
 pub use argon2_hasher::Argon2Hasher;
-pub use authenticator::{AuthError, Authenticator, ClaimAuthenticator, LoginOutcome};
+pub use authenticator::{
+    AuthError, Authenticator, ClaimAuthenticator, CompleteError, LoginOutcome,
+};
 pub use capabilities::{HasFederated, HasPassword};
+pub use clock::{Clock, FixedClock, SystemClock};
 pub use credentials::{Credentials, Digest, Sha256};
 pub use email::{Email, EmailError};
 pub use error::LoginMethodError;
@@ -95,9 +107,14 @@ pub use password_hasher::{HashError, PasswordHasher};
 pub use password_login::{PasswordAttempt, PasswordLogin};
 pub use password_or_federated::PasswordOrFederated;
 pub use password_or_federated_login::{PasswordOrFederatedAttempt, PasswordOrFederatedLogin};
+pub use pending_login::{PendingLogin, PendingLoginError, PendingLoginId, PendingLogins};
 #[cfg(feature = "postgres")]
 pub use postgres_login_store::{InvalidSchemaName, PostgresLoginStore};
 #[cfg(feature = "redis")]
 pub use redis_login_store::RedisLoginStore;
+pub use second_factor::{HasSecondFactor, SecondFactor};
+#[cfg(feature = "totp")]
+pub use totp::{HasTotp, Totp, TotpSecret};
+pub use two_factor::{LoginStage, NoSecondFactor, TwoFactor};
 pub use user::UserAggregate;
 pub use username::{Username, UsernameError};
