@@ -1887,6 +1887,10 @@ mod tests {
             vec![AggregateClaim::new("Account.email", json!(value))]
         }
 
+        async fn email_holder(store: &InMemoryEventStore, value: &str) -> Option<EntityId> {
+            store.resolve_claim(&email(value)[0]).await.unwrap()
+        }
+
         async fn append_one(store: &InMemoryEventStore, commit: StreamCommit) -> Result<(), Error> {
             store.append_batch(vec![commit]).await
         }
@@ -2061,10 +2065,7 @@ mod tests {
             .await
             .unwrap();
 
-            let holder = store
-                .resolve_claim(&AggregateClaim::new("Account.email", json!("a@x")))
-                .await
-                .unwrap();
+            let holder = email_holder(&store, "a@x").await;
 
             assert_eq!(holder, Some(EntityId::from(id)));
         }
@@ -2079,10 +2080,7 @@ mod tests {
             .await
             .unwrap();
 
-            let other_value = store
-                .resolve_claim(&AggregateClaim::new("Account.email", json!("b@x")))
-                .await
-                .unwrap();
+            let other_value = email_holder(&store, "b@x").await;
             let other_type = store
                 .resolve_claim(&AggregateClaim::new("Account.name", json!("a@x")))
                 .await
@@ -2109,14 +2107,8 @@ mod tests {
             .await
             .unwrap();
 
-            let old = store
-                .resolve_claim(&AggregateClaim::new("Account.email", json!("old@x")))
-                .await
-                .unwrap();
-            let new = store
-                .resolve_claim(&AggregateClaim::new("Account.email", json!("new@x")))
-                .await
-                .unwrap();
+            let old = email_holder(&store, "old@x").await;
+            let new = email_holder(&store, "new@x").await;
 
             assert_eq!(old, None);
             assert_eq!(new, Some(EntityId::from(id)));
@@ -2136,10 +2128,7 @@ mod tests {
             tombstone.clear_claims = true;
             append_one(&store, tombstone).await.unwrap();
 
-            let holder = store
-                .resolve_claim(&AggregateClaim::new("Account.email", json!("gone")))
-                .await
-                .unwrap();
+            let holder = email_holder(&store, "gone").await;
 
             assert_eq!(holder, None);
         }
@@ -2161,10 +2150,7 @@ mod tests {
                 .await
                 .unwrap_err();
 
-            let holder = store
-                .resolve_claim(&AggregateClaim::new("Account.email", json!("fresh")))
-                .await
-                .unwrap();
+            let holder = email_holder(&store, "fresh").await;
 
             assert_eq!(holder, None);
         }

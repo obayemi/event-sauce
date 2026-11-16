@@ -24,15 +24,12 @@ impl ClaimsData {
 
     pub(crate) fn check(&self, aggregate_id: Uuid, claims: &[AggregateClaim]) -> Result<()> {
         for claim in claims {
-            let key = (claim.claim_type.to_string(), claim.claim_key.to_string());
-            if let Some(holder) = self.holders.get(&key) {
-                if *holder != aggregate_id {
-                    return Err(Error::claim_conflict(
-                        claim.claim_type,
-                        claim.claim_key.clone(),
-                        Some(*holder),
-                    ));
-                }
+            if let Some(holder) = self.holder(claim).filter(|holder| *holder != aggregate_id) {
+                return Err(Error::claim_conflict(
+                    claim.claim_type,
+                    claim.claim_key.clone(),
+                    Some(holder),
+                ));
             }
         }
         Ok(())
