@@ -2,8 +2,8 @@
 
 use chrono::{DateTime, Utc};
 use event_sauce_core::{
-    Aggregate, AggregateError, AggregateVersion, ApplyEvent, DomainEvent, Entity, EntityId,
-    EventApplicator, EventVersion, SnapshotStrategy,
+    Aggregate, AggregateError, AggregateVersion, DomainEvent, Entity, EntityId, EventApplicator,
+    EventVersion, SnapshotStrategy,
 };
 use serde::{Deserialize, Serialize};
 
@@ -29,10 +29,6 @@ macro_rules! fixture {
             fn occurred_at(&self) -> DateTime<Utc> {
                 Utc::now()
             }
-        }
-
-        impl ApplyEvent<$name> for $event {
-            fn apply(&self, _entity: &mut $name) {}
         }
 
         impl EventApplicator<$name> for $event {

@@ -745,10 +745,9 @@ above and
 [architecture.md](architecture.md#snapshots-are-a-cache-never-the-source-of-truth).
 
 An aggregate can declare its own strategy with
-`#[aggregate(..., snapshots(every = 50))]` (see
-[aggregates.md](aggregates.md#snapshot-strategy-per-aggregate)). At commit
-time the strategy resolves in this order: a `per_type_override` configured on
-the store, then the aggregate's declared strategy, then the store's default.
+`#[aggregate(..., snapshots(every = 50))]`; see
+[aggregates.md](aggregates.md#snapshot-strategy-per-aggregate) for how it
+combines with the store's configuration.
 
 ### Event Store Metrics
 

@@ -53,7 +53,7 @@ read models kept up to date from the very events your aggregates emit.
 - 🔗 **Policies**: Cross-aggregate event orchestration with causation tracking, checkpoint-based resumption, and configurable error handling
 - 📊 **Checkpointed Projections**: Transactional postgres-backed read models, rebuildable from history (`PostgresProjection`)
 - 🔐 **Encryption & Crypto-Shredding**: Full-aggregate or field-level encryption with pluggable providers
-- 📸 **Snapshots**: Replay optimization with schema versioning and replay fallback
+- 📸 **Snapshots**: Replay optimization with per-aggregate strategies (`#[aggregate(snapshots(every = N))]`), schema versioning and replay fallback
 - ⏱️ **Battle-Tested Patterns**: Global ordering, distributed lease fencing, atomic multi-aggregate writes
 
 ### State storage

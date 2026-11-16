@@ -182,7 +182,9 @@ pub trait Aggregate: Entity + Into<Self::DeletedState> {
     ///
     /// When `Some`, it overrides the store's default strategy for this
     /// aggregate type, but a per-type override configured on the store still
-    /// wins (see [`SnapshotConfig::resolve_strategy`](crate::SnapshotConfig::resolve_strategy)).
+    /// wins (see `SnapshotConfig::resolve_strategy`).
+    /// Only event-sourced commits (`EventStore::commit`) read the strategy;
+    /// state-stored aggregates ignore it.
     ///
     /// Defaults to `None`. Declare one with
     /// `#[aggregate(..., snapshots(every = 50))]` (also `always`, `never` and
@@ -192,7 +194,7 @@ pub trait Aggregate: Entity + Into<Self::DeletedState> {
     ///
     /// ```
     /// use event_sauce_core::{
-    ///     Aggregate, AggregateError, ApplyEvent, DomainEvent, Entity, EntityId, EventApplicator,
+    ///     Aggregate, AggregateError, DomainEvent, Entity, EntityId, EventApplicator,
     ///     EventVersion, EveryNEvents, SnapshotStrategy,
     /// };
     /// use std::num::NonZeroU32;
@@ -215,7 +217,6 @@ pub trait Aggregate: Entity + Into<Self::DeletedState> {
     /// #     fn event_version(&self) -> EventVersion { EventVersion::new(1) }
     /// #     fn occurred_at(&self) -> chrono::DateTime<chrono::Utc> { chrono::Utc::now() }
     /// # }
-    /// # impl ApplyEvent<Counter> for Bumped { fn apply(&self, _: &mut Counter) {} }
     /// # impl EventApplicator<Counter> for Bumped {
     /// #     fn dispatch(&self, _: &mut Counter) -> Result<(), CounterError> { Ok(()) }
     /// #     fn dispatch_unchecked(&self, _: &mut Counter) {}

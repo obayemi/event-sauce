@@ -224,7 +224,7 @@ impl SnapshotStrategy for NeverSnapshot {
 pub struct EveryNEvents(NonZeroU32);
 
 impl EveryNEvents {
-    /// The interval [`SnapshotConfig`](crate::SnapshotConfig)'s built-in
+    /// The interval `SnapshotConfig`'s built-in
     /// default uses: a snapshot every 100 events.
     pub const DEFAULT_INTERVAL: NonZeroU32 = NonZeroU32::new(100).unwrap();
 

@@ -147,6 +147,13 @@ account.apply(some_event)?;
 - **`snapshots(...)`**: Snapshot strategy for this aggregate (see below)
 - **`#[id]`**: Field attribute marking the `EntityId` field (or name it `id`)
 
+### Key Features
+
+- **`#[id]` field attribute**: Marks which field is the entity ID (must be `EntityId` type)
+- **`EntityId` for all entities**: Concrete UUID-backed newtype, no custom ID types
+- **`AggregateRoot<A>` wrapper**: Handles version, pending events, and event application
+- **Read-only Deref**: Access entity fields directly through `AggregateRoot`
+
 ### Snapshot Strategy per Aggregate
 
 An aggregate can decide how often it is snapshotted instead of inheriting the
@@ -172,13 +179,6 @@ for aggregates that declare nothing. At commit time the strategy is resolved by
 
 So a store can always force a type's behaviour (for example `never` in tests),
 while aggregates carry a sensible default of their own.
-
-### Key Features
-
-- **`#[id]` field attribute**: Marks which field is the entity ID (must be `EntityId` type)
-- **`EntityId` for all entities**: Concrete UUID-backed newtype, no custom ID types
-- **`AggregateRoot<A>` wrapper**: Handles version, pending events, and event application
-- **Read-only Deref**: Access entity fields directly through `AggregateRoot`
 
 ## Aggregate Initialization
 

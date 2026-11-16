@@ -211,7 +211,11 @@ explicitly rather than gated behind a major version bump.
   (also `always`, `never` and `with = "path::TO_STATIC"`) generates
   `Aggregate::snapshot_strategy()`, and `SnapshotConfig::resolve_strategy`
   applies it at commit between the store's per-type override and the store's
-  default strategy.
+  default strategy. `SnapshotStrategy`, `AlwaysSnapshot`, `EveryNEvents` and
+  `NeverSnapshot` are now exported without the `event-sourcing` feature,
+  because `Aggregate::snapshot_strategy` names them. This change to the
+  public API comes from removing the `#[cfg(feature = "event-sourcing")]`
+  gates in event-sauce-core/src/lib.rs.
 
 - Ambient event context. `EventContext` (a `Root` context starts a new flow
   and may carry a tenant, a nested one cannot), the `event_context!` macro,

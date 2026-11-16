@@ -274,15 +274,22 @@ let config = SnapshotConfig::builder()
     .use_snapshots_on_load(true)
     .build();
 
-// Strategy 2: More frequent snapshots for hot aggregates
-let config = SnapshotConfig::builder()
-    .default_strategy(EveryNEvents::try_new(50).expect("50 != 0"))   // More frequent
-    .use_snapshots_on_load(true)
-    .build();
-
-// Strategy 3: Disable snapshots (for testing or low-event aggregates)
+// Strategy 2: Disable snapshots (for testing or low-event aggregates)
 let config = SnapshotConfig::disabled();
 ```
+
+#### Strategy 3: More frequent snapshots for hot aggregates
+
+Raising `default_strategy` would affect every aggregate. Declare the
+strategy on the hot aggregate instead:
+
+```rust
+#[aggregate(event = "OrderEvent", error = "OrderError", snapshots(every = 25))]
+pub struct Order { /* ... */ }
+```
+
+The store-side alternative is `per_type_override("Order", ...)` on the
+`SnapshotConfig` builder.
 
 ### Choosing Snapshot Frequency
 
@@ -291,6 +298,8 @@ let config = SnapshotConfig::disabled();
 | Hot (frequently accessed) | 1000+ | Every 25-50 events |
 | Warm (regular access) | 100-1000 | Every 50-100 events |
 | Cold (rare access) | < 100 | Every 100-200 events or disabled |
+
+Apply the table per aggregate with [per-aggregate snapshot strategies](aggregates.md#snapshot-strategy-per-aggregate).
 
 ### Performance Impact
 
