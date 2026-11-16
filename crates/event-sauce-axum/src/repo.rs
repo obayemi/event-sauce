@@ -63,6 +63,6 @@ where
         _parts: &mut Parts,
         state: &St,
     ) -> impl Future<Output = Result<Self, Infallible>> {
-        ready(Ok(Self(Store::from_ref(state).repository())))
+        ready(Ok(Self(Store::from_ref(state).arc().repository())))
     }
 }

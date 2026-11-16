@@ -80,12 +80,9 @@ async fn open_after_a_yield(State(store): State<Store>) -> String {
 }
 
 async fn open_in_a_spawned_task(State(store): State<Store>) -> String {
-    let task = open_and_save_owned(store).with_event_context(EventContext::current());
+    let task =
+        async move { open_and_save(&store).await }.with_event_context(EventContext::current());
     tokio::spawn(task).await.unwrap().to_string()
-}
-
-async fn open_and_save_owned(store: Store) -> EntityId {
-    open_and_save(&store).await
 }
 
 fn router(store: &Store) -> Router {

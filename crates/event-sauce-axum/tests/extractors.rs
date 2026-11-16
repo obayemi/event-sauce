@@ -11,8 +11,9 @@ use axum::routing::{get, post};
 use axum::Router;
 use event_sauce_axum::{Repo, Store, UnitOfWork};
 use event_sauce_core::{
-    aggregate_command, define_events, Aggregate, AggregateError, Entity, EntityId, Repository,
-    RetryPolicy, UnitOfWork as Work, UnitOfWorkCommand, UnitOfWorkError, UnitOfWorkStore,
+    aggregate_command, define_events, Aggregate, AggregateError, Entity, EntityId, EventStore,
+    Repository, RetryPolicy, UnitOfWork as Work, UnitOfWorkCommand, UnitOfWorkError,
+    UnitOfWorkStore,
 };
 use event_sauce_memory::{InMemoryEventStore, InMemoryStateStore, InMemoryTransactionalStore};
 use serde::{Deserialize, Serialize};
@@ -124,6 +125,7 @@ async fn ticket_title(
 
 async fn ticket_exists(store: Store<InMemoryEventStore>, Path(id): Path<EntityId>) -> String {
     store
+        .arc()
         .repository::<Ticket>()
         .exists(id)
         .await

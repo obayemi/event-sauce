@@ -6,7 +6,6 @@ use std::ops::Deref;
 use std::sync::Arc;
 
 use axum::extract::{FromRef, FromRequestParts};
-use event_sauce_core::{Aggregate, EventSourcedRepository, EventStore};
 use http::request::Parts;
 
 #[cfg(test)]
@@ -49,22 +48,6 @@ impl<S> Store<S> {
     #[must_use]
     pub fn arc(&self) -> &Arc<S> {
         &self.0
-    }
-}
-
-impl<S: EventStore + 'static> Store<S> {
-    /// Builds the repository for aggregate type `A` over this store.
-    ///
-    /// Nothing is registered anywhere: a repository is an `Arc` clone, so
-    /// every aggregate type is available on every store.
-    #[must_use]
-    pub fn repository<A>(&self) -> EventSourcedRepository<S, A>
-    where
-        A: Aggregate + serde::Serialize + serde::de::DeserializeOwned,
-        A::DeletedState: serde::Serialize + serde::de::DeserializeOwned,
-        A::Event: serde::Serialize + serde::de::DeserializeOwned,
-    {
-        EventSourcedRepository::new(Arc::clone(&self.0))
     }
 }
 
