@@ -62,6 +62,8 @@ base64 = "0.22"
 aes-gcm = "0.10"
 zeroize = "1"
 sha2 = "0.11"
+argon2 = "0.6.0"
+secrecy = "0.10.3"
 phc = { version = "0.6.1", default-features = false, features = ["alloc"] }
 
 # Identifiers

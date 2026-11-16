@@ -81,3 +81,11 @@ fn debug_does_not_leak_the_hash() {
     let shown = format!("{:?}", password("ada@example.com", HASH_A));
     assert!(!shown.contains("argon2id"));
 }
+
+#[test]
+fn claim_for_a_login_is_the_claim_its_password_holds() {
+    let claim = Password::claim_for(&email("ada@example.com"));
+    let held = password("ada@example.com", HASH_A).claims().remove(0);
+    assert_eq!(claim.claim_type, held.claim_type);
+    assert_eq!(claim.claim_key, held.claim_key);
+}

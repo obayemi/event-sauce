@@ -6,19 +6,33 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Pluggable credentials and login identity for event-sauce user aggregates"
+description = "Pluggable credentials, login methods and authentication for event-sauce user aggregates"
 keywords = ["event-sourcing", "authentication", "login", "identity"]
 categories = ["authentication"]
 
+[features]
+default = ["argon2"]
+argon2 = ["dep:argon2"]
+
 [dependencies]
 event-sauce-core = { path = "../event-sauce-core", version = "0.1.0" }
+argon2 = { workspace = true, optional = true }
+async-trait.workspace = true
 email_address.workspace = true
 phc.workspace = true
+secrecy.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+event-sauce-memory = { path = "../event-sauce-memory", version = "0.1.0" }
 chrono.workspace = true
 proptest.workspace = true
+tokio = { workspace = true, features = ["macros", "rt"] }
+tokio-test.workspace = true
+
+[[test]]
+name = "claim_authenticator"
+required-features = ["argon2"]

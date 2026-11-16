@@ -18,6 +18,13 @@
 //!   require of the credentials an application picked.
 //! - [`UserAggregate`] tells the login machinery how to read an identity off
 //!   an aggregate.
+//! - [`PasswordHasher`] hashes and checks passwords, with [`Argon2Hasher`] behind
+//!   the `argon2` feature.
+//! - [`LoginMethod`] locates a user and verifies an attempt, with
+//!   [`PasswordLogin`], [`FederatedLogin`] and [`PasswordOrFederatedLogin`]
+//!   ready-made.
+//! - [`Authenticator`] turns an attempt into a [`LoginOutcome`], and
+//!   [`ClaimAuthenticator`] is the generic implementation over any event store.
 //!
 //! # Examples
 //!
@@ -33,30 +40,48 @@
 #![deny(clippy::all)]
 #![warn(clippy::pedantic)]
 
+#[cfg(feature = "argon2")]
+mod argon2_hasher;
+mod authenticator;
 mod capabilities;
 mod credentials;
 mod email;
 mod error;
 mod federated;
+mod federated_login;
 mod identity;
 mod login_id;
+mod login_method;
 mod non_empty;
 mod password;
 mod password_hash;
+mod password_hasher;
+mod password_login;
 mod password_or_federated;
+mod password_or_federated_login;
+#[cfg(test)]
+mod test_support;
 mod user;
 mod username;
 
+#[cfg(feature = "argon2")]
+pub use argon2_hasher::Argon2Hasher;
+pub use authenticator::{AuthError, Authenticator, ClaimAuthenticator, LoginOutcome};
 pub use capabilities::{HasFederated, HasPassword};
 pub use credentials::{Credentials, Digest, Sha256};
 pub use email::{Email, EmailError};
 pub use error::LoginMethodError;
 pub use federated::{Federated, FederatedId, Provider};
+pub use federated_login::{FederatedLogin, VerifiedFederated};
 pub use identity::{Identity, IdentityError};
 pub use login_id::LoginId;
+pub use login_method::{ClaimLocator, LocateError, LoginMethod, Rejected};
 pub use non_empty::{EmptyError, NonEmpty};
 pub use password::Password;
 pub use password_hash::{PasswordHash, PasswordHashError};
+pub use password_hasher::{HashError, PasswordHasher};
+pub use password_login::{PasswordAttempt, PasswordLogin};
 pub use password_or_federated::PasswordOrFederated;
+pub use password_or_federated_login::{PasswordOrFederatedAttempt, PasswordOrFederatedLogin};
 pub use user::UserAggregate;
 pub use username::{Username, UsernameError};
