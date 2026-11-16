@@ -25,7 +25,7 @@ use futures::Stream;
 use uuid::Uuid;
 
 use crate::{
-    Aggregate, AggregateClaim, AggregateRoot, AggregateVersion, DeletedAggregateRoot,
+    Aggregate, AggregateClaim, AggregateRoot, AggregateVersion, DeletedAggregateRoot, EntityId,
     EventEnvelope, EventLogEntry, EventSourcedRepository, Position, Result, SnapshotConfig,
     StreamId,
 };
@@ -228,6 +228,27 @@ pub trait EventStore: Send + Sync {
             max = entry?.position;
         }
         Ok(max)
+    }
+
+    /// Returns the aggregate currently holding `claim`, if any.
+    ///
+    /// Backends index claims as `(claim_type, sha256(claim_key)) ->
+    /// aggregate_id`, so this is one indexed lookup that needs no plaintext
+    /// projection of the claimed value. A claim released by an aggregate
+    /// (changed, dropped, or cleared on deletion) no longer resolves.
+    ///
+    /// The default implementation reports that this store keeps no claim
+    /// index; backends that enforce [`AggregateClaim`] uniqueness override it.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::InvalidState` if the store keeps no claim index, or a
+    /// backend error if the lookup fails.
+    async fn resolve_claim(&self, claim: &AggregateClaim) -> Result<Option<EntityId>> {
+        let _ = claim;
+        Err(crate::Error::invalid_state(
+            "this event store does not index claims",
+        ))
     }
 
     /// Gets the current version of a stream.
@@ -705,5 +726,17 @@ mod tests {
             .expect("limit 0 must return an empty batch without polling the stream");
 
         assert!(batch.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_resolve_claim_default_reports_claims_unsupported() {
+        let store = ScriptedStreamStore::new(Vec::new());
+
+        let err = store
+            .resolve_claim(&AggregateClaim::new("Thing.name", serde_json::json!("x")))
+            .await
+            .expect_err("a store without a claim index cannot resolve a claim");
+
+        assert!(err.is_invalid_state());
     }
 }

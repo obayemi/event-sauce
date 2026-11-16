@@ -7,8 +7,8 @@ use crate::claims::ClaimsData;
 use crate::expectations::check_expectations;
 use async_trait::async_trait;
 use event_sauce_core::{
-    AggregateVersion, Error, EventEnvelope, EventLogEntry, EventStore, Position, Result, Snapshot,
-    SnapshotConfig, StreamCommit, StreamId,
+    AggregateClaim, AggregateVersion, EntityId, Error, EventEnvelope, EventLogEntry, EventStore,
+    Position, Result, Snapshot, SnapshotConfig, StreamCommit, StreamId,
 };
 use futures::stream::{self, Stream};
 use parking_lot::{Mutex, RwLock};
@@ -619,6 +619,10 @@ impl EventStore for InMemoryEventStore {
         Ok(global_events
             .last()
             .map_or_else(Position::start, |(position, _)| *position))
+    }
+
+    async fn resolve_claim(&self, claim: &AggregateClaim) -> Result<Option<EntityId>> {
+        Ok(self.inner.claims.lock().holder(claim).map(EntityId::from))
     }
 
     async fn get_version(&self, stream_id: StreamId) -> Result<AggregateVersion> {
@@ -1865,7 +1869,7 @@ mod tests {
 
     mod claims {
         use super::*;
-        use event_sauce_core::AggregateClaim;
+        use event_sauce_core::{AggregateClaim, EntityId};
 
         fn claiming(
             aggregate_id: Uuid,
@@ -2044,6 +2048,125 @@ mod tests {
             )
             .await
             .unwrap();
+        }
+
+        #[tokio::test]
+        async fn test_resolve_claim_returns_the_holder() {
+            let store = InMemoryEventStore::new();
+            let id = Uuid::new_v4();
+            append_one(
+                &store,
+                claiming(id, AggregateVersion::initial(), email("a@x")),
+            )
+            .await
+            .unwrap();
+
+            let holder = store
+                .resolve_claim(&AggregateClaim::new("Account.email", json!("a@x")))
+                .await
+                .unwrap();
+
+            assert_eq!(holder, Some(EntityId::from(id)));
+        }
+
+        #[tokio::test]
+        async fn test_resolve_claim_is_none_for_an_unheld_value() {
+            let store = InMemoryEventStore::new();
+            append_one(
+                &store,
+                claiming(Uuid::new_v4(), AggregateVersion::initial(), email("a@x")),
+            )
+            .await
+            .unwrap();
+
+            let other_value = store
+                .resolve_claim(&AggregateClaim::new("Account.email", json!("b@x")))
+                .await
+                .unwrap();
+            let other_type = store
+                .resolve_claim(&AggregateClaim::new("Account.name", json!("a@x")))
+                .await
+                .unwrap();
+
+            assert_eq!(other_value, None);
+            assert_eq!(other_type, None);
+        }
+
+        #[tokio::test]
+        async fn test_resolve_claim_follows_a_changed_claim() {
+            let store = InMemoryEventStore::new();
+            let id = Uuid::new_v4();
+            append_one(
+                &store,
+                claiming(id, AggregateVersion::initial(), email("old@x")),
+            )
+            .await
+            .unwrap();
+            append_one(
+                &store,
+                claiming(id, AggregateVersion::new(1), email("new@x")),
+            )
+            .await
+            .unwrap();
+
+            let old = store
+                .resolve_claim(&AggregateClaim::new("Account.email", json!("old@x")))
+                .await
+                .unwrap();
+            let new = store
+                .resolve_claim(&AggregateClaim::new("Account.email", json!("new@x")))
+                .await
+                .unwrap();
+
+            assert_eq!(old, None);
+            assert_eq!(new, Some(EntityId::from(id)));
+        }
+
+        #[tokio::test]
+        async fn test_resolve_claim_is_none_after_claims_are_cleared() {
+            let store = InMemoryEventStore::new();
+            let id = Uuid::new_v4();
+            append_one(
+                &store,
+                claiming(id, AggregateVersion::initial(), email("gone")),
+            )
+            .await
+            .unwrap();
+            let mut tombstone = claiming(id, AggregateVersion::new(1), vec![]);
+            tombstone.clear_claims = true;
+            append_one(&store, tombstone).await.unwrap();
+
+            let holder = store
+                .resolve_claim(&AggregateClaim::new("Account.email", json!("gone")))
+                .await
+                .unwrap();
+
+            assert_eq!(holder, None);
+        }
+
+        #[tokio::test]
+        async fn test_resolve_claim_ignores_a_rejected_batch() {
+            let store = InMemoryEventStore::new();
+            append_one(
+                &store,
+                claiming(Uuid::new_v4(), AggregateVersion::initial(), email("taken")),
+            )
+            .await
+            .unwrap();
+            store
+                .append_batch(vec![
+                    claiming(Uuid::new_v4(), AggregateVersion::initial(), email("fresh")),
+                    claiming(Uuid::new_v4(), AggregateVersion::initial(), email("taken")),
+                ])
+                .await
+                .unwrap_err();
+
+            let holder = store
+                .resolve_claim(&AggregateClaim::new("Account.email", json!("fresh")))
+                .await
+                .unwrap();
+
+            assert_eq!(holder, None);
         }
     }
 }

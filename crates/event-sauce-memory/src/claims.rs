@@ -16,6 +16,12 @@ pub(crate) struct ClaimsData {
 }
 
 impl ClaimsData {
+    pub(crate) fn holder(&self, claim: &AggregateClaim) -> Option<Uuid> {
+        self.holders
+            .get(&(claim.claim_type.to_string(), claim.claim_key.to_string()))
+            .copied()
+    }
+
     pub(crate) fn check(&self, aggregate_id: Uuid, claims: &[AggregateClaim]) -> Result<()> {
         for claim in claims {
             let key = (claim.claim_type.to_string(), claim.claim_key.to_string());
