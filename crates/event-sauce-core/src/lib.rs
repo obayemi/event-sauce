@@ -89,7 +89,6 @@ pub mod policy;
 mod repository;
 #[cfg(feature = "event-sourcing")]
 mod snapshot_config;
-#[cfg(feature = "event-sourcing")]
 mod snapshot_strategy;
 /// Specification pattern for composable, reusable business rule validation.
 pub mod specification;
@@ -179,7 +178,6 @@ pub use repository::EventSourcedRepository;
 pub use repository::Repository;
 #[cfg(feature = "event-sourcing")]
 pub use snapshot_config::{SnapshotConfig, SnapshotConfigBuilder};
-#[cfg(feature = "event-sourcing")]
 pub use snapshot_strategy::{AlwaysSnapshot, EveryNEvents, NeverSnapshot, SnapshotStrategy};
 pub use specification::{Spec, Specification, SpecificationError};
 #[cfg(feature = "state-store")]

@@ -744,6 +744,12 @@ match. See [repo.load() - Reconstruct Aggregate](#repoload---reconstruct-aggrega
 above and
 [architecture.md](architecture.md#snapshots-are-a-cache-never-the-source-of-truth).
 
+An aggregate can declare its own strategy with
+`#[aggregate(..., snapshots(every = 50))]` (see
+[aggregates.md](aggregates.md#snapshot-strategy-per-aggregate)). At commit
+time the strategy resolves in this order: a `per_type_override` configured on
+the store, then the aggregate's declared strategy, then the store's default.
+
 ### Event Store Metrics
 
 Track performance and usage the same way a decorator does — wrap the

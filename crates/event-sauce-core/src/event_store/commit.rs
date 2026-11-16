@@ -52,7 +52,7 @@ where
     encrypt_envelopes::<S, A>(store, aggregate_id, &mut envelopes, pending).await?;
 
     let config = store.snapshot_config();
-    let strategy = config.strategy_for_type(aggregate_type.as_str());
+    let strategy = config.resolve_strategy(aggregate_type.as_str(), A::snapshot_strategy());
     let current_version = root.version();
 
     let snapshot = if strategy.should_snapshot_range(expected_version, current_version) {
@@ -212,6 +212,105 @@ mod tests {
     use crate::SnapshotConfig;
 
     // -- commit() tests --
+
+    mod declared_strategy {
+        use super::*;
+        use crate::{
+            Aggregate, AggregateError, ApplyEvent, DomainEvent, Entity, EntityId, EventApplicator,
+            EventVersion, NeverSnapshot, SnapshotStrategy,
+        };
+        use serde::{Deserialize, Serialize};
+
+        #[derive(Debug, thiserror::Error)]
+        #[error("declared strategy error")]
+        pub struct DeclaredError;
+
+        impl AggregateError for DeclaredError {}
+
+        #[derive(Debug, Clone, Serialize, Deserialize)]
+        pub struct Declared {
+            id: EntityId,
+        }
+
+        #[derive(Debug, Clone, Serialize, Deserialize)]
+        pub struct DeclaredEvent;
+
+        impl Entity for Declared {
+            fn new(id: EntityId) -> Self {
+                Self { id }
+            }
+
+            fn entity_id(&self) -> EntityId {
+                self.id
+            }
+        }
+
+        impl crate::DefaultEntity for Declared {}
+
+        impl DomainEvent for DeclaredEvent {
+            type Aggregate = Declared;
+
+            fn event_type(&self) -> &'static str {
+                "Declared.Touched"
+            }
+
+            fn event_version(&self) -> EventVersion {
+                EventVersion::new(1)
+            }
+
+            fn occurred_at(&self) -> chrono::DateTime<chrono::Utc> {
+                chrono::Utc::now()
+            }
+        }
+
+        impl ApplyEvent<Declared> for DeclaredEvent {
+            fn apply(&self, _entity: &mut Declared) {}
+        }
+
+        impl EventApplicator<Declared> for DeclaredEvent {
+            fn dispatch(&self, _entity: &mut Declared) -> std::result::Result<(), DeclaredError> {
+                Ok(())
+            }
+
+            fn dispatch_unchecked(&self, _entity: &mut Declared) {}
+        }
+
+        impl Aggregate for Declared {
+            type Event = DeclaredEvent;
+            type Error = DeclaredError;
+            type DeletedState = Self;
+
+            fn snapshot_strategy() -> Option<&'static dyn SnapshotStrategy> {
+                static STRATEGY: NeverSnapshot = NeverSnapshot;
+                Some(&STRATEGY)
+            }
+        }
+
+        #[tokio::test]
+        async fn test_commit_follows_the_strategy_declared_by_the_aggregate() {
+            let store = CommitTestStore::new(SnapshotConfig::always());
+            let mut agg = AggregateRoot::<Declared>::new(EntityId::new());
+            agg.apply(DeclaredEvent).unwrap();
+
+            store.commit(&mut agg).await.unwrap();
+
+            assert_eq!(store.save_snapshot_count(), 0);
+        }
+
+        #[tokio::test]
+        async fn test_store_override_beats_the_strategy_declared_by_the_aggregate() {
+            let config = SnapshotConfig::builder()
+                .per_type_override("Declared", crate::AlwaysSnapshot)
+                .build();
+            let store = CommitTestStore::new(config);
+            let mut agg = AggregateRoot::<Declared>::new(EntityId::new());
+            agg.apply(DeclaredEvent).unwrap();
+
+            store.commit(&mut agg).await.unwrap();
+
+            assert_eq!(store.save_snapshot_count(), 1);
+        }
+    }
 
     #[tokio::test]
     async fn test_commit_with_pending_events() {

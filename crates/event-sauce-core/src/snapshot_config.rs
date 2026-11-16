@@ -173,6 +173,46 @@ impl SnapshotConfig {
         )
     }
 
+    /// Resolves the strategy that governs an aggregate type at commit time.
+    ///
+    /// Precedence, highest first:
+    /// 1. the per-type override configured on this store,
+    /// 2. `aggregate_strategy`, the strategy the aggregate declares itself
+    ///    (see [`Aggregate::snapshot_strategy`](crate::Aggregate::snapshot_strategy)),
+    /// 3. the store's default strategy.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use event_sauce_core::{SnapshotConfig, AlwaysSnapshot, NeverSnapshot, AggregateVersion};
+    ///
+    /// let config = SnapshotConfig::builder()
+    ///     .default_strategy(NeverSnapshot)
+    ///     .per_type_override("Order", NeverSnapshot)
+    ///     .build();
+    ///
+    /// let declared = config.resolve_strategy("User", Some(&AlwaysSnapshot));
+    /// assert!(declared.should_snapshot(AggregateVersion::new(1)));
+    ///
+    /// let overridden = config.resolve_strategy("Order", Some(&AlwaysSnapshot));
+    /// assert!(!overridden.should_snapshot(AggregateVersion::new(1)));
+    ///
+    /// let fallback = config.resolve_strategy("Cart", None);
+    /// assert!(!fallback.should_snapshot(AggregateVersion::new(1)));
+    /// ```
+    #[must_use]
+    pub fn resolve_strategy<'a>(
+        &'a self,
+        aggregate_type: &str,
+        aggregate_strategy: Option<&'a dyn SnapshotStrategy>,
+    ) -> &'a dyn SnapshotStrategy {
+        self.per_type_strategies
+            .get(aggregate_type)
+            .map(std::convert::AsRef::as_ref)
+            .or(aggregate_strategy)
+            .unwrap_or_else(|| self.default_strategy.as_ref())
+    }
+
     /// Returns whether snapshots should be used when loading aggregates.
     ///
     /// # Examples
@@ -561,5 +601,48 @@ mod tests {
         assert!(!config
             .default_strategy()
             .should_snapshot(AggregateVersion::new(99)));
+    }
+
+    #[test]
+    fn test_resolve_override_wins_over_aggregate_strategy() {
+        let config = SnapshotConfig::builder()
+            .default_strategy(NeverSnapshot)
+            .per_type_override("User", NeverSnapshot)
+            .build();
+
+        let strategy = config.resolve_strategy("User", Some(&AlwaysSnapshot));
+        assert!(!strategy.should_snapshot(AggregateVersion::new(1)));
+    }
+
+    #[test]
+    fn test_resolve_aggregate_strategy_wins_over_default() {
+        let config = SnapshotConfig::builder()
+            .default_strategy(NeverSnapshot)
+            .per_type_override("Order", NeverSnapshot)
+            .build();
+
+        let strategy = config.resolve_strategy("User", Some(&AlwaysSnapshot));
+        assert!(strategy.should_snapshot(AggregateVersion::new(1)));
+    }
+
+    #[test]
+    fn test_resolve_without_aggregate_strategy_falls_back_to_default() {
+        let config = SnapshotConfig::builder()
+            .default_strategy(AlwaysSnapshot)
+            .build();
+
+        let strategy = config.resolve_strategy("User", None);
+        assert!(strategy.should_snapshot(AggregateVersion::new(1)));
+    }
+
+    #[test]
+    fn test_resolve_without_aggregate_strategy_uses_override() {
+        let config = SnapshotConfig::builder()
+            .default_strategy(AlwaysSnapshot)
+            .per_type_override("User", NeverSnapshot)
+            .build();
+
+        let strategy = config.resolve_strategy("User", None);
+        assert!(!strategy.should_snapshot(AggregateVersion::new(1)));
     }
 }

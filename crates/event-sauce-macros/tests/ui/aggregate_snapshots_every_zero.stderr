@@ -1,0 +1,5 @@
+error: `snapshots(every = N)` requires N greater than 0
+ --> tests/ui/aggregate_snapshots_every_zero.rs:7:85
+  |
+7 | #[event_sauce_macros::aggregate(event = "TestEvent", error = "TestError", snapshots(every = 0))]
+  |                                                                                     ^^^^^

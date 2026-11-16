@@ -71,6 +71,81 @@ struct AggregateAttrs {
     /// and rebuilt from events.
     #[darling(default)]
     snapshot_version: Option<u32>,
+    /// Optional snapshot strategy for this aggregate, overriding the store default.
+    /// One of `snapshots(every = N)`, `snapshots(always)`, `snapshots(never)` or
+    /// `snapshots(with = "path::TO_STATIC")`. Generates `fn snapshot_strategy()`.
+    #[darling(default)]
+    snapshots: Option<SnapshotDecl>,
+}
+
+/// The snapshot strategy an aggregate declares through `snapshots(...)`.
+#[derive(Debug)]
+enum SnapshotDecl {
+    Every(u32),
+    Always,
+    Never,
+    With(syn::Path),
+}
+
+impl FromMeta for SnapshotDecl {
+    fn from_meta(item: &syn::Meta) -> darling::Result<Self> {
+        const USAGE: &str =
+            "`snapshots` takes exactly one of `every = N`, `always`, `never` or `with = \"path\"`";
+        let syn::Meta::List(list) = item else {
+            return Err(darling::Error::custom(USAGE).with_span(item));
+        };
+        let nested = darling::ast::NestedMeta::parse_meta_list(list.tokens.clone())?;
+        let [darling::ast::NestedMeta::Meta(option)] = nested.as_slice() else {
+            return Err(darling::Error::custom(USAGE).with_span(item));
+        };
+        let name = option.path();
+        if name.is_ident("always") && matches!(option, syn::Meta::Path(_)) {
+            Ok(Self::Always)
+        } else if name.is_ident("never") && matches!(option, syn::Meta::Path(_)) {
+            Ok(Self::Never)
+        } else if name.is_ident("every") {
+            match u32::from_meta(option)? {
+                0 => Err(darling::Error::custom(
+                    "`snapshots(every = N)` requires N greater than 0",
+                )
+                .with_span(option)),
+                n => Ok(Self::Every(n)),
+            }
+        } else if name.is_ident("with") {
+            let path = String::from_meta(option)?;
+            syn::parse_str(&path)
+                .map(Self::With)
+                .map_err(|e| darling::Error::custom(e.to_string()).with_span(option))
+        } else {
+            Err(darling::Error::custom(USAGE).with_span(item))
+        }
+    }
+}
+
+impl SnapshotDecl {
+    fn to_override(&self, core: &proc_macro2::TokenStream) -> proc_macro2::TokenStream {
+        let strategy = match self {
+            Self::Every(n) => quote! {
+                static STRATEGY: #core::EveryNEvents =
+                    #core::EveryNEvents::new(::core::num::NonZeroU32::new(#n).unwrap());
+                &STRATEGY
+            },
+            Self::Always => quote! {
+                static STRATEGY: #core::AlwaysSnapshot = #core::AlwaysSnapshot;
+                &STRATEGY
+            },
+            Self::Never => quote! {
+                static STRATEGY: #core::NeverSnapshot = #core::NeverSnapshot;
+                &STRATEGY
+            },
+            Self::With(path) => quote! { &#path },
+        };
+        quote! {
+            fn snapshot_strategy() -> ::core::option::Option<&'static dyn #core::SnapshotStrategy> {
+                ::core::option::Option::Some({ #strategy })
+            }
+        }
+    }
 }
 
 /// Attributes for the #[event(...)] container attribute
@@ -1299,6 +1374,10 @@ pub fn aggregate(attr: TokenStream, item: TokenStream) -> TokenStream {
         || quote! {},
         |v| quote! { fn snapshot_version() -> u32 { #v } },
     );
+    let snapshot_strategy_override = aggregate_attrs
+        .snapshots
+        .as_ref()
+        .map_or_else(|| quote! {}, |decl| decl.to_override(&core));
     let deleted_state_type = aggregate_attrs.deleted_state.as_deref().map_or_else(
         || quote! { type DeletedState = Self; },
         |ds| {
@@ -1321,6 +1400,7 @@ pub fn aggregate(attr: TokenStream, item: TokenStream) -> TokenStream {
             #is_encrypted_override
             #claims_override
             #snapshot_version_override
+            #snapshot_strategy_override
         }
 
         impl #aggregate_name {
