@@ -1,0 +1,5 @@
+error: `user` on `TestAggregate` requires a field marked `#[user(identity)]`
+ --> tests/ui/aggregate_user_missing_identity.rs:8:8
+  |
+8 | struct TestAggregate {
+  |        ^^^^^^^^^^^^^

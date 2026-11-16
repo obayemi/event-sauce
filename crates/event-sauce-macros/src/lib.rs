@@ -19,6 +19,7 @@ use std::sync::OnceLock;
 use syn::{parse_macro_input, Attribute, Data, DeriveInput, Fields, Ident, Meta};
 
 mod snapshots;
+mod user;
 mod with_event_context;
 
 /// Path prefix the generated code uses to reach the core traits and types.
@@ -77,6 +78,11 @@ struct AggregateAttrs {
     /// `snapshots(with = "path::TO_STATIC")`. Generates `fn snapshot_strategy()`.
     #[darling(default)]
     snapshots: Option<snapshots::SnapshotDecl>,
+    /// When true, the aggregate is a login user. Fields marked `#[user(identity)]`
+    /// and `#[user(active)]` generate `UserAggregate`, and the credentials'
+    /// claims join `claims()`.
+    #[darling(default)]
+    user: darling::util::Flag,
 }
 
 /// Attributes for the #[event(...)] container attribute
@@ -1243,6 +1249,10 @@ fn extract_ref_param(param: &syn::FnArg) -> Result<(Ident, syn::Type), syn::Erro
 ///   changes incompatibly
 /// - `snapshots(every = N | always | never | with = "path::TO_STATIC")` - generates
 ///   `Aggregate::snapshot_strategy()`; a store `per_type_override` still wins
+/// - `user` - makes the aggregate a login user: needs one `#[user(identity)]` field of type
+///   `Identity<C>` and may mark one `#[user(active)]` bool field. Generates `UserAggregate`
+///   and adds the credentials' claims to `claims()`; requires `event-sauce-auth` (or the
+///   `event-sauce` facade with its `auth` feature)
 ///
 /// # Panics
 ///
@@ -1280,7 +1290,8 @@ pub fn aggregate(attr: TokenStream, item: TokenStream) -> TokenStream {
         .map(|f| f.ty.clone())
         .expect("ID field must exist (already validated)");
 
-    let cleaned_input = strip_id_attributes(&input);
+    let mut cleaned_input = strip_id_attributes(&input);
+    user::strip_user_markers(&mut cleaned_input);
     let event_type = Ident::new(&aggregate_attrs.event, proc_macro2::Span::call_site());
     let error_type = aggregate_error_token(aggregate_attrs.error.as_deref());
     let entity_impl = gen_entity_impl(
@@ -1296,15 +1307,11 @@ pub fn aggregate(attr: TokenStream, item: TokenStream) -> TokenStream {
     } else {
         quote! {}
     };
-    let claims_override = if aggregate_attrs.claims {
-        quote! {
-            fn claims(&self) -> Vec<#core::AggregateClaim> {
-                self.aggregate_claims()
-            }
-        }
-    } else {
-        quote! {}
-    };
+    let (user_impl, claims_override) =
+        match gen_user_and_claims(&aggregate_attrs, aggregate_name, named_fields) {
+            Ok(generated) => generated,
+            Err(err) => return err.to_compile_error().into(),
+        };
     let snapshot_version_override = aggregate_attrs
         .snapshot_version
         .map(|v| quote! { fn snapshot_version() -> u32 { #v } });
@@ -1324,6 +1331,8 @@ pub fn aggregate(attr: TokenStream, item: TokenStream) -> TokenStream {
         #cleaned_input
 
         #entity_impl
+
+        #user_impl
 
         impl #core::Aggregate for #aggregate_name {
             type Event = #event_type;
@@ -1393,6 +1402,34 @@ fn strip_id_attributes(input: &DeriveInput) -> DeriveInput {
         }
     }
     cleaned_input
+}
+
+/// The `UserAggregate` impl and the `claims()` override an aggregate declares
+/// through `user` and `claims`.
+fn gen_user_and_claims(
+    attrs: &AggregateAttrs,
+    aggregate_name: &Ident,
+    named_fields: &syn::punctuated::Punctuated<syn::Field, syn::token::Comma>,
+) -> syn::Result<(proc_macro2::TokenStream, proc_macro2::TokenStream)> {
+    let core = core_path();
+    match user::UserFields::for_aggregate(attrs.user.is_present(), aggregate_name, named_fields)? {
+        Some(fields) => {
+            let user::UserExpansion {
+                user_impl,
+                claims_override,
+            } = fields.expand(aggregate_name, &core, attrs.claims)?;
+            Ok((user_impl, claims_override))
+        }
+        None if attrs.claims => Ok((
+            quote! {},
+            quote! {
+                fn claims(&self) -> Vec<#core::AggregateClaim> {
+                    self.aggregate_claims()
+                }
+            },
+        )),
+        None => Ok((quote! {}, quote! {})),
+    }
 }
 
 fn aggregate_error_token(error: Option<&str>) -> proc_macro2::TokenStream {

@@ -1,0 +1,6 @@
+error: `#[user(...)]` markers require the `user` flag in `#[aggregate(...)]`
+  --> tests/ui/aggregate_user_marker_without_flag.rs:11:5
+   |
+11 | /     #[user(identity)]
+12 | |     identity: event_sauce_auth::Identity<event_sauce_auth::Password<event_sauce_auth::Email>>,
+   | |_____________________________________________________________________________________________^

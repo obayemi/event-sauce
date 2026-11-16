@@ -145,6 +145,7 @@ account.apply(some_event)?;
 - **`type_name = "..."`**: Custom aggregate type name (default: struct name)
 - **`snapshot_version = N`**: Snapshot schema version; bump it when the serialized shape changes incompatibly
 - **`snapshots(...)`**: Snapshot strategy for this aggregate (see below)
+- **`user`**: Makes the aggregate a login user. Needs one `#[user(identity)]` field of type `Identity<C>` and may mark one `#[user(active)]` `bool` field (users are always active without it). Generates `UserAggregate` and adds the credentials' claims to `claims()` while the user is registered, next to the aggregate's own claims when `claims` is also set. Requires the `event-sauce-auth` crate (or `event-sauce` with its `auth` feature)
 - **`#[id]`**: Field attribute marking the `EntityId` field (or name it `id`)
 
 ### Key Features
