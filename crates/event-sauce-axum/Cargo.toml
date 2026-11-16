@@ -1,0 +1,32 @@
+[package]
+name = "event-sauce-axum"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "axum and tower integration for event-sauce"
+keywords = ["event-sourcing", "axum", "tower", "correlation", "http"]
+categories = ["web-programming", "asynchronous"]
+
+[features]
+default = ["tracing"]
+tracing = ["dep:tracing"]
+
+[dependencies]
+event-sauce-core = { path = "../event-sauce-core", version = "0.1.0", default-features = false }
+http.workspace = true
+tower = { workspace = true }
+tracing = { workspace = true, optional = true }
+uuid.workspace = true
+
+[dev-dependencies]
+axum.workspace = true
+chrono.workspace = true
+event-sauce-memory = { path = "../event-sauce-memory", version = "0.1.0" }
+futures.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time"] }
+tower = { workspace = true, features = ["util"] }

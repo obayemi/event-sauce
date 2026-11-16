@@ -2,6 +2,7 @@
 members = [
     "crates/event-sauce",
     "crates/event-sauce-auth",
+    "crates/event-sauce-axum",
     "crates/event-sauce-core",
     "crates/event-sauce-crypto",
     "crates/event-sauce-macro-surface-test",
@@ -63,6 +64,11 @@ proc-macro2 = "1.0.103"
 darling = "0.20"
 proc-macro-crate = "3"
 pastey = "0.2"
+
+# HTTP
+axum = { version = "0.8.9", default-features = false }
+http = "1.5"
+tower = { version = "0.5.3", default-features = false }
 
 # Encoding
 base64 = "0.22"
