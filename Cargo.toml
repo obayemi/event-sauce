@@ -75,6 +75,12 @@ secrecy = "0.10.3"
 phc = { version = "0.6.1", default-features = false, features = ["alloc"] }
 totp-rs = { version = "6.0.0", default-features = false, features = ["std", "gen_secret", "serde", "zeroize"] }
 
+# Randomness (latest stable: 0.10.4)
+rand = "0.10.4"
+
+# Constant-time comparison (latest stable: 2.6.1)
+subtle = "2.6.1"
+
 # Identifiers
 email_address = { version = "0.2.10", default-features = false, features = ["std"] }
 

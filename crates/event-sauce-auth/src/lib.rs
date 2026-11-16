@@ -33,6 +33,8 @@
 //! - [`UserCache`] keeps loaded users, checked against the stored version on every
 //!   read, with `MokaUserCache` (feature `moka`) and `RedisUserCache` (feature
 //!   `redis`) ready-made. [`CachedUserLoader`] resolves the current user through it.
+//! - `ResetToken` and `ResetTokenHash` (feature `reset`) issue and check the
+//!   single-use tokens of a password reset, storing only the hash.
 //! - [`Authenticator`] turns an attempt into a [`LoginOutcome`], and
 //!   [`ClaimAuthenticator`] is the generic implementation over any event store.
 //!
@@ -83,6 +85,8 @@ mod postgres_login_store;
 mod redis_login_store;
 #[cfg(feature = "redis")]
 mod redis_user_cache;
+#[cfg(feature = "reset")]
+mod reset;
 mod second_factor;
 #[cfg(test)]
 mod test_support;
@@ -126,6 +130,8 @@ pub use postgres_login_store::{InvalidSchemaName, PostgresLoginStore};
 pub use redis_login_store::RedisLoginStore;
 #[cfg(feature = "redis")]
 pub use redis_user_cache::RedisUserCache;
+#[cfg(feature = "reset")]
+pub use reset::{ResetError, ResetToken, ResetTokenError, ResetTokenHash};
 pub use second_factor::{HasSecondFactor, SecondFactor};
 #[cfg(feature = "totp")]
 pub use totp::{HasTotp, Totp, TotpSecret};
