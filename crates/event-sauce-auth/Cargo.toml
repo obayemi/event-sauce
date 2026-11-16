@@ -13,6 +13,7 @@ categories = ["authentication"]
 [dependencies]
 event-sauce-core = { path = "../event-sauce-core", version = "0.1.0" }
 email_address.workspace = true
+phc.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

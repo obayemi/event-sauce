@@ -27,3 +27,18 @@ pub trait Credentials:
     /// sessions opened before the change stop being valid.
     fn fingerprint(&self, digest: &mut Sha256);
 }
+
+/// Feeds `bytes` behind a length prefix, so that two different sequences of
+/// fields never feed the same byte stream.
+pub(crate) fn feed(digest: &mut Sha256, bytes: &[u8]) {
+    digest.update((bytes.len() as u64).to_be_bytes());
+    digest.update(bytes);
+}
+
+/// The fingerprint `credentials` alone would produce.
+#[cfg(test)]
+pub(crate) fn fingerprint_of(credentials: &impl Credentials) -> [u8; 32] {
+    let mut digest = Sha256::new();
+    credentials.fingerprint(&mut digest);
+    digest.finalize().into()
+}
