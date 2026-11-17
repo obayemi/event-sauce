@@ -5,6 +5,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use sqlx::PgPool;
 
+use crate::login_store::backend;
 use crate::{ttl, LoginKey, LoginStore, LoginStoreError};
 
 /// The schema a [`PostgresLoginStore`] uses unless told otherwise.
@@ -126,10 +127,6 @@ impl PostgresLoginStore {
         .map(|done| done.rows_affected())
         .map_err(backend("purge expired entries"))
     }
-}
-
-fn backend(context: &'static str) -> impl FnOnce(sqlx::Error) -> LoginStoreError {
-    move |error| LoginStoreError::backend(context, error)
 }
 
 #[async_trait]

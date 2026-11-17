@@ -4,7 +4,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use redis::aio::ConnectionManager;
+use redis::{AsyncCommands, ExistenceCheck, SetOptions};
 
+use crate::login_store::backend;
 use crate::{ttl, LoginKey, LoginStore, LoginStoreError};
 
 /// The prefix a [`RedisLoginStore`] puts before every key unless told
@@ -13,10 +15,6 @@ const DEFAULT_PREFIX: &str = "event_sauce:login:";
 
 fn storage_key(prefix: &str, key: &LoginKey) -> String {
     format!("{prefix}{key}")
-}
-
-fn backend(context: &'static str) -> impl FnOnce(redis::RedisError) -> LoginStoreError {
-    move |error| LoginStoreError::backend(context, error)
 }
 
 /// A [`LoginStore`] in Redis, using its native expiry.
@@ -81,33 +79,31 @@ impl LoginStore for RedisLoginStore {
         ttl: Duration,
     ) -> Result<(), LoginStoreError> {
         let millis = ttl::millis(ttl).ok_or(LoginStoreError::InvalidTtl(ttl))?;
-        redis::cmd("SET")
-            .arg(storage_key(&self.prefix, key))
-            .arg(value)
-            .arg("PX")
-            .arg(millis)
-            .query_async::<()>(&mut self.connection.clone())
+        let options = SetOptions::default().with_expiration(ttl::redis_expiry(millis));
+        self.connection
+            .clone()
+            .set_options::<_, _, ()>(storage_key(&self.prefix, key), value, options)
             .await
             .map_err(backend("put entry"))
     }
 
     async fn take(&self, key: &LoginKey) -> Result<Option<Vec<u8>>, LoginStoreError> {
-        redis::cmd("GETDEL")
-            .arg(storage_key(&self.prefix, key))
-            .query_async(&mut self.connection.clone())
+        self.connection
+            .clone()
+            .get_del(storage_key(&self.prefix, key))
             .await
             .map_err(backend("take entry"))
     }
 
     async fn mark_once(&self, key: &LoginKey, ttl: Duration) -> Result<bool, LoginStoreError> {
         let millis = ttl::millis(ttl).ok_or(LoginStoreError::InvalidTtl(ttl))?;
-        let recorded: Option<String> = redis::cmd("SET")
-            .arg(storage_key(&self.prefix, key))
-            .arg("")
-            .arg("NX")
-            .arg("PX")
-            .arg(millis)
-            .query_async(&mut self.connection.clone())
+        let options = SetOptions::default()
+            .conditional_set(ExistenceCheck::NX)
+            .with_expiration(ttl::redis_expiry(millis));
+        let recorded: Option<String> = self
+            .connection
+            .clone()
+            .set_options(storage_key(&self.prefix, key), "", options)
             .await
             .map_err(backend("mark entry"))?;
         Ok(recorded.is_some())

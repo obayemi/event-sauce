@@ -10,6 +10,7 @@ use event_sauce_core::{
     EventStore, StoredVersion,
 };
 use redis::aio::ConnectionManager;
+use redis::{AsyncCommands, SetOptions};
 use serde::{de::DeserializeOwned, Serialize};
 use zeroize::Zeroizing;
 
@@ -267,9 +268,10 @@ where
         id: EntityId,
         version: AggregateVersion,
     ) -> Result<Option<Arc<AggregateRoot<U>>>, CacheError> {
-        let stored: Option<Vec<u8>> = redis::cmd("GET")
-            .arg(self.key(id))
-            .query_async(&mut self.connection.clone())
+        let stored: Option<Vec<u8>> = self
+            .connection
+            .clone()
+            .get(self.key(id))
             .await
             .map_err(backend("read entry"))?;
         match stored {
@@ -285,12 +287,10 @@ where
         let Some(bytes) = self.seal(&user).await? else {
             return Ok(());
         };
-        redis::cmd("SET")
-            .arg(self.key(user.entity_id()))
-            .arg(bytes)
-            .arg("PX")
-            .arg(self.millis()?)
-            .query_async::<()>(&mut self.connection.clone())
+        let options = SetOptions::default().with_expiration(ttl::redis_expiry(self.millis()?));
+        self.connection
+            .clone()
+            .set_options::<_, _, ()>(self.key(user.entity_id()), bytes, options)
             .await
             .map_err(backend("write entry"))
     }

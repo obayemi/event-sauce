@@ -66,6 +66,13 @@ impl LoginStoreError {
     }
 }
 
+#[cfg(any(feature = "postgres", feature = "redis"))]
+pub(crate) fn backend<E: StdError + Send + Sync + 'static>(
+    context: &'static str,
+) -> impl FnOnce(E) -> LoginStoreError {
+    move |error| LoginStoreError::backend(context, error)
+}
+
 /// Short-lived state of logins in progress, kept apart from the event store.
 ///
 /// Pending second factors, consumed one-time-password steps and device-link
