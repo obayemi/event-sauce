@@ -20,6 +20,11 @@
 //! event-sauce = { version = "0.1", features = ["postgres"] }
 //! ```
 //!
+//! Login for user aggregates sits under `auth` (feature `auth`, plus
+//! `auth-postgres`, `auth-moka`, `auth-redis`, `auth-reset` and `auth-totp`
+//! for its optional parts), and the axum integration under `axum` (features
+//! `axum`, `axum-login` and `axum-app`).
+//!
 //! [`define_events!`](crate::define_events) still expands to
 //! `#[derive(Serialize, Deserialize)]` on the generated event structs, so a
 //! caller using it also needs `serde` with the `derive` feature. `pastey`,
@@ -105,6 +110,23 @@ pub mod memory {
 #[cfg(feature = "postgres")]
 pub mod postgres {
     pub use event_sauce_postgres::*;
+}
+
+/// Pluggable credentials, login methods and authentication for user
+/// aggregates.
+///
+/// `#[aggregate(user)]` expands to paths rooted here.
+#[cfg(feature = "auth")]
+pub mod auth {
+    pub use event_sauce_auth::*;
+}
+
+/// axum and tower integration: the correlation layer, the `Store`, `Repo` and
+/// `UnitOfWork` extractors, and, behind `axum-login` and `axum-app`, the
+/// login backend and the application builder.
+#[cfg(feature = "axum")]
+pub mod axum {
+    pub use event_sauce_axum::*;
 }
 
 /// Prelude module for convenient imports
