@@ -958,7 +958,7 @@ Each step is its own commit, test first:
 11. `Store`/`Repo`/`UnitOfWork` extractors.
 12. `EventSauceBackend`, `PendingLogin` and the user extractors.
 13. `EventSauceApp` builder with the Postgres defaults.
-14. Facade features, CI (adding a Redis service, or testcontainers),
+14. Facade features, CI (Redis through testcontainers, so no service),
     docs (`docs/auth.md`, `docs/axum.md`) and the example.
 
 ## 9. Open questions

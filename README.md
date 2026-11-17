@@ -43,6 +43,8 @@ read models kept up to date from the very events your aggregates emit.
 - 📦 **Optimistic Concurrency**: Version-checked writes with typed `ConcurrencyConflict` errors
 - ⚙️ **Typed Commands**: lifecycle-aware `Command` handlers over a `Root`, run with `Repository::execute` and a `RetryPolicy` that retries concurrency conflicts (`commands` feature)
 - 🔗 **Units of Work**: atomic commits across event-sourced and state-stored aggregates with `UnitOfWorkStore`, backed by the in-memory and Postgres `TransactionalStore` (`unit-of-work` feature)
+- 🔑 **Pluggable Auth**: credentials live inside the user aggregate (`#[aggregate(user)]`, `Identity<C>`), logins resolve through claims, with password, federated and second-factor support (`auth` feature)
+- 🌐 **axum Integration**: request-id correlation, `Store`/`Repo` extractors, an `axum-login` backend with session invalidation on credential change, and a one-builder Postgres app (`axum`, `axum-login` and `axum-app` features)
 - 🗄️ **Multiple Backends**: PostgreSQL, in-memory
 - 🧪 **Testing First-Class**: In-memory backend for fast tests; 🚀 latest stable dependencies (Tokio 1.48, SQLx 0.8); strict TDD with property-based testing
 
@@ -480,6 +482,8 @@ use event_sauce::crypto::Aes256GcmProvider;
 - `state-store` (default) - The state-stored persistence style: `StateStore`, in-transaction projections
 - `postgres` - PostgreSQL backend (implies `event-sourcing` and `state-store`)
 - `crypto` - Encryption support (AES-256-GCM provider, key stores); implies `event-sourcing`; turns on encryption in whichever backends are enabled
+- `auth` - Credentials, login methods and authenticators for user aggregates, as `event_sauce::auth` (with `auth-postgres`, `auth-moka`, `auth-redis`, `auth-reset` and `auth-totp` for its optional parts)
+- `axum` - Correlation layer and `Store`/`Repo`/`UnitOfWork` extractors, as `event_sauce::axum`; `axum-login` adds the login backend and user extractors (implies `auth`), `axum-app` adds the Postgres app builder (implies `postgres`)
 - `full` - All features enabled
 
 The event-driven domain layer (aggregates, events, commands, the `Repository`
@@ -739,6 +743,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 - **[PostgreSQL Production Setup](docs/postgres-production.md)** - Complete production deployment guide
 - **[Policies Guide](docs/policies.md)** - Cross-aggregate event orchestration, causation tracking, and error handling
 - **[Claims Guide](docs/claims.md)** - Cross-aggregate uniqueness constraints
+- **[Auth Guide](docs/auth.md)** - Credentials in the user aggregate, login methods, second factors, user cache and reset tokens
+- **[axum Guide](docs/axum.md)** - Correlation layer, extractors, `axum-login` sessions and the Postgres app builder
 - **[Audit Log Guide](docs/audit-log.md)** - Event log queries, actor tracking, and causation tracing
 - **[Architecture Overview](docs/architecture.md)** - System design and patterns
 - **[TDD Workflow](docs/tdd-workflow.md)** - Test-driven development for event sourcing
@@ -753,6 +759,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 - **Examples** - See `crates/event-sauce/examples/` for complete applications:
   - **[postgres-quickstart.rs](crates/event-sauce/examples/postgres-quickstart.rs)** - Full-featured example with User and Order aggregates, projections, and PostgreSQL backend (requires `postgres` + `crypto`; needs Docker)
+  - **[axum-auth/](crates/event-sauce/examples/axum-auth/main.rs)** - An axum app with a user aggregate, password login and a guarded route, with its tests (requires `axum-login`; no Docker)
   - **[apply-event.rs](crates/event-sauce/examples/apply-event.rs)** - Bank account example with manual `ApplyEvent` trait implementation
   - **[actor-events.rs](crates/event-sauce/examples/actor-events.rs)** - Role-based permission validation with actor events
   - **[crypto-shredding.rs](crates/event-sauce/examples/crypto-shredding.rs)** - Full-aggregate encryption and right-to-be-forgotten (requires `memory` + `crypto`)

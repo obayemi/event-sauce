@@ -258,6 +258,18 @@ explicitly rather than gated behind a major version bump.
   authentication layers. Call `user::<U, _>(method)`: Rust cannot infer
   only the method type.
 
+- Facade features `auth`, `auth-postgres`, `auth-moka`, `auth-redis`,
+  `auth-reset` and `auth-totp` re-export `event-sauce-auth` as
+  `event_sauce::auth`, and `axum`, `axum-login` and `axum-app` re-export
+  `event-sauce-axum` as `event_sauce::axum`. `axum-login` implies `auth`,
+  `axum-app` implies `axum-login` and `postgres`, and `full` turns them all
+  on. `#[aggregate(user)]` resolves its paths through `event_sauce::auth`, so
+  a crate that depends on the facade alone can use it. The `axum-auth`
+  example (an in-memory axum app with a user aggregate, a password login and
+  guarded routes, tested with `cargo test --examples`), the `docs/auth.md`
+  and `docs/axum.md` guides, and a CI job that lints each feature of the
+  new crates alone come with them.
+
 - Per-aggregate snapshot strategy. `#[aggregate(snapshots(every = N))]`
   (also `always`, `never` and `with = "path::TO_STATIC"`) generates
   `Aggregate::snapshot_strategy()`, and `SnapshotConfig::resolve_strategy`

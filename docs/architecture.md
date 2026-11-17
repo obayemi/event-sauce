@@ -212,11 +212,32 @@ consumer based on what it needs:
 The log is the source of truth in all three; the outbox is *derived* from
 it, so a new consumer can be added later by replaying history.
 
+### event-sauce-auth
+
+Pluggable authentication for user aggregates, behind the facade's `auth`
+feature (see [auth.md](auth.md)):
+
+- **Identity / Credentials** - The credentials of a user live inside its aggregate
+- **LoginMethod / Authenticator** - Turn a submitted attempt into an authenticated user, locating the user through `EventStore::resolve_claim`
+- **SecondFactor / LoginStore** - Multi-step logins, with Postgres and Redis login stores
+- **UserCache** - Version-checked cache of loaded users (Moka, Redis)
+
+### event-sauce-axum
+
+axum and tower integration, behind the facade's `axum`, `axum-login` and
+`axum-app` features (see [axum.md](axum.md)):
+
+- **CorrelationLayer** - Runs each request in an event context carrying its request id
+- **Store / Repo / UnitOfWork** - Extractors over the application state
+- **EventSauceBackend** - An `axum-login` backend whose sessions end when credentials change
+- **EventSauceApp** - The Postgres stack wired in one builder
+
 ### event-sauce (facade)
 
 The single **event-sauce** dependency downstream crates take (none of the
 sibling crates appear in a caller's `Cargo.toml`). It re-exports the core
-surface at its root, the backends as `event_sauce::{memory, postgres}`, and
+surface at its root, the backends as `event_sauce::{memory, postgres}`, the
+login and web crates as `event_sauce::{auth, axum}`, and
 the AES-256-GCM provider alongside the traits it implements in
 `event_sauce::crypto`. The derive macros resolve their generated paths to
 whichever of `event-sauce` or `event-sauce-core` a crate depends on:
