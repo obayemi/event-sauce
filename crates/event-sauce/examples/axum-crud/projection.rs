@@ -13,14 +13,15 @@ use crate::member::MemberId;
 use event_sauce::postgres::{
     LeaseOutcome, PostgresBackend, PostgresEventStore, PostgresProjection,
 };
-use event_sauce::prelude::{Error, EventEnvelope, EventType, Result};
+use event_sauce::prelude::{DomainEvent, Error, EventEnvelope, EventType, Result};
 use futures::StreamExt;
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use sqlx::postgres::PgArguments;
+use sqlx::query::Query;
 use sqlx::{FromRow, PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
-use crate::note::{CreatedEvent, DeletedEvent, EditedEvent};
+use crate::note::{CreatedEvent, DeletedEvent, EditedEvent, NoteEvent};
 
 const LEASE: Duration = Duration::from_secs(30);
 const IDLE: Duration = Duration::from_secs(1);
@@ -36,11 +37,6 @@ pub struct NoteView {
 
 fn sql_error(error: sqlx::Error) -> Error {
     Error::custom(format!("notes read model: {error}"))
-}
-
-fn payload<E: DeserializeOwned>(envelope: &EventEnvelope) -> Result<E> {
-    serde_json::from_value(envelope.event_data.clone())
-        .map_err(|error| Error::custom(format!("{}: {error}", envelope.event_type)))
 }
 
 /// The projection that maintains the `note_list` table.
@@ -65,48 +61,33 @@ impl NoteList {
         Ok(())
     }
 
-    async fn created(envelope: &EventEnvelope, tx: &mut Transaction<'_, Postgres>) -> Result<()> {
-        let event: CreatedEvent = payload(envelope)?;
-        sqlx::query(
-            "INSERT INTO note_list (id, owner, title, body, created_at)
-             VALUES ($1, $2, $3, $4, $5)
-             ON CONFLICT (id) DO NOTHING",
-        )
-        .bind(envelope.aggregate_id)
-        .bind(event.owner.as_uuid())
-        .bind(event.title.trim())
-        .bind(&event.body)
-        .bind(envelope.created_at)
-        .execute(&mut **tx)
-        .await
-        .map_err(sql_error)?;
-        Ok(())
-    }
-
-    async fn edited(envelope: &EventEnvelope, tx: &mut Transaction<'_, Postgres>) -> Result<()> {
-        let event: EditedEvent = payload(envelope)?;
-        sqlx::query(
-            "UPDATE note_list
-             SET title = COALESCE($2, title), body = COALESCE($3, body)
-             WHERE id = $1",
-        )
-        .bind(envelope.aggregate_id)
-        .bind(event.title.as_deref().map(str::trim))
-        .bind(event.body)
-        .execute(&mut **tx)
-        .await
-        .map_err(sql_error)?;
-        Ok(())
-    }
-
-    async fn deleted(envelope: &EventEnvelope, tx: &mut Transaction<'_, Postgres>) -> Result<()> {
-        let _: DeletedEvent = payload(envelope)?;
-        sqlx::query("DELETE FROM note_list WHERE id = $1")
+    fn statement(envelope: &EventEnvelope) -> Result<Query<'static, Postgres, PgArguments>> {
+        let query = match NoteEvent::from_envelope(envelope)? {
+            NoteEvent::Created {
+                owner, title, body, ..
+            } => sqlx::query(
+                "INSERT INTO note_list (id, owner, title, body, created_at)
+                 VALUES ($1, $2, $3, $4, $5)
+                 ON CONFLICT (id) DO NOTHING",
+            )
             .bind(envelope.aggregate_id)
-            .execute(&mut **tx)
-            .await
-            .map_err(sql_error)?;
-        Ok(())
+            .bind(owner.as_uuid())
+            .bind(title.trim().to_owned())
+            .bind(body)
+            .bind(envelope.created_at),
+            NoteEvent::Edited { title, body, .. } => sqlx::query(
+                "UPDATE note_list
+                 SET title = COALESCE($2, title), body = COALESCE($3, body)
+                 WHERE id = $1",
+            )
+            .bind(envelope.aggregate_id)
+            .bind(title.map(|title| title.trim().to_owned()))
+            .bind(body),
+            NoteEvent::Deleted { .. } => {
+                sqlx::query("DELETE FROM note_list WHERE id = $1").bind(envelope.aggregate_id)
+            }
+        };
+        Ok(query)
     }
 }
 
@@ -127,12 +108,11 @@ impl PostgresProjection for NoteList {
         envelope: &EventEnvelope,
         tx: &mut Transaction<'_, Postgres>,
     ) -> Result<()> {
-        match envelope.event_type.as_str() {
-            CreatedEvent::EVENT_TYPE => Self::created(envelope, tx).await,
-            EditedEvent::EVENT_TYPE => Self::edited(envelope, tx).await,
-            DeletedEvent::EVENT_TYPE => Self::deleted(envelope, tx).await,
-            other => Err(Error::custom(format!("unexpected event {other}"))),
-        }
+        Self::statement(envelope)?
+            .execute(&mut **tx)
+            .await
+            .map_err(sql_error)?;
+        Ok(())
     }
 }
 
