@@ -10,6 +10,7 @@ This guide explains how to enforce cross-aggregate uniqueness constraints using 
   - [Manual Implementation](#manual-implementation)
 - [How Claims Work](#how-claims-work)
 - [Handling Conflicts](#handling-conflicts)
+- [Resolving a Claim](#resolving-a-claim)
 - [Composite Claims](#composite-claims)
 - [Claims and Encryption](#claims-and-encryption)
 - [Claims and Delete Events](#claims-and-delete-events)
@@ -143,6 +144,28 @@ The error includes:
 - `claim_key` — the attempted value (the original JSON, not the hash)
 - `held_by` — the UUID of the aggregate that currently holds the claim (if retrievable)
 
+## Resolving a Claim
+
+Claims also answer the reverse question: which aggregate holds this value?
+`EventStore::resolve_claim` returns the holder's `EntityId`, or `None` when
+nobody holds the claim:
+
+```rust
+use event_sauce::prelude::*;
+use serde_json::json;
+
+let holder: Option<EntityId> = store
+    .resolve_claim(&AggregateClaim::new("User.email", json!(email)))
+    .await?;
+```
+
+It is one indexed lookup on `(claim_type, claim_key)`, with no projection of
+the claimed value. A claim released by its aggregate (value changed, claim
+dropped, or aggregate deleted) returns `None`. A store that keeps no claim
+index returns `Error::InvalidState`: custom stores must override
+`resolve_claim`, and decorators must delegate it (see
+[Event Store Decorators](event-store.md#event-store-decorators)).
+
 ## Composite Claims
 
 For uniqueness across multiple fields, use structured JSON values:
@@ -186,16 +209,16 @@ This means:
 
 ## Backend Support
 
-| Backend | Claims Enforced | Notes |
-|---------|----------------|-------|
-| **PostgreSQL** | Yes | Full transactional enforcement with UNIQUE constraints |
-| **In-Memory** | Yes | Event streams and state rows each enforce claims atomically per commit or batch |
+| Backend | Claims Enforced | `resolve_claim` | Notes |
+|---------|----------------|-----------------|-------|
+| **PostgreSQL** | Yes | Yes | Full transactional enforcement with UNIQUE constraints; lookups read the shared `aggregate_claims` table, so they also find state-store claims |
+| **In-Memory** | Yes | Yes | Event streams and state rows each enforce claims atomically per commit or batch; the event store sees only its own index |
 
 The in-memory event store and state store enforce claims with the same rules as PostgreSQL, so uniqueness tests need no database. Each in-memory store keeps its own claim index: unlike PostgreSQL, where both stores share the `aggregate_claims` table, a value claimed by an event stream is not visible to the state store.
 
 ## Best Practices
 
-1. **Use descriptive claim types** — `"User.email"` is better than `"email"` to avoid collisions across aggregate types
+1. **Use descriptive claim types** — `"User.email"` is better than `"email"` to avoid collisions across aggregate types. The exception is `#[aggregate(user)]`, which adds the unprefixed `auth.login` and `auth.federated` claim types while the user is registered: treat them as reserved and keep one user aggregate per store (see [Aggregate Attributes](aggregates.md#aggregate-attributes))
 2. **Keep claims derived from state** — `claims()` should be a pure function of the aggregate's current fields
 3. **Handle conflicts gracefully** — return user-friendly error messages when `is_claim_conflict()` is true
 4. **Use JSON values** — `AggregateClaim` accepts `serde_json::Value`, so you can claim strings, numbers, or composite objects

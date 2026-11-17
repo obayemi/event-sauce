@@ -207,6 +207,27 @@ explicitly rather than gated behind a major version bump.
 
 ### Added
 
+- `EventStore::resolve_claim` returns the aggregate currently holding an
+  `AggregateClaim`, in one indexed lookup. The in-memory and PostgreSQL
+  stores implement it, and a claim released by its aggregate no longer
+  resolves. The default returns `Error::InvalidState`, so a custom store
+  must override it and a decorator must delegate it, or every lookup
+  through the wrapper fails.
+
+- `#[aggregate(user)]` with the `#[user(identity)]` and `#[user(active)]`
+  field markers. It generates `UserAggregate` and merges the `auth.login`
+  and `auth.federated` claims into `claims()` while the user is registered.
+  It requires the `event-sauce-auth` crate.
+
+- `event-sauce-auth` crate: pluggable credentials and login for user
+  aggregates. Its main types are `Identity`, `Credentials` (`Password`,
+  `Federated`, `PasswordOrFederated`), `LoginId` (`Email`, `Username`),
+  `LoginMethod` (`PasswordLogin`, `FederatedLogin`,
+  `PasswordOrFederatedLogin`), `ClaimAuthenticator`, `PasswordHasher`,
+  `LoginStore` and `CachedUserLoader`. The `argon2` and `postgres`
+  features are on by default; `moka`, `redis`, `reset` and `totp` are
+  optional.
+
 - Per-aggregate snapshot strategy. `#[aggregate(snapshots(every = N))]`
   (also `always`, `never` and `with = "path::TO_STATIC"`) generates
   `Aggregate::snapshot_strategy()`, and `SnapshotConfig::resolve_strategy`

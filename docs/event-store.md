@@ -646,7 +646,10 @@ async fn test_counter_replay() {
 Implement `EventStore` for a custom backend by providing its primitives —
 `append`, `load_stream`, `stream_all`, and `get_version`. Everything else
 (`commit`, `repository()`, `append_batch`, snapshots, ...) has a default
-built on those four, so a minimal backend needs only them:
+built on those four, so a minimal backend needs only them. A backend that
+enforces `AggregateClaim` uniqueness should also override `resolve_claim`:
+its default returns `Error::InvalidState`, because a claim lookup cannot be
+derived from the other primitives.
 
 ```rust
 use async_trait::async_trait;
@@ -720,6 +723,16 @@ impl<S: EventStore> EventStore for LoggingEventStore<S> {
     }
 
     // ... load_stream, stream_all, get_version delegate the same way
+}
+```
+
+Delegate `resolve_claim` as well. Its default returns `Error::InvalidState`
+instead of calling the primitives, so a decorator that leaves it out makes
+every claim lookup through it fail, including each `ClaimAuthenticator` login:
+
+```rust
+async fn resolve_claim(&self, claim: &AggregateClaim) -> Result<Option<EntityId>> {
+    self.inner.resolve_claim(claim).await
 }
 ```
 

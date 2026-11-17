@@ -232,13 +232,17 @@ pub trait EventStore: Send + Sync {
 
     /// Returns the aggregate currently holding `claim`, if any.
     ///
-    /// Backends index claims as `(claim_type, sha256(claim_key)) ->
-    /// aggregate_id`, so this is one indexed lookup that needs no plaintext
-    /// projection of the claimed value. A claim released by an aggregate
-    /// (changed, dropped, or cleared on deletion) no longer resolves.
+    /// Backends index claims by `(claim_type, claim_key) -> aggregate_id`, so
+    /// this is one indexed lookup that needs no plaintext projection of the
+    /// claimed value. PostgreSQL stores the SHA-256 of the key, while the
+    /// in-memory backend keys its in-process index by the JSON value. A claim
+    /// released by an aggregate (changed, dropped, or cleared on deletion) no
+    /// longer resolves.
     ///
     /// The default implementation reports that this store keeps no claim
-    /// index; backends that enforce [`AggregateClaim`] uniqueness override it.
+    /// index; backends that enforce [`AggregateClaim`] uniqueness override it,
+    /// and a store wrapping another one must delegate this method, or every
+    /// lookup through the wrapper fails.
     ///
     /// # Errors
     ///

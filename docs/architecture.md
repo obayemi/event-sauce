@@ -350,6 +350,12 @@ pub trait EventStore: Send + Sync {
 
     async fn stream_exists(&self, stream_id: StreamId) -> Result<bool>;
 
+    // The aggregate currently holding `claim`, if any. Unlike the other
+    // defaults, it cannot be derived from the primitives: the default returns
+    // `Error::InvalidState`, and the in-memory and PostgreSQL backends answer
+    // it from their claim index. Decorators must delegate it.
+    async fn resolve_claim(&self, claim: &AggregateClaim) -> Result<Option<EntityId>>;
+
     // Snapshot cache hooks — no-ops by default, wired by backends that
     // support snapshotting.
     async fn save_snapshot(&self, snapshot: Snapshot) -> Result<()>;
