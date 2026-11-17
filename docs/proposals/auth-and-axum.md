@@ -1,7 +1,11 @@
 # Proposal: pluggable auth and axum integration
 
-Status: **proposed**, not implemented. Supersedes the
-"extract `event-sauce-auth` from saxy-p" plan in saxy-p's `PLAN.md`.
+Status: **partly implemented**. Steps 1 to 9 of the build order
+(section 8) are implemented on `feat/auth`, and steps 10 and 11 on
+`feat/auth-axum`. Steps 12 to 14 are still proposed. Where the code
+deliberately differs from the first draft of this proposal, the sections
+below describe the code. Supersedes the "extract `event-sauce-auth` from
+saxy-p" plan in saxy-p's `PLAN.md`.
 
 Two new optional crates:
 
@@ -185,11 +189,15 @@ its `define_events!` apply closures and `@validate` blocks.
 | `Identity::session_fingerprint() -> [u8; 32]` | SHA-256 over `C::fingerprint`. Any credential change invalidates other sessions. |
 | `Password::set_hash(hash)`, `Password::change_login(l)` | Always allowed; the claim follows on commit. |
 | `Federated::link(id)` | Errors with `AlreadyLinked`. |
-| `Federated::unlink(&provider)` | Errors with `LastLoginMethod` when it is the only link. |
+| `Federated::unlink(&provider)` | Errors with `NotLinked` when no link of that provider exists, and with `LastLoginMethod` when it is the only link. |
 | `PasswordOrFederated::set_password(p)` | Adds or replaces the password; `Federated` becomes `Both`. |
 | `PasswordOrFederated::remove_password()` | Errors with `LastLoginMethod` unless federated links remain. |
 | `PasswordOrFederated::link(id)` | Adds a link; `Password` becomes `Both`. |
-| `PasswordOrFederated::unlink(&provider)` | Errors with `LastLoginMethod` if it removes the last way to log in. |
+| `PasswordOrFederated::unlink(&provider)` | Errors with `NotLinked` when no link of that provider exists, and with `LastLoginMethod` if it removes the last way to log in. |
+
+The rules fail with `LoginMethodError`, whose variants are
+`AlreadyLinked`, `NotLinked` and `LastLoginMethod`. `Identity::register`
+fails with `IdentityError::AlreadyRegistered`.
 
 Each type only exposes what makes sense for it. For example,
 `Password<L>` has no `remove_password`, so a password-only app cannot
@@ -278,6 +286,10 @@ method. It cannot be built on `load_stream`/`append`, because the index is
 backend state. The memory and postgres backends implement it as one
 indexed lookup.
 
+The method has a default body that fails with `Error::InvalidState`, so a
+store that keeps no claim index still compiles and fails loudly at the
+first lookup. A store wrapping another one must delegate it.
+
 The lookup hashes the input, so no plaintext is stored. Shredding a user
 leaves only hashes behind, as `docs/claims.md` already describes. The
 `profile_auth` projection is no longer needed for login.
@@ -295,9 +307,10 @@ pub trait LoginMethod<C: Credentials>: Send + Sync {
     type Attempt: Send + Sync;
 
     /// Finds the user this attempt targets. Credential methods resolve a
-    /// claim through the `ClaimLocator` helper; delegated methods (device
-    /// links) look the user up in their own store.
-    async fn locate(&self, attempt: &Self::Attempt) -> Result<Option<EntityId>, LocateError>;
+    /// claim through the `locator`; delegated methods (device links) ignore
+    /// it and look the user up in their own store.
+    async fn locate(&self, locator: &dyn ClaimLocator, attempt: &Self::Attempt)
+        -> Result<Option<EntityId>, LocateError>;
 
     /// Checks the attempt against the located user's identity. The method
     /// decides whether `Identity::Anonymous` may log in this way: credential
@@ -309,6 +322,21 @@ pub trait LoginMethod<C: Credentials>: Send + Sync {
     async fn on_unknown(&self, _attempt: &Self::Attempt) {}
 }
 ```
+
+`ClaimLocator` is the one-method view of `EventStore::resolve_claim` that
+`locate` needs:
+
+```rust
+#[async_trait]
+pub trait ClaimLocator: Send + Sync {
+    async fn locate_claim(&self, claim: &AggregateClaim) -> Result<Option<EntityId>, LocateError>;
+}
+// implemented for every `S: EventStore + ?Sized`
+```
+
+`LocateError` is an alias of `event_sauce_core::Error`. `Rejected` is an
+enum with three variants: `Mismatch` (the attempt does not match what is
+stored), `Hash(HashError)` and `LoginStore(LoginStoreError)`.
 
 The library ships three:
 
@@ -371,6 +399,7 @@ pub enum LoginOutcome<U: Aggregate> {
     /// First factor accepted; a second factor is required (section 3.6).
     SecondFactorRequired(PendingLoginId),
 }
+// `LoginOutcome` is `#[non_exhaustive]`.
 
 #[derive(Debug, thiserror::Error)]
 pub enum AuthError<A> {
@@ -379,14 +408,21 @@ pub enum AuthError<A> {
     #[error("no user for this login")] Unknown { attempt: A },
     #[error(transparent)]           Store(#[from] event_sauce_core::Error),
     #[error(transparent)]           Hash(#[from] HashError),
+    #[error(transparent)]           Pending(#[from] PendingLoginError),
 }
 ```
 
-The default implementation is `ClaimAuthenticator<U, M>`, for any
-`M: LoginMethod<U::Credentials>`. It is the generic code every backend
-gets:
+`Rejected` converts into `AuthError`: `Mismatch` becomes
+`InvalidCredentials`, `Hash` stays `Hash`, and a login store failure
+becomes `Pending`.
 
-1. `method.locate(&attempt)`.
+The default implementation is `ClaimAuthenticator<U, M, S, T = NoSecondFactor>`,
+for any `M: LoginMethod<U::Credentials>` and any event store `S`. It is the
+generic code every backend gets, and `ClaimAuthenticator::new(store: Arc<S>,
+method)` builds it. `S` is inferred, so callers name only the user type. The
+fourth parameter is the login stage of section 3.6.
+
+1. `method.locate(&*store, &attempt)`: the event store is the locator.
 2. If no user matches, run `on_unknown` and return `Unknown { attempt }`.
    `Unknown` hands the attempt back so the app can apply its own policy:
    - for a federated attempt, link the subject to an existing user by
@@ -399,15 +435,15 @@ gets:
 4. `is_active()`, otherwise return `Inactive`. This check runs for every
    method.
 5. `method.verify(identity, &attempt)`.
-6. If the user's credentials require a second factor (section 3.6), store
-   a pending login and return `SecondFactorRequired`. Otherwise return
-   `Authenticated`.
+6. Ask the login stage `T` (section 3.6). If the user's credentials require
+   a second factor, it stores a pending login and the outcome is
+   `SecondFactorRequired`. Otherwise the outcome is `Authenticated`.
 
 saxy-p's login becomes:
 
 ```rust
-ClaimAuthenticator::<Profile, _>::new(
-    repo,
+ClaimAuthenticator::<Profile, _, _>::new(
+    store.clone(),
     PasswordOrFederatedLogin::new(Argon2Hasher::default()),
 )
 ```
@@ -461,20 +497,53 @@ The library ships `Totp` behind the `totp` feature:
 - `verify` rejects a time step that was already used, through
   `LoginStore::mark_once`. This replay protection writes nothing to the
   user's event stream.
+- `Totp::with_clock` injects the `Clock` that picks the time step.
+  `Clock` is a small trait (`now() -> DateTime<Utc>`) with `SystemClock`
+  and the test double `FixedClock`. Everything that reads the time takes
+  one: `Totp`, and `TwoFactor` for `PendingLogin::created_at`.
 
 WebAuthn is left to the app or a later release. The `Challenge` type is
 what makes it possible.
 
-**Completing the login.** `ClaimAuthenticator::complete(pending_id,
-response)` performs these steps:
-1. `take` the pending login from the store. A pending login is single
-   use and expires.
-2. Reload the user and re-check that it is active.
-3. Run `SecondFactor::verify`.
-4. Return `Authenticated`.
+**The login stage.** The fourth parameter of `ClaimAuthenticator` is a
+`LoginStage<C>`, which decides after the first factor whether the login is
+complete:
 
-No session exists before step 4. The pending login is not a partial
-session.
+```rust
+#[async_trait]
+pub trait LoginStage<C: Credentials>: Send + Sync {
+    /// `Some(id)` when a pending login was stored, `None` when the login is complete.
+    async fn begin(&self, user: EntityId, identity: &Identity<C>)
+        -> Result<Option<PendingLoginId>, PendingLoginError>;
+}
+```
+
+- `NoSecondFactor` is the default stage. It never holds a login back, so an
+  app whose credentials implement `HasSecondFactor` must not keep it.
+- `TwoFactor<F>` holds back the logins whose credentials report
+  `requires_second_factor()`. It is opt-in:
+  `.with_second_factor(TwoFactor::new(factor, login_store))` turns a
+  `ClaimAuthenticator<U, M, S>` into a
+  `ClaimAuthenticator<U, M, S, TwoFactor<F>>`, which compiles only for
+  `U::Credentials: HasSecondFactor` and `F: SecondFactor<U::Credentials>`.
+  A pending login lives five minutes by default, `with_pending_ttl(ttl)`
+  changes it, and `with_clock(clock)` injects the clock.
+
+**Completing the login.** `complete(pending_id, response)` exists on the
+`TwoFactor` variant only, so an authenticator with no second factor cannot
+call it. It returns `Result<AggregateRoot<U>, CompleteError>`, and
+performs these steps:
+1. `take` the pending login from the store. A pending login is single
+   use and expires; an unknown, expired or already taken one is
+   `CompleteError::NotInProgress`.
+2. Reload the user and re-check that it is active (`Inactive` otherwise).
+3. Run `SecondFactor::verify`; a wrong response is `InvalidResponse`. The
+   pending login was already taken, so a wrong response ends the login and
+   the user starts again from the first factor.
+4. Return the user.
+
+`CompleteError` also carries `Store`, `Hash` and `Pending`. No session
+exists before step 4. The pending login is not a partial session.
 
 **The login store.** In-progress login state goes in a small pluggable
 store, separate from the event store:
@@ -498,14 +567,21 @@ pub trait LoginStore: Send + Sync {
 ```
 
 `LoginKey` is a namespaced key such as `pending:{uuid}` or
-`totp:{user}:{step}`. A typed `PendingLogins<S>` wrapper serialises
-`PendingLogin { user, method, challenge, created_at }` over the raw
-bytes, once for every backend.
+`totp:{user}:{step}`. `PendingLogins`, which is not generic, wraps an
+`Arc<dyn LoginStore>` and a ttl, and serialises
+`PendingLogin<Ch> { user, challenge, created_at }` as JSON over the raw
+bytes, once for every backend. `PendingLoginId` is a random UUID.
+
+`put` and `mark_once` accept a ttl greater than zero and at most 366 days.
+Anything else fails with `LoginStoreError::InvalidTtl`. `take` has no ttl.
 
 | Implementation | Feature | `take` | `mark_once` | Expiry |
 |---|---|---|---|---|
 | `PostgresLoginStore` (default) | `postgres` | `DELETE … RETURNING` | `INSERT … ON CONFLICT DO NOTHING` | `expires_at` filtered on read, plus `purge_expired()` for a periodic task |
-| `RedisLoginStore` | `redis` | `GETDEL` | `SET NX EX` | native TTL |
+| `RedisLoginStore` | `redis` | `GETDEL` (Redis 6.2 or newer) | `SET NX PX` | native TTL |
+
+`RedisLoginStore` prefixes every key with `event_sauce:login:` unless
+`with_prefix` says otherwise.
 
 As decided, there is no in-memory login store. A login in progress must
 survive across instances. The crate's unit tests use a private fake.
@@ -519,13 +595,32 @@ Loading the current user goes through a pluggable cache:
 
 ```rust
 #[async_trait]
-pub trait UserCache<U: UserAggregate>: Send + Sync {
+pub trait UserCache<U: UserAggregate>: Debug + Send + Sync {
     /// Returns the cached user only if it is exactly at `version`.
     async fn get(&self, id: EntityId, version: AggregateVersion)
         -> Result<Option<Arc<AggregateRoot<U>>>, CacheError>;
+    /// Caches `user` at the version it was loaded at. A user with pending
+    /// events, or a poisoned one, is skipped: a cache only holds users as stored.
     async fn put(&self, user: Arc<AggregateRoot<U>>) -> Result<(), CacheError>;
 }
 ```
+
+`UserCache` requires `Debug`, so the types holding one stay printable.
+
+`CachedUserLoader<U, S>` is the piece that puts the cache to use, and is
+what step 12 builds `get_user` on. `new(store)` loads without a cache,
+`with_cache(cache)` or `with_shared_cache(arc)` adds one, and
+`load(id) -> Result<Option<Arc<AggregateRoot<U>>>, Error>` does the
+following:
+1. Read the stored version (one cheap query). The initial version means no such
+   user: `None`.
+2. Serve a cached user at exactly that version.
+3. Otherwise load in full and fill the cache. A missing or deleted user is
+   `None`.
+4. Return `None` for an inactive user.
+
+A cache is an optimisation, never a source of failure: a cache error is
+logged with `tracing` and the user is loaded in full.
 
 Every read is checked against the version, so the caches never need
 explicit invalidation. Every instance keeps its own Moka cache, or all of
@@ -555,21 +650,30 @@ key, through the store's `CryptoProvider` and `CryptoKeyStore`.
 Crypto-shredding a user then also makes its cache entries unreadable, as
 it does for events and snapshots. A missing key is a miss, not an error.
 
+The cache finds that key and provider through the event store the users
+live in, which the app passes with
+`RedisUserCache::new(connection).with_crypto_from(store)`. Entries live for
+one day by default, `with_ttl` changes it (zero or more than 366 days makes
+`put` fail with `CacheError::InvalidTtl`), and keys are prefixed with
+`event_sauce:user:` unless `with_prefix` says otherwise.
+
 The trait stays open, so an app can plug in another shared cache.
 
 ### 3.8 Dependencies and features
 
-The crate depends on `event-sauce-core`, plus `argon2`, `sha2`, `rand`,
-`secrecy`, `email_address` and `thiserror`.
+The crate depends on `event-sauce-core`, plus `async-trait`, `chrono`,
+`email_address`, `phc`, `secrecy`, `serde`, `serde_json`, `sha2`,
+`thiserror`, `tracing` and `uuid`. The optional dependencies come with
+their feature.
 
 | Feature | Brings |
 |---|---|
-| `argon2` (default) | `Argon2Hasher` |
-| `reset` | reset tokens |
-| `totp` | `Totp` second factor |
-| `moka` | `MokaUserCache` |
-| `postgres` (default) | `PostgresLoginStore` (sqlx, workspace version) |
-| `redis` | `RedisLoginStore`, `RedisUserCache` (`redis` crate, tokio) |
+| `argon2` (default) | `Argon2Hasher` (`argon2`) |
+| `reset` | reset tokens (`base64`, `rand`, `subtle`) |
+| `totp` | `Totp` second factor (`totp-rs`, `hex`) |
+| `moka` | `MokaUserCache` (`moka`) |
+| `postgres` (default) | `PostgresLoginStore` (`sqlx`, workspace version) |
+| `redis` | `RedisLoginStore`, `RedisUserCache` (`redis` crate, `zeroize`) |
 
 These stores live here, not in `event-sauce-postgres`. That crate depends
 on core only, and the stores depend on auth types.
@@ -578,7 +682,9 @@ on core only, and the stores depend on auth types.
 
 The crate depends on `axum 0.8`, `tower 0.5`, `event-sauce-core` and
 `event-sauce-auth`. `axum-login 0.18` comes in behind the `login`
-feature, which is on by default.
+feature, which is on by default. Until step 12 lands, the crate holds only
+the correlation layer and the state helpers, so it depends on neither
+`event-sauce-auth` nor `axum-login` yet.
 
 ### 4.1 Correlation layer
 
@@ -595,7 +701,8 @@ This lifts saxy-p's `correlate` into a `tower::Layer`:
 - It wraps the inner future in
   `with_event_context(event_context!(root, correlation_id = id))`.
 - It echoes the header on the response.
-- It opens a `tracing` span when the `tracing` feature is on.
+- It opens a `tracing` span when the `tracing` feature is on. The feature
+  is on by default, and `default-features = false` drops the dependency.
 
 Every event committed during the request carries the correlation id,
 because `EventMetadata.correlation_id` is filled from the context.
@@ -609,7 +716,7 @@ inside a handler does **not** inherit it. The fix is
 
 ```rust
 let backend = EventSauceBackend::<Profile, _>::new(
-    ClaimAuthenticator::new(repo.clone(), PasswordLogin::new(Argon2Hasher::default())),
+    ClaimAuthenticator::<Profile, _, _>::new(store.clone(), PasswordLogin::new(Argon2Hasher::default())),
     repo,
 ).with_cache(MokaUserCache::new(10_000));    // any UserCache<U>
 let auth_layer = AuthManagerLayerBuilder::new(backend, session_layer).build();
