@@ -2,7 +2,6 @@
 
 use std::{
     collections::HashMap,
-    fmt::Write as _,
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc, Mutex,
@@ -105,11 +104,7 @@ impl ClaimLocator for FakeLocator {
 /// The PHC string a [`FakeHasher`] makes of `password`.
 pub(crate) fn fake_phc(password: &SecretString) -> String {
     let digest = Sha256::digest(password.expose_secret().as_bytes());
-    let hex = digest.iter().fold(String::new(), |mut hex, byte| {
-        write!(hex, "{byte:02x}").expect("writing to a String cannot fail");
-        hex
-    });
-    format!("$fake$c29tZXNhbHRzYWx0${hex}")
+    format!("$fake$c29tZXNhbHRzYWx0${}", hex::encode(digest))
 }
 
 /// A login store held in a map that remembers the ttl of every entry.
@@ -223,3 +218,6 @@ impl HasSecondFactor for SecondFactorCredentials {
         self.second_factor
     }
 }
+
+#[cfg(test)]
+mod tests;

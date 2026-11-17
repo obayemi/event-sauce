@@ -277,3 +277,13 @@ fn the_same_secret_gives_the_same_fingerprint() {
         crate::credentials::fingerprint_of(&enrolled(1))
     );
 }
+
+#[test]
+fn the_replay_key_is_the_lowercase_hex_digest_of_the_secret_and_the_step() {
+    let key = Totp::replay_key(&secret(1), 7);
+
+    assert_eq!(
+        key.as_str(),
+        "totp:d2b3c25e318be0c985ecdd042683796b39789bf8b07f398f52e57f97e544a331:7"
+    );
+}

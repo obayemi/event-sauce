@@ -31,6 +31,7 @@ async-stream = "0.3"
 # Serialization (latest stable)
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
+hex = "0.4.3"
 
 # Database (latest stable: 0.8.6)
 sqlx = { version = "0.8.6", features = ["runtime-tokio-rustls", "postgres", "chrono", "uuid", "json"] }

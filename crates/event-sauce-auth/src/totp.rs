@@ -2,7 +2,7 @@
 //!
 //! [RFC 6238]: https://datatracker.ietf.org/doc/html/rfc6238
 
-use std::{fmt::Write as _, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use secrecy::{ExposeSecret, SecretString};
@@ -105,13 +105,7 @@ impl Totp {
         let mut digest = Sha256::new();
         feed(&mut digest, b"event-sauce-auth totp");
         feed(&mut digest, secret.as_bytes());
-        let digest = digest
-            .finalize()
-            .iter()
-            .fold(String::new(), |mut hex, byte| {
-                write!(hex, "{byte:02x}").expect("writing to a String cannot fail");
-                hex
-            });
+        let digest = hex::encode(digest.finalize());
         LoginKey::new(REPLAY_NAMESPACE, format_args!("{digest}:{step}"))
     }
 }
