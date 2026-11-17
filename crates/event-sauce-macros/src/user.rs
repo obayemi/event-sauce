@@ -1,10 +1,12 @@
 //! Parsing and expansion of `#[aggregate(user)]` and its `#[user(...)]` field markers.
 
 use proc_macro2::TokenStream;
-use proc_macro_crate::{crate_name, FoundCrate};
 use quote::quote;
 use syn::punctuated::Punctuated;
-use syn::{token::Comma, Data, DeriveInput, Field, Fields, GenericArgument, Ident, Meta, Type};
+use syn::{
+    token::Comma, Data, DeriveInput, Field, Fields, GenericArgument, Ident, Meta, PathArguments,
+    Type,
+};
 
 const MARKER_USAGE: &str = "`#[user(...)]` takes exactly one of `identity` or `active`";
 
@@ -24,35 +26,51 @@ impl Marker {
     }
 }
 
-/// The fields of an aggregate that make it a user.
-#[derive(Debug)]
-pub(crate) struct UserFields {
-    pub(crate) identity: Ident,
-    pub(crate) credentials: Type,
-    pub(crate) active: Option<Ident>,
+/// The `UserAggregate` impl and the `claims()` override an aggregate declares
+/// through `user` and `claims`.
+///
+/// Without `user`, stray field markers are refused and the override only
+/// forwards to the aggregate's own claims, when `claims` is declared.
+pub(crate) fn expand(
+    declared: bool,
+    own_claims: bool,
+    aggregate: &Ident,
+    fields: &Punctuated<Field, Comma>,
+    core: &TokenStream,
+) -> syn::Result<(TokenStream, TokenStream)> {
+    if declared {
+        return UserFields::from_fields(aggregate, fields)?.expand(aggregate, core, own_claims);
+    }
+    reject_markers(fields)?;
+    let claims_override = own_claims.then(|| {
+        quote! {
+            fn claims(&self) -> Vec<#core::AggregateClaim> {
+                self.aggregate_claims()
+            }
+        }
+    });
+    Ok((quote! {}, claims_override.unwrap_or_default()))
 }
 
-/// What the `user` flag adds to the expansion of `#[aggregate]`.
-pub(crate) struct UserExpansion {
-    pub(crate) user_impl: TokenStream,
-    pub(crate) claims_override: TokenStream,
+fn reject_markers(fields: &Punctuated<Field, Comma>) -> syn::Result<()> {
+    match fields.iter().find(|field| has_marker(field)) {
+        Some(field) => Err(syn::Error::new_spanned(
+            field,
+            "`#[user(...)]` markers require the `user` flag in `#[aggregate(...)]`",
+        )),
+        None => Ok(()),
+    }
+}
+
+/// The fields of an aggregate that make it a user.
+#[derive(Debug)]
+struct UserFields {
+    identity: Ident,
+    credentials: Type,
+    active: Option<Ident>,
 }
 
 impl UserFields {
-    /// Reads the field markers when `user` is declared, and refuses stray
-    /// markers when it is not.
-    pub(crate) fn for_aggregate(
-        declared: bool,
-        aggregate: &Ident,
-        fields: &Punctuated<Field, Comma>,
-    ) -> syn::Result<Option<Self>> {
-        if declared {
-            Self::from_fields(aggregate, fields).map(Some)
-        } else {
-            Self::reject_markers(fields).map(|()| None)
-        }
-    }
-
     fn from_fields(aggregate: &Ident, fields: &Punctuated<Field, Comma>) -> syn::Result<Self> {
         let mut identity: Option<&Field> = None;
         let mut active: Option<&Field> = None;
@@ -84,33 +102,22 @@ impl UserFields {
         })
     }
 
-    fn reject_markers(fields: &Punctuated<Field, Comma>) -> syn::Result<()> {
-        match fields.iter().find(|field| has_marker(field)) {
-            Some(field) => Err(syn::Error::new_spanned(
-                field,
-                "`#[user(...)]` markers require the `user` flag in `#[aggregate(...)]`",
-            )),
-            None => Ok(()),
-        }
-    }
-
-    /// The `UserAggregate` impl and the `claims()` override of the aggregate.
-    pub(crate) fn expand(
+    fn expand(
         &self,
         aggregate: &Ident,
         core: &TokenStream,
         own_claims: bool,
-    ) -> syn::Result<UserExpansion> {
+    ) -> syn::Result<(TokenStream, TokenStream)> {
         let auth = auth_path().ok_or_else(|| {
             syn::Error::new_spanned(
                 aggregate,
                 "`user` needs the `event-sauce-auth` crate, or `event-sauce` with its `auth` feature, as a dependency",
             )
         })?;
-        Ok(UserExpansion {
-            user_impl: self.to_impl(aggregate, &auth),
-            claims_override: self.claims_override(core, &auth, own_claims),
-        })
+        Ok((
+            self.to_impl(aggregate, &auth),
+            self.claims_override(core, &auth, own_claims),
+        ))
     }
 
     fn to_impl(&self, aggregate: &Ident, auth: &TokenStream) -> TokenStream {
@@ -212,37 +219,29 @@ fn marker_of(field: &Field) -> syn::Result<Option<Marker>> {
 }
 
 fn credentials_of(identity_type: &Type) -> syn::Result<Type> {
-    let credentials = match identity_type {
-        Type::Path(path) => {
-            path.path
-                .segments
-                .last()
-                .and_then(|segment| match &segment.arguments {
-                    syn::PathArguments::AngleBracketed(args) => match args.args.first() {
-                        Some(GenericArgument::Type(credentials)) if args.args.len() == 1 => {
-                            Some(credentials.clone())
-                        }
-                        _ => None,
-                    },
-                    _ => None,
-                })
-        }
-        _ => None,
-    };
-    credentials.ok_or_else(|| {
+    let not_identity = || {
         syn::Error::new_spanned(
             identity_type,
             "a `#[user(identity)]` field must have the type `Identity<C>`",
         )
-    })
+    };
+    let Type::Path(path) = identity_type else {
+        return Err(not_identity());
+    };
+    let Some(segment) = path.path.segments.last() else {
+        return Err(not_identity());
+    };
+    let PathArguments::AngleBracketed(args) = &segment.arguments else {
+        return Err(not_identity());
+    };
+    match args.args.first() {
+        Some(GenericArgument::Type(credentials)) if args.args.len() == 1 => Ok(credentials.clone()),
+        _ => Err(not_identity()),
+    }
 }
 
 fn auth_path() -> Option<TokenStream> {
-    auth_path_from(|package| match crate_name(package) {
-        Ok(FoundCrate::Name(name)) => Some(name),
-        Ok(FoundCrate::Itself) => Some(package.replace('-', "_")),
-        Err(_) => None,
-    })
+    auth_path_from(crate::imported_crate)
 }
 
 /// Path to the auth crate, given a lookup from package name to the identifier

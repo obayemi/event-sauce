@@ -1,4 +1,4 @@
-use super::{auth_path_from, strip_user_markers, UserFields};
+use super::{auth_path_from, expand, reject_markers, strip_user_markers, UserFields};
 use quote::quote;
 use syn::{parse_quote, DeriveInput};
 
@@ -134,11 +134,11 @@ fn qualified_identity_types_are_accepted() {
 #[test]
 fn markers_without_the_user_flag_are_rejected() {
     let input = struct_input(&quote! { #[user(active)] is_active: bool });
-    let err = UserFields::reject_markers(named(&input)).unwrap_err();
+    let err = reject_markers(named(&input)).unwrap_err();
     assert!(err.to_string().contains("`user`"), "{err}");
 
     let input = struct_input(&quote! { #[id] id: EntityId });
-    assert!(UserFields::reject_markers(named(&input)).is_ok());
+    assert!(reject_markers(named(&input)).is_ok());
 }
 
 #[test]
@@ -260,4 +260,48 @@ fn the_direct_dependency_wins_over_the_facade() {
 #[test]
 fn no_auth_dependency_resolves_to_nothing() {
     assert_eq!(resolve(&[]), None);
+}
+
+fn expansion(
+    declared: bool,
+    own_claims: bool,
+    body: &proc_macro2::TokenStream,
+) -> syn::Result<(String, String)> {
+    let input = struct_input(body);
+    expand(
+        declared,
+        own_claims,
+        &parse_quote!(Profile),
+        named(&input),
+        &quote!(::core_crate),
+    )
+    .map(|(user_impl, claims)| (squeezed(&user_impl), squeezed(&claims)))
+}
+
+#[test]
+fn without_the_user_flag_nothing_is_added_unless_claims_are_declared() {
+    let (user_impl, claims) = expansion(false, false, &quote! { #[id] id: EntityId }).unwrap();
+    assert!(user_impl.is_empty() && claims.is_empty());
+}
+
+#[test]
+fn claims_alone_forward_to_the_aggregates_own_claims() {
+    let (user_impl, claims) = expansion(false, true, &quote! { #[id] id: EntityId }).unwrap();
+    assert!(user_impl.is_empty());
+    assert_eq!(
+        claims,
+        "fnclaims(&self)->Vec<::core_crate::AggregateClaim>{self.aggregate_claims()}"
+    );
+}
+
+#[test]
+fn stray_markers_are_refused_without_the_user_flag() {
+    let err = expansion(false, true, &quote! { #[user(active)] is_active: bool }).unwrap_err();
+    assert!(err.to_string().contains("`user`"), "{err}");
+}
+
+#[test]
+fn a_declared_user_without_identity_is_refused() {
+    let err = expansion(true, false, &quote! { #[id] id: EntityId }).unwrap_err();
+    assert!(err.to_string().contains("#[user(identity)]"), "{err}");
 }

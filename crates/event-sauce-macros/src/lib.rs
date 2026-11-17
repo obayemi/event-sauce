@@ -29,16 +29,23 @@ mod with_event_context;
 /// directly keep working, and either dependency may be renamed in `Cargo.toml`.
 fn core_path() -> proc_macro2::TokenStream {
     static RESOLVED: OnceLock<String> = OnceLock::new();
-    let name = RESOLVED.get_or_init(|| match crate_name("event-sauce") {
-        Ok(FoundCrate::Name(name)) => name,
-        Ok(FoundCrate::Itself) => "event_sauce".to_string(),
-        Err(_) => match crate_name("event-sauce-core") {
-            Ok(FoundCrate::Name(name)) => name,
-            _ => "event_sauce_core".to_string(),
-        },
+    let name = RESOLVED.get_or_init(|| {
+        imported_crate("event-sauce")
+            .or_else(|| imported_crate("event-sauce-core"))
+            .unwrap_or_else(|| "event_sauce_core".to_owned())
     });
     let ident = Ident::new(name, proc_macro2::Span::call_site());
     quote!(::#ident)
+}
+
+/// The identifier the calling crate imports `package` under, or `None` when
+/// it is not a dependency.
+pub(crate) fn imported_crate(package: &str) -> Option<String> {
+    match crate_name(package) {
+        Ok(FoundCrate::Name(name)) => Some(name),
+        Ok(FoundCrate::Itself) => Some(package.replace('-', "_")),
+        Err(_) => None,
+    }
 }
 
 /// Attributes for the #[aggregate(...)] container attribute
@@ -1307,11 +1314,16 @@ pub fn aggregate(attr: TokenStream, item: TokenStream) -> TokenStream {
     } else {
         quote! {}
     };
-    let (user_impl, claims_override) =
-        match gen_user_and_claims(&aggregate_attrs, aggregate_name, named_fields) {
-            Ok(generated) => generated,
-            Err(err) => return err.to_compile_error().into(),
-        };
+    let (user_impl, claims_override) = match user::expand(
+        aggregate_attrs.user.is_present(),
+        aggregate_attrs.claims,
+        aggregate_name,
+        named_fields,
+        &core,
+    ) {
+        Ok(generated) => generated,
+        Err(err) => return err.to_compile_error().into(),
+    };
     let snapshot_version_override = aggregate_attrs
         .snapshot_version
         .map(|v| quote! { fn snapshot_version() -> u32 { #v } });
@@ -1402,34 +1414,6 @@ fn strip_id_attributes(input: &DeriveInput) -> DeriveInput {
         }
     }
     cleaned_input
-}
-
-/// The `UserAggregate` impl and the `claims()` override an aggregate declares
-/// through `user` and `claims`.
-fn gen_user_and_claims(
-    attrs: &AggregateAttrs,
-    aggregate_name: &Ident,
-    named_fields: &syn::punctuated::Punctuated<syn::Field, syn::token::Comma>,
-) -> syn::Result<(proc_macro2::TokenStream, proc_macro2::TokenStream)> {
-    let core = core_path();
-    match user::UserFields::for_aggregate(attrs.user.is_present(), aggregate_name, named_fields)? {
-        Some(fields) => {
-            let user::UserExpansion {
-                user_impl,
-                claims_override,
-            } = fields.expand(aggregate_name, &core, attrs.claims)?;
-            Ok((user_impl, claims_override))
-        }
-        None if attrs.claims => Ok((
-            quote! {},
-            quote! {
-                fn claims(&self) -> Vec<#core::AggregateClaim> {
-                    self.aggregate_claims()
-                }
-            },
-        )),
-        None => Ok((quote! {}, quote! {})),
-    }
 }
 
 fn aggregate_error_token(error: Option<&str>) -> proc_macro2::TokenStream {
@@ -1694,3 +1678,6 @@ fn extract_aggregate_id_type(attrs: &[Attribute]) -> Result<String, TokenStream>
 pub fn with_event_context(args: TokenStream, item: TokenStream) -> TokenStream {
     with_event_context::expand(&core_path(), &args.into(), item.into()).into()
 }
+
+#[cfg(test)]
+mod tests;
