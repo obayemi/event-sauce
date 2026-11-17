@@ -239,21 +239,15 @@ pub trait EventStore: Send + Sync {
     /// released by an aggregate (changed, dropped, or cleared on deletion) no
     /// longer resolves.
     ///
-    /// The default implementation reports that this store keeps no claim
-    /// index; backends that enforce [`AggregateClaim`] uniqueness override it,
-    /// and a store wrapping another one must delegate this method, or every
-    /// lookup through the wrapper fails.
+    /// The method is required: it cannot be derived from the other
+    /// primitives, because the claim index is backend state. A store that
+    /// keeps no claim index answers `Ok(None)`, and a store wrapping another
+    /// one delegates to it.
     ///
     /// # Errors
     ///
-    /// Returns `Error::InvalidState` if the store keeps no claim index, or a
-    /// backend error if the lookup fails.
-    async fn resolve_claim(&self, claim: &AggregateClaim) -> Result<Option<EntityId>> {
-        let _ = claim;
-        Err(crate::Error::invalid_state(
-            "this event store does not index claims",
-        ))
-    }
+    /// Returns a backend error if the lookup fails.
+    async fn resolve_claim(&self, claim: &AggregateClaim) -> Result<Option<EntityId>>;
 
     /// Gets the current version of a stream.
     async fn get_version(&self, stream_id: StreamId) -> Result<AggregateVersion>;
@@ -644,6 +638,13 @@ mod tests {
 
     #[async_trait]
     impl EventStore for ScriptedStreamStore {
+        async fn resolve_claim(
+            &self,
+            _claim: &crate::AggregateClaim,
+        ) -> Result<Option<crate::EntityId>> {
+            Ok(None)
+        }
+
         async fn append(
             &self,
             _stream_id: StreamId,
@@ -730,17 +731,5 @@ mod tests {
             .expect("limit 0 must return an empty batch without polling the stream");
 
         assert!(batch.is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_resolve_claim_default_reports_claims_unsupported() {
-        let store = ScriptedStreamStore::new(Vec::new());
-
-        let err = store
-            .resolve_claim(&AggregateClaim::new("Thing.name", serde_json::json!("x")))
-            .await
-            .expect_err("a store without a claim index cannot resolve a claim");
-
-        assert!(err.is_invalid_state());
     }
 }

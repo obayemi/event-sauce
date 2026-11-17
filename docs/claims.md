@@ -161,9 +161,9 @@ let holder: Option<EntityId> = store
 
 It is one indexed lookup on `(claim_type, claim_key)`, with no projection of
 the claimed value. A claim released by its aggregate (value changed, claim
-dropped, or aggregate deleted) returns `None`. A store that keeps no claim
-index returns `Error::InvalidState`: custom stores must override
-`resolve_claim`, and decorators must delegate it (see
+dropped, or aggregate deleted) returns `None`. `resolve_claim` is a required
+method: a custom store implements it (`Ok(None)` when it keeps no claim
+index), and a decorator delegates it (see
 [Event Store Decorators](event-store.md#event-store-decorators)).
 
 ## Composite Claims

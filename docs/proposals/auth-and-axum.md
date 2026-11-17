@@ -285,9 +285,9 @@ method. It cannot be built on `load_stream`/`append`, because the index is
 backend state. The memory and postgres backends implement it as one
 indexed lookup.
 
-The method has a default body that fails with `Error::InvalidState`, so a
-store that keeps no claim index still compiles and fails loudly at the
-first lookup. A store wrapping another one must delegate it.
+The method is required, with no default body, so every store states what it
+answers: a store that keeps no claim index returns `Ok(None)`, and a store
+wrapping another one delegates it.
 
 The lookup hashes the input, so no plaintext is stored. Shredding a user
 leaves only hashes behind, as `docs/claims.md` already describes. The

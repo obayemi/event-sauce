@@ -210,9 +210,8 @@ explicitly rather than gated behind a major version bump.
 - `EventStore::resolve_claim` returns the aggregate currently holding an
   `AggregateClaim`, in one indexed lookup. The in-memory and PostgreSQL
   stores implement it, and a claim released by its aggregate no longer
-  resolves. The default returns `Error::InvalidState`, so a custom store
-  must override it and a decorator must delegate it, or every lookup
-  through the wrapper fails.
+  resolves. It is a required method with no default, so a
+  custom store implements it and a decorator delegates it.
 
 - `#[aggregate(user)]` with the `#[user(identity)]` and `#[user(active)]`
   field markers. It generates `UserAggregate` and merges the `auth.login`

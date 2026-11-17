@@ -2095,6 +2095,10 @@ struct FlakyBatchStore<S> {
 
 #[async_trait::async_trait]
 impl<S: EventStore + 'static> EventStore for FlakyBatchStore<S> {
+    async fn resolve_claim(&self, claim: &AggregateClaim) -> Result<Option<EntityId>> {
+        self.inner.resolve_claim(claim).await
+    }
+
     async fn append(
         &self,
         stream_id: StreamId,
