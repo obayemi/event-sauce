@@ -1,10 +1,8 @@
 # Proposal: pluggable auth and axum integration
 
-Status: **partly implemented**. Steps 1 to 9 of the build order
-(section 8) are implemented on `feat/auth`, and steps 10 and 11 on
-`feat/auth-axum`. Steps 12 to 14 are still proposed. Where the code
-deliberately differs from the first draft of this proposal, the sections
-below describe the code. Supersedes the "extract `event-sauce-auth` from
+Status: **implemented**. Every step of the build order (section 8) is on
+`feat/auth`. Where the code deliberately differs from the first draft of
+this proposal, the sections below describe the code. Supersedes the "extract `event-sauce-auth` from
 saxy-p" plan in saxy-p's `PLAN.md`.
 
 Two new optional crates:
@@ -14,7 +12,8 @@ Two new optional crates:
 - `event-sauce-axum`: correlation-id middleware, a cached current-user
   extractor, an `axum-login` backend, and state helpers.
 
-Both are reached from the facade through the `auth` and `axum` features.
+Both are reached from the facade through the `auth` and `axum` features
+and their sub-features (see section 5).
 
 ## 1. What saxy-p does today
 
@@ -680,11 +679,12 @@ on core only, and the stores depend on auth types.
 
 ## 4. `event-sauce-axum`
 
-The crate depends on `axum 0.8`, `tower 0.5`, `event-sauce-core` and
-`event-sauce-auth`. `axum-login 0.18` (with its `tower-sessions 0.14`)
-comes in behind the `login` feature, which is on by default. The crate asks
-`event-sauce-auth` for no default features, so the application picks the
-hasher and the login store itself.
+The crate depends on `axum 0.8`, `tower 0.5` and `event-sauce-core`. The
+default `login` feature adds `event-sauce-auth` and `axum-login 0.18` (with
+its `tower-sessions 0.14`). The crate asks `event-sauce-auth` for no default
+features, so the application picks the hasher itself. The default `app`
+feature adds `event-sauce-postgres` and `sqlx`, and turns on
+`event-sauce-auth/postgres` and `event-sauce-auth/moka`.
 
 ### 4.1 Correlation layer
 
@@ -843,7 +843,8 @@ What `build` sets up by default, all on the same pool:
 The login store gets its own schema. It can then be dropped, given
 permissions, or excluded from backups independently of the event store.
 The builder sets no snapshot policy: the user aggregate declares its own
-(section 3.7). `event-sauce-axum` enables `event-sauce-auth/moka`.
+(section 3.7). The `app` feature enables `event-sauce-auth/moka` and
+`event-sauce-auth/postgres`.
 
 The builder does not take a custom login store or a custom authenticator:
 an app that needs a Redis login store or its own `Authenticator` builds an
@@ -864,8 +865,8 @@ session store for the app.
 | `event-sauce-core` | `EventStore::resolve_claim` |
 | `event-sauce-memory`, `event-sauce-postgres` | implement `resolve_claim` against the existing claim index |
 | `event-sauce-macros` | `user` flag, `#[user(identity)]`/`#[user(active)]` field attributes, `Credentials::claims()` merged into `claims()` |
-| `event-sauce` facade | features `auth` and `axum` (both in `full`), re-exported as `event_sauce::auth` and `event_sauce::axum` |
-| `.github/workflows/ci.yml` | add both crates to the feature-combination job |
+| `event-sauce` facade | features `auth` (plus `auth-postgres`, `auth-moka`, `auth-redis`, `auth-reset`, `auth-totp`) and `axum` (plus `axum-login`, `axum-app`), all in `full`, re-exported as `event_sauce::auth` and `event_sauce::axum` |
+| `.github/workflows/ci.yml` | new `feature-matrix-auth-axum` job that lints each feature of `event-sauce-auth`, `event-sauce-axum` and the facade alone |
 
 ## 6. Migrating saxy-p
 
@@ -882,7 +883,7 @@ session store for the app.
    `auth.federated`. This is done by re-saving claims through a replay.
 3. Replace `hash_password`/`verify_password` with `Argon2Hasher`. Existing
    PHC hashes stay valid.
-4. Replace `AuthStore` with `EventSauceBackend<Profile, _>` over
+4. Replace `AuthStore` with `EventSauceBackend<Profile, _, _>` over
    `PasswordOrFederatedLogin`. Keep the Google
    link/create policy on `AuthError::Unknown` for federated attempts.
 5. Replace `CurrentUser`/`RegisteredUser`/`ActorGuard` with the crate
@@ -936,9 +937,12 @@ The lowest level that can prove each behaviour, and only there:
     - a shredded key turns a hit into a miss.
   - `EventSauceApp::postgres` creates the login schema and is idempotent
     on a second `build`.
-- **System:** one example app (`examples/axum-login.rs`) running
-  register → login → guarded command → password change → old session
-  rejected, plus login with TOTP enrolled.
+- **System:** the `axum-auth` example
+  (`crates/event-sauce/examples/axum-auth/`, tests in `tests.rs`, run by
+  `cargo test --examples`) drives register → login → guarded route →
+  password change → old session rejected on the in-memory store. The TOTP
+  or second-factor login is covered by `event-sauce-axum`'s integration
+  tests `tests/login.rs` and `tests/app.rs`.
 
 ## 8. Build order
 
