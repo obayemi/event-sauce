@@ -291,6 +291,14 @@ correlation id.
   tenant therefore apply to the command's events.
 - **`Repository::modify` and `Repository::modify_deleted`** add the correlation
   id the same way; a closure has no name, so `command` stays empty.
+- **HTTP requests.** `event_sauce_axum::CorrelationLayer` runs each request in
+  a root context whose correlation id is the request's well-formed
+  `x-request-id` (or the header given to `CorrelationLayer::header`), and a
+  fresh UUID v4 otherwise. The id is echoed on the response, the events of
+  every handler share it, and `Repository::execute` keeps it. A task a handler
+  spawns does not inherit the context: wrap it with
+  `with_event_context(EventContext::current())`, see
+  [Spawned tasks](#spawned-tasks).
 - **Policies.** A policy reaction runs in a root context seeded from its source
   event: the tenant, the correlation id and the correlation path of the event
   that triggered it, with `command` set to the policy's `name()`. A cascade
@@ -341,3 +349,5 @@ in the `metadata` JSONB column; see
 - [Audit Log](audit-log.md): causation chains and correlation ids
 - [Commands](commands.md) and [Unit of Work](unit-of-work.md): command names
 - [Policies](policies.md): reactions inherit the source event's context
+- `event-sauce-axum`: `CorrelationLayer`, the HTTP entry point that opens a root
+  context per request
