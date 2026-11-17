@@ -136,8 +136,9 @@ let auth_layer = AuthManagerLayerBuilder::new(backend, session_layer).build();
   login and an inactive user all answer `Ok(None)`;
 - `get_user` goes through the `CachedUserLoader` of the [auth
   guide](auth.md#the-user-cache): a hit is version-checked, so a stale or
-  deactivated user is never served. Without `with_cache`, every request loads
-  the user in full.
+  deactivated user is never served. `with_shared_cache(Arc<dyn UserCache<U>>)`
+  takes a cache that other backends share. Without a cache, every request
+  loads the user in full.
 
 You choose the session store and the session layer. The backend does not.
 

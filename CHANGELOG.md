@@ -224,8 +224,9 @@ explicitly rather than gated behind a major version bump.
   `Federated`, `PasswordOrFederated`), `LoginId` (`Email`, `Username`),
   `LoginMethod` (`PasswordLogin`, `FederatedLogin`,
   `PasswordOrFederatedLogin`), `ClaimAuthenticator`, `PasswordHasher`,
-  `LoginStore` and `CachedUserLoader`. The `argon2` and `postgres`
-  features are on by default; `moka`, `redis`, `reset` and `totp` are
+  `LoginStore` and `CachedUserLoader`. `DEFAULT_PENDING_TTL` (five
+  minutes) is the default lifetime of a login waiting for its second
+  factor. The `argon2` and `postgres` features are on by default; `moka`, `redis`, `reset` and `totp` are
   optional.
 
 - `event-sauce-axum` crate. `CorrelationLayer` reads `x-request-id` (or the
@@ -241,11 +242,17 @@ explicitly rather than gated behind a major version bump.
 
   Behind the default `login` feature it adds `EventSauceBackend`, an
   `axum-login` backend over any `Authenticator` whose `get_user` goes
-  through `CachedUserLoader` (optional `with_cache`); `SessionUser`, whose
-  session auth hash is the identity session fingerprint; `PendingLogin`, the
-  short-lived cookie that carries a login waiting for its second factor; and
-  the `CurrentUser<B>`, `MaybeUser<B>` and `Registered<B>` extractors, which
-  read the user `axum-login` already resolved and reject with `401` or `403`.
+  through `CachedUserLoader` (optional `with_cache`, or `with_shared_cache`
+  to share one `Arc<dyn UserCache<U>>` between backends);
+  `EventSauceBackend::start(attempt)` and, with a `TwoFactor` stage,
+  `complete(pending, response)`, which serve the second-factor logins that
+  `authenticate` reports as `BackendError::SecondFactorRequired`;
+  `SessionUser`, whose session auth hash is the identity session
+  fingerprint; `PendingLogin`, the short-lived cookie that carries a login
+  waiting for its second factor; and the `CurrentUser<B>`, `MaybeUser<B>`
+  and `Registered<B>` extractors, which read the user `axum-login` already
+  resolved and reject with `401` or `403`. The extractors are generic over
+  the `UserBackend` trait, which names the user aggregate of a backend.
 
   Behind the default `app` feature it adds `EventSauceApp::postgres(pool)`,
   a builder that wires the Postgres event store, a `PostgresLoginStore` in
