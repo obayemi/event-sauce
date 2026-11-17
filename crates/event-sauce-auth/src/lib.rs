@@ -73,17 +73,13 @@ mod password_hasher;
 mod password_login;
 mod password_or_federated;
 mod password_or_federated_login;
-mod pending_login;
 #[cfg(feature = "reset")]
 mod reset;
 mod second_factor;
 #[cfg(test)]
 mod test_support;
-#[cfg(feature = "totp")]
-mod totp;
 #[cfg(any(feature = "postgres", feature = "redis"))]
 mod ttl;
-mod two_factor;
 mod user;
 mod user_cache;
 mod username;
@@ -115,13 +111,14 @@ pub use password_hasher::{HashError, PasswordHasher};
 pub use password_login::{PasswordAttempt, PasswordLogin};
 pub use password_or_federated::PasswordOrFederated;
 pub use password_or_federated_login::{PasswordOrFederatedAttempt, PasswordOrFederatedLogin};
-pub use pending_login::{PendingLogin, PendingLoginError, PendingLoginId, PendingLogins};
 #[cfg(feature = "reset")]
 pub use reset::{ResetError, ResetToken, ResetTokenError, ResetTokenHash};
-pub use second_factor::{HasSecondFactor, SecondFactor};
+pub use second_factor::{
+    HasSecondFactor, LoginStage, NoSecondFactor, PendingLogin, PendingLoginError, PendingLoginId,
+    PendingLogins, SecondFactor, TwoFactor,
+};
 #[cfg(feature = "totp")]
-pub use totp::{HasTotp, Totp, TotpSecret};
-pub use two_factor::{LoginStage, NoSecondFactor, TwoFactor};
+pub use second_factor::{HasTotp, Totp, TotpSecret};
 pub use user::UserAggregate;
 #[cfg(feature = "moka")]
 pub use user_cache::MokaUserCache;

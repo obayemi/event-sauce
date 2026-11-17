@@ -1,9 +1,21 @@
-//! The [`SecondFactor`] trait and the [`HasSecondFactor`] capability.
+//! The second factor: the [`SecondFactor`] trait, the [`HasSecondFactor`]
+//! capability, and the pieces of the step between the first factor and the
+//! session.
 
 use async_trait::async_trait;
 use serde::{de::DeserializeOwned, Serialize};
 
 use crate::{Credentials, LoginStore, Rejected};
+
+mod pending;
+mod stage;
+#[cfg(feature = "totp")]
+mod totp;
+
+pub use pending::{PendingLogin, PendingLoginError, PendingLoginId, PendingLogins};
+pub use stage::{LoginStage, NoSecondFactor, TwoFactor};
+#[cfg(feature = "totp")]
+pub use totp::{HasTotp, Totp, TotpSecret};
 
 /// Credentials that may demand a second factor after the first succeeds.
 ///
