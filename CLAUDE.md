@@ -654,10 +654,13 @@ The CI pipeline (`.github/workflows/ci.yml`) runs on pushes and PRs against
 9. **Core Feature Combinations** — `event-sauce-core` with each combination of
    `event-sourcing` / `state-store`, plus `commands`, `commands,state-store`,
    `commands,event-sourcing` and `unit-of-work`
+10. **Auth and axum Feature Combinations** — `event-sauce-auth`,
+    `event-sauce-axum` and the `event-sauce` facade with each of their
+    features alone and none by default
 
-PostgreSQL tests spin up their own containers via testcontainers, so the
-pipeline needs Docker (present on `ubuntu-latest`) rather than a database
-service.
+PostgreSQL and Redis tests spin up their own containers via
+testcontainers, so the pipeline needs Docker (present on `ubuntu-latest`)
+rather than a database service.
 
 ### Before Pushing
 
