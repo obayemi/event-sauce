@@ -822,12 +822,12 @@ the default for everything:
 
 ```rust
 let app = EventSauceApp::postgres(pool)
-    .user::<Profile>(PasswordOrFederatedLogin::new(Argon2Hasher::default()))
+    .user::<Profile, _>(PasswordOrFederatedLogin::new(Argon2Hasher::default()))
     .build()
     .await?;                       // runs every migration below
 
 let router = app.layer(Router::new().route(…), session_layer);
-// AppState holds `app.state()`: Store<S> + backend, both reachable via FromRef
+// AppState holds `app.store()` and `app.backend()`, both reachable via FromRef
 ```
 
 What `build` sets up by default, all on the same pool:
@@ -835,15 +835,19 @@ What `build` sets up by default, all on the same pool:
 | Piece | Default | Postgres schema | Override |
 |---|---|---|---|
 | event store | `PostgresEventStore` | its existing schema | `.event_store(store)` |
-| login store | `PostgresLoginStore` | `event_sauce_login` | `.login_store(RedisLoginStore::new(conn))`, `.login_store_schema("…")` |
+| login store | `PostgresLoginStore` | `event_sauce_login` | `.login_store_schema("…")` |
 | user cache | `MokaUserCache`, 10 000 entries | — | `.user_cache(RedisUserCache::new(conn))`, `.user_cache_capacity(n)`, `.no_user_cache()` |
-| authenticator | `ClaimAuthenticator` over the given login method | — | `.authenticator(custom)` |
+| authenticator | `ClaimAuthenticator` over the given login method | — | `.second_factor(factor)` keeps pending logins in the login store |
 | correlation | `CorrelationLayer` on `x-request-id` | — | `.correlation_header("…")` |
 
 The login store gets its own schema. It can then be dropped, given
 permissions, or excluded from backups independently of the event store.
 The builder sets no snapshot policy: the user aggregate declares its own
 (section 3.7). `event-sauce-axum` enables `event-sauce-auth/moka`.
+
+The builder does not take a custom login store or a custom authenticator:
+an app that needs a Redis login store or its own `Authenticator` builds an
+`EventSauceBackend` by hand and applies the layers itself.
 
 `app.layer(router, session_layer)` applies, outermost first:
 1. `CorrelationLayer`;

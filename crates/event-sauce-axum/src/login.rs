@@ -7,7 +7,7 @@ mod current_user;
 mod pending;
 mod session_user;
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 
 pub use backend::{BackendError, EventSauceBackend, UserBackend};
 pub use current_user::{AuthRejection, CurrentUser, MaybeUser, Registered};

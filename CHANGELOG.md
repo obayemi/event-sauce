@@ -247,6 +247,17 @@ explicitly rather than gated behind a major version bump.
   the `CurrentUser<B>`, `MaybeUser<B>` and `Registered<B>` extractors, which
   read the user `axum-login` already resolved and reject with `401` or `403`.
 
+  Behind the default `app` feature it adds `EventSauceApp::postgres(pool)`,
+  a builder that wires the Postgres event store, a `PostgresLoginStore` in
+  its own `event_sauce_login` schema, a `MokaUserCache` of 10 000 entries,
+  a `ClaimAuthenticator` and the `CorrelationLayer`. `build` runs every
+  migration and is idempotent. The overrides are `event_store`,
+  `login_store_schema`, `user_cache`, `user_cache_capacity`,
+  `no_user_cache`, `correlation_header` and `second_factor`, and
+  `App::layer(router, session_layer)` applies the correlation, session and
+  authentication layers. Call `user::<U, _>(method)`: Rust cannot infer
+  only the method type.
+
 - Per-aggregate snapshot strategy. `#[aggregate(snapshots(every = N))]`
   (also `always`, `never` and `with = "path::TO_STATIC"`) generates
   `Aggregate::snapshot_strategy()`, and `SnapshotConfig::resolve_strategy`

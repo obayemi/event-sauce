@@ -14,11 +14,15 @@
 //!   `PendingLogin` carries a login that waits for its second factor, and
 //!   `CurrentUser`, `MaybeUser` and `Registered` hand the logged-in
 //!   user to handlers.
+//! - With the `app` feature, `EventSauceApp::postgres` builds the whole
+//!   stack, stores, cache, authenticator and layers, on one pool.
 
 #![deny(missing_docs)]
 #![deny(clippy::all)]
 #![warn(clippy::pedantic)]
 
+#[cfg(feature = "app")]
+mod app;
 mod correlation;
 #[cfg(feature = "login")]
 mod login;
@@ -27,6 +31,10 @@ mod request_id;
 mod store;
 mod unit_of_work;
 
+#[cfg(feature = "app")]
+pub use app::{
+    App, AppBuilder, BuildError, EventSauceApp, SecondFactorStage, UserAppBuilder, WithSecondFactor,
+};
 pub use correlation::{Correlation, CorrelationLayer, ResponseFuture, DEFAULT_HEADER};
 #[cfg(feature = "login")]
 pub use login::{
