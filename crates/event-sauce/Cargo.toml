@@ -187,11 +187,11 @@ required-features = ["auth", "memory"]
 [[example]]
 name = "axum-auth"
 path = "examples/axum-auth/main.rs"
-required-features = ["axum-login"]
+required-features = ["axum-login", "macros", "memory"]
 test = true
 
 [[example]]
 name = "axum-crud"
 path = "examples/axum-crud/main.rs"
-required-features = ["axum-app"]
+required-features = ["axum-app", "macros"]
 test = true
