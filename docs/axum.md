@@ -307,14 +307,15 @@ DATABASE_URL=postgres://postgres:postgres@localhost/postgres \
   cargo run --example axum-crud --features axum-app
 ```
 
-Members register, log in and manage their own `Note`s with `POST`, `GET`,
-`PUT`, `PATCH` and `DELETE /notes`. The handlers stay thin: `Repo<Note, _>`
-and `Registered<Backend>` extract the repository and the member, and the
-member passes straight to the `@actor(Member)` commands, so ownership is
-the validation of the events and a foreign note answers `404`. `GET /notes`
-reads a Postgres projection (see the [projections guide](projections.md))
-that a background task keeps up to date, and every event is stored with the
-request id. Its tests start a Postgres container, so they need Docker.
+Members register, log in and manage their own `Note`s with `POST` and
+`GET /notes`, and `GET`, `PUT`, `PATCH` and `DELETE /notes/{id}`. The
+handlers stay thin: `Repo<Note, _>` and `Registered<Backend>` extract the
+repository and the member, and the member passes straight to the
+`@actor(Member)` commands, so ownership is the validation of the events and
+a foreign note answers `404`. `GET /notes` reads a Postgres projection (see
+the [projections guide](projections.md)) that a background task keeps up to
+date, and every event is stored with the request id. Its tests start a
+Postgres container, so they need Docker.
 
 ## Feature Flags
 

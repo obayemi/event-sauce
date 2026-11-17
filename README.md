@@ -760,7 +760,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 - **Examples** - See `crates/event-sauce/examples/` for complete applications:
   - **[postgres-quickstart.rs](crates/event-sauce/examples/postgres-quickstart.rs)** - Full-featured example with User and Order aggregates, projections, and PostgreSQL backend (requires `postgres` + `crypto`; needs Docker)
   - **[axum-auth/](crates/event-sauce/examples/axum-auth/main.rs)** - An axum app with a user aggregate, password login and a guarded route, with its tests (requires `axum-login`; no Docker)
-  - **[axum-crud/](crates/event-sauce/examples/axum-crud/main.rs)** - A full CRUD API with authentication on Postgres: password login, notes owned through actor events, a projected list and request-id correlation, with its tests (requires `axum-app`; needs Docker)
+  - **[axum-crud/](crates/event-sauce/examples/axum-crud/main.rs)** - A full CRUD API with authentication on Postgres: password login, notes owned through actor events, a projected list and request-id correlation, with its tests (requires `axum-app`; runs against a Postgres `DATABASE_URL`, its tests need Docker)
   - **[apply-event.rs](crates/event-sauce/examples/apply-event.rs)** - Bank account example with manual `ApplyEvent` trait implementation
   - **[actor-events.rs](crates/event-sauce/examples/actor-events.rs)** - Role-based permission validation with actor events
   - **[crypto-shredding.rs](crates/event-sauce/examples/crypto-shredding.rs)** - Full-aggregate encryption and right-to-be-forgotten (requires `memory` + `crypto`)
