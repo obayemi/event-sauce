@@ -101,7 +101,7 @@ async fn an_invalid_registration_is_unprocessable() {
 }
 
 #[tokio::test]
-async fn changing_the_password_ends_every_other_session() {
+async fn changing_the_password_ends_every_session() {
     let mut harness = Harness::signed_up().await;
     let mut other = harness.client.another_browser();
     other.log_in(EMAIL, PASSWORD).await;

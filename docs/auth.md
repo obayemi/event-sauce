@@ -399,9 +399,10 @@ Through the facade, `auth` is the base, and every other feature implies it.
   testcontainers, so they need Docker.
 - The [axum example](../crates/event-sauce/examples/axum-auth/tests.rs)
   drives the whole register, login and guarded route flow with `oneshot`.
-- The [axum CRUD example](../crates/event-sauce/examples/axum-crud/tests.rs)
+- The [axum CRUD example](../crates/event-sauce/examples/axum-crud/tests/http.rs)
   does the same on a Postgres container, with notes that only their owner
-  reaches, and checks that a password change ends the other sessions.
+  reaches, and checks that a password change ends every session, the
+  caller's included.
 
 ## Best Practices
 
