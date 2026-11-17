@@ -53,21 +53,12 @@
 #![warn(clippy::pedantic)]
 
 mod authenticator;
-mod capabilities;
 mod clock;
 mod credentials;
-mod email;
-mod error;
-mod federated;
-mod identity;
 mod login_id;
 mod login_method;
 mod login_store;
-mod non_empty;
-mod password;
-mod password_hash;
 mod password_hasher;
-mod password_or_federated;
 #[cfg(feature = "reset")]
 mod reset;
 mod second_factor;
@@ -77,19 +68,17 @@ mod test_support;
 mod ttl;
 mod user;
 mod user_cache;
-mod username;
 
 pub use authenticator::{
     AuthError, Authenticator, ClaimAuthenticator, CompleteError, LoginOutcome,
 };
-pub use capabilities::{HasFederated, HasPassword};
 pub use clock::{Clock, FixedClock, SystemClock};
-pub use credentials::{Credentials, Digest, Sha256};
-pub use email::{Email, EmailError};
-pub use error::LoginMethodError;
-pub use federated::{Federated, FederatedId, Provider};
-pub use identity::{Identity, IdentityError};
-pub use login_id::LoginId;
+pub use credentials::{
+    Credentials, Digest, EmptyError, Federated, FederatedId, HasFederated, HasPassword, Identity,
+    IdentityError, LoginMethodError, NonEmpty, Password, PasswordHash, PasswordHashError,
+    PasswordOrFederated, Provider, Sha256,
+};
+pub use login_id::{Email, EmailError, LoginId, Username, UsernameError};
 pub use login_method::{
     ClaimLocator, FederatedLogin, LocateError, LoginMethod, PasswordAttempt, PasswordLogin,
     PasswordOrFederatedAttempt, PasswordOrFederatedLogin, Rejected, VerifiedFederated,
@@ -99,13 +88,9 @@ pub use login_store::RedisLoginStore;
 #[cfg(feature = "postgres")]
 pub use login_store::{InvalidSchemaName, PostgresLoginStore};
 pub use login_store::{LoginKey, LoginStore, LoginStoreError};
-pub use non_empty::{EmptyError, NonEmpty};
-pub use password::Password;
-pub use password_hash::{PasswordHash, PasswordHashError};
 #[cfg(feature = "argon2")]
 pub use password_hasher::Argon2Hasher;
 pub use password_hasher::{HashError, PasswordHasher};
-pub use password_or_federated::PasswordOrFederated;
 #[cfg(feature = "reset")]
 pub use reset::{ResetError, ResetToken, ResetTokenError, ResetTokenHash};
 pub use second_factor::{
@@ -120,4 +105,3 @@ pub use user_cache::MokaUserCache;
 #[cfg(feature = "redis")]
 pub use user_cache::RedisUserCache;
 pub use user_cache::{CacheError, CachedUserLoader, UserCache};
-pub use username::{Username, UsernameError};

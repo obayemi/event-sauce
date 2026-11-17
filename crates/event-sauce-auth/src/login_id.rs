@@ -1,8 +1,14 @@
-//! The [`LoginId`] trait.
+//! The [`LoginId`] trait and its ready-made implementations.
 
 use std::fmt::Debug;
 
 use serde::{de::DeserializeOwned, Serialize};
+
+mod email;
+mod username;
+
+pub use email::{Email, EmailError};
+pub use username::{Username, UsernameError};
 
 /// The identifier a password login names, such as an email or a username.
 ///

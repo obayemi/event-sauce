@@ -1,4 +1,4 @@
-//! The [`Credentials`] trait.
+//! The [`Credentials`] trait and the credential types built on it.
 
 use std::fmt::Debug;
 
@@ -6,6 +6,24 @@ use event_sauce_core::AggregateClaim;
 use serde::{de::DeserializeOwned, Serialize};
 
 pub use sha2::{Digest, Sha256};
+
+mod capabilities;
+mod error;
+mod federated;
+mod identity;
+mod non_empty;
+mod password;
+mod password_hash;
+mod password_or_federated;
+
+pub use capabilities::{HasFederated, HasPassword};
+pub use error::LoginMethodError;
+pub use federated::{Federated, FederatedId, Provider};
+pub use identity::{Identity, IdentityError};
+pub use non_empty::{EmptyError, NonEmpty};
+pub use password::Password;
+pub use password_hash::{PasswordHash, PasswordHashError};
+pub use password_or_federated::PasswordOrFederated;
 
 /// What a registered user stores to be able to log in.
 ///
