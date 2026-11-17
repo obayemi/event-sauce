@@ -13,7 +13,7 @@ use redis::aio::ConnectionManager;
 use serde::{de::DeserializeOwned, Serialize};
 use zeroize::Zeroizing;
 
-use crate::{login_ttl, user_cache::is_stored, CacheError, UserAggregate, UserCache};
+use crate::{ttl, user_cache::is_stored, CacheError, UserAggregate, UserCache};
 
 /// The prefix a [`RedisUserCache`] puts before every key unless told
 /// otherwise.
@@ -169,7 +169,7 @@ impl<U> RedisUserCache<U> {
     }
 
     fn millis(&self) -> Result<i64, CacheError> {
-        login_ttl::millis(self.ttl).map_err(|_| CacheError::InvalidTtl(self.ttl))
+        ttl::millis(self.ttl).ok_or(CacheError::InvalidTtl(self.ttl))
     }
 }
 

@@ -5,7 +5,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use sqlx::PgPool;
 
-use crate::{login_ttl, LoginKey, LoginStore, LoginStoreError};
+use crate::{ttl, LoginKey, LoginStore, LoginStoreError};
 
 /// The schema a [`PostgresLoginStore`] uses unless told otherwise.
 const DEFAULT_SCHEMA: &str = "event_sauce_login";
@@ -140,7 +140,7 @@ impl LoginStore for PostgresLoginStore {
         value: &[u8],
         ttl: Duration,
     ) -> Result<(), LoginStoreError> {
-        let millis = login_ttl::millis(ttl)?;
+        let millis = ttl::millis(ttl).ok_or(LoginStoreError::InvalidTtl(ttl))?;
         sqlx::query(&format!(
             "INSERT INTO {0}.entries (key, value, expires_at)
              VALUES ($1, $2, now() + $3::bigint * interval '1 millisecond')
@@ -170,7 +170,7 @@ impl LoginStore for PostgresLoginStore {
     }
 
     async fn mark_once(&self, key: &LoginKey, ttl: Duration) -> Result<bool, LoginStoreError> {
-        let millis = login_ttl::millis(ttl)?;
+        let millis = ttl::millis(ttl).ok_or(LoginStoreError::InvalidTtl(ttl))?;
         sqlx::query(&format!(
             "INSERT INTO {0}.entries AS entry (key, value, expires_at)
              VALUES ($1, ''::bytea, now() + $2::bigint * interval '1 millisecond')

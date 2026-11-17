@@ -67,8 +67,6 @@ mod identity;
 mod login_id;
 mod login_method;
 mod login_store;
-#[cfg(any(feature = "postgres", feature = "redis"))]
-mod login_ttl;
 #[cfg(feature = "moka")]
 mod moka_user_cache;
 mod non_empty;
@@ -92,6 +90,8 @@ mod second_factor;
 mod test_support;
 #[cfg(feature = "totp")]
 mod totp;
+#[cfg(any(feature = "postgres", feature = "redis"))]
+mod ttl;
 mod two_factor;
 mod user;
 mod user_cache;

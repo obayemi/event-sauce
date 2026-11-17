@@ -5,7 +5,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use redis::aio::ConnectionManager;
 
-use crate::{login_ttl, LoginKey, LoginStore, LoginStoreError};
+use crate::{ttl, LoginKey, LoginStore, LoginStoreError};
 
 /// The prefix a [`RedisLoginStore`] puts before every key unless told
 /// otherwise.
@@ -80,7 +80,7 @@ impl LoginStore for RedisLoginStore {
         value: &[u8],
         ttl: Duration,
     ) -> Result<(), LoginStoreError> {
-        let millis = login_ttl::millis(ttl)?;
+        let millis = ttl::millis(ttl).ok_or(LoginStoreError::InvalidTtl(ttl))?;
         redis::cmd("SET")
             .arg(storage_key(&self.prefix, key))
             .arg(value)
@@ -100,7 +100,7 @@ impl LoginStore for RedisLoginStore {
     }
 
     async fn mark_once(&self, key: &LoginKey, ttl: Duration) -> Result<bool, LoginStoreError> {
-        let millis = login_ttl::millis(ttl)?;
+        let millis = ttl::millis(ttl).ok_or(LoginStoreError::InvalidTtl(ttl))?;
         let recorded: Option<String> = redis::cmd("SET")
             .arg(storage_key(&self.prefix, key))
             .arg("")
