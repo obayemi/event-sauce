@@ -25,9 +25,10 @@ use crate::note::{CreatedEvent, DeletedEvent, EditedEvent};
 const LEASE: Duration = Duration::from_secs(30);
 const IDLE: Duration = Duration::from_secs(1);
 
-/// One row of the list of notes.
-#[derive(Debug, Serialize, FromRow)]
-pub struct NoteRow {
+/// The API shape of a note: what the routes answer and what a row of the
+/// read model holds.
+#[derive(Serialize, FromRow)]
+pub struct NoteView {
     pub id: Uuid,
     pub title: String,
     pub body: String,
@@ -43,7 +44,6 @@ fn payload<E: DeserializeOwned>(envelope: &EventEnvelope) -> Result<E> {
 }
 
 /// The projection that maintains the `note_list` table.
-#[derive(Debug, Clone, Copy)]
 pub struct NoteList;
 
 impl NoteList {
@@ -144,7 +144,7 @@ impl PostgresProjection for NoteList {
 pub async fn notes_of(
     pool: &PgPool,
     owner: MemberId,
-) -> std::result::Result<Vec<NoteRow>, sqlx::Error> {
+) -> std::result::Result<Vec<NoteView>, sqlx::Error> {
     sqlx::query_as("SELECT id, title, body FROM note_list WHERE owner = $1 ORDER BY created_at, id")
         .bind(owner.as_uuid())
         .fetch_all(pool)

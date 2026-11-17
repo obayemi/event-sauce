@@ -4,19 +4,20 @@
 use axum::{
     extract::{Path, State},
     http::{header::LOCATION, StatusCode},
+    response::IntoResponse,
     Json,
 };
 use event_sauce::axum::{Registered, Repo};
 use event_sauce::postgres::PostgresEventStore;
 use event_sauce::prelude::*;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use sqlx::PgPool;
 use std::result::Result;
 
 use crate::app::Backend;
 use crate::error::ApiError;
 use crate::note::{Note, NoteCommands, NoteDeleteCommands, NoteId};
-use crate::projection::{self, NoteRow};
+use crate::projection::{self, NoteView};
 
 type Notes = Repo<Note, PostgresEventStore>;
 
@@ -32,17 +33,10 @@ pub struct NotePatch {
     body: Option<String>,
 }
 
-#[derive(Serialize)]
-pub struct NoteView {
-    id: EntityId,
-    title: String,
-    body: String,
-}
-
 impl From<&AggregateRoot<Note>> for NoteView {
     fn from(note: &AggregateRoot<Note>) -> Self {
         Self {
-            id: note.entity_id(),
+            id: note.entity_id().into(),
             title: note.title.clone(),
             body: note.body.clone(),
         }
@@ -53,14 +47,7 @@ pub async fn create(
     Repo(notes): Notes,
     author: Registered<Backend>,
     Json(form): Json<NoteForm>,
-) -> Result<
-    (
-        StatusCode,
-        [(axum::http::HeaderName, String); 1],
-        Json<NoteView>,
-    ),
-    ApiError,
-> {
+) -> Result<impl IntoResponse, ApiError> {
     let mut note = Note::write(&author, form.title, form.body)?;
     notes.save(&mut note).await?;
     let view = NoteView::from(&note);
@@ -71,7 +58,7 @@ pub async fn create(
 pub async fn list(
     State(pool): State<PgPool>,
     member: Registered<Backend>,
-) -> Result<Json<Vec<NoteRow>>, ApiError> {
+) -> Result<Json<Vec<NoteView>>, ApiError> {
     Ok(Json(projection::notes_of(&pool, member.id()).await?))
 }
 
