@@ -112,7 +112,7 @@ full = [
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "net", "rt", "rt-multi-thread", "sync", "test-util", "time"] }
-axum = { workspace = true, features = ["http1", "json", "tokio"] }
+axum = { workspace = true, features = ["http1", "json", "macros", "tokio"] }
 axum-login.workspace = true
 tower = { workspace = true, features = ["util"] }
 tower-sessions = { workspace = true, features = ["memory-store"] }
@@ -188,4 +188,10 @@ required-features = ["auth", "memory"]
 name = "axum-auth"
 path = "examples/axum-auth/main.rs"
 required-features = ["axum-login"]
+test = true
+
+[[example]]
+name = "axum-crud"
+path = "examples/axum-crud/main.rs"
+required-features = ["axum-app"]
 test = true

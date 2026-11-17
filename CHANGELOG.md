@@ -277,6 +277,16 @@ explicitly rather than gated behind a major version bump.
   and `docs/axum.md` guides, and a CI job that lints each feature of the
   new crates alone come with them.
 
+- The `axum-crud` example: a full CRUD HTTP API with authentication on
+  Postgres, behind `EventSauceApp::postgres`. Members register and log in
+  with a password, and create, list, read, update and delete their own
+  `Note`s. The note events carry the member as actor, so ownership is the
+  actor validation (another member gets `404`), `GET /notes` is served from
+  a transactional Postgres projection kept up to date by a leased worker,
+  and every event records the request id. Its tests run against a Postgres
+  container (`cargo test -p event-sauce --all-features --example
+  axum-crud`).
+
 - Per-aggregate snapshot strategy. `#[aggregate(snapshots(every = N))]`
   (also `always`, `never` and `with = "path::TO_STATIC"`) generates
   `Aggregate::snapshot_strategy()`, and `SnapshotConfig::resolve_strategy`

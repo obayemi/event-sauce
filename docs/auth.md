@@ -182,7 +182,8 @@ surfaces like any other claim conflict (`Error::as_claim_conflict`).
 You write the events: a registration `@init` event carrying the
 credentials, plus whatever changes them (`PasswordChanged`, a second factor
 enrolment, a deactivation). See `crates/event-sauce/examples/axum-auth` for a
-complete aggregate.
+complete aggregate, and `crates/event-sauce/examples/axum-crud` for one that
+declares snapshots and acts as the actor of another aggregate.
 
 ## Logging In
 
@@ -398,6 +399,9 @@ Through the facade, `auth` is the base, and every other feature implies it.
   testcontainers, so they need Docker.
 - The [axum example](../crates/event-sauce/examples/axum-auth/tests.rs)
   drives the whole register, login and guarded route flow with `oneshot`.
+- The [axum CRUD example](../crates/event-sauce/examples/axum-crud/tests.rs)
+  does the same on a Postgres container, with notes that only their owner
+  reaches, and checks that a password change ends the other sessions.
 
 ## Best Practices
 
