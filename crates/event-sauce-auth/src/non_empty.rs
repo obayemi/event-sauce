@@ -74,17 +74,12 @@ impl<T: PartialEq + Clone> TryFrom<Vec<T>> for NonEmpty<T> {
     /// Builds a set from `items`, dropping repeats after the first
     /// occurrence.
     fn try_from(items: Vec<T>) -> Result<Self, EmptyError> {
-        let mut unique: Vec<T> = Vec::with_capacity(items.len());
+        let mut items = items.into_iter();
+        let mut set = Self::new(items.next().ok_or(EmptyError)?);
         for item in items {
-            if !unique.contains(&item) {
-                unique.push(item);
-            }
+            set.push(item);
         }
-        if unique.is_empty() {
-            Err(EmptyError)
-        } else {
-            Ok(Self(unique))
-        }
+        Ok(set)
     }
 }
 
