@@ -1,11 +1,7 @@
+use crate::test_support::secret;
 use argon2::Params;
-use secrecy::SecretString;
 
 use super::*;
-
-fn secret(raw: &str) -> SecretString {
-    SecretString::from(raw)
-}
 
 fn cheap() -> Argon2Hasher {
     Argon2Hasher::new(Params::new(8, 1, 1, None).unwrap())

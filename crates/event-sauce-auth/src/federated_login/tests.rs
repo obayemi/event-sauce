@@ -1,12 +1,8 @@
 use event_sauce_core::EntityId;
 
 use super::*;
-use crate::test_support::{fake_phc, secret, FakeLocator};
+use crate::test_support::{fake_phc, google, secret, FakeLocator};
 use crate::{Email, Federated, LoginId, Password, PasswordHash, Provider};
-
-fn google(subject: &str) -> FederatedId {
-    FederatedId::new(Provider::GOOGLE, subject)
-}
 
 fn attempt(id: FederatedId) -> VerifiedFederated {
     VerifiedFederated { id, email: None }

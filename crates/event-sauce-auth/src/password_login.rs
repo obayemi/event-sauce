@@ -110,13 +110,14 @@ where
             .credentials()
             .and_then(HasPassword::password)
             .map(Password::hash);
-        match stored {
-            Some(hash) if self.hasher.verify(&attempt.password, hash)? => Ok(()),
-            Some(_) => Err(Rejected::Mismatch),
-            None => {
-                self.equalise_timing(&attempt.password);
-                Err(Rejected::Mismatch)
-            }
+        let Some(hash) = stored else {
+            self.equalise_timing(&attempt.password);
+            return Err(Rejected::Mismatch);
+        };
+        if self.hasher.verify(&attempt.password, hash)? {
+            Ok(())
+        } else {
+            Err(Rejected::Mismatch)
         }
     }
 

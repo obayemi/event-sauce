@@ -2,13 +2,10 @@ use serde_json::json;
 
 use super::*;
 use crate::credentials::fingerprint_of;
+use crate::test_support::google;
 
 fn id(provider: &Provider, subject: &str) -> FederatedId {
     FederatedId::new(provider.clone(), subject)
-}
-
-fn google(subject: &str) -> FederatedId {
-    id(&Provider::GOOGLE, subject)
 }
 
 fn github(subject: &str) -> FederatedId {

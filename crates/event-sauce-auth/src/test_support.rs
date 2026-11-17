@@ -16,9 +16,22 @@ use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ClaimLocator, Credentials, Digest, HasSecondFactor, HashError, LocateError, LoginKey,
-    LoginStore, LoginStoreError, PasswordHash, PasswordHasher, Sha256,
+    ClaimLocator, Credentials, Digest, Email, FederatedId, HasSecondFactor, HashError, LocateError,
+    LoginId, LoginKey, LoginStore, LoginStoreError, PasswordHash, PasswordHasher, Provider, Sha256,
 };
+
+pub(crate) const HASH_A: &str =
+    "$argon2id$v=19$m=19456,t=2,p=1$c29tZXNhbHRzYWx0$aGFzaGhhc2hoYXNoaGFzaGhhc2hoYXNoaGFzaGhhc2g";
+pub(crate) const HASH_B: &str =
+    "$argon2id$v=19$m=19456,t=2,p=1$b3RoZXJzYWx0c2FsdA$b3RoZXJoYXNob3RoZXJoYXNob3RoZXI";
+
+pub(crate) fn email(raw: &str) -> Email {
+    Email::parse(raw).unwrap()
+}
+
+pub(crate) fn google(subject: &str) -> FederatedId {
+    FederatedId::new(Provider::GOOGLE, subject)
+}
 
 pub(crate) fn secret(raw: &str) -> SecretString {
     SecretString::from(raw)

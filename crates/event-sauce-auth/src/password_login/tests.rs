@@ -2,15 +2,11 @@ use event_sauce_core::{AggregateClaim, EntityId};
 use serde::{Deserialize, Serialize};
 
 use super::*;
-use crate::test_support::{fake_phc, secret, FakeHasher, FakeLocator};
+use crate::test_support::{email, fake_phc, secret, FakeHasher, FakeLocator};
 use crate::{
     Credentials, Digest, Email, FederatedId, LoginId, PasswordOrFederated, Provider, Sha256,
     Username,
 };
-
-fn email(raw: &str) -> Email {
-    Email::parse(raw).unwrap()
-}
 
 fn registered(hasher: &FakeHasher, login: &str, password: &str) -> Identity<Password<Email>> {
     let hash = hasher.hash(&secret(password)).unwrap();

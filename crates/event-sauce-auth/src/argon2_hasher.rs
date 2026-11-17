@@ -1,5 +1,7 @@
 //! The [`Argon2Hasher`] password hasher.
 
+use std::fmt::Display;
+
 use argon2::{
     password_hash::{phc, Error, PasswordHasher as _, PasswordVerifier as _},
     Argon2, Params,
@@ -44,11 +46,11 @@ impl PasswordHasher for Argon2Hasher {
         let hash = Argon2::from(&self.params)
             .hash_password(password.expose_secret().as_bytes())
             .map_err(failure)?;
-        PasswordHash::new(hash.to_string()).map_err(|e| HashError(e.to_string()))
+        PasswordHash::new(hash.to_string()).map_err(failure)
     }
 
     fn verify(&self, password: &SecretString, hash: &PasswordHash) -> Result<bool, HashError> {
-        let parsed = phc::PasswordHash::new(hash.as_str()).map_err(|e| HashError(e.to_string()))?;
+        let parsed = phc::PasswordHash::new(hash.as_str()).map_err(failure)?;
         match Argon2::default().verify_password(password.expose_secret().as_bytes(), &parsed) {
             Ok(()) => Ok(true),
             Err(Error::PasswordInvalid) => Ok(false),
@@ -57,7 +59,7 @@ impl PasswordHasher for Argon2Hasher {
     }
 }
 
-fn failure(error: Error) -> HashError {
+fn failure(error: impl Display) -> HashError {
     HashError(error.to_string())
 }
 

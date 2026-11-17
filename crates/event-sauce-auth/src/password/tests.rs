@@ -2,16 +2,8 @@ use serde_json::json;
 
 use super::*;
 use crate::credentials::fingerprint_of;
+use crate::test_support::{email, HASH_A, HASH_B};
 use crate::Email;
-
-const HASH_A: &str =
-    "$argon2id$v=19$m=19456,t=2,p=1$c29tZXNhbHRzYWx0$aGFzaGhhc2hoYXNoaGFzaGhhc2hoYXNoaGFzaGhhc2g";
-const HASH_B: &str =
-    "$argon2id$v=19$m=19456,t=2,p=1$b3RoZXJzYWx0c2FsdA$b3RoZXJoYXNob3RoZXJoYXNob3RoZXJoYXNob3RoZXI";
-
-fn email(raw: &str) -> Email {
-    Email::parse(raw).unwrap()
-}
 
 fn hash(raw: &str) -> PasswordHash {
     PasswordHash::new(raw).unwrap()

@@ -1,7 +1,5 @@
 use super::*;
-
-const ARGON2ID: &str =
-    "$argon2id$v=19$m=19456,t=2,p=1$c29tZXNhbHRzYWx0$aGFzaGhhc2hoYXNoaGFzaGhhc2hoYXNoaGFzaGhhc2g";
+use crate::test_support::HASH_A as ARGON2ID;
 
 #[test]
 fn accepts_a_phc_string() {

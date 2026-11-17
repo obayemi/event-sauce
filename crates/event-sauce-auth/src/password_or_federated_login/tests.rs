@@ -1,14 +1,10 @@
 use event_sauce_core::EntityId;
 
 use super::*;
-use crate::test_support::{secret, FakeHasher, FakeLocator};
+use crate::test_support::{email, secret, FakeHasher, FakeLocator};
 use crate::{
-    Email, Federated, FederatedId, LoginId, Password, PasswordHasher, PasswordOrFederated, Provider,
+    Email, Federated, FederatedId, Password, PasswordHasher, PasswordOrFederated, Provider,
 };
-
-fn email(raw: &str) -> Email {
-    Email::parse(raw).unwrap()
-}
 
 fn both(hasher: &FakeHasher) -> Identity<PasswordOrFederated<Email>> {
     let hash = hasher.hash(&secret("correct-horse")).unwrap();
