@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use redis::aio::ConnectionManager;
 use redis::{AsyncCommands, ExistenceCheck, SetOptions};
 
-use crate::login_store::backend;
+use super::backend;
 use crate::{ttl, LoginKey, LoginStore, LoginStoreError};
 
 /// The prefix a [`RedisLoginStore`] puts before every key unless told

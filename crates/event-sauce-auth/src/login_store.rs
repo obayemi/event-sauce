@@ -6,6 +6,16 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 
+#[cfg(feature = "postgres")]
+mod postgres;
+#[cfg(feature = "redis")]
+mod redis;
+
+#[cfg(feature = "postgres")]
+pub use postgres::{InvalidSchemaName, PostgresLoginStore};
+#[cfg(feature = "redis")]
+pub use redis::RedisLoginStore;
+
 /// A namespaced key into a [`LoginStore`], such as `pending:{id}` or
 /// `totp:{user}:{step}`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -67,7 +77,7 @@ impl LoginStoreError {
 }
 
 #[cfg(any(feature = "postgres", feature = "redis"))]
-pub(crate) fn backend<E: StdError + Send + Sync + 'static>(
+fn backend<E: StdError + Send + Sync + 'static>(
     context: &'static str,
 ) -> impl FnOnce(E) -> LoginStoreError {
     move |error| LoginStoreError::backend(context, error)

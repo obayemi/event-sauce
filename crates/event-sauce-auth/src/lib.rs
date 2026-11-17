@@ -77,10 +77,6 @@ mod password_login;
 mod password_or_federated;
 mod password_or_federated_login;
 mod pending_login;
-#[cfg(feature = "postgres")]
-mod postgres_login_store;
-#[cfg(feature = "redis")]
-mod redis_login_store;
 #[cfg(feature = "redis")]
 mod redis_user_cache;
 #[cfg(feature = "reset")]
@@ -113,6 +109,10 @@ pub use federated_login::{FederatedLogin, VerifiedFederated};
 pub use identity::{Identity, IdentityError};
 pub use login_id::LoginId;
 pub use login_method::{ClaimLocator, LocateError, LoginMethod, Rejected};
+#[cfg(feature = "redis")]
+pub use login_store::RedisLoginStore;
+#[cfg(feature = "postgres")]
+pub use login_store::{InvalidSchemaName, PostgresLoginStore};
 pub use login_store::{LoginKey, LoginStore, LoginStoreError};
 #[cfg(feature = "moka")]
 pub use moka_user_cache::MokaUserCache;
@@ -124,10 +124,6 @@ pub use password_login::{PasswordAttempt, PasswordLogin};
 pub use password_or_federated::PasswordOrFederated;
 pub use password_or_federated_login::{PasswordOrFederatedAttempt, PasswordOrFederatedLogin};
 pub use pending_login::{PendingLogin, PendingLoginError, PendingLoginId, PendingLogins};
-#[cfg(feature = "postgres")]
-pub use postgres_login_store::{InvalidSchemaName, PostgresLoginStore};
-#[cfg(feature = "redis")]
-pub use redis_login_store::RedisLoginStore;
 #[cfg(feature = "redis")]
 pub use redis_user_cache::RedisUserCache;
 #[cfg(feature = "reset")]

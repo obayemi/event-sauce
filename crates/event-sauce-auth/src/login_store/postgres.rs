@@ -5,7 +5,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use sqlx::PgPool;
 
-use crate::login_store::backend;
+use super::backend;
 use crate::{ttl, LoginKey, LoginStore, LoginStoreError};
 
 /// The schema a [`PostgresLoginStore`] uses unless told otherwise.
