@@ -1,9 +1,7 @@
 //! The event-sourced `Member` user of the example.
 
-use event_sauce::auth::PasswordHasher;
-use event_sauce::auth::{Argon2Hasher, Email, HashError, Identity, Password, PasswordHash};
+use event_sauce::auth::{Email, Identity, Password, PasswordHash};
 use event_sauce::prelude::*;
-use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use std::result::Result;
 
@@ -89,27 +87,14 @@ aggregate_command! {
     }
 }
 
-/// Why a password could not be turned into a hash.
-#[derive(Debug, thiserror::Error)]
-pub enum HashingError {
-    #[error(transparent)]
-    Refused(#[from] MemberError),
-    #[error("the hasher failed: {0}")]
-    Failed(#[from] HashError),
-}
-
-/// Hashes `password` unless it is too short to be acceptable.
+/// Checks that `password` is long enough to be acceptable.
 ///
 /// # Errors
 ///
-/// [`MemberError::WeakPassword`] for a short password, or the hasher's own
-/// failure.
-pub fn hash_password(
-    hasher: &Argon2Hasher,
-    password: String,
-) -> Result<PasswordHash, HashingError> {
+/// [`MemberError::WeakPassword`] when the password is too short.
+pub fn check_password(password: &str) -> Result<(), MemberError> {
     if password.chars().count() < MIN_PASSWORD_LEN {
-        return Err(MemberError::WeakPassword.into());
+        return Err(MemberError::WeakPassword);
     }
-    Ok(hasher.hash(&SecretString::from(password))?)
+    Ok(())
 }

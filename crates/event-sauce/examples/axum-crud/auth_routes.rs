@@ -2,7 +2,9 @@
 
 use axum::{extract::State, http::StatusCode, Json};
 use axum_login::AuthSession;
-use event_sauce::auth::{Argon2Hasher, Email, LoginId, Password, PasswordAttempt};
+use event_sauce::auth::{
+    Argon2Hasher, Email, LoginId, Password, PasswordAttempt, PasswordHash, PasswordHasher,
+};
 use event_sauce::axum::{CurrentUser, Repo};
 use event_sauce::postgres::PostgresEventStore;
 use event_sauce::prelude::*;
@@ -13,7 +15,7 @@ use std::result::Result;
 
 use crate::app::Backend;
 use crate::error::ApiError;
-use crate::member::{hash_password, Member, MemberCommands};
+use crate::member::{check_password, Member, MemberCommands};
 
 type Members = Repo<Member, PostgresEventStore>;
 
@@ -58,15 +60,14 @@ pub async fn login(
     let attempt = PasswordAttempt::new(email, SecretString::from(form.password));
     let member = auth
         .authenticate(attempt)
-        .await
-        .map_err(ApiError::session)?
+        .await?
         .ok_or(ApiError::Unauthorized)?;
-    auth.login(&member).await.map_err(ApiError::session)?;
+    auth.login(&member).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn logout(mut auth: AuthSession<Backend>) -> Result<StatusCode, ApiError> {
-    auth.logout().await.map_err(ApiError::session)?;
+    auth.logout().await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -89,4 +90,9 @@ pub async fn me(member: CurrentUser<Backend>) -> Json<Value> {
         "nickname": member.nickname,
         "email": member.email().map(Email::as_str),
     }))
+}
+
+fn hash_password(hasher: &Argon2Hasher, password: String) -> Result<PasswordHash, ApiError> {
+    check_password(&password)?;
+    Ok(hasher.hash(&SecretString::from(password))?)
 }

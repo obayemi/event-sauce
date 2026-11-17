@@ -25,7 +25,7 @@ use testcontainers_modules::testcontainers::{runners::AsyncRunner, ContainerAsyn
 use tower::ServiceExt;
 
 use crate::app::{self, Service};
-use crate::member::{hash_password, HashingError, Member, MemberError};
+use crate::member::{check_password, Member, MemberError};
 use crate::note::{Note, NoteCommands, NoteDeleteCommands, NoteError};
 
 const EMAIL: &str = "ada@example.com";
@@ -49,6 +49,19 @@ fn a_member_needs_a_nickname() {
     let result = Member::join("  ".to_owned(), credentials);
 
     assert!(matches!(result, Err(MemberError::EmptyNickname)));
+}
+
+#[test]
+fn a_short_password_is_refused() {
+    assert!(matches!(
+        check_password("short"),
+        Err(MemberError::WeakPassword)
+    ));
+}
+
+#[test]
+fn a_long_enough_password_is_accepted() {
+    assert!(check_password(PASSWORD).is_ok());
 }
 
 #[test]
@@ -705,19 +718,4 @@ async fn every_response_carries_a_request_id() {
     assert!(reply
         .header("x-request-id")
         .is_some_and(|id| !id.is_empty()));
-}
-
-#[test]
-fn a_short_password_is_not_hashed() {
-    let result = hash_password(&cheap_hasher(), "short".to_owned());
-
-    assert!(matches!(
-        result,
-        Err(HashingError::Refused(MemberError::WeakPassword))
-    ));
-}
-
-#[test]
-fn a_long_enough_password_is_hashed() {
-    assert!(hash_password(&cheap_hasher(), PASSWORD.to_owned()).is_ok());
 }

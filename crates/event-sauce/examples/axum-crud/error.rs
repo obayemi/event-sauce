@@ -7,7 +7,8 @@ use axum::{
 use event_sauce::auth::EmailError;
 use event_sauce::prelude::{Error, ModifyError};
 
-use crate::member::{HashingError, MemberError};
+use crate::app::Backend;
+use crate::member::MemberError;
 use crate::note::NoteError;
 
 /// Everything a handler can fail with.
@@ -25,51 +26,32 @@ pub enum ApiError {
     #[error(transparent)]
     Email(#[from] EmailError),
     #[error("the password hasher failed")]
-    Hashing(#[source] HashingError),
+    Hashing(#[from] event_sauce::auth::HashError),
     #[error(transparent)]
     Store(#[from] Error),
     #[error(transparent)]
     Database(#[from] sqlx::Error),
     #[error("the session failed: {0}")]
-    Session(String),
+    Session(#[from] axum_login::Error<Backend>),
 }
 
 impl ApiError {
-    /// Wraps a failure of the session or of the authentication layer.
-    pub fn session(error: impl std::fmt::Display) -> Self {
-        Self::Session(error.to_string())
-    }
-
     fn status(&self) -> StatusCode {
         match self {
             Self::Unauthorized => StatusCode::UNAUTHORIZED,
-            Self::Member(_) | Self::Email(_) | Self::Note(_) if self.is_not_found() => {
+            Self::Note(NoteError::NotOwner) => StatusCode::NOT_FOUND,
+            Self::Member(_) | Self::Email(_) | Self::Note(_) => StatusCode::UNPROCESSABLE_ENTITY,
+            Self::Store(error)
+                if error.as_claim_conflict().is_some() || error.is_concurrency_conflict() =>
+            {
+                StatusCode::CONFLICT
+            }
+            Self::Store(error) if error.is_not_found() || error.is_aggregate_deleted() => {
                 StatusCode::NOT_FOUND
             }
-            Self::Member(_) | Self::Email(_) | Self::Note(_) => StatusCode::UNPROCESSABLE_ENTITY,
-            Self::Store(error) if error.as_claim_conflict().is_some() => StatusCode::CONFLICT,
-            Self::Store(error) if error.is_concurrency_conflict() => StatusCode::CONFLICT,
-            Self::Store(_) if self.is_not_found() => StatusCode::NOT_FOUND,
             Self::Hashing(_) | Self::Store(_) | Self::Database(_) | Self::Session(_) => {
                 StatusCode::INTERNAL_SERVER_ERROR
             }
-        }
-    }
-
-    fn is_not_found(&self) -> bool {
-        match self {
-            Self::Note(NoteError::NotOwner) => true,
-            Self::Store(error) => error.is_not_found() || error.is_aggregate_deleted(),
-            _ => false,
-        }
-    }
-}
-
-impl From<HashingError> for ApiError {
-    fn from(error: HashingError) -> Self {
-        match error {
-            HashingError::Refused(refused) => Self::Member(refused),
-            failed @ HashingError::Failed(_) => Self::Hashing(failed),
         }
     }
 }
