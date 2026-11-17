@@ -111,7 +111,7 @@ pub use password_hasher::{HashError, PasswordHasher};
 pub use reset::{ResetError, ResetToken, ResetTokenError, ResetTokenHash};
 pub use second_factor::{
     HasSecondFactor, LoginStage, NoSecondFactor, PendingLogin, PendingLoginError, PendingLoginId,
-    PendingLogins, SecondFactor, TwoFactor,
+    PendingLogins, SecondFactor, TwoFactor, DEFAULT_PENDING_TTL,
 };
 #[cfg(feature = "totp")]
 pub use second_factor::{HasTotp, Totp, TotpSecret};

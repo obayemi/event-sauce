@@ -55,9 +55,8 @@ pub enum BuildError {
 ///
 /// async fn router<U>(pool: sqlx::PgPool) -> Result<Router, Box<dyn std::error::Error>>
 /// where
-///     U: UserAggregate<Credentials = Password<Email>> + Serialize + DeserializeOwned + 'static,
+///     U: UserAggregate<Credentials = Password<Email>> + 'static,
 ///     U::DeletedState: Serialize + DeserializeOwned,
-///     U::Event: Serialize + DeserializeOwned,
 /// {
 ///     let app = EventSauceApp::postgres(pool)
 ///         .user::<U, _>(PasswordLogin::new(Argon2Hasher::default()))
@@ -257,9 +256,8 @@ type Authenticator<U, M, S, T> = ClaimAuthenticator<U, M, S, <T as SecondFactorS
 
 impl<U, M, T> UserAppBuilder<U, M, T>
 where
-    U: UserAggregate + Serialize + DeserializeOwned + Send + Sync + 'static,
+    U: UserAggregate + 'static,
     U::DeletedState: Serialize + DeserializeOwned,
-    U::Event: Serialize + DeserializeOwned,
     M: LoginMethod<U::Credentials>,
     T: SecondFactorStage<U>,
 {

@@ -13,7 +13,7 @@ mod stage;
 mod totp;
 
 pub use pending::{PendingLogin, PendingLoginError, PendingLoginId, PendingLogins};
-pub use stage::{LoginStage, NoSecondFactor, TwoFactor};
+pub use stage::{LoginStage, NoSecondFactor, TwoFactor, DEFAULT_PENDING_TTL};
 #[cfg(feature = "totp")]
 pub use totp::{HasTotp, Totp, TotpSecret};
 

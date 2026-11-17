@@ -76,3 +76,8 @@ fn a_malformed_id_means_no_pending_login() {
 
     assert!(PendingLogin::from_headers(&headers(&cookie)).is_none());
 }
+
+#[test]
+fn the_cookie_lives_as_long_as_the_pending_login_of_the_default_stage() {
+    assert_eq!(PendingLogin::DEFAULT_TTL, Duration::from_secs(300));
+}

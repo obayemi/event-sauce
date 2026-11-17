@@ -43,7 +43,7 @@ impl PendingLogin {
     /// How long a pending login lives unless the stage says otherwise:
     /// five minutes, the default of
     /// [`TwoFactor`](event_sauce_auth::TwoFactor).
-    pub const DEFAULT_TTL: Duration = Duration::from_secs(300);
+    pub const DEFAULT_TTL: Duration = event_sauce_auth::DEFAULT_PENDING_TTL;
 
     /// The id of the waiting login.
     #[must_use]

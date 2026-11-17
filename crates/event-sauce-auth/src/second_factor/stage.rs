@@ -11,7 +11,9 @@ use crate::{
     PendingLoginId, PendingLogins, Rejected, SecondFactor, SystemClock,
 };
 
-const DEFAULT_PENDING_TTL: Duration = Duration::from_secs(300);
+/// How long a pending login lives unless the stage says otherwise: five
+/// minutes.
+pub const DEFAULT_PENDING_TTL: Duration = Duration::from_secs(300);
 
 /// Decides whether a login that passed its first factor is complete.
 ///

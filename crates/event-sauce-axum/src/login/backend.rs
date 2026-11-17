@@ -94,9 +94,8 @@ fn into_session_user<U: UserAggregate, A>(
 /// fn router<U, S>(store: Arc<S>) -> Router
 /// where
 ///     S: EventStore + 'static,
-///     U: UserAggregate<Credentials = Password<Email>> + Serialize + DeserializeOwned + 'static,
+///     U: UserAggregate<Credentials = Password<Email>> + 'static,
 ///     U::DeletedState: Serialize + DeserializeOwned,
-///     U::Event: Serialize + DeserializeOwned,
 /// {
 ///     let authenticator =
 ///         ClaimAuthenticator::<U, _, _>::new(store.clone(), PasswordLogin::new(Argon2Hasher::default()));
@@ -115,9 +114,8 @@ pub struct EventSauceBackend<U: UserAggregate, A, S> {
 impl<U, A, S> EventSauceBackend<U, A, S>
 where
     S: EventStore + 'static,
-    U: UserAggregate + Serialize + DeserializeOwned,
+    U: UserAggregate,
     U::DeletedState: Serialize + DeserializeOwned,
-    U::Event: Serialize + DeserializeOwned,
 {
     /// A backend that authenticates with `authenticator` and loads the users
     /// of `store`, with no cache.
@@ -146,14 +144,6 @@ where
     }
 }
 
-impl<U: UserAggregate, A, S> EventSauceBackend<U, A, S> {
-    /// The authenticator the backend delegates to.
-    #[must_use]
-    pub fn authenticator(&self) -> &A {
-        &self.authenticator
-    }
-}
-
 impl<U: UserAggregate, A: Authenticator<U>, S> EventSauceBackend<U, A, S> {
     /// Starts a login.
     ///
@@ -176,10 +166,9 @@ impl<U: UserAggregate, A: Authenticator<U>, S> EventSauceBackend<U, A, S> {
 impl<U, M, S, F> EventSauceBackend<U, ClaimAuthenticator<U, M, S, TwoFactor<F>>, S>
 where
     S: EventStore + 'static,
-    U: UserAggregate + Serialize + DeserializeOwned,
+    U: UserAggregate,
     U::Credentials: HasSecondFactor,
     U::DeletedState: Serialize + DeserializeOwned,
-    U::Event: Serialize + DeserializeOwned,
     F: SecondFactor<U::Credentials>,
 {
     /// Completes the login held under `pending` with the client's
@@ -231,9 +220,8 @@ pub trait UserBackend:
 impl<U, A, S> AuthnBackend for EventSauceBackend<U, A, S>
 where
     S: EventStore + 'static,
-    U: UserAggregate + Serialize + DeserializeOwned,
+    U: UserAggregate,
     U::DeletedState: Serialize + DeserializeOwned,
-    U::Event: Serialize + DeserializeOwned,
     A: Authenticator<U> + 'static,
 {
     type User = SessionUser<U>;
@@ -255,9 +243,8 @@ where
 impl<U, A, S> UserBackend for EventSauceBackend<U, A, S>
 where
     S: EventStore + 'static,
-    U: UserAggregate + Serialize + DeserializeOwned + 'static,
+    U: UserAggregate + 'static,
     U::DeletedState: Serialize + DeserializeOwned,
-    U::Event: Serialize + DeserializeOwned,
     A: Authenticator<U> + 'static,
 {
     type Aggregate = U;
