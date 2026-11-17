@@ -19,6 +19,12 @@ pub enum MemberError {
 
 impl AggregateError for MemberError {}
 
+/// The typed id of a [`Member`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, AggregateId)]
+#[serde(transparent)]
+#[aggregate_id(Member)]
+pub struct MemberId(EntityId);
+
 /// A registered user who owns notes.
 ///
 /// Snapshots every ten events keep the per-request user load short, and
@@ -33,7 +39,7 @@ impl AggregateError for MemberError {}
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Member {
     #[id]
-    id: EntityId,
+    id: MemberId,
     #[user(identity)]
     identity: Identity<Password<Email>>,
     pub nickname: String,
@@ -61,7 +67,7 @@ define_events! {
         }
         => |id, event| {
             Member {
-                id,
+                id: id.into(),
                 identity: Identity::Registered(event.credentials.clone()),
                 nickname: event.nickname.trim().to_owned(),
             }

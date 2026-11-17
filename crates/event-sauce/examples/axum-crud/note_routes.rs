@@ -15,7 +15,7 @@ use std::result::Result;
 
 use crate::app::Backend;
 use crate::error::ApiError;
-use crate::note::{Note, NoteCommands, NoteDeleteCommands};
+use crate::note::{Note, NoteCommands, NoteDeleteCommands, NoteId};
 use crate::projection::{self, NoteRow};
 
 type Notes = Repo<Note, PostgresEventStore>;
@@ -72,13 +72,13 @@ pub async fn list(
     State(pool): State<PgPool>,
     member: Registered<Backend>,
 ) -> Result<Json<Vec<NoteRow>>, ApiError> {
-    Ok(Json(projection::notes_of(&pool, member.entity_id()).await?))
+    Ok(Json(projection::notes_of(&pool, member.id()).await?))
 }
 
 pub async fn read(
     Repo(notes): Notes,
     member: Registered<Backend>,
-    Path(id): Path<EntityId>,
+    Path(id): Path<NoteId>,
 ) -> Result<Json<NoteView>, ApiError> {
     let note = notes.load(id).await?;
     note.ensure_owned_by(&member)?;
@@ -88,7 +88,7 @@ pub async fn read(
 pub async fn replace(
     notes: Notes,
     member: Registered<Backend>,
-    Path(id): Path<EntityId>,
+    Path(id): Path<NoteId>,
     Json(form): Json<NoteForm>,
 ) -> Result<Json<NoteView>, ApiError> {
     edit(notes, &member, id, Some(form.title), Some(form.body)).await
@@ -97,7 +97,7 @@ pub async fn replace(
 pub async fn amend(
     notes: Notes,
     member: Registered<Backend>,
-    Path(id): Path<EntityId>,
+    Path(id): Path<NoteId>,
     Json(patch): Json<NotePatch>,
 ) -> Result<Json<NoteView>, ApiError> {
     edit(notes, &member, id, patch.title, patch.body).await
@@ -106,7 +106,7 @@ pub async fn amend(
 pub async fn remove(
     Repo(notes): Notes,
     member: Registered<Backend>,
-    Path(id): Path<EntityId>,
+    Path(id): Path<NoteId>,
 ) -> Result<StatusCode, ApiError> {
     let mut deleted = notes.load(id).await?.delete(&member)?;
     notes.save_deleted(&mut deleted).await?;
@@ -116,7 +116,7 @@ pub async fn remove(
 async fn edit(
     Repo(notes): Notes,
     member: &Registered<Backend>,
-    id: EntityId,
+    id: NoteId,
     title: Option<String>,
     body: Option<String>,
 ) -> Result<Json<NoteView>, ApiError> {

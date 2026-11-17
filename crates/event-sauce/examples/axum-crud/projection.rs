@@ -9,10 +9,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::member::MemberId;
 use event_sauce::postgres::{
     LeaseOutcome, PostgresBackend, PostgresEventStore, PostgresProjection,
 };
-use event_sauce::prelude::{EntityId, Error, EventEnvelope, EventType, Result};
+use event_sauce::prelude::{Error, EventEnvelope, EventType, Result};
 use futures::StreamExt;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -142,7 +143,7 @@ impl PostgresProjection for NoteList {
 /// The database error, when the query fails.
 pub async fn notes_of(
     pool: &PgPool,
-    owner: EntityId,
+    owner: MemberId,
 ) -> std::result::Result<Vec<NoteRow>, sqlx::Error> {
     sqlx::query_as("SELECT id, title, body FROM note_list WHERE owner = $1 ORDER BY created_at, id")
         .bind(owner.as_uuid())

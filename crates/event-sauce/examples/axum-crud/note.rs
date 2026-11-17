@@ -1,7 +1,7 @@
 //! The event-sourced `Note` of the example, owned by the `Member` who wrote
 //! it.
 
-use crate::member::Member;
+use crate::member::{Member, MemberId};
 use event_sauce::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::result::Result;
@@ -34,14 +34,20 @@ fn check_title(title: &str) -> Result<(), NoteError> {
     Ok(())
 }
 
+/// The typed id of a [`Note`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, AggregateId)]
+#[serde(transparent)]
+#[aggregate_id(Note)]
+pub struct NoteId(EntityId);
+
 /// A titled text owned by one member: only its owner reads, edits or
 /// deletes it.
 #[aggregate(event = "NoteEvent", error = "NoteError", init)]
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Note {
     #[id]
-    id: EntityId,
-    owner: EntityId,
+    id: NoteId,
+    owner: MemberId,
     pub title: String,
     pub body: String,
 }
@@ -53,7 +59,7 @@ impl Note {
     ///
     /// [`NoteError::NotOwner`] for anybody else.
     pub fn ensure_owned_by(&self, member: &Member) -> Result<(), NoteError> {
-        if self.owner == member.entity_id() {
+        if self.owner == member.id() {
             Ok(())
         } else {
             Err(NoteError::NotOwner)
@@ -71,28 +77,28 @@ impl Note {
         title: String,
         body: String,
     ) -> Result<AggregateRoot<Self>, NoteError> {
-        Self::open(author, author.entity_id(), title, body)
+        Self::open(author, author.id(), title, body)
     }
 }
 
 define_events! {
     pub enum NoteEvent for Note {
         Created {
-            owner: EntityId,
+            owner: MemberId,
             title: String,
             body: String,
         }
         @init
         @actor(Member)
         @validate |author, event| {
-            if event.owner != author.entity_id() {
+            if event.owner != author.id() {
                 return Err(NoteError::NotOwner);
             }
             return check_title(&event.title);
         }
         => |id, event| {
             Note {
-                id,
+                id: id.into(),
                 owner: event.owner,
                 title: event.title.trim().to_owned(),
                 body: event.body.clone(),
@@ -136,7 +142,7 @@ define_events! {
 aggregate_command! {
     impl Note {
         @clock @init @actor(Member)
-        fn open(owner: EntityId, title: String, body: String) -> CreatedEvent {
+        fn open(owner: MemberId, title: String, body: String) -> CreatedEvent {
             owner, title, body
         };
         @clock @actor(Member)
