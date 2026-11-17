@@ -2,7 +2,7 @@ use axum::http::{header::LOCATION, Method, StatusCode};
 use event_sauce::prelude::*;
 use serde_json::json;
 
-use super::harness::{first_event_of, Client, Harness};
+use super::harness::{first_event_of, Harness};
 use super::{EMAIL, PASSWORD};
 
 #[tokio::test]
@@ -89,10 +89,9 @@ async fn an_invalid_registration_is_unprocessable() {
     let weak_password = harness.client.register(EMAIL, "short").await;
     let no_nickname = harness
         .client
-        .call(
-            Method::POST,
+        .post(
             "/register",
-            Some(json!({ "nickname": " ", "email": EMAIL, "password": PASSWORD })),
+            json!({ "nickname": " ", "email": EMAIL, "password": PASSWORD }),
         )
         .await;
 
@@ -110,11 +109,7 @@ async fn changing_the_password_ends_every_other_session() {
 
     let change = harness
         .client
-        .call(
-            Method::PUT,
-            "/password",
-            Some(json!({ "password": "battery-staple" })),
-        )
+        .put("/password", json!({ "password": "battery-staple" }))
         .await;
 
     assert_eq!(change.status, StatusCode::NO_CONTENT);
@@ -139,11 +134,7 @@ async fn a_weak_new_password_is_refused() {
 
     let change = harness
         .client
-        .call(
-            Method::PUT,
-            "/password",
-            Some(json!({ "password": "short" })),
-        )
+        .put("/password", json!({ "password": "short" }))
         .await;
 
     assert_eq!(change.status, StatusCode::UNPROCESSABLE_ENTITY);
@@ -157,35 +148,25 @@ async fn a_note_goes_through_create_read_update_and_delete() {
     let created = harness.client.write_note("Groceries", "milk").await;
     assert_eq!(created.status, StatusCode::CREATED);
     let id = created.id();
-    assert_eq!(
-        created.header(LOCATION.as_str()),
-        Some(format!("/notes/{id}").as_str())
-    );
+    let uri = format!("/notes/{id}");
+    assert_eq!(created.header(LOCATION.as_str()), Some(uri.as_str()));
     assert_eq!(created.json()["title"], "Groceries");
 
-    let read = harness.client.get(&format!("/notes/{id}")).await;
+    let read = harness.client.get(&uri).await;
     assert_eq!(read.status, StatusCode::OK);
     assert_eq!(read.json()["body"], "milk");
     assert_eq!(harness.titles().await, ["Groceries"]);
 
     let replaced = harness
         .client
-        .call(
-            Method::PUT,
-            &format!("/notes/{id}"),
-            Some(json!({ "title": "Shopping", "body": "milk, eggs" })),
-        )
+        .put(&uri, json!({ "title": "Shopping", "body": "milk, eggs" }))
         .await;
     assert_eq!(replaced.status, StatusCode::OK);
     assert_eq!(replaced.json()["title"], "Shopping");
 
     let patched = harness
         .client
-        .call(
-            Method::PATCH,
-            &format!("/notes/{id}"),
-            Some(json!({ "body": "milk, eggs, flour" })),
-        )
+        .patch(&uri, json!({ "body": "milk, eggs, flour" }))
         .await;
     assert_eq!(patched.status, StatusCode::OK);
     assert_eq!(patched.json()["title"], "Shopping");
@@ -194,15 +175,9 @@ async fn a_note_goes_through_create_read_update_and_delete() {
     let listed = harness.client.get("/notes").await.json();
     assert_eq!(listed[0]["body"], "milk, eggs, flour");
 
-    let deleted = harness
-        .client
-        .call(Method::DELETE, &format!("/notes/{id}"), None)
-        .await;
+    let deleted = harness.client.delete(&uri).await;
     assert_eq!(deleted.status, StatusCode::NO_CONTENT);
-    assert_eq!(
-        harness.client.get(&format!("/notes/{id}")).await.status,
-        StatusCode::NOT_FOUND
-    );
+    assert_eq!(harness.client.get(&uri).await.status, StatusCode::NOT_FOUND);
     assert!(harness.titles().await.is_empty());
 }
 
@@ -210,23 +185,11 @@ async fn a_note_goes_through_create_read_update_and_delete() {
 async fn a_deleted_note_cannot_be_deleted_or_edited_again() {
     let mut harness = Harness::signed_up().await;
     let id = harness.client.write_note("Groceries", "milk").await.id();
-    harness
-        .client
-        .call(Method::DELETE, &format!("/notes/{id}"), None)
-        .await;
+    let uri = format!("/notes/{id}");
+    harness.client.delete(&uri).await;
 
-    let again = harness
-        .client
-        .call(Method::DELETE, &format!("/notes/{id}"), None)
-        .await;
-    let edit = harness
-        .client
-        .call(
-            Method::PATCH,
-            &format!("/notes/{id}"),
-            Some(json!({ "title": "Back" })),
-        )
-        .await;
+    let again = harness.client.delete(&uri).await;
+    let edit = harness.client.patch(&uri, json!({ "title": "Back" })).await;
 
     assert_eq!(again.status, StatusCode::NOT_FOUND);
     assert_eq!(edit.status, StatusCode::NOT_FOUND);
@@ -248,20 +211,14 @@ async fn an_unknown_note_is_not_found() {
 async fn an_invalid_note_is_unprocessable() {
     let mut harness = Harness::signed_up().await;
     let id = harness.client.write_note("Groceries", "milk").await.id();
+    let uri = format!("/notes/{id}");
 
     let blank = harness.client.write_note("  ", "milk").await;
     let too_long = harness.client.write_note(&"x".repeat(201), "milk").await;
-    let empty_patch = harness
-        .client
-        .call(Method::PATCH, &format!("/notes/{id}"), Some(json!({})))
-        .await;
+    let empty_patch = harness.client.patch(&uri, json!({})).await;
     let incomplete_put = harness
         .client
-        .call(
-            Method::PUT,
-            &format!("/notes/{id}"),
-            Some(json!({ "title": "Only a title" })),
-        )
+        .put(&uri, json!({ "title": "Only a title" }))
         .await;
 
     assert_eq!(blank.status, StatusCode::UNPROCESSABLE_ENTITY);
@@ -288,15 +245,13 @@ async fn another_member_cannot_reach_a_note() {
     let mut grace = harness.another_member("grace@example.com").await;
     let id = harness.client.write_note("Private", "secret").await.id();
     let uri = format!("/notes/{id}");
-    let attempt = Some(json!({ "title": "Mine", "body": "stolen" }));
+    let attempt = json!({ "title": "Mine", "body": "stolen" });
 
     let replies = [
-        grace.call(Method::GET, &uri, None).await,
-        grace.call(Method::PUT, &uri, attempt).await,
-        grace
-            .call(Method::PATCH, &uri, Some(json!({ "title": "Mine" })))
-            .await,
-        grace.call(Method::DELETE, &uri, None).await,
+        grace.get(&uri).await,
+        grace.put(&uri, attempt).await,
+        grace.patch(&uri, json!({ "title": "Mine" })).await,
+        grace.delete(&uri).await,
     ];
 
     for reply in replies {
@@ -345,12 +300,8 @@ async fn the_request_id_is_echoed_and_recorded_on_the_events() {
     );
     assert_eq!(
         envelope.created_by.map(|id| id.to_string()),
-        Some(me_id(&mut harness.client).await)
+        Some(harness.client.get("/me").await.id())
     );
-}
-
-async fn me_id(client: &mut Client) -> String {
-    client.get("/me").await.id()
 }
 
 #[tokio::test]

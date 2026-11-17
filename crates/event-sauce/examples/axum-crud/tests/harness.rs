@@ -117,14 +117,30 @@ impl Client {
         self.call(Method::GET, uri, None).await
     }
 
+    pub(super) async fn post(&mut self, uri: &str, body: Value) -> Reply {
+        self.call(Method::POST, uri, Some(body)).await
+    }
+
+    pub(super) async fn put(&mut self, uri: &str, body: Value) -> Reply {
+        self.call(Method::PUT, uri, Some(body)).await
+    }
+
+    pub(super) async fn patch(&mut self, uri: &str, body: Value) -> Reply {
+        self.call(Method::PATCH, uri, Some(body)).await
+    }
+
+    pub(super) async fn delete(&mut self, uri: &str) -> Reply {
+        self.call(Method::DELETE, uri, None).await
+    }
+
     pub(super) async fn register(&mut self, email: &str, password: &str) -> Reply {
         let form = json!({ "nickname": "ada", "email": email, "password": password });
-        self.call(Method::POST, "/register", Some(form)).await
+        self.post("/register", form).await
     }
 
     pub(super) async fn log_in(&mut self, email: &str, password: &str) -> Reply {
         let form = json!({ "email": email, "password": password });
-        self.call(Method::POST, "/login", Some(form)).await
+        self.post("/login", form).await
     }
 
     pub(super) async fn sign_up(&mut self, email: &str) {
@@ -140,7 +156,7 @@ impl Client {
 
     pub(super) async fn write_note(&mut self, title: &str, body: &str) -> Reply {
         let note = json!({ "title": title, "body": body });
-        self.call(Method::POST, "/notes", Some(note)).await
+        self.post("/notes", note).await
     }
 
     pub(super) async fn titles(&mut self) -> Vec<String> {
@@ -229,6 +245,5 @@ pub(super) async fn first_event_of(
         .load_stream(StreamId::new(aggregate, id), AggregateVersion::initial())
         .await
         .unwrap();
-    let events: Vec<_> = stream.collect().await;
-    events.into_iter().next().unwrap().unwrap()
+    std::pin::pin!(stream).next().await.unwrap().unwrap()
 }
