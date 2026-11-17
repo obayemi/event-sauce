@@ -111,7 +111,11 @@ full = [
 ]
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "test-util", "time"] }
+tokio = { workspace = true, features = ["macros", "net", "rt", "rt-multi-thread", "sync", "test-util", "time"] }
+axum = { workspace = true, features = ["http1", "json", "tokio"] }
+axum-login.workspace = true
+tower = { workspace = true, features = ["util"] }
+tower-sessions = { workspace = true, features = ["memory-store"] }
 anyhow.workspace = true
 chrono.workspace = true
 uuid.workspace = true
@@ -179,3 +183,9 @@ required-features = ["unit-of-work", "postgres"]
 [[test]]
 name = "facade_auth"
 required-features = ["auth", "memory"]
+
+[[example]]
+name = "axum-auth"
+path = "examples/axum-auth/main.rs"
+required-features = ["axum-login"]
+test = true
