@@ -20,7 +20,7 @@ async fn append_claiming(
     store: &PostgresEventStore,
     aggregate_id: Uuid,
     version: AggregateVersion,
-    claims: Vec<AggregateClaim>,
+    claimed: &[&str],
     clear_claims: bool,
 ) {
     store
@@ -28,7 +28,7 @@ async fn append_claiming(
             StreamId::new("User", aggregate_id),
             vec![create_test_envelope("UserChanged", aggregate_id)],
             version,
-            claims,
+            claimed.iter().map(|value| email(value)).collect(),
             clear_claims,
         )
         .await
@@ -40,14 +40,7 @@ async fn test_resolve_claim_returns_the_holder() {
     let db = TestDatabase::new().await.unwrap();
     let store = store_of(&db);
     let id = Uuid::new_v4();
-    append_claiming(
-        &store,
-        id,
-        AggregateVersion::initial(),
-        vec![email("a@x")],
-        false,
-    )
-    .await;
+    append_claiming(&store, id, AggregateVersion::initial(), &["a@x"], false).await;
 
     let holder = store.resolve_claim(&email("a@x")).await.unwrap();
 
@@ -62,7 +55,7 @@ async fn test_resolve_claim_is_none_for_an_unheld_value_or_type() {
         &store,
         Uuid::new_v4(),
         AggregateVersion::initial(),
-        vec![email("a@x")],
+        &["a@x"],
         false,
     )
     .await;
@@ -82,22 +75,8 @@ async fn test_resolve_claim_follows_a_changed_claim() {
     let db = TestDatabase::new().await.unwrap();
     let store = store_of(&db);
     let id = Uuid::new_v4();
-    append_claiming(
-        &store,
-        id,
-        AggregateVersion::initial(),
-        vec![email("old@x")],
-        false,
-    )
-    .await;
-    append_claiming(
-        &store,
-        id,
-        AggregateVersion::new(1),
-        vec![email("new@x")],
-        false,
-    )
-    .await;
+    append_claiming(&store, id, AggregateVersion::initial(), &["old@x"], false).await;
+    append_claiming(&store, id, AggregateVersion::new(1), &["new@x"], false).await;
 
     let old = store.resolve_claim(&email("old@x")).await.unwrap();
     let new = store.resolve_claim(&email("new@x")).await.unwrap();
@@ -111,15 +90,8 @@ async fn test_resolve_claim_is_none_after_claims_are_cleared() {
     let db = TestDatabase::new().await.unwrap();
     let store = store_of(&db);
     let id = Uuid::new_v4();
-    append_claiming(
-        &store,
-        id,
-        AggregateVersion::initial(),
-        vec![email("gone@x")],
-        false,
-    )
-    .await;
-    append_claiming(&store, id, AggregateVersion::new(1), vec![], true).await;
+    append_claiming(&store, id, AggregateVersion::initial(), &["gone@x"], false).await;
+    append_claiming(&store, id, AggregateVersion::new(1), &[], true).await;
 
     let holder = store.resolve_claim(&email("gone@x")).await.unwrap();
 

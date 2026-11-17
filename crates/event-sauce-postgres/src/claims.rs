@@ -25,10 +25,10 @@ use sqlx::{PgConnection, PgPool};
 /// already serializes claim enforcement across the whole batch, so this
 /// ordering is not what protects it.
 fn hash_claims(claims: &[AggregateClaim]) -> Result<Vec<(&AggregateClaim, Vec<u8>)>> {
-    let mut hashed: Vec<(&AggregateClaim, Vec<u8>)> = Vec::with_capacity(claims.len());
-    for claim in claims {
-        hashed.push((claim, claim_hash(claim)?));
-    }
+    let mut hashed = claims
+        .iter()
+        .map(|claim| Ok((claim, claim_hash(claim)?)))
+        .collect::<Result<Vec<_>>>()?;
     hashed.sort_by(|(a, a_hash), (b, b_hash)| {
         a.claim_type
             .cmp(b.claim_type)
