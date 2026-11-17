@@ -13,4 +13,10 @@ ignore = [
     # `postgres` driver only, so `rsa` is never compiled or linked.
     # `cargo tree --workspace --all-features -i rsa` finds nothing.
     "RUSTSEC-2023-0071",
+
+    # RUSTSEC-2026-0459 — `libsqlite3-sys` (bundled C SQLite CVE).
+    # Reached only through `sqlx-sqlite`, and this workspace enables the
+    # `postgres` driver only, so `libsqlite3-sys` is never compiled or linked.
+    # `cargo tree --workspace --all-features -i libsqlite3-sys` finds nothing.
+    "RUSTSEC-2026-0459",
 ]
