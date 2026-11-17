@@ -55,7 +55,6 @@
 #[cfg(feature = "argon2")]
 mod argon2_hasher;
 mod authenticator;
-mod cached_user_loader;
 mod capabilities;
 mod clock;
 mod credentials;
@@ -67,8 +66,6 @@ mod identity;
 mod login_id;
 mod login_method;
 mod login_store;
-#[cfg(feature = "moka")]
-mod moka_user_cache;
 mod non_empty;
 mod password;
 mod password_hash;
@@ -77,8 +74,6 @@ mod password_login;
 mod password_or_federated;
 mod password_or_federated_login;
 mod pending_login;
-#[cfg(feature = "redis")]
-mod redis_user_cache;
 #[cfg(feature = "reset")]
 mod reset;
 mod second_factor;
@@ -98,7 +93,6 @@ pub use argon2_hasher::Argon2Hasher;
 pub use authenticator::{
     AuthError, Authenticator, ClaimAuthenticator, CompleteError, LoginOutcome,
 };
-pub use cached_user_loader::CachedUserLoader;
 pub use capabilities::{HasFederated, HasPassword};
 pub use clock::{Clock, FixedClock, SystemClock};
 pub use credentials::{Credentials, Digest, Sha256};
@@ -114,8 +108,6 @@ pub use login_store::RedisLoginStore;
 #[cfg(feature = "postgres")]
 pub use login_store::{InvalidSchemaName, PostgresLoginStore};
 pub use login_store::{LoginKey, LoginStore, LoginStoreError};
-#[cfg(feature = "moka")]
-pub use moka_user_cache::MokaUserCache;
 pub use non_empty::{EmptyError, NonEmpty};
 pub use password::Password;
 pub use password_hash::{PasswordHash, PasswordHashError};
@@ -124,8 +116,6 @@ pub use password_login::{PasswordAttempt, PasswordLogin};
 pub use password_or_federated::PasswordOrFederated;
 pub use password_or_federated_login::{PasswordOrFederatedAttempt, PasswordOrFederatedLogin};
 pub use pending_login::{PendingLogin, PendingLoginError, PendingLoginId, PendingLogins};
-#[cfg(feature = "redis")]
-pub use redis_user_cache::RedisUserCache;
 #[cfg(feature = "reset")]
 pub use reset::{ResetError, ResetToken, ResetTokenError, ResetTokenHash};
 pub use second_factor::{HasSecondFactor, SecondFactor};
@@ -133,5 +123,9 @@ pub use second_factor::{HasSecondFactor, SecondFactor};
 pub use totp::{HasTotp, Totp, TotpSecret};
 pub use two_factor::{LoginStage, NoSecondFactor, TwoFactor};
 pub use user::UserAggregate;
-pub use user_cache::{CacheError, UserCache};
+#[cfg(feature = "moka")]
+pub use user_cache::MokaUserCache;
+#[cfg(feature = "redis")]
+pub use user_cache::RedisUserCache;
+pub use user_cache::{CacheError, CachedUserLoader, UserCache};
 pub use username::{Username, UsernameError};

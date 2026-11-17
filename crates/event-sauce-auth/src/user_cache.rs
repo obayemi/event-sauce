@@ -9,6 +9,20 @@ use event_sauce_core::{AggregateRoot, AggregateVersion, EntityId};
 
 use crate::UserAggregate;
 
+mod loader;
+#[cfg(feature = "moka")]
+mod moka;
+#[cfg(feature = "redis")]
+mod redis;
+#[cfg(all(test, any(feature = "moka", feature = "redis")))]
+mod test_support;
+
+pub use loader::CachedUserLoader;
+#[cfg(feature = "moka")]
+pub use moka::MokaUserCache;
+#[cfg(feature = "redis")]
+pub use redis::RedisUserCache;
+
 /// Why a [`UserCache`] operation failed.
 #[derive(Debug, thiserror::Error)]
 pub enum CacheError {
@@ -83,6 +97,6 @@ pub trait UserCache<U: UserAggregate>: Debug + Send + Sync {
 
 /// Whether `user` still is exactly what the event store holds.
 #[cfg(any(feature = "moka", feature = "redis"))]
-pub(crate) fn is_stored<U: UserAggregate>(user: &AggregateRoot<U>) -> bool {
+fn is_stored<U: UserAggregate>(user: &AggregateRoot<U>) -> bool {
     user.pending_events().is_empty() && !user.is_poisoned()
 }

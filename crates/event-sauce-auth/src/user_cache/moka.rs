@@ -6,7 +6,8 @@ use async_trait::async_trait;
 use event_sauce_core::{AggregateRoot, AggregateVersion, EntityId};
 use moka::{ops::compute::Op, sync::Cache};
 
-use crate::{user_cache::is_stored, CacheError, UserAggregate, UserCache};
+use super::is_stored;
+use crate::{CacheError, UserAggregate, UserCache};
 
 /// A [`UserCache`] that keeps users in this process, bounded by a number of
 /// entries.

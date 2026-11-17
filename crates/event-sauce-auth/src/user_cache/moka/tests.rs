@@ -1,7 +1,7 @@
 use event_sauce_core::{AggregateVersion, EntityId};
 
 use super::*;
-use crate::test_support::{cache_user_at, CacheUser, RenamedEvent};
+use crate::user_cache::test_support::{cache_user_at, CacheUser, RenamedEvent};
 
 fn version(n: i64) -> AggregateVersion {
     AggregateVersion::new(n)
