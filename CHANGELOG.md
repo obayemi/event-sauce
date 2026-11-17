@@ -239,6 +239,14 @@ explicitly rather than gated behind a major version bump.
   and never reject. `Store` has no repository method of its own: get a
   repository from `Repo` or `store.arc().repository()`.
 
+  Behind the default `login` feature it adds `EventSauceBackend`, an
+  `axum-login` backend over any `Authenticator` whose `get_user` goes
+  through `CachedUserLoader` (optional `with_cache`); `SessionUser`, whose
+  session auth hash is the identity session fingerprint; `PendingLogin`, the
+  short-lived cookie that carries a login waiting for its second factor; and
+  the `CurrentUser<B>`, `MaybeUser<B>` and `Registered<B>` extractors, which
+  read the user `axum-login` already resolved and reject with `401` or `403`.
+
 - Per-aggregate snapshot strategy. `#[aggregate(snapshots(every = N))]`
   (also `always`, `never` and `with = "path::TO_STATIC"`) generates
   `Aggregate::snapshot_strategy()`, and `SnapshotConfig::resolve_strategy`

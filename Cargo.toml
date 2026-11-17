@@ -69,6 +69,8 @@ pastey = "0.2"
 axum = { version = "0.8.9", default-features = false }
 http = "1.5"
 tower = { version = "0.5.3", default-features = false }
+axum-login = { version = "0.18.0", default-features = false }
+tower-sessions = { version = "0.14.0", default-features = false }
 
 # Encoding
 base64 = "0.22"

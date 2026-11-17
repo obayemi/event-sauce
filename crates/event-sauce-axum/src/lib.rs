@@ -8,18 +8,31 @@
 //! - [`Store`], [`Repo`] and [`UnitOfWork`] are extractors over the
 //!   application state: there is no registry, a repository is built per
 //!   request from the shared store.
+//! - With the `login` feature, `EventSauceBackend` plugs an
+//!   `Authenticator` into `axum-login`.
+//!   `SessionUser` ties a session to the identity's fingerprint,
+//!   `PendingLogin` carries a login that waits for its second factor, and
+//!   `CurrentUser`, `MaybeUser` and `Registered` hand the logged-in
+//!   user to handlers.
 
 #![deny(missing_docs)]
 #![deny(clippy::all)]
 #![warn(clippy::pedantic)]
 
 mod correlation;
+#[cfg(feature = "login")]
+mod login;
 mod repo;
 mod request_id;
 mod store;
 mod unit_of_work;
 
 pub use correlation::{Correlation, CorrelationLayer, ResponseFuture, DEFAULT_HEADER};
+#[cfg(feature = "login")]
+pub use login::{
+    AuthRejection, BackendError, CurrentUser, EventSauceBackend, MaybeUser, PendingLogin,
+    Registered, SessionUser, UserBackend,
+};
 pub use repo::Repo;
 pub use request_id::RequestId;
 pub use store::Store;

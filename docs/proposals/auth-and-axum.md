@@ -681,10 +681,10 @@ on core only, and the stores depend on auth types.
 ## 4. `event-sauce-axum`
 
 The crate depends on `axum 0.8`, `tower 0.5`, `event-sauce-core` and
-`event-sauce-auth`. `axum-login 0.18` comes in behind the `login`
-feature, which is on by default. Until step 12 lands, the crate holds only
-the correlation layer and the state helpers, so it depends on neither
-`event-sauce-auth` nor `axum-login` yet.
+`event-sauce-auth`. `axum-login 0.18` (with its `tower-sessions 0.14`)
+comes in behind the `login` feature, which is on by default. The crate asks
+`event-sauce-auth` for no default features, so the application picks the
+hasher and the login store itself.
 
 ### 4.1 Correlation layer
 
@@ -715,48 +715,65 @@ inside a handler does **not** inherit it. The fix is
 ### 4.2 Login backend and current user (feature `login`)
 
 ```rust
-let backend = EventSauceBackend::<Profile, _>::new(
-    ClaimAuthenticator::<Profile, _, _>::new(store.clone(), PasswordLogin::new(Argon2Hasher::default())),
-    repo,
-).with_cache(MokaUserCache::new(10_000));    // any UserCache<U>
+let authenticator = ClaimAuthenticator::<Profile, _, _>::new(
+    store.clone(),
+    PasswordLogin::new(Argon2Hasher::default()),
+);
+let backend = EventSauceBackend::new(authenticator, store)
+    .with_cache(MokaUserCache::new(10_000));    // any UserCache<U>
 let auth_layer = AuthManagerLayerBuilder::new(backend, session_layer).build();
 ```
 
-`EventSauceBackend<U, A>` implements `axum_login::AuthnBackend`:
+`EventSauceBackend<U, A, S>` implements `axum_login::AuthnBackend`. `A` is
+the authenticator and `S` the event store the users live in:
 
 - `Credentials = A::Attempt`: the submitted form is whatever the chosen
   login methods accept (`PasswordOrFederatedAttempt` for
   saxy-p).
-- `User = SessionUser<U>`, a newtype over `Arc<AggregateRoot<U>>` that
+- `User = SessionUser<U>`, which shares an `Arc<AggregateRoot<U>>` and
   implements `AuthUser`:
   - `id()` is the `EntityId`.
-  - `session_auth_hash()` is `identity().session_fingerprint()`. This fixes
-    the bug where changing a password left other sessions logged in.
-- `authenticate` delegates to the `Authenticator`.
-- `get_user(id)` loads the user through the cache and returns `None` for
-  inactive users.
+  - `session_auth_hash()` is `identity().session_fingerprint()`, computed
+    once when the `SessionUser` is built. This fixes the bug where changing
+    a password left other sessions logged in.
+- `authenticate` delegates to the `Authenticator`. A wrong password, an
+  unknown login and an inactive user are `Ok(None)`, as axum-login expects.
+- `get_user(id)` goes through a `CachedUserLoader` (section 3.7) and
+  returns `None` for a missing, deleted or inactive user.
 
-`get_user` goes through the configured `UserCache` (section 3.7):
+`get_user` goes through the configured `UserCache`:
 - A hit is checked against the version, so it never serves a stale or
   deactivated user.
 - A miss, or a version mismatch, means a full load, which then fills the
   cache.
 - Without `with_cache`, every request does a full load, as today.
 
-Second factor: `authenticate` returns an error to axum-login when the
-outcome is `SecondFactorRequired`, so no session is opened. The backend
-exposes `start(attempt) -> LoginOutcome` and `complete(pending, response)`
-for that case. The `PendingLogin` extractor reads the pending id from a
-short-lived cookie, and the handler calls `auth_session.login` only after
-`complete` succeeds.
+Second factor: `authenticate` fails with
+`BackendError::SecondFactorRequired(id)` when the outcome is
+`SecondFactorRequired`, so no session is opened. A handler that serves such
+logins calls `backend.start(attempt) -> LoginOutcome` instead, and, once the
+client answers, `backend.complete(pending, response) -> SessionUser<U>`.
+`complete` exists only when the authenticator is a
+`ClaimAuthenticator` with a `TwoFactor` stage.
 
-Extractors:
+`PendingLogin` carries the pending id between the two requests, in a
+short-lived `HttpOnly`, `Secure`, `SameSite=Lax` cookie:
+- `PendingLogin::set_cookie(id, ttl)` is the `Set-Cookie` value the handler
+  answers with after `start`, and `PendingLogin::clear_cookie()` removes it
+  once the login is done.
+- As an extractor, `PendingLogin` rejects with `401` when the cookie is
+  missing or malformed. `pending.id()` goes to `complete`.
+- The handler calls `auth_session.login` only after `complete` succeeds.
+
+Extractors, generic over the backend type `B` (a `UserBackend`, which every
+`EventSauceBackend` is) so that they find the `AuthSession<B>` axum-login
+stored in the request, and know the aggregate it yields:
 
 | Extractor | Yields | Rejection |
 |---|---|---|
-| `CurrentUser<U>` | `Arc<AggregateRoot<U>>`, which derefs to `AggregateRoot<U>` | 401 |
-| `MaybeUser<U>` | `Option<…>` | never |
-| `Registered<U>` | user whose `identity()` is `Registered` | 401 or 403 |
+| `CurrentUser<B>` | `Arc<AggregateRoot<U>>`, which derefs to `AggregateRoot<U>` | 401 |
+| `MaybeUser<B>` | `Option<…>` | never, but 500 when the auth layer is missing |
+| `Registered<B>` | user whose `identity()` is `Registered` | 401 or 403 |
 
 All three read the user axum-login already resolved for the request
 (`AuthSession::user`). So there is exactly one load per request, or zero
