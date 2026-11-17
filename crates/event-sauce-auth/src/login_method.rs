@@ -5,6 +5,14 @@ use event_sauce_core::{AggregateClaim, EntityId, EventStore};
 
 use crate::{Credentials, HashError, Identity, LoginStoreError};
 
+mod federated;
+mod password;
+mod password_or_federated;
+
+pub use federated::{FederatedLogin, VerifiedFederated};
+pub use password::{PasswordAttempt, PasswordLogin};
+pub use password_or_federated::{PasswordOrFederatedAttempt, PasswordOrFederatedLogin};
+
 /// Why a user could not be located.
 pub type LocateError = event_sauce_core::Error;
 

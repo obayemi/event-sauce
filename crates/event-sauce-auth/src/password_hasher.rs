@@ -4,6 +4,12 @@ use secrecy::SecretString;
 
 use crate::PasswordHash;
 
+#[cfg(feature = "argon2")]
+mod argon2;
+
+#[cfg(feature = "argon2")]
+pub use self::argon2::Argon2Hasher;
+
 /// Why a password could not be hashed or checked.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("password hashing failed: {0}")]
