@@ -77,9 +77,8 @@ async fn main() -> anyhow::Result<()> {
         .await?;
     let service = app::build(pool, Argon2Hasher::default()).await?;
     tokio::spawn(async move {
-        if let Err(error) = service.projector.run().await {
-            eprintln!("note projection stopped: {error}");
-        }
+        let Err(error) = service.projector.run().await;
+        eprintln!("note projection stopped: {error}");
     });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:3000").await?;
     println!("listening on http://{}", listener.local_addr()?);

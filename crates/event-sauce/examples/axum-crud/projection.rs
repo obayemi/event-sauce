@@ -6,6 +6,7 @@
 //! checkpoint. The list is therefore eventually consistent with the writes:
 //! a note shows up once the [`Projector`] has caught up with its events.
 
+use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -132,9 +133,8 @@ pub async fn notes_of(
 }
 
 /// Keeps [`NoteList`] up to date from the events of the store it owns.
-#[derive(Clone)]
 pub struct Projector {
-    backend: Arc<PostgresBackend>,
+    backend: PostgresBackend,
     worker_id: String,
 }
 
@@ -152,13 +152,13 @@ impl Projector {
             .await?;
         NoteList::migrate(&pool).await?;
         Ok(Self {
-            backend: Arc::new(backend),
+            backend,
             worker_id: Uuid::new_v4().to_string(),
         })
     }
 
-    /// The event store the application must write through, since it is the
-    /// one that wakes the projector up.
+    /// The event store of the projector's backend, for the application to
+    /// write through instead of building a second store on the same pool.
     pub fn event_store(&self) -> Arc<PostgresEventStore> {
         self.backend.event_store()
     }
@@ -182,7 +182,7 @@ impl Projector {
     ///
     /// The store error, when the announcements cannot be listened to. A
     /// failed catch-up is reported and retried on the next wake-up.
-    pub async fn run(self) -> Result<()> {
+    pub async fn run(self) -> Result<Infallible> {
         let mut announcements = Box::pin(self.event_store().listen_for_events().await?);
         loop {
             if let Err(error) = self.catch_up().await {
