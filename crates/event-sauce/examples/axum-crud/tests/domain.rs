@@ -6,18 +6,22 @@ use super::{cheap_hasher, EMAIL, PASSWORD};
 use crate::member::{check_password, Member, MemberError};
 use crate::note::{Note, NoteCommands, NoteDeleteCommands, NoteError};
 
-fn member(nickname: &str) -> AggregateRoot<Member> {
+fn credentials(email: &str) -> Password<Email> {
     let hash = cheap_hasher().hash(&SecretString::from(PASSWORD)).unwrap();
-    let email = Email::parse(&format!("{nickname}@example.com")).unwrap();
-    Member::join(nickname.to_owned(), Password::new(email, hash)).unwrap()
+    Password::new(Email::parse(email).unwrap(), hash)
+}
+
+fn member(nickname: &str) -> AggregateRoot<Member> {
+    Member::join(
+        nickname.to_owned(),
+        credentials(&format!("{nickname}@example.com")),
+    )
+    .unwrap()
 }
 
 #[test]
 fn a_member_needs_a_nickname() {
-    let hash = cheap_hasher().hash(&SecretString::from(PASSWORD)).unwrap();
-    let credentials = Password::new(Email::parse(EMAIL).unwrap(), hash);
-
-    let result = Member::join("  ".to_owned(), credentials);
+    let result = Member::join("  ".to_owned(), credentials(EMAIL));
 
     assert!(matches!(result, Err(MemberError::EmptyNickname)));
 }
