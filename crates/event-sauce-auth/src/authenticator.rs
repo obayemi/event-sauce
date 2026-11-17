@@ -1,7 +1,7 @@
 //! Authentication: [`Authenticator`], [`ClaimAuthenticator`], [`LoginOutcome`]
 //! and [`AuthError`].
 
-use std::{marker::PhantomData, sync::Arc};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use event_sauce_core::{Aggregate, AggregateRoot, EventSourcedRepository, EventStore, Repository};
@@ -134,13 +134,71 @@ pub trait Authenticator<U: UserAggregate>: Send + Sync {
 ///
 /// Step 6 only happens once [`ClaimAuthenticator::with_second_factor`] has
 /// been called. [`ClaimAuthenticator::complete`] finishes a held login.
+///
+/// # Examples
+///
+/// A password login, then the same login held for a TOTP code:
+///
+/// ```no_run
+/// # #[cfg(all(feature = "argon2", feature = "totp"))]
+/// # mod wiring {
+/// use std::sync::Arc;
+///
+/// use event_sauce_auth::{
+///     Argon2Hasher, Authenticator, ClaimAuthenticator, CompleteError, Email, HasPassword,
+///     HasTotp, LoginStore, PasswordLogin, Password, PendingLoginId, Totp, TwoFactor,
+///     UserAggregate,
+/// };
+/// use event_sauce_core::{AggregateRoot, EventStore};
+/// use secrecy::SecretString;
+/// use serde::{de::DeserializeOwned, Serialize};
+///
+/// fn password_only<U, S>(store: Arc<S>) -> impl Authenticator<U>
+/// where
+///     S: EventStore + 'static,
+///     U: UserAggregate<Credentials = Password<Email>> + Serialize + DeserializeOwned,
+///     U::DeletedState: Serialize + DeserializeOwned,
+///     U::Event: Serialize + DeserializeOwned,
+/// {
+///     ClaimAuthenticator::<U, _, _>::new(store, PasswordLogin::new(Argon2Hasher::default()))
+/// }
+///
+/// type WithTotp<U, S> = ClaimAuthenticator<U, PasswordLogin<Argon2Hasher>, S, TwoFactor<Totp>>;
+///
+/// fn with_totp<U, S>(store: Arc<S>, login_store: Arc<dyn LoginStore>) -> WithTotp<U, S>
+/// where
+///     S: EventStore + 'static,
+///     U: UserAggregate + Serialize + DeserializeOwned,
+///     U::Credentials: HasPassword + HasTotp,
+///     U::DeletedState: Serialize + DeserializeOwned,
+///     U::Event: Serialize + DeserializeOwned,
+/// {
+///     ClaimAuthenticator::new(store, PasswordLogin::new(Argon2Hasher::default()))
+///         .with_second_factor(TwoFactor::new(Totp::new(), login_store))
+/// }
+///
+/// async fn finish<U, S>(
+///     authenticator: &WithTotp<U, S>,
+///     pending: PendingLoginId,
+///     code: &SecretString,
+/// ) -> Result<AggregateRoot<U>, CompleteError>
+/// where
+///     S: EventStore + 'static,
+///     U: UserAggregate + Serialize + DeserializeOwned,
+///     U::Credentials: HasPassword + HasTotp,
+///     U::DeletedState: Serialize + DeserializeOwned,
+///     U::Event: Serialize + DeserializeOwned,
+/// {
+///     authenticator.complete(pending, code).await
+/// }
+/// # }
+/// ```
 #[derive(Debug)]
 pub struct ClaimAuthenticator<U, M, S, T = NoSecondFactor> {
     repository: EventSourcedRepository<S, U>,
     store: Arc<S>,
     method: M,
     stage: T,
-    user: PhantomData<fn() -> U>,
 }
 
 impl<U, M, S> ClaimAuthenticator<U, M, S>
@@ -160,7 +218,6 @@ where
             store,
             method,
             stage: NoSecondFactor,
-            user: PhantomData,
         }
     }
 }
@@ -185,7 +242,6 @@ impl<U, M, S> ClaimAuthenticator<U, M, S> {
             store: self.store,
             method: self.method,
             stage,
-            user: PhantomData,
         }
     }
 }

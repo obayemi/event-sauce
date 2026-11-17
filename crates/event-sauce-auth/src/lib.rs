@@ -17,19 +17,24 @@
 //! - [`HasPassword`] and [`HasFederated`] are the capabilities login methods
 //!   require of the credentials an application picked.
 //! - [`UserAggregate`] tells the login machinery how to read an identity off
-//!   an aggregate.
+//!   an aggregate. `#[aggregate(..., user)]` generates it, with `#[user(identity)]`
+//!   on the identity field and an optional `#[user(active)]` on a flag field.
 //! - [`PasswordHasher`] hashes and checks passwords, with [`Argon2Hasher`] behind
 //!   the `argon2` feature.
 //! - [`LoginMethod`] locates a user and verifies an attempt, with
 //!   [`PasswordLogin`], [`FederatedLogin`] and [`PasswordOrFederatedLogin`]
-//!   ready-made.
+//!   ready-made. [`ClaimLocator`] finds the user holding a claim, and every event
+//!   store is one.
 //! - [`LoginStore`] keeps the short-lived state of logins in progress, with
 //!   `PostgresLoginStore` (feature `postgres`) and `RedisLoginStore` (feature
 //!   `redis`) as the only implementations: state that is not shared between
 //!   instances would break a login in progress.
 //! - [`SecondFactor`] proves a login a second time, with `Totp` (feature `totp`)
 //!   ready-made, and [`TwoFactor`] holds back the logins that require one
-//!   until [`ClaimAuthenticator::complete`] finishes them.
+//!   until [`ClaimAuthenticator::complete`] finishes them. [`LoginStage`] is
+//!   what the authenticator asks at that point, [`NoSecondFactor`] being the
+//!   stage that never holds a login. [`PendingLogins`] keeps the held
+//!   [`PendingLogin`]s in a [`LoginStore`], each under a [`PendingLoginId`].
 //! - [`UserCache`] keeps loaded users, checked against the stored version on every
 //!   read, with `MokaUserCache` (feature `moka`) and `RedisUserCache` (feature
 //!   `redis`) ready-made. [`CachedUserLoader`] resolves the current user through it.
@@ -37,6 +42,17 @@
 //!   single-use tokens of a password reset, storing only the hash.
 //! - [`Authenticator`] turns an attempt into a [`LoginOutcome`], and
 //!   [`ClaimAuthenticator`] is the generic implementation over any event store.
+//! - [`Clock`] is the time source that second factors and pending logins read, with [`SystemClock`] and the
+//!   test double [`FixedClock`].
+//!
+//! # Features
+//!
+//! - `argon2` (default): [`Argon2Hasher`].
+//! - `postgres` (default): `PostgresLoginStore`.
+//! - `redis`: `RedisLoginStore` and `RedisUserCache`.
+//! - `moka`: `MokaUserCache`, an in-process user cache.
+//! - `reset`: `ResetToken` and `ResetTokenHash` for password resets.
+//! - `totp`: `Totp`, `HasTotp` and `TotpSecret` for TOTP second factors.
 //!
 //! # Examples
 //!
