@@ -1,7 +1,8 @@
-//! The aggregate, the backend and the routes of the example.
+//! The backend and the routes of the example.
 
 use std::sync::Arc;
 
+use crate::member::{Member, MemberCommands};
 use axum::{
     extract::State,
     http::StatusCode,
@@ -11,65 +12,15 @@ use axum::{
 };
 use axum_login::{AuthManagerLayerBuilder, AuthSession};
 use event_sauce::auth::{
-    Argon2Hasher, ClaimAuthenticator, Email, Identity, LoginId, Password, PasswordAttempt,
-    PasswordHash, PasswordHasher, PasswordLogin,
+    Argon2Hasher, ClaimAuthenticator, Email, LoginId, Password, PasswordAttempt, PasswordHash,
+    PasswordHasher, PasswordLogin,
 };
 use event_sauce::axum::{CorrelationLayer, CurrentUser, EventSauceBackend};
 use event_sauce::memory::InMemoryEventStore;
 use event_sauce::prelude::*;
 use secrecy::SecretString;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use tower_sessions::{MemoryStore, SessionManagerLayer};
-
-#[derive(Debug, thiserror::Error)]
-pub enum MemberError {}
-
-impl AggregateError for MemberError {}
-
-#[aggregate(event = "MemberEvent", error = "MemberError", init, user)]
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Member {
-    #[id]
-    id: EntityId,
-    #[user(identity)]
-    identity: Identity<Password<Email>>,
-    nickname: String,
-}
-
-define_events! {
-    pub enum MemberEvent for Member {
-        Joined {
-            nickname: String,
-            credentials: Password<Email>,
-        }
-        @init
-        => |id, event| {
-            Member {
-                id,
-                identity: Identity::Registered(event.credentials.clone()),
-                nickname: event.nickname.clone(),
-            }
-        },
-
-        PasswordChanged {
-            hash: PasswordHash,
-        }
-        => |member, event| {
-            if let Identity::Registered(credentials) = &mut member.identity {
-                credentials.set_hash(event.hash.clone());
-            }
-        },
-    }
-}
-
-aggregate_command! {
-    impl Member {
-        @clock @init fn join(nickname: String, credentials: Password<Email>) -> JoinedEvent {
-            nickname, credentials
-        };
-        @clock fn change_password(hash: PasswordHash) -> PasswordChangedEvent { hash };
-    }
-}
 
 type Authenticator = ClaimAuthenticator<Member, PasswordLogin<Argon2Hasher>, InMemoryEventStore>;
 type Backend = EventSauceBackend<Member, Authenticator, InMemoryEventStore>;

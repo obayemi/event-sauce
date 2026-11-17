@@ -23,6 +23,7 @@
 //! ```
 
 mod app;
+mod member;
 #[cfg(test)]
 mod tests;
 
