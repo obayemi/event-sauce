@@ -1,0 +1,5 @@
+error[E0599]: no associated function or constant named `default` found for struct `Authenticated<U>` in the current scope
+ --> tests/ui/authenticated_default.rs:4:20
+  |
+4 |     Authenticated::default()
+  |                    ^^^^^^^ associated function or constant not found in `Authenticated<_>`

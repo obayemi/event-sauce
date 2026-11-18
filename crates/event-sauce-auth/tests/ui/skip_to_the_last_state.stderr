@@ -1,0 +1,10 @@
+error[E0308]: mismatched types
+  --> tests/ui/skip_to_the_last_state.rs:12:5
+   |
+11 | fn skip<U: UserAggregate>(login: Login<U, First>) -> Login<U, Done> {
+   |                                                      -------------- expected `Login<U, event_sauce_auth::Done>` because of return type
+12 |     login
+   |     ^^^^^ expected `Login<U, Done>`, found `Login<U, First>`
+   |
+   = note: expected struct `Login<U, event_sauce_auth::Done>`
+              found struct `Login<U, First>`

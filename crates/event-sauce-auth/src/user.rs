@@ -10,7 +10,7 @@ use crate::{Credentials, Identity};
 /// `user` in `#[aggregate(..., user)]`, mark the identity field with
 /// `#[user(identity)]` and, optionally, a `bool` field with `#[user(active)]`
 /// that [`is_active`](Self::is_active) reads.
-pub trait UserAggregate: Aggregate {
+pub trait UserAggregate: Aggregate + 'static {
     /// The credentials this user can hold.
     type Credentials: Credentials;
 

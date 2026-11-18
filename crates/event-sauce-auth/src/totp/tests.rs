@@ -21,12 +21,6 @@ impl Credentials for Enrolled {
     }
 }
 
-impl HasSecondFactor for Enrolled {
-    fn requires_second_factor(&self) -> bool {
-        self.0.is_some()
-    }
-}
-
 impl HasTotp for Enrolled {
     fn totp_secret(&self) -> Option<&TotpSecret> {
         self.0.as_ref()
@@ -45,8 +39,8 @@ fn at(seconds: i64) -> DateTime<Utc> {
     DateTime::from_timestamp(seconds, 0).unwrap()
 }
 
-fn totp_at(seconds: i64) -> Totp {
-    Totp::new().with_clock(Arc::new(FixedClock(at(seconds))))
+fn totp_at(seconds: i64, store: &Arc<FakeLoginStore>) -> Totp {
+    Totp::new(store.clone()).with_clock(Arc::new(FixedClock(at(seconds))))
 }
 
 fn code(seed: u8, seconds: i64) -> SecretString {
@@ -65,36 +59,36 @@ async fn verify(
     totp: &Totp,
     credentials: &Enrolled,
     response: &SecretString,
-    store: &FakeLoginStore,
 ) -> Result<(), Rejected> {
-    totp.verify(credentials, &(), response, store).await
+    let secret = credentials.totp_secret().ok_or(Rejected::Mismatch)?;
+    totp.check(secret, response).await
 }
 
 #[tokio::test]
 async fn the_code_of_the_current_step_is_accepted() {
-    let store = FakeLoginStore::default();
+    let store = Arc::new(FakeLoginStore::default());
 
-    let verified = verify(&totp_at(T0), &enrolled(1), &code(1, T0), &store).await;
+    let verified = verify(&totp_at(T0, &store), &enrolled(1), &code(1, T0)).await;
 
     assert!(verified.is_ok());
 }
 
 #[tokio::test]
 async fn the_codes_of_the_neighbouring_steps_are_accepted() {
-    let store = FakeLoginStore::default();
+    let store = Arc::new(FakeLoginStore::default());
 
-    let previous = verify(&totp_at(T0), &enrolled(1), &code(1, T0 - STEP), &store).await;
-    let next = verify(&totp_at(T0), &enrolled(1), &code(1, T0 + STEP), &store).await;
+    let previous = verify(&totp_at(T0, &store), &enrolled(1), &code(1, T0 - STEP)).await;
+    let next = verify(&totp_at(T0, &store), &enrolled(1), &code(1, T0 + STEP)).await;
 
     assert!(previous.is_ok() && next.is_ok());
 }
 
 #[tokio::test]
 async fn a_code_two_steps_away_is_rejected() {
-    let store = FakeLoginStore::default();
+    let store = Arc::new(FakeLoginStore::default());
 
-    let stale = verify(&totp_at(T0), &enrolled(1), &code(1, T0 - 2 * STEP), &store).await;
-    let early = verify(&totp_at(T0), &enrolled(1), &code(1, T0 + 2 * STEP), &store).await;
+    let stale = verify(&totp_at(T0, &store), &enrolled(1), &code(1, T0 - 2 * STEP)).await;
+    let early = verify(&totp_at(T0, &store), &enrolled(1), &code(1, T0 + 2 * STEP)).await;
 
     assert!(matches!(stale, Err(Rejected::Mismatch)));
     assert!(matches!(early, Err(Rejected::Mismatch)));
@@ -102,23 +96,22 @@ async fn a_code_two_steps_away_is_rejected() {
 
 #[tokio::test]
 async fn a_wrong_code_is_rejected() {
-    let store = FakeLoginStore::default();
+    let store = Arc::new(FakeLoginStore::default());
 
-    let verified = verify(&totp_at(T0), &enrolled(1), &code(2, T0), &store).await;
+    let verified = verify(&totp_at(T0, &store), &enrolled(1), &code(2, T0)).await;
 
     assert!(matches!(verified, Err(Rejected::Mismatch)));
 }
 
 #[tokio::test]
 async fn something_that_is_not_a_code_is_rejected() {
-    let store = FakeLoginStore::default();
+    let store = Arc::new(FakeLoginStore::default());
 
     for garbage in ["", "abcdef", "12345", "1234567", " 123456"] {
         let verified = verify(
-            &totp_at(T0),
+            &totp_at(T0, &store),
             &enrolled(1),
             &SecretString::from(garbage),
-            &store,
         )
         .await;
 
@@ -131,11 +124,11 @@ async fn something_that_is_not_a_code_is_rejected() {
 
 #[tokio::test]
 async fn a_step_is_accepted_only_once() {
-    let store = FakeLoginStore::default();
-    let totp = totp_at(T0);
+    let store = Arc::new(FakeLoginStore::default());
+    let totp = totp_at(T0, &store);
 
-    let first = verify(&totp, &enrolled(1), &code(1, T0), &store).await;
-    let replay = verify(&totp, &enrolled(1), &code(1, T0), &store).await;
+    let first = verify(&totp, &enrolled(1), &code(1, T0)).await;
+    let replay = verify(&totp, &enrolled(1), &code(1, T0)).await;
 
     assert!(first.is_ok());
     assert!(matches!(replay, Err(Rejected::Mismatch)));
@@ -143,10 +136,10 @@ async fn a_step_is_accepted_only_once() {
 
 #[tokio::test]
 async fn a_replay_is_caught_from_a_later_instant_of_the_same_window() {
-    let store = FakeLoginStore::default();
+    let store = Arc::new(FakeLoginStore::default());
 
-    let first = verify(&totp_at(T0), &enrolled(1), &code(1, T0), &store).await;
-    let replay = verify(&totp_at(T0 + STEP), &enrolled(1), &code(1, T0), &store).await;
+    let first = verify(&totp_at(T0, &store), &enrolled(1), &code(1, T0)).await;
+    let replay = verify(&totp_at(T0 + STEP, &store), &enrolled(1), &code(1, T0)).await;
 
     assert!(first.is_ok());
     assert!(matches!(replay, Err(Rejected::Mismatch)));
@@ -154,14 +147,13 @@ async fn a_replay_is_caught_from_a_later_instant_of_the_same_window() {
 
 #[tokio::test]
 async fn the_next_step_is_still_accepted_after_one_was_used() {
-    let store = FakeLoginStore::default();
+    let store = Arc::new(FakeLoginStore::default());
 
-    let first = verify(&totp_at(T0), &enrolled(1), &code(1, T0), &store).await;
+    let first = verify(&totp_at(T0, &store), &enrolled(1), &code(1, T0)).await;
     let second = verify(
-        &totp_at(T0 + STEP),
+        &totp_at(T0 + STEP, &store),
         &enrolled(1),
         &code(1, T0 + STEP),
-        &store,
     )
     .await;
 
@@ -170,11 +162,11 @@ async fn the_next_step_is_still_accepted_after_one_was_used() {
 
 #[tokio::test]
 async fn a_rejected_code_does_not_use_up_the_step() {
-    let store = FakeLoginStore::default();
-    let totp = totp_at(T0);
+    let store = Arc::new(FakeLoginStore::default());
+    let totp = totp_at(T0, &store);
 
-    let wrong = verify(&totp, &enrolled(1), &code(2, T0), &store).await;
-    let right = verify(&totp, &enrolled(1), &code(1, T0), &store).await;
+    let wrong = verify(&totp, &enrolled(1), &code(2, T0)).await;
+    let right = verify(&totp, &enrolled(1), &code(1, T0)).await;
 
     assert!(wrong.is_err());
     assert!(right.is_ok());
@@ -182,20 +174,20 @@ async fn a_rejected_code_does_not_use_up_the_step() {
 
 #[tokio::test]
 async fn replay_protection_is_per_secret() {
-    let store = FakeLoginStore::default();
-    let totp = totp_at(T0);
+    let store = Arc::new(FakeLoginStore::default());
+    let totp = totp_at(T0, &store);
 
-    let ada = verify(&totp, &enrolled(1), &code(1, T0), &store).await;
-    let eve = verify(&totp, &enrolled(2), &code(2, T0), &store).await;
+    let ada = verify(&totp, &enrolled(1), &code(1, T0)).await;
+    let eve = verify(&totp, &enrolled(2), &code(2, T0)).await;
 
     assert!(ada.is_ok() && eve.is_ok());
 }
 
 #[tokio::test]
 async fn a_used_step_is_remembered_for_the_whole_window_it_could_be_replayed_in() {
-    let store = FakeLoginStore::default();
+    let store = Arc::new(FakeLoginStore::default());
 
-    verify(&totp_at(T0), &enrolled(1), &code(1, T0), &store)
+    verify(&totp_at(T0, &store), &enrolled(1), &code(1, T0))
         .await
         .unwrap();
 
@@ -207,9 +199,9 @@ async fn a_used_step_is_remembered_for_the_whole_window_it_could_be_replayed_in(
 
 #[tokio::test]
 async fn the_replay_mark_does_not_expose_the_secret() {
-    let store = FakeLoginStore::default();
+    let store = Arc::new(FakeLoginStore::default());
 
-    verify(&totp_at(T0), &enrolled(1), &code(1, T0), &store)
+    verify(&totp_at(T0, &store), &enrolled(1), &code(1, T0))
         .await
         .unwrap();
 
@@ -221,40 +213,22 @@ async fn the_replay_mark_does_not_expose_the_secret() {
 }
 
 #[tokio::test]
-async fn credentials_without_a_secret_reject_every_code() {
-    let store = FakeLoginStore::default();
-
-    let verified = verify(&totp_at(T0), &Enrolled(None), &code(1, T0), &store).await;
-
-    assert!(matches!(verified, Err(Rejected::Mismatch)));
-    assert_eq!(store.len(), 0);
-}
-
-#[tokio::test]
 async fn a_failing_store_is_reported_not_swallowed() {
-    let store = FakeLoginStore::broken();
+    let store = Arc::new(FakeLoginStore::broken());
 
-    let verified = verify(&totp_at(T0), &enrolled(1), &code(1, T0), &store).await;
+    let verified = verify(&totp_at(T0, &store), &enrolled(1), &code(1, T0)).await;
 
     assert!(matches!(verified, Err(Rejected::LoginStore(_))));
 }
 
 #[tokio::test]
 async fn the_system_clock_is_the_default() {
-    let store = FakeLoginStore::default();
+    let store = Arc::new(FakeLoginStore::default());
     let now = Utc::now().timestamp();
 
-    let verified = verify(&Totp::new(), &enrolled(1), &code(1, now), &store).await;
+    let verified = verify(&Totp::new(store.clone()), &enrolled(1), &code(1, now)).await;
 
     assert!(verified.is_ok());
-}
-
-#[test]
-fn totp_needs_nothing_from_the_client_to_challenge() {
-    assert_eq!(
-        SecondFactor::<Enrolled>::challenge(&Totp::new(), &enrolled(1)),
-        ()
-    );
 }
 
 #[test]

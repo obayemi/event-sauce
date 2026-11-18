@@ -425,6 +425,7 @@ a `Route` that picks, per user, the state the login moves to next, and
      reaches the client.
 3. Load the user, which decrypts the aggregate. Snapshots bound the replay
    cost, and a configured user cache serves a version-checked hit.
+   A located id whose user is gone or deleted is treated like no match.
 4. `is_active()`, otherwise return `Inactive`. This check runs for every
    method.
 5. `method.verify(identity, &attempt)`.
@@ -644,7 +645,10 @@ The errors: `ResumeError { NotInProgress, Inactive, CredentialsChanged,
 Store, Pending }`, `FinishError { Inactive, CredentialsChanged, Store }`,
 `SignUpError { NotNew, Store }` (a claim conflict surfaces through
 `Error::as_claim_conflict`, as on any commit), and `PendingLoginError
-{ Store, Encoding }` as today.
+{ Store, Encoding }` as today. `NotNew` means the aggregate holds no pending
+event, or its version is not the initial one plus its pending events (it
+was loaded), or its id exists. `UserAggregate` requires `'static`, so
+`Logins` can keep the store behind a trait object.
 
 **What the library ships.**
 

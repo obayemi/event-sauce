@@ -2,7 +2,7 @@
 
 This guide explains how to log users in with event-sauce: how credentials live
 inside an aggregate, how a login attempt becomes an authenticated user, and
-how second factors, caches and password reset tokens fit around it. The
+how multi-step logins, caches and password reset tokens fit around it. The
 HTTP side (sessions, extractors, the app builder) is in the
 [axum guide](axum.md).
 
@@ -18,9 +18,9 @@ HTTP side (sessions, extractors, the app builder) is in the
 - [The User Aggregate](#the-user-aggregate)
 - [Logging In](#logging-in)
   - [Login Methods](#login-methods)
-  - [The Authenticator](#the-authenticator)
+  - [Starting a Login](#starting-a-login)
   - [Password Hashing](#password-hashing)
-- [Second Factors](#second-factors)
+- [Multi-step Logins](#multi-step-logins)
   - [The Login Store](#the-login-store)
   - [TOTP](#totp)
 - [The User Cache](#the-user-cache)
@@ -39,10 +39,11 @@ The library does not pick how your users log in. It gives you:
   `PasswordOrFederated<Email>`, or your own).
 - **`#[aggregate(user)]`**, which makes the aggregate a `UserAggregate` and
   adds the credentials' uniqueness claims to its own.
-- **`LoginMethod`** and **`Authenticator`**, which turn a submitted form into
-  an authenticated user without any plaintext login projection.
-- **`SecondFactor`** and a **`LoginStore`** for logins that need more than
-  one step.
+- **`LoginMethod`** and **`Logins`**, which turn a submitted form into a
+  login without any plaintext login projection.
+- **Typestate logins** (`Login`, `Step`, `Complete`, `Authenticated`) and a
+  **`LoginStore`** for logins that take more than one step: no session can open
+  before the whole process ended.
 - **`UserCache`**, which keeps the per-request user load cheap.
 
 Credentials live **inside** the aggregate. When the aggregate is encrypted,
@@ -145,7 +146,7 @@ pub trait Credentials:
 
 and, for each login method it supports, a small capability trait:
 `HasPassword` (an accessor to the `Password`), `HasFederated`,
-`HasSecondFactor`, `HasTotp`. `PasswordLogin` needs `HasPassword`, so
+`HasTotp`. `PasswordLogin` needs `HasPassword`, so
 configuring a login method the type does not support fails to compile.
 
 ## The User Aggregate
@@ -215,34 +216,41 @@ unknown, so the response time does not reveal which logins exist.
 Your own `LoginMethod` implements three functions: `locate` (find the user
 id, usually by claim), `verify`, and an optional `on_unknown`.
 
-### The Authenticator
+### Starting a Login
 
-`ClaimAuthenticator<U, M, S>` is the generic `Authenticator`, for any login
-method `M` and any event store `S`:
+`Logins<U>` starts logins for the users of one event store. A `FirstFactor`
+pairs a login method with a `Route`, which picks, per user, where the login
+goes once the first factor passed:
 
 ```rust
-let authenticator = ClaimAuthenticator::<Member, _, _>::new(
-    store.clone(),
-    PasswordLogin::new(Argon2Hasher::default()),
-);
-let outcome = authenticator.authenticate(attempt).await?;
+let logins = Logins::<Member>::new(store.clone());
+let password = FirstFactor::new(PasswordLogin::new(Argon2Hasher::default()), AlwaysDone);
+let login: Login<Member, Done> = logins.begin(&password, attempt).await?;
 ```
 
-Every attempt goes through the same steps:
+`begin` goes through the same steps for every attempt:
 
 1. the method locates the user, resolving a claim through
    `EventStore::resolve_claim` (one indexed lookup);
 2. when nobody matches, `on_unknown` runs and the attempt comes back in
    `AuthError::Unknown`, so the app can link or create a user;
-3. the user loads (decrypted, from its latest snapshot);
+3. the user loads (decrypted, from its latest snapshot, through the shared
+   cache when `with_shared_cache` set one);
 4. an inactive user is refused with `AuthError::Inactive`, whatever the
    method;
 5. the method verifies the attempt;
-6. the login stage decides whether the login is complete.
+6. the session fingerprint and the start time are pinned, and the route picks
+   the state the login moves to.
 
-The outcome is `LoginOutcome::Authenticated(root)` or
-`LoginOutcome::SecondFactorRequired(pending_id)`. `AuthError` separates
-`InvalidCredentials`, `Inactive`, `Unknown`, `Store`, `Hash` and `Pending`.
+`AuthError` separates `InvalidCredentials`, `Inactive`, `Unknown`, `Store`,
+`Hash`, `LoginStore` and `Unavailable`, the last one for a verifier that could
+not check the attempt at all (`Rejected::unavailable(error)`).
+
+What `begin` returns is a `Login`, not a session. Only `Login::finish` yields
+the `Authenticated<U>` a session is opened from, and `finish` exists only for
+a `Complete` state such as `Done`. `Logins::sign_up(user)` commits a brand-new
+user, at its initial version so it can never log into an account that exists,
+and starts its login in `Done`.
 
 ### Password Hashing
 
@@ -260,37 +268,85 @@ let hash = hasher.hash(&SecretString::from("correct horse")).await?;
 Use cheap parameters in tests, never in production. `PasswordHash` is a PHC
 string newtype with a redacted `Debug`.
 
-## Second Factors
+## Multi-step Logins
 
-A credentials type opts in with `HasSecondFactor::requires_second_factor`.
-The authenticator's fourth type parameter is a `LoginStage`:
+A login can take more than one proof: a password then a TOTP code, a TOTP
+code or a recovery code, a code sent by email, a step another device
+performs. Whatever the process, **no session can open before it ends**,
+because a session needs an `Authenticated<U>` and the only way to get one is
+to finish a login that reached a `Complete` state:
 
-- `NoSecondFactor`, the default, never holds a login back;
-- `TwoFactor<F>` holds back the logins whose credentials require a second
-  factor.
+| Link of the chain | Held by |
+|---|---|
+| A session needs an `Authenticated<U>` | type: private fields, no `Default`, no `Deserialize` |
+| An `Authenticated<U>` needs a finished login in a `Complete` state | type: `finish` is bounded by `S: Complete` |
+| A `Login` exists only after a proof | type: built only by `begin`, `sign_up`, `PendingLogins::resume` and `Advance::to` |
+| A login leaves a state only through that state's step | type: `Advance<U, S>` is built only by `prove` for `S: Step<U>` |
+| A login is used once | type: `prove`, `finish` and `save` consume it, it is not `Clone` |
+| A saved login resumes in the state it was saved in | runtime: tag check in `resume` |
+| Nothing changed underneath | runtime: active and fingerprint checks in `resume` and `finish` |
+
+You name the states. A state is plain data, saved with the login while the
+client is away, and its `Step` is the only way out of it:
 
 ```rust
-let authenticator = ClaimAuthenticator::<Member, _, _>::new(store, method)
-    .with_second_factor(TwoFactor::new(Totp::new(), login_store));
+#[derive(Serialize, Deserialize)]
+struct NeedEmailCode { code_hash: [u8; 32] }
 
-match authenticator.authenticate(attempt).await? {
-    LoginOutcome::Authenticated(root) => { /* open a session */ }
-    LoginOutcome::SecondFactorRequired(pending) => { /* ask for the code */ }
-    _ => unreachable!(),
+impl LoginState for NeedEmailCode {
+    const TAG: &'static str = "app.email_code";
+    const TTL: LoginTtl = LoginTtl::ONE_HOUR;
 }
-let root = authenticator.complete(pending, &code).await?;
+
+#[async_trait]
+impl Step<Member> for NeedEmailCode {
+    type Proof = SecretString;
+    type Verifier = ();
+    type Next = Login<Member, Done>;
+
+    async fn verify(advance: Advance<Member, Self>, (): &(), code: SecretString)
+        -> Result<Login<Member, Done>, Rejected>
+    {
+        if !matches_hash(&advance.login().state().code_hash, &code) {
+            return Err(Rejected::Mismatch);
+        }
+        Ok(advance.to(Done))
+    }
+}
 ```
 
-`complete` exists only on the `TwoFactor` variant. A pending login is single
-use and expires after five minutes (`TwoFactor::with_pending_ttl(LoginTtl)` changes it): an
-unknown, expired or already used one is `CompleteError::NotInProgress`, and
-a wrong response ends the login, so the user starts again from the first
-factor. No session exists before `complete` succeeds: the pending login is
-not a partial session.
+`Step::Next` lists the states a step can lead to: one `Login<U, T>`, or an
+application enum of them, picked per user. A `Route` does the same after the
+first factor, which is how a flow branches. Each request of a flow resumes the
+state its endpoint serves, proves, and either saves the next state or
+finishes:
 
-A `SecondFactor` implementation defines a `Challenge` sent to the client
-(nothing for TOTP, a nonce for WebAuthn), a `Response`, and `verify`.
-WebAuthn is not shipped, but `Challenge` leaves room for it.
+```rust
+let pending = logins.pending(login_store);
+let id = pending.save(login).await?;                       // POST /login
+let login = pending.resume::<NeedTotp>(id).await?;         // POST /login/totp
+let authenticated = login.prove(&totp, code).await?.finish().await?;
+```
+
+A saved login is single use and expires after the `TTL` of its state (five
+minutes by default). `resume` checks the tag, so a login saved in another
+state is `ResumeError::NotInProgress` and is used up. It also reloads the
+user: gone or inactive is `Inactive`, a changed session fingerprint (a new
+password, a new TOTP secret) is `CredentialsChanged`, and the login starts
+over. `finish` makes the same checks once more.
+
+The library ships `Done`, `AlwaysDone` (the route of single-factor
+credentials: `Password`, `Federated` and `PasswordOrFederated` implement the
+`SingleFactor` marker), and, behind `totp`, `NeedTotp`, `TotpIfEnrolled` and
+`Totp`. `TotpIfEnrolled` fails closed: a user with any TOTP secret goes to
+`NeedTotp`, and only a user with none goes to `Done`. `AlwaysDone` does not
+compile for credentials that are not `SingleFactor`.
+
+The types guarantee the order of the process, not the quality of each check:
+the app decides which states are `Complete`, a step's `verify` is ordinary
+code, `SingleFactor` is an assertion by the credentials type, and tags must
+be unique. Anyone who can write the login store directly can forge a pending
+login.
 
 ### The Login Store
 
@@ -324,12 +380,14 @@ purpose: a login in progress must survive across instances.
 
 ### TOTP
 
-`Totp` (feature `totp`) verifies time-based one-time codes. The secret lives
-in your credentials type behind `HasTotp`, and is part of the fingerprint,
-so enrolling a second factor logs out the user's other sessions. A time step
-that was already used is rejected through `LoginStore::mark_once`; that
-replay protection writes nothing to the user's event stream. `Totp::with_clock`
-injects the `Clock` that picks the time step.
+`Totp` (feature `totp`) verifies time-based one-time codes. It is the verifier
+of the `NeedTotp` step, `Totp::new(login_store)`, and `Totp::check(secret, code)`
+is there for the steps of your own. The secret lives in your credentials type
+behind `HasTotp`, and is part of the fingerprint, so enrolling a second
+factor logs out the user's other sessions. A time step that was already used
+is rejected through `LoginStore::mark_once`; that replay protection writes
+nothing to the user's event stream. `Totp::with_clock` injects the `Clock`
+that picks the time step.
 
 ## The User Cache
 
@@ -397,7 +455,7 @@ the same byte stream, however their fields are split.
 | `moka` | `auth-moka` | `MokaUserCache` |
 | `redis` | `auth-redis` | `RedisLoginStore`, `RedisUserCache` |
 | `reset` | `auth-reset` | reset tokens |
-| `totp` | `auth-totp` | the `Totp` second factor |
+| `totp` | `auth-totp` | the `Totp` verifier, `NeedTotp` and `TotpIfEnrolled` |
 
 Through the facade, `auth` is the base, and every other feature implies it.
 
@@ -405,8 +463,8 @@ Through the facade, `auth` is the base, and every other feature implies it.
 
 - The unit tests of your user aggregate need no store: apply events and call
   the rules.
-- `ClaimAuthenticator` works over `InMemoryEventStore`, so login tests run
-  without a database. Use cheap Argon2 parameters.
+- `Logins` works over `InMemoryEventStore`, so login tests run without a
+  database, whole multi-step flows included. Use cheap Argon2 parameters.
 - A `LoginStore` fake is a few lines over a `HashMap`; the crate's own tests
   do the same. Real Postgres and Redis stores are tested against
   testcontainers, so they need Docker.

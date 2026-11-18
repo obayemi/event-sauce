@@ -1,22 +1,25 @@
-//! Time-based one-time passwords ([RFC 6238]) as a [`SecondFactor`].
+//! Time-based one-time passwords ([RFC 6238]) as a login step: the
+//! [`HasTotp`] capability, the [`Totp`] verifier, the [`NeedTotp`] state and
+//! the [`TotpIfEnrolled`] route.
 //!
 //! [RFC 6238]: https://datatracker.ietf.org/doc/html/rfc6238
 
-use std::{sync::Arc, time::Duration};
+use std::{fmt, sync::Arc, time::Duration};
 
-use async_trait::async_trait;
 use secrecy::{ExposeSecret, SecretString};
 
 use crate::{
-    Clock, Fingerprint, HasSecondFactor, LoginKey, LoginStore, LoginTtl, Rejected, SecondFactor,
-    SystemClock,
+    Clock, Credentials, Fingerprint, LoginKey, LoginStore, LoginTtl, Rejected, SystemClock,
 };
 
+mod steps;
+
+pub use steps::{NeedTotp, TotpIfEnrolled, TotpOrDone};
 pub use totp_rs::Secret as TotpSecret;
 
 const REPLAY_NAMESPACE: &str = "totp";
 
-/// Credentials that hold the shared secret of a TOTP second factor.
+/// Credentials that may hold the shared secret of a TOTP second factor.
 ///
 /// The secret is part of the credentials, so it must be fed to the
 /// session fingerprint: enrolling or replacing a second factor then ends the
@@ -26,7 +29,7 @@ const REPLAY_NAMESPACE: &str = "totp";
 /// # Examples
 ///
 /// ```
-/// use event_sauce_auth::{Credentials, Fingerprint, HasSecondFactor, HasTotp, TotpSecret};
+/// use event_sauce_auth::{Credentials, Fingerprint, HasTotp, TotpSecret};
 /// use event_sauce_core::AggregateClaim;
 /// use serde::{Deserialize, Serialize};
 ///
@@ -45,12 +48,6 @@ const REPLAY_NAMESPACE: &str = "totp";
 ///     }
 /// }
 ///
-/// impl HasSecondFactor for Account {
-///     fn requires_second_factor(&self) -> bool {
-///         self.totp.is_some()
-///     }
-/// }
-///
 /// impl HasTotp for Account {
 ///     fn totp_secret(&self) -> Option<&TotpSecret> {
 ///         self.totp.as_ref()
@@ -58,9 +55,9 @@ const REPLAY_NAMESPACE: &str = "totp";
 /// }
 ///
 /// let account = Account { totp: Some(TotpSecret::generate()) };
-/// assert!(account.requires_second_factor());
+/// assert!(account.totp_secret().is_some());
 /// ```
-pub trait HasTotp: HasSecondFactor {
+pub trait HasTotp: Credentials {
     /// The shared secret, or `None` when no TOTP second factor is enrolled.
     fn totp_secret(&self) -> Option<&TotpSecret>;
 
@@ -70,23 +67,35 @@ pub trait HasTotp: HasSecondFactor {
     }
 }
 
-/// The TOTP second factor: six digits, thirty-second steps, SHA-1, with one
-/// step of tolerance on each side, as authenticator apps expect.
+/// The TOTP verifier: six digits, thirty-second steps, SHA-1, with one step
+/// of tolerance on each side, as authenticator apps expect.
 ///
-/// A code is accepted once. Verifying records the matched time step in the
-/// [`LoginStore`], keyed by a digest of the secret, so replaying a code
-/// within its validity window fails without writing to the user's event
-/// stream. A rejected code records nothing.
-#[derive(Debug, Clone)]
+/// A code is accepted once. Checking records the matched time step in the
+/// replay [`LoginStore`], keyed by a digest of the secret, so replaying a
+/// code within its validity window fails without writing to the user's
+/// event stream. A rejected code records nothing.
+///
+/// It is the [`Step::Verifier`](crate::Step::Verifier) of [`NeedTotp`], and an
+/// application reuses [`Totp::check`] in steps of its own.
+#[derive(Clone)]
 pub struct Totp {
+    replays: Arc<dyn LoginStore>,
     clock: Arc<dyn Clock>,
 }
 
+impl fmt::Debug for Totp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Totp").finish_non_exhaustive()
+    }
+}
+
 impl Totp {
-    /// A TOTP factor reading the system clock.
+    /// A TOTP verifier recording used steps in `replays`, reading the system
+    /// clock.
     #[must_use]
-    pub fn new() -> Self {
+    pub fn new(replays: Arc<dyn LoginStore>) -> Self {
         Self {
+            replays,
             clock: Arc::new(SystemClock),
         }
     }
@@ -106,40 +115,27 @@ impl Totp {
         let digest = hex::encode(fingerprint.finish());
         LoginKey::new(REPLAY_NAMESPACE, format_args!("{digest}:{step}"))
     }
-}
 
-impl Default for Totp {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[async_trait]
-impl<C: HasTotp> SecondFactor<C> for Totp {
-    type Challenge = ();
-    type Response = SecretString;
-
-    fn challenge(&self, _stored: &C) {}
-
-    async fn verify(
-        &self,
-        stored: &C,
-        _challenge: &(),
-        response: &SecretString,
-        store: &dyn LoginStore,
-    ) -> Result<(), Rejected> {
-        let secret = stored.totp_secret().ok_or(Rejected::Mismatch)?;
+    /// Checks `code` against `secret`, accepting each time step once.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Rejected::Mismatch`] when the code does not match or its
+    /// step was already used, and [`Rejected::LoginStore`] when the replay
+    /// store fails.
+    pub async fn check(&self, secret: &TotpSecret, code: &SecretString) -> Result<(), Rejected> {
         let totp = totp_rs::Builder::new()
             .with_secret(secret.clone())
             .build()
             .map_err(|_| Rejected::Mismatch)?;
         let now = u64::try_from(self.clock.now().timestamp()).map_err(|_| Rejected::Mismatch)?;
         let step = totp
-            .check(response.expose_secret(), now)
+            .check(code.expose_secret(), now)
             .ok_or(Rejected::Mismatch)?;
         let window = Duration::from_secs((2 * u64::from(totp.skew()) + 1) * totp.step());
         let ttl = LoginTtl::new(window).map_err(|_| Rejected::Mismatch)?;
-        let first_use = store
+        let first_use = self
+            .replays
             .mark_once(&Self::replay_key(secret, step), ttl)
             .await?;
         if first_use {

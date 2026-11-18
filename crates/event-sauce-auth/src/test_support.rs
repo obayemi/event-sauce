@@ -9,17 +9,24 @@ use std::{
 };
 
 use async_trait::async_trait;
-use event_sauce_core::{AggregateClaim, EntityId};
+use event_sauce_core::{
+    aggregate_command, define_events, Aggregate, AggregateClaim, AggregateError, AggregateRoot,
+    Entity, EntityId, StoredVersion,
+};
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 
 use sha2::{Digest, Sha256};
 
 use crate::{
-    ClaimLocator, Credentials, Email, FederatedId, Fingerprint, HasSecondFactor, HashError,
-    LocateError, LoginId, LoginKey, LoginStore, LoginStoreError, LoginTtl, PasswordHash,
-    PasswordHasher, Provider,
+    login::users::{Found, Users},
+    ClaimLocator, Email, FederatedId, HashError, Identity, LocateError, LoginId, LoginKey,
+    LoginStore, LoginStoreError, LoginTtl, Password, PasswordHash, PasswordHasher, Provider,
+    SignUpError, UserAggregate, UserCache,
 };
+
+#[cfg(any(feature = "moka", feature = "redis"))]
+use crate::{Credentials, Fingerprint};
 
 pub(crate) const HASH_A: &str =
     "$argon2id$v=19$m=19456,t=2,p=1$c29tZXNhbHRzYWx0$aGFzaGhhc2hoYXNoaGFzaGhhc2hoYXNoaGFzaGhhc2g";
@@ -152,10 +159,6 @@ impl FakeLoginStore {
         self.entries.lock().unwrap().keys().cloned().collect()
     }
 
-    pub(crate) fn len(&self) -> usize {
-        self.entries.lock().unwrap().len()
-    }
-
     fn check(&self) -> Result<(), LoginStoreError> {
         if self.broken {
             return Err(LoginStoreError::backend(
@@ -204,12 +207,14 @@ impl LoginStore for FakeLoginStore {
     }
 }
 
-/// Credentials that demand a second factor when `second_factor` is set.
+/// Credentials holding one flag, so that two values fingerprint differently.
+#[cfg(any(feature = "moka", feature = "redis"))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SecondFactorCredentials {
     pub(crate) second_factor: bool,
 }
 
+#[cfg(any(feature = "moka", feature = "redis"))]
 impl Credentials for SecondFactorCredentials {
     fn claims(&self) -> Vec<AggregateClaim> {
         Vec::new()
@@ -220,9 +225,183 @@ impl Credentials for SecondFactorCredentials {
     }
 }
 
-impl HasSecondFactor for SecondFactorCredentials {
-    fn requires_second_factor(&self) -> bool {
-        self.second_factor
+/// The credentials of [`TestUser`].
+pub(crate) type TestCredentials = Password<Email>;
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum TestUserError {}
+
+impl AggregateError for TestUserError {}
+
+/// A user aggregate with password credentials and an active flag.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct TestUser {
+    id: EntityId,
+    identity: Identity<TestCredentials>,
+    active: bool,
+}
+
+impl Entity for TestUser {
+    fn entity_id(&self) -> EntityId {
+        self.id
+    }
+}
+
+impl Aggregate for TestUser {
+    type Event = TestUserEvent;
+    type Error = TestUserError;
+    type DeletedState = Self;
+}
+
+impl UserAggregate for TestUser {
+    type Credentials = TestCredentials;
+
+    fn identity(&self) -> &Identity<TestCredentials> {
+        &self.identity
+    }
+
+    fn is_active(&self) -> bool {
+        self.active
+    }
+}
+
+define_events! {
+    pub(crate) enum TestUserEvent for TestUser {
+        Registered {
+            credentials: TestCredentials,
+        }
+        @init
+        => |id, event| {
+            TestUser {
+                id,
+                identity: Identity::Registered(event.credentials.clone()),
+                active: true,
+            }
+        },
+
+        Deactivated {}
+        => |user, _event| {
+            user.active = false;
+        },
+    }
+}
+
+aggregate_command! {
+    impl TestUser {
+        @clock @init fn register(credentials: TestCredentials) -> RegisteredEvent { credentials };
+    }
+}
+
+pub(crate) fn credentials(login: &str, password: &str) -> TestCredentials {
+    Password::new(
+        email(login),
+        PasswordHash::new(fake_phc(&secret(password))).unwrap(),
+    )
+}
+
+/// A user as the event store holds it, at its first version.
+pub(crate) fn stored_user(
+    credentials: TestCredentials,
+    active: bool,
+) -> Arc<AggregateRoot<TestUser>> {
+    restored_user(EntityId::new(), credentials, active)
+}
+
+/// The user `id` as the event store holds it, at its first version.
+pub(crate) fn restored_user(
+    id: EntityId,
+    credentials: TestCredentials,
+    active: bool,
+) -> Arc<AggregateRoot<TestUser>> {
+    let user = TestUser {
+        id,
+        identity: Identity::Registered(credentials),
+        active,
+    };
+    Arc::new(AggregateRoot::restore(StoredVersion::FIRST, user).unwrap())
+}
+
+/// The users of a [`FakeUsers`], shared between its copies.
+#[derive(Debug, Default)]
+struct FakeUsersState {
+    users: Mutex<HashMap<EntityId, Arc<AggregateRoot<TestUser>>>>,
+}
+
+/// Users held in a map, standing in for the event store.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct FakeUsers {
+    state: Arc<FakeUsersState>,
+    locator: Arc<FakeLocator>,
+}
+
+impl FakeUsers {
+    /// Holds `user`, locatable by its password login.
+    pub(crate) fn holding(user: &Arc<AggregateRoot<TestUser>>) -> Self {
+        let credentials = user.identity().credentials().unwrap();
+        let fake = Self {
+            state: Arc::default(),
+            locator: Arc::new(FakeLocator::holding(
+                &Password::claim_for(credentials.login()),
+                user.entity_id(),
+            )),
+        };
+        fake.replace(user.clone());
+        fake
+    }
+
+    pub(crate) fn replace(&self, user: Arc<AggregateRoot<TestUser>>) {
+        self.state
+            .users
+            .lock()
+            .unwrap()
+            .insert(user.entity_id(), user);
+    }
+
+    pub(crate) fn remove(&self, id: EntityId) {
+        self.state.users.lock().unwrap().remove(&id);
+    }
+
+    fn lookup(&self, id: EntityId) -> Found<TestUser> {
+        match self.state.users.lock().unwrap().get(&id) {
+            Some(user) if user.is_active() => Found::Active(user.clone()),
+            Some(_) => Found::Inactive,
+            None => Found::Missing,
+        }
+    }
+}
+
+#[async_trait]
+impl Users<TestUser> for FakeUsers {
+    fn locator(&self) -> &dyn ClaimLocator {
+        &*self.locator
+    }
+
+    fn with_cache(&self, _cache: Arc<dyn UserCache<TestUser>>) -> Arc<dyn Users<TestUser>> {
+        Arc::new(self.clone())
+    }
+
+    async fn find(&self, id: EntityId) -> Result<Found<TestUser>, event_sauce_core::Error> {
+        Ok(self.lookup(id))
+    }
+
+    async fn current(
+        &self,
+        held: &Arc<AggregateRoot<TestUser>>,
+    ) -> Result<Found<TestUser>, event_sauce_core::Error> {
+        Ok(self.lookup(held.entity_id()))
+    }
+
+    async fn create(
+        &self,
+        user: AggregateRoot<TestUser>,
+    ) -> Result<Arc<AggregateRoot<TestUser>>, SignUpError> {
+        let mut users = self.state.users.lock().unwrap();
+        if users.contains_key(&user.entity_id()) || user.pending_events().is_empty() {
+            return Err(SignUpError::NotNew);
+        }
+        let stored = Arc::new(user);
+        users.insert(stored.entity_id(), stored.clone());
+        Ok(stored)
     }
 }
 

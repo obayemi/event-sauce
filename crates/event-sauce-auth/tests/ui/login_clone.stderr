@@ -1,0 +1,5 @@
+error[E0599]: no method named `clone` found for struct `Login<U, S>` in the current scope
+ --> tests/ui/login_clone.rs:4:12
+  |
+4 |     (login.clone(), login)
+  |            ^^^^^ method not found in `Login<U, event_sauce_auth::Done>`

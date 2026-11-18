@@ -83,7 +83,7 @@ fn backend<E: StdError + Send + Sync + 'static>(
 
 /// Short-lived state of logins in progress, kept apart from the event store.
 ///
-/// Pending second factors, consumed one-time-password steps and device-link
+/// Saved logins, consumed one-time-password steps and device-link
 /// challenges live here rather than in a session: a device link spans two
 /// devices, and replay protection is per user. Every entry expires, and a
 /// store is shared by every instance of the application, so a login can

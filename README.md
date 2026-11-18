@@ -743,7 +743,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 - **[PostgreSQL Production Setup](docs/postgres-production.md)** - Complete production deployment guide
 - **[Policies Guide](docs/policies.md)** - Cross-aggregate event orchestration, causation tracking, and error handling
 - **[Claims Guide](docs/claims.md)** - Cross-aggregate uniqueness constraints
-- **[Auth Guide](docs/auth.md)** - Credentials in the user aggregate, login methods, second factors, user cache and reset tokens
+- **[Auth Guide](docs/auth.md)** - Credentials in the user aggregate, login methods, multi-step logins, user cache and reset tokens
 - **[axum Guide](docs/axum.md)** - Correlation layer, extractors, `axum-login` sessions and the Postgres app builder
 - **[Audit Log Guide](docs/audit-log.md)** - Event log queries, actor tracking, and causation tracing
 - **[Architecture Overview](docs/architecture.md)** - System design and patterns

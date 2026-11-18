@@ -1,6 +1,7 @@
 //! # event-sauce-auth
 //!
-//! Pluggable credentials and login identity for event-sauce user aggregates.
+//! Pluggable credentials, typestate logins and login identity for
+//! event-sauce user aggregates.
 //!
 //! The library does not choose how users log in. A user aggregate holds an
 //! [`Identity`] generic over a [`Credentials`] type that the application
@@ -25,25 +26,26 @@
 //!   [`PasswordLogin`], [`FederatedLogin`] and [`PasswordOrFederatedLogin`]
 //!   ready-made. [`ClaimLocator`] finds the user holding a claim, and every event
 //!   store is one.
+//! - [`Logins`] starts a login: a [`FirstFactor`] pairs a [`LoginMethod`] with a
+//!   [`Route`], and the [`Login`] it yields moves through the states the
+//!   application names. Each state's [`Step`] is the only way out of it, and
+//!   [`Login::finish`] exists only for a [`Complete`] state, such as [`Done`]. It
+//!   yields an [`Authenticated`] user, the only thing a session is opened from, so
+//!   no session can open before the whole process ended.
 //! - [`LoginStore`] keeps the short-lived state of logins in progress, with
 //!   `PostgresLoginStore` (feature `postgres`) and `RedisLoginStore` (feature
 //!   `redis`) as the only implementations: state that is not shared between
-//!   instances would break a login in progress.
-//! - [`SecondFactor`] proves a login a second time, with `Totp` (feature `totp`)
-//!   ready-made, and [`TwoFactor`] holds back the logins that require one
-//!   until [`ClaimAuthenticator::complete`] finishes them. [`LoginStage`] is
-//!   what the authenticator asks at that point, [`NoSecondFactor`] being the
-//!   stage that never holds a login. [`PendingLogins`] keeps the held
-//!   [`PendingLogin`]s in a [`LoginStore`], each under a [`PendingLoginId`].
+//!   instances would break a login in progress. [`PendingLogins`] saves a
+//!   [`Login`] in it between two requests, under a [`PendingLoginId`].
+//! - `Totp`, `NeedTotp` and `TotpIfEnrolled` (feature `totp`) are the
+//!   ready-made TOTP step.
 //! - [`UserCache`] keeps loaded users, checked against the stored version on every
 //!   read, with `MokaUserCache` (feature `moka`) and `RedisUserCache` (feature
 //!   `redis`) ready-made. [`CachedUserLoader`] resolves the current user through it.
 //! - `ResetToken` and `ResetTokenHash` (feature `reset`) issue and check the
 //!   single-use tokens of a password reset, storing only the hash.
-//! - [`Authenticator`] turns an attempt into a [`LoginOutcome`], and
-//!   [`ClaimAuthenticator`] is the generic implementation over any event store.
-//! - [`Clock`] is the time source that second factors and pending logins read, with [`SystemClock`] and the
-//!   test double [`FixedClock`].
+//! - [`Clock`] is the time source that logins and TOTP read, with [`SystemClock`]
+//!   and the test double [`FixedClock`].
 //!
 //! # Features
 //!
@@ -52,7 +54,7 @@
 //! - `redis`: `RedisLoginStore` and `RedisUserCache`.
 //! - `moka`: `MokaUserCache`, an in-process user cache.
 //! - `reset`: `ResetToken` and `ResetTokenHash` for password resets.
-//! - `totp`: `Totp`, `HasTotp` and `TotpSecret` for TOTP second factors.
+//! - `totp`: `Totp`, `NeedTotp`, `TotpIfEnrolled`, `HasTotp` and `TotpSecret`.
 //!
 //! # Examples
 //!
@@ -68,9 +70,9 @@
 #![deny(clippy::all)]
 #![warn(clippy::pedantic)]
 
-mod authenticator;
 mod clock;
 mod credentials;
+mod login;
 mod login_id;
 mod login_method;
 mod login_store;
@@ -78,20 +80,23 @@ mod login_ttl;
 mod password_hasher;
 #[cfg(feature = "reset")]
 mod reset;
-mod second_factor;
 #[cfg(test)]
 mod test_support;
+#[cfg(feature = "totp")]
+mod totp;
 mod user;
 mod user_cache;
 
-pub use authenticator::{
-    AuthError, Authenticator, ClaimAuthenticator, CompleteError, LoginOutcome,
-};
 pub use clock::{Clock, FixedClock, SystemClock};
 pub use credentials::{
     Credentials, EmptyError, Federated, FederatedId, Fingerprint, HasFederated, HasPassword,
     Identity, IdentityError, LoginMethodError, NonEmpty, Password, PasswordHash, PasswordHashError,
     PasswordOrFederated, Provider,
+};
+pub use login::{
+    Advance, AlwaysDone, AuthError, Authenticated, Complete, Done, Entered, FinishError,
+    FirstFactor, Login, LoginState, Logins, PendingLoginError, PendingLoginId, PendingLogins,
+    ResumeError, Route, SignUpError, SingleFactor, Step,
 };
 pub use login_id::{Email, EmailError, LoginId, Username, UsernameError};
 pub use login_method::{
@@ -109,12 +114,8 @@ pub use password_hasher::Argon2Hasher;
 pub use password_hasher::{HashError, PasswordHasher};
 #[cfg(feature = "reset")]
 pub use reset::{ResetError, ResetToken, ResetTokenError, ResetTokenHash};
-pub use second_factor::{
-    HasSecondFactor, LoginStage, NoSecondFactor, PendingLogin, PendingLoginError, PendingLoginId,
-    PendingLogins, SecondFactor, TwoFactor, DEFAULT_PENDING_TTL,
-};
 #[cfg(feature = "totp")]
-pub use second_factor::{HasTotp, Totp, TotpSecret};
+pub use totp::{HasTotp, NeedTotp, Totp, TotpIfEnrolled, TotpOrDone, TotpSecret};
 pub use user::UserAggregate;
 #[cfg(feature = "moka")]
 pub use user_cache::MokaUserCache;

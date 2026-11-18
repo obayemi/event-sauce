@@ -1,0 +1,13 @@
+error[E0599]: the method `prove` exists for struct `Login<U, event_sauce_auth::Done>`, but its trait bounds were not satisfied
+ --> tests/ui/prove_a_complete_state.rs:4:19
+  |
+4 |     let _ = login.prove(&(), ()).await;
+  |                   ^^^^^ method cannot be called on `Login<U, event_sauce_auth::Done>` due to unsatisfied trait bounds
+  |
+ ::: src/login/state.rs
+  |
+  | pub struct Done;
+  | --------------- doesn't satisfy `event_sauce_auth::Done: event_sauce_auth::Step<U>`
+  |
+  = note: the following trait bounds were not satisfied:
+          `event_sauce_auth::Done: event_sauce_auth::Step<U>`

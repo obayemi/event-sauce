@@ -1,5 +1,5 @@
-//! `ClaimAuthenticator` against the in-memory event store and a real user
-//! aggregate whose claims come from its credentials.
+//! The first factor of a login against the in-memory event store and a real
+//! user aggregate whose claims come from its credentials.
 
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
@@ -9,9 +9,9 @@ use std::sync::{
 use argon2::Params;
 use async_trait::async_trait;
 use event_sauce_auth::{
-    Argon2Hasher, AuthError, Authenticator, ClaimAuthenticator, ClaimLocator, Credentials, Email,
-    FederatedId, FederatedLogin, HashError, Identity, LocateError, LoginId, LoginMethod,
-    LoginOutcome, Password, PasswordAttempt, PasswordHash, PasswordHasher, PasswordLogin,
+    AlwaysDone, Argon2Hasher, AuthError, ClaimLocator, Credentials, Done, Email, FederatedId,
+    FederatedLogin, FirstFactor, HashError, Identity, LocateError, Login, LoginId, LoginMethod,
+    Logins, Password, PasswordAttempt, PasswordHash, PasswordHasher, PasswordLogin,
     PasswordOrFederated, PasswordOrFederatedAttempt, PasswordOrFederatedLogin, Provider, Rejected,
     UserAggregate, VerifiedFederated,
 };
@@ -182,29 +182,30 @@ impl World {
             .unwrap();
     }
 
-    fn authenticator<M>(&self, method: M) -> ClaimAuthenticator<User, M, InMemoryEventStore>
+    async fn begin<M>(
+        &self,
+        method: M,
+        attempt: M::Attempt,
+    ) -> Result<Login<User, Done>, AuthError<M::Attempt>>
     where
         M: LoginMethod<UserCredentials>,
     {
-        ClaimAuthenticator::new(self.store.clone(), method)
+        Logins::<User>::new(self.store.clone())
+            .begin(&FirstFactor::new(method, AlwaysDone), attempt)
+            .await
     }
 
-    fn combined(
+    async fn combined(
         &self,
-    ) -> ClaimAuthenticator<User, PasswordOrFederatedLogin<Argon2Hasher>, InMemoryEventStore> {
-        self.authenticator(PasswordOrFederatedLogin::new(cheap_hasher()))
-    }
-}
-
-fn authenticated(outcome: LoginOutcome<User>) -> event_sauce_core::AggregateRoot<User> {
-    match outcome {
-        LoginOutcome::Authenticated(user) => user,
-        _ => panic!("expected an authenticated user"),
+        attempt: PasswordOrFederatedAttempt<Email>,
+    ) -> Result<Login<User, Done>, AuthError<PasswordOrFederatedAttempt<Email>>> {
+        self.begin(PasswordOrFederatedLogin::new(cheap_hasher()), attempt)
+            .await
     }
 }
 
 #[tokio::test]
-async fn the_right_password_authenticates_the_user_that_holds_the_login() {
+async fn the_right_password_logs_in_the_user_that_holds_the_login() {
     let world = World::new();
     let id = world
         .register(password_credentials("ada@example.com", "correct-horse").await)
@@ -213,15 +214,13 @@ async fn the_right_password_authenticates_the_user_that_holds_the_login() {
         .register(password_credentials("eve@example.com", "battery-staple").await)
         .await;
 
-    let outcome = world
-        .combined()
-        .authenticate(password_attempt("ADA@example.com", "correct-horse"))
+    let login = world
+        .combined(password_attempt("ADA@example.com", "correct-horse"))
         .await
         .unwrap();
 
-    let user = authenticated(outcome);
-    assert_eq!(user.entity_id(), id);
-    assert_eq!(user.version().as_i64(), 1);
+    assert_eq!(login.user().entity_id(), id);
+    assert_eq!(login.user().version().as_i64(), 1);
 }
 
 #[tokio::test]
@@ -232,8 +231,7 @@ async fn the_wrong_password_is_invalid_credentials() {
         .await;
 
     let error = world
-        .combined()
-        .authenticate(password_attempt("ada@example.com", "battery-staple"))
+        .combined(password_attempt("ada@example.com", "battery-staple"))
         .await
         .unwrap_err();
 
@@ -248,8 +246,7 @@ async fn an_unknown_login_hands_the_attempt_back() {
         .await;
 
     let error = world
-        .combined()
-        .authenticate(password_attempt("nobody@example.com", "correct-horse"))
+        .combined(password_attempt("nobody@example.com", "correct-horse"))
         .await
         .unwrap_err();
 
@@ -262,19 +259,15 @@ async fn an_unknown_login_hands_the_attempt_back() {
 }
 
 #[tokio::test]
-async fn a_linked_federated_identity_authenticates_the_user() {
+async fn a_linked_federated_identity_logs_in_the_user() {
     let world = World::new();
     let id = world
         .register(both_credentials("ada@example.com", "correct-horse", "g-1").await)
         .await;
 
-    let outcome = world
-        .combined()
-        .authenticate(federated_attempt("g-1"))
-        .await
-        .unwrap();
+    let login = world.combined(federated_attempt("g-1")).await.unwrap();
 
-    assert_eq!(authenticated(outcome).entity_id(), id);
+    assert_eq!(login.user().entity_id(), id);
 }
 
 #[tokio::test]
@@ -284,11 +277,7 @@ async fn an_unlinked_federated_identity_is_unknown() {
         .register(both_credentials("ada@example.com", "correct-horse", "g-1").await)
         .await;
 
-    let error = world
-        .combined()
-        .authenticate(federated_attempt("g-2"))
-        .await
-        .unwrap_err();
+    let error = world.combined(federated_attempt("g-2")).await.unwrap_err();
 
     assert!(matches!(
         error,
@@ -299,41 +288,42 @@ async fn an_unlinked_federated_identity_is_unknown() {
 }
 
 #[tokio::test]
-async fn a_password_only_app_authenticates_with_password_login_alone() {
+async fn a_password_only_app_logs_in_with_password_login_alone() {
     let world = World::new();
     let id = world
         .register(password_credentials("ada@example.com", "correct-horse").await)
         .await;
-    let authenticator = world.authenticator(PasswordLogin::new(cheap_hasher()));
 
-    let outcome = authenticator
-        .authenticate(PasswordAttempt::new(
-            email("ada@example.com"),
-            secret("correct-horse"),
-        ))
+    let login = world
+        .begin(
+            PasswordLogin::new(cheap_hasher()),
+            PasswordAttempt::new(email("ada@example.com"), secret("correct-horse")),
+        )
         .await
         .unwrap();
 
-    assert_eq!(authenticated(outcome).entity_id(), id);
+    assert_eq!(login.user().entity_id(), id);
 }
 
 #[tokio::test]
-async fn a_federated_only_app_authenticates_with_federated_login_alone() {
+async fn a_federated_only_app_logs_in_with_federated_login_alone() {
     let world = World::new();
     let id = world
         .register(both_credentials("ada@example.com", "pw", "g-1").await)
         .await;
-    let authenticator = world.authenticator(FederatedLogin);
 
-    let outcome = authenticator
-        .authenticate(VerifiedFederated {
-            id: google("g-1"),
-            email: None,
-        })
+    let login = world
+        .begin(
+            FederatedLogin,
+            VerifiedFederated {
+                id: google("g-1"),
+                email: None,
+            },
+        )
         .await
         .unwrap();
 
-    assert_eq!(authenticated(outcome).entity_id(), id);
+    assert_eq!(login.user().entity_id(), id);
 }
 
 #[tokio::test]
@@ -343,23 +333,14 @@ async fn an_inactive_user_is_refused_by_every_method() {
         .register(both_credentials("ada@example.com", "correct-horse", "g-1").await)
         .await;
     world.deactivate(id).await;
+    let spy = Spy::locating(id).accepting_anyone();
 
     let by_password = world
-        .combined()
-        .authenticate(password_attempt("ada@example.com", "correct-horse"))
+        .combined(password_attempt("ada@example.com", "correct-horse"))
         .await
         .unwrap_err();
-    let by_federation = world
-        .combined()
-        .authenticate(federated_attempt("g-1"))
-        .await
-        .unwrap_err();
-    let spy = Spy::locating(id).accepting_anyone();
-    let by_spy = world
-        .authenticator(spy.clone())
-        .authenticate(())
-        .await
-        .unwrap_err();
+    let by_federation = world.combined(federated_attempt("g-1")).await.unwrap_err();
+    let by_spy = world.begin(spy.clone(), ()).await.unwrap_err();
 
     assert!(matches!(by_password, AuthError::Inactive));
     assert!(matches!(by_federation, AuthError::Inactive));
@@ -368,22 +349,17 @@ async fn an_inactive_user_is_refused_by_every_method() {
 }
 
 #[tokio::test]
-async fn an_anonymous_user_is_accepted_only_by_a_method_that_allows_it() {
+async fn an_anonymous_user_logs_in_only_with_a_method_that_allows_it() {
     let world = World::new();
     let id = world.start_anonymous().await;
 
     let allowed = world
-        .authenticator(Spy::locating(id).accepting_anyone())
-        .authenticate(())
+        .begin(Spy::locating(id).accepting_anyone(), ())
         .await
         .unwrap();
-    let refused = world
-        .authenticator(Spy::locating(id))
-        .authenticate(())
-        .await
-        .unwrap_err();
+    let refused = world.begin(Spy::locating(id), ()).await.unwrap_err();
 
-    assert_eq!(authenticated(allowed).entity_id(), id);
+    assert_eq!(allowed.user().entity_id(), id);
     assert!(matches!(refused, AuthError::InvalidCredentials));
 }
 
@@ -392,11 +368,7 @@ async fn nobody_found_by_a_method_runs_its_unknown_hook_once() {
     let world = World::new();
     let spy = Spy::locating_nobody();
 
-    let error = world
-        .authenticator(spy.clone())
-        .authenticate(())
-        .await
-        .unwrap_err();
+    let error = world.begin(spy.clone(), ()).await.unwrap_err();
 
     assert!(matches!(error, AuthError::Unknown { attempt: () }));
     assert_eq!(spy.unknowns(), 1);
@@ -404,19 +376,32 @@ async fn nobody_found_by_a_method_runs_its_unknown_hook_once() {
 }
 
 #[tokio::test]
-async fn a_located_user_that_does_not_exist_is_a_store_error() {
+async fn a_located_user_that_does_not_exist_is_unknown() {
     let world = World::new();
+    let spy = Spy::locating(EntityId::new());
+
+    let error = world.begin(spy.clone(), ()).await.unwrap_err();
+
+    assert!(matches!(error, AuthError::Unknown { attempt: () }));
+    assert_eq!(spy.unknowns(), 1);
+}
+
+#[tokio::test]
+async fn a_hasher_failure_is_a_hash_error() {
+    let world = World::new();
+    world
+        .register(password_credentials("ada@example.com", "correct-horse").await)
+        .await;
 
     let error = world
-        .authenticator(Spy::locating(EntityId::new()))
-        .authenticate(())
+        .begin(
+            PasswordLogin::new(BrokenHasher),
+            PasswordAttempt::new(email("ada@example.com"), secret("correct-horse")),
+        )
         .await
         .unwrap_err();
 
-    match error {
-        AuthError::Store(error) => assert!(error.is_not_found()),
-        other => panic!("expected a store error, got {other:?}"),
-    }
+    assert!(matches!(error, AuthError::Hash(HashError(_))));
 }
 
 struct BrokenHasher;
@@ -430,25 +415,6 @@ impl PasswordHasher for BrokenHasher {
     async fn verify(&self, _: &SecretString, _: &PasswordHash) -> Result<bool, HashError> {
         Err(HashError("broken".into()))
     }
-}
-
-#[tokio::test]
-async fn a_hasher_failure_is_a_hash_error() {
-    let world = World::new();
-    world
-        .register(password_credentials("ada@example.com", "correct-horse").await)
-        .await;
-    let authenticator = world.authenticator(PasswordLogin::new(BrokenHasher));
-
-    let error = authenticator
-        .authenticate(PasswordAttempt::new(
-            email("ada@example.com"),
-            secret("correct-horse"),
-        ))
-        .await
-        .unwrap_err();
-
-    assert!(matches!(error, AuthError::Hash(HashError(_))));
 }
 
 #[tokio::test]
@@ -556,4 +522,59 @@ impl LoginMethod<UserCredentials> for Spy {
     async fn on_unknown(&self, _: &()) {
         self.unknown.fetch_add(1, Ordering::SeqCst);
     }
+}
+
+#[tokio::test]
+async fn a_single_factor_login_finishes_into_an_authenticated_user() {
+    let world = World::new();
+    let id = world
+        .register(password_credentials("ada@example.com", "correct-horse").await)
+        .await;
+
+    let authenticated = world
+        .combined(password_attempt("ada@example.com", "correct-horse"))
+        .await
+        .unwrap()
+        .finish()
+        .await
+        .unwrap();
+
+    assert_eq!(authenticated.user().entity_id(), id);
+}
+
+#[cfg(feature = "moka")]
+#[tokio::test]
+async fn a_shared_cache_serves_the_user_a_login_begins_with() {
+    use event_sauce_auth::{MokaUserCache, UserCache};
+    use event_sauce_core::{AggregateRoot, StoredVersion};
+
+    let world = World::new();
+    let id = world
+        .register(password_credentials("ada@example.com", "stored-password").await)
+        .await;
+    let cache = Arc::new(MokaUserCache::<User>::new(10));
+    let cached_copy = User {
+        id,
+        identity: Identity::Registered(
+            password_credentials("ada@example.com", "cached-password").await,
+        ),
+        active: true,
+    };
+    cache
+        .put(Arc::new(
+            AggregateRoot::restore(StoredVersion::FIRST, cached_copy).unwrap(),
+        ))
+        .await
+        .unwrap();
+    let logins = Logins::<User>::new(world.store.clone()).with_shared_cache(cache);
+    let first = FirstFactor::new(PasswordOrFederatedLogin::new(cheap_hasher()), AlwaysDone);
+
+    let served = logins
+        .begin(
+            &first,
+            password_attempt("ada@example.com", "cached-password"),
+        )
+        .await;
+
+    assert_eq!(served.unwrap().user().entity_id(), id);
 }

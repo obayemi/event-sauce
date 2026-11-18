@@ -1,4 +1,4 @@
-//! The [`Clock`] that second factors and pending logins read the time from.
+//! The [`Clock`] that logins and TOTP read the time from.
 
 use std::fmt::Debug;
 

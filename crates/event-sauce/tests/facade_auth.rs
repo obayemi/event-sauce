@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use event_sauce::auth::{
-    Argon2Hasher, Authenticator, ClaimAuthenticator, Email, Identity, LoginId, Password,
+    AlwaysDone, Argon2Hasher, Email, FirstFactor, Identity, LoginId, Logins, Password,
     PasswordHash, PasswordHasher, PasswordLogin, UserAggregate,
 };
 use event_sauce::memory::InMemoryEventStore;
@@ -93,7 +93,7 @@ async fn a_user_aggregate_registers_through_the_facade_alone() {
 }
 
 #[tokio::test]
-async fn the_facade_authenticator_logs_a_registered_user_in() {
+async fn the_facade_logs_a_registered_user_in() {
     let store = Arc::new(InMemoryEventStore::builder().build());
     let login = Email::parse("ada@example.com").unwrap();
     let mut member =
@@ -103,19 +103,21 @@ async fn the_facade_authenticator_logs_a_registered_user_in() {
         .save(&mut member)
         .await
         .unwrap();
-    let authenticator =
-        ClaimAuthenticator::<Member, _, _>::new(store, PasswordLogin::new(hasher()));
+    let first_factor = FirstFactor::new(PasswordLogin::new(hasher()), AlwaysDone);
     let attempt = event_sauce::auth::PasswordAttempt::new(
         login,
         secrecy::SecretString::from("correct-horse"),
     );
 
-    let outcome = authenticator.authenticate(attempt).await.unwrap();
+    let authenticated = Logins::<Member>::new(store)
+        .begin(&first_factor, attempt)
+        .await
+        .unwrap()
+        .finish()
+        .await
+        .unwrap();
 
-    assert!(matches!(
-        outcome,
-        event_sauce::auth::LoginOutcome::Authenticated(_)
-    ));
+    assert_eq!(authenticated.user().entity_id(), member.entity_id());
 }
 
 #[tokio::test]

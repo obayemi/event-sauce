@@ -225,11 +225,22 @@ explicitly rather than gated behind a major version bump.
   aggregates. Its main types are `Identity`, `Credentials` (`Password`,
   `Federated`, `PasswordOrFederated`), `LoginId` (`Email`, `Username`),
   `LoginMethod` (`PasswordLogin`, `FederatedLogin`,
-  `PasswordOrFederatedLogin`), `ClaimAuthenticator`, `PasswordHasher`,
-  `LoginStore` and `CachedUserLoader`. `LoginTtl` is the validated time to live of every login store and user
+  `PasswordOrFederatedLogin`), `Logins`, `PasswordHasher`,
+  `LoginStore` and `CachedUserLoader`. Logins are typestate: `Logins::begin` runs a
+  `FirstFactor` (a `LoginMethod` and a `Route`), and the `Login<U, S>` it
+  yields moves through states the app names, each state's `Step` being the
+  only way out of it. `Login::finish`, which exists only for a `Complete`
+  state such as `Done`, yields the only value a session is opened from, an
+  `Authenticated<U>` with no public constructor, so no session can open
+  before the whole process ended. `PendingLogins` saves a login between two
+  requests (single use, checked against the state tag, the user's active flag
+  and its session fingerprint), `Logins::sign_up` commits a new user at its
+  initial version and logs it in, and behind `totp`, `Totp`, `NeedTotp` and
+  `TotpIfEnrolled` are the ready-made TOTP step. `UserAggregate` requires
+  `'static`. `Rejected::Unavailable` and `AuthError::Unavailable` report a
+  verifier that could not check at all. `LoginTtl` is the validated time to live of every login store and user
   cache entry: never zero, at most 366 days, with infallible constants such
-  as `LoginTtl::FIVE_MINUTES`. `DEFAULT_PENDING_TTL` (five minutes) is the
-  default lifetime of a login waiting for its second factor. `Federated` and `PasswordOrFederated` unlink one identity with
+  as `LoginTtl::FIVE_MINUTES`. `Federated` and `PasswordOrFederated` unlink one identity with
   `unlink(&FederatedId)` or every identity of a provider with
   `unlink_provider(&Provider)`. `Credentials::fingerprint` feeds a
   `Fingerprint` whose `field` and `str_field` length-prefix every field, so
@@ -509,7 +520,7 @@ explicitly rather than gated behind a major version bump.
   is replaced by its maintained fork, `pastey`. Callers of
   `define_events!`/`command_handler!` are unaffected either way, since
   neither was ever a direct dependency.
-- `ClaimAuthenticator`, `CachedUserLoader`, `EventSauceBackend` and the app
+- `Logins`, `CachedUserLoader`, `EventSauceBackend` and the app
   builder ask for fewer bounds: `U::Event`, `U` itself and, on
   construction, the login method no longer need `Serialize +
   DeserializeOwned` or `LoginMethod` spelled out, since the aggregate

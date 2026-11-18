@@ -28,6 +28,19 @@ pub enum Rejected {
     /// The attempt could not be checked because the login store failed.
     #[error(transparent)]
     LoginStore(#[from] LoginStoreError),
+    /// The attempt could not be checked at all: a mailer or a link store
+    /// the verifier depends on failed.
+    #[error("the attempt could not be checked")]
+    Unavailable(#[source] Box<dyn std::error::Error + Send + Sync>),
+}
+
+impl Rejected {
+    /// A rejection for a verifier that could not check the attempt, wrapping
+    /// what went wrong.
+    #[must_use]
+    pub fn unavailable(error: impl std::error::Error + Send + Sync + 'static) -> Self {
+        Self::Unavailable(Box::new(error))
+    }
 }
 
 /// Finds the user holding a claim.

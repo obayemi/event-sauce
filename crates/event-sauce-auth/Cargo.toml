@@ -52,9 +52,10 @@ tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time
 testcontainers.workspace = true
 testcontainers-modules = { workspace = true, features = ["postgres", "redis"] }
 tokio-test.workspace = true
+trybuild.workspace = true
 
 [[test]]
-name = "claim_authenticator"
+name = "first_factor"
 required-features = ["argon2"]
 
 [[test]]
@@ -66,7 +67,7 @@ name = "redis_login_store"
 required-features = ["redis"]
 
 [[test]]
-name = "second_factor"
+name = "login"
 required-features = ["argon2", "totp"]
 
 [[test]]

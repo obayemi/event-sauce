@@ -23,3 +23,12 @@ fn a_login_store_failure_converts_into_a_rejection_that_keeps_its_cause() {
         Rejected::LoginStore(LoginStoreError::Backend { .. })
     ));
 }
+
+#[test]
+fn an_unavailable_verifier_keeps_its_cause() {
+    let rejected = Rejected::unavailable(std::io::Error::other("mailer down"));
+
+    assert!(
+        matches!(rejected, Rejected::Unavailable(ref cause) if cause.to_string() == "mailer down")
+    );
+}

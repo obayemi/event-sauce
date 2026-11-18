@@ -218,8 +218,9 @@ Pluggable authentication for user aggregates, behind the facade's `auth`
 feature (see [auth.md](auth.md)):
 
 - **Identity / Credentials** - The credentials of a user live inside its aggregate
-- **LoginMethod / Authenticator** - Turn a submitted attempt into an authenticated user, locating the user through `EventStore::resolve_claim`
-- **SecondFactor / LoginStore** - Multi-step logins, with Postgres and Redis login stores
+- **LoginMethod / Logins** - Start a login from a submitted attempt, locating the user through `EventStore::resolve_claim`
+- **Login / Step / Authenticated** - Typestate multi-step logins: only a login that reached a `Complete` state yields the `Authenticated` user a session needs
+- **LoginStore** - Saves logins between two requests, with Postgres and Redis login stores
 - **UserCache** - Version-checked cache of loaded users (Moka, Redis)
 
 ### event-sauce-axum
