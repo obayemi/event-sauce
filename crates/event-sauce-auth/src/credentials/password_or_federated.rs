@@ -87,6 +87,17 @@ impl<L: LoginId> PasswordOrFederated<L> {
         }
     }
 
+    /// Unlinks exactly the identity `id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LoginMethodError::NotLinked`] when `id` is not linked, and
+    /// [`LoginMethodError::LastLoginMethod`] when that would leave no way to
+    /// log in.
+    pub fn unlink(&mut self, id: &FederatedId) -> Result<(), LoginMethodError> {
+        self.unlink_with(|links| links.unlink(id))
+    }
+
     /// Unlinks every identity at `provider`.
     ///
     /// # Errors
@@ -94,11 +105,18 @@ impl<L: LoginId> PasswordOrFederated<L> {
     /// Returns [`LoginMethodError::NotLinked`] when nothing is linked at
     /// `provider`, and [`LoginMethodError::LastLoginMethod`] when that
     /// would leave no way to log in.
-    pub fn unlink(&mut self, provider: &Provider) -> Result<(), LoginMethodError> {
+    pub fn unlink_provider(&mut self, provider: &Provider) -> Result<(), LoginMethodError> {
+        self.unlink_with(|links| links.unlink_provider(provider))
+    }
+
+    fn unlink_with(
+        &mut self,
+        unlink: impl FnOnce(&mut Federated) -> Result<(), LoginMethodError>,
+    ) -> Result<(), LoginMethodError> {
         match self {
             Self::Password(_) => Err(LoginMethodError::NotLinked),
-            Self::Federated(links) => links.unlink(provider),
-            Self::Both(password, links) => match links.unlink(provider) {
+            Self::Federated(links) => unlink(links),
+            Self::Both(password, links) => match unlink(links) {
                 Err(LoginMethodError::LastLoginMethod) => {
                     *self = Self::Password(password.clone());
                     Ok(())

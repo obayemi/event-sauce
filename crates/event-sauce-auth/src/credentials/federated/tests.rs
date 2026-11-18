@@ -73,29 +73,61 @@ fn link_accepts_another_subject_of_a_known_provider() {
 }
 
 #[test]
-fn unlink_removes_every_link_of_the_provider() {
+fn unlink_removes_exactly_the_given_link() {
     let mut federated = Federated::new(google("g1"));
     federated.link(google("g2")).unwrap();
     federated.link(github("h1")).unwrap();
-    federated.unlink(&Provider::GOOGLE).unwrap();
-    assert_eq!(federated.links(), [github("h1")]);
+    federated.unlink(&google("g1")).unwrap();
+    assert_eq!(federated.links(), [google("g2"), github("h1")]);
 }
 
 #[test]
 fn unlink_refuses_to_remove_the_last_way_to_log_in() {
     let mut federated = Federated::new(google("g1"));
     assert_eq!(
-        federated.unlink(&Provider::GOOGLE),
+        federated.unlink(&google("g1")),
         Err(LoginMethodError::LastLoginMethod)
     );
     assert_eq!(federated.links(), [google("g1")]);
 }
 
 #[test]
-fn unlink_refuses_a_provider_that_is_not_linked() {
+fn unlink_refuses_a_link_that_is_not_linked() {
+    let mut federated = Federated::new(google("g1"));
+    federated.link(github("h1")).unwrap();
+    for stranger in [google("g2"), github("h2"), id(&Provider::APPLE, "g1")] {
+        assert_eq!(
+            federated.unlink(&stranger),
+            Err(LoginMethodError::NotLinked)
+        );
+    }
+    assert_eq!(federated.links(), [google("g1"), github("h1")]);
+}
+
+#[test]
+fn unlink_provider_removes_every_link_of_the_provider() {
+    let mut federated = Federated::new(google("g1"));
+    federated.link(google("g2")).unwrap();
+    federated.link(github("h1")).unwrap();
+    federated.unlink_provider(&Provider::GOOGLE).unwrap();
+    assert_eq!(federated.links(), [github("h1")]);
+}
+
+#[test]
+fn unlink_provider_refuses_to_remove_the_last_way_to_log_in() {
     let mut federated = Federated::new(google("g1"));
     assert_eq!(
-        federated.unlink(&Provider::GITHUB),
+        federated.unlink_provider(&Provider::GOOGLE),
+        Err(LoginMethodError::LastLoginMethod)
+    );
+    assert_eq!(federated.links(), [google("g1")]);
+}
+
+#[test]
+fn unlink_provider_refuses_a_provider_that_is_not_linked() {
+    let mut federated = Federated::new(google("g1"));
+    assert_eq!(
+        federated.unlink_provider(&Provider::GITHUB),
         Err(LoginMethodError::NotLinked)
     );
 }
@@ -124,7 +156,7 @@ fn fingerprint_changes_when_a_link_is_added_or_removed() {
     let mut two = one.clone();
     two.link(github("h1")).unwrap();
     assert_ne!(fingerprint_of(&one), fingerprint_of(&two));
-    two.unlink(&Provider::GITHUB).unwrap();
+    two.unlink_provider(&Provider::GITHUB).unwrap();
     assert_eq!(fingerprint_of(&one), fingerprint_of(&two));
 }
 

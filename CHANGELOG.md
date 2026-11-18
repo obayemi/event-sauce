@@ -225,8 +225,10 @@ explicitly rather than gated behind a major version bump.
   `PasswordOrFederatedLogin`), `ClaimAuthenticator`, `PasswordHasher`,
   `LoginStore` and `CachedUserLoader`. `DEFAULT_PENDING_TTL` (five
   minutes) is the default lifetime of a login waiting for its second
-  factor. The `argon2` and `postgres` features are on by default; `moka`, `redis`, `reset` and `totp` are
-  optional.
+  factor. `Federated` and `PasswordOrFederated` unlink one identity with
+  `unlink(&FederatedId)` or every identity of a provider with
+  `unlink_provider(&Provider)`. The `argon2` and `postgres` features are
+  on by default; `moka`, `redis`, `reset` and `totp` are optional.
 
 - `event-sauce-axum` crate. `CorrelationLayer` reads `x-request-id` (or the
   header chosen with `header(name)`), keeps it when it is a valid

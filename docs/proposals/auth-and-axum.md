@@ -188,11 +188,12 @@ its `define_events!` apply closures and `@validate` blocks.
 | `Identity::session_fingerprint() -> [u8; 32]` | SHA-256 over `C::fingerprint`. Any credential change invalidates other sessions. |
 | `Password::set_hash(hash)`, `Password::change_login(l)` | Always allowed; the claim follows on commit. |
 | `Federated::link(id)` | Errors with `AlreadyLinked`. |
-| `Federated::unlink(&provider)` | Errors with `NotLinked` when no link of that provider exists, and with `LastLoginMethod` when it is the only link. |
+| `Federated::unlink(&id)` | Removes exactly that link. Errors with `NotLinked` when it is not linked, and with `LastLoginMethod` when it is the only link. |
+| `Federated::unlink_provider(&provider)` | Removes every link at that provider. Errors with `NotLinked` when none exists, and with `LastLoginMethod` when it would remove every link. |
 | `PasswordOrFederated::set_password(p)` | Adds or replaces the password; `Federated` becomes `Both`. |
 | `PasswordOrFederated::remove_password()` | Errors with `LastLoginMethod` unless federated links remain. |
 | `PasswordOrFederated::link(id)` | Adds a link; `Password` becomes `Both`. |
-| `PasswordOrFederated::unlink(&provider)` | Errors with `NotLinked` when no link of that provider exists, and with `LastLoginMethod` if it removes the last way to log in. |
+| `PasswordOrFederated::unlink(&id)` / `unlink_provider(&provider)` | Same rules as on `Federated`; `LastLoginMethod` when removing would leave no way to log in, except that a `Both` user falls back to the password. |
 
 The rules fail with `LoginMethodError`, whose variants are
 `AlreadyLinked`, `NotLinked` and `LastLoginMethod`. `Identity::register`

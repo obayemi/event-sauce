@@ -117,9 +117,9 @@ blocks:
 | `Identity::credentials()` | `None` when anonymous |
 | `Identity::session_fingerprint()` | SHA-256 over the credentials; any change invalidates other sessions |
 | `Password::set_hash(hash)`, `Password::change_login(id)` | always allowed; the claim follows on commit |
-| `Federated::link(id)` / `unlink(&provider)` | `AlreadyLinked`, `NotLinked`, `LastLoginMethod` |
+| `Federated::link(id)` / `unlink(&id)` / `unlink_provider(&provider)` | `AlreadyLinked`, `NotLinked`, `LastLoginMethod` |
 | `PasswordOrFederated::set_password` / `remove_password` | `remove_password` fails with `LastLoginMethod` unless links remain |
-| `PasswordOrFederated::link` / `unlink` | `unlink` cannot remove the last way to log in |
+| `PasswordOrFederated::link` / `unlink` / `unlink_provider` | `unlink` and `unlink_provider` cannot remove the last way to log in |
 
 The rules fail with `LoginMethodError` and `IdentityError`. Each type
 exposes only what makes sense for it: `Password<L>` has no

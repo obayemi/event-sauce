@@ -108,9 +108,9 @@ impl FederatedId {
 ///
 /// let mut federated = Federated::new(FederatedId::new(Provider::GOOGLE, "g-1"));
 /// federated.link(FederatedId::new(Provider::GITHUB, "h-1"))?;
-/// federated.unlink(&Provider::GOOGLE)?;
+/// federated.unlink(&FederatedId::new(Provider::GOOGLE, "g-1"))?;
 /// assert_eq!(
-///     federated.unlink(&Provider::GITHUB),
+///     federated.unlink_provider(&Provider::GITHUB),
 ///     Err(LoginMethodError::LastLoginMethod)
 /// );
 /// # Ok::<(), LoginMethodError>(())
@@ -145,6 +145,16 @@ impl Federated {
         }
     }
 
+    /// Removes exactly the link `id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LoginMethodError::NotLinked`] when `id` is not linked, and
+    /// [`LoginMethodError::LastLoginMethod`] when it is the only link.
+    pub fn unlink(&mut self, id: &FederatedId) -> Result<(), LoginMethodError> {
+        self.remove_where(|link| link == id)
+    }
+
     /// Removes every identity linked at `provider`.
     ///
     /// # Errors
@@ -152,13 +162,20 @@ impl Federated {
     /// Returns [`LoginMethodError::NotLinked`] when nothing is linked at
     /// `provider`, and [`LoginMethodError::LastLoginMethod`] when that
     /// would remove every link.
-    pub fn unlink(&mut self, provider: &Provider) -> Result<(), LoginMethodError> {
-        if self.0.iter().all(|id| id.provider() != provider) {
+    pub fn unlink_provider(&mut self, provider: &Provider) -> Result<(), LoginMethodError> {
+        self.remove_where(|link| link.provider() == provider)
+    }
+
+    fn remove_where(
+        &mut self,
+        matches: impl Fn(&FederatedId) -> bool,
+    ) -> Result<(), LoginMethodError> {
+        if !self.0.iter().any(&matches) {
             return Err(LoginMethodError::NotLinked);
         }
         self.0 = self
             .0
-            .retained(|id| id.provider() != provider)
+            .retained(|link| !matches(link))
             .ok_or(LoginMethodError::LastLoginMethod)?;
         Ok(())
     }

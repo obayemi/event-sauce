@@ -110,17 +110,17 @@ fn link_refuses_an_identity_already_linked() {
 }
 
 #[test]
-fn unlink_removes_one_of_several_links() {
+fn unlink_removes_exactly_the_given_link() {
     let mut credentials = federated_only();
     credentials.link(github()).unwrap();
-    credentials.unlink(&Provider::GOOGLE).unwrap();
+    credentials.unlink(&google()).unwrap();
     assert_eq!(credentials, Creds::Federated(Federated::new(github())));
 }
 
 #[test]
 fn unlink_of_the_last_link_falls_back_to_the_password() {
     let mut credentials = both();
-    credentials.unlink(&Provider::GOOGLE).unwrap();
+    credentials.unlink(&google()).unwrap();
     assert_eq!(credentials, password_only());
 }
 
@@ -128,17 +128,52 @@ fn unlink_of_the_last_link_falls_back_to_the_password() {
 fn unlink_of_the_last_link_without_a_password_is_refused() {
     let mut credentials = federated_only();
     assert_eq!(
-        credentials.unlink(&Provider::GOOGLE),
+        credentials.unlink(&google()),
         Err(LoginMethodError::LastLoginMethod)
     );
     assert_eq!(credentials, federated_only());
 }
 
 #[test]
-fn unlink_of_an_unknown_provider_is_refused() {
+fn unlink_of_an_unknown_link_is_refused() {
     for mut credentials in [password_only(), federated_only(), both()] {
         assert_eq!(
-            credentials.unlink(&Provider::GITHUB),
+            credentials.unlink(&github()),
+            Err(LoginMethodError::NotLinked)
+        );
+    }
+}
+
+#[test]
+fn unlink_provider_removes_one_of_several_links() {
+    let mut credentials = federated_only();
+    credentials.link(github()).unwrap();
+    credentials.unlink_provider(&Provider::GOOGLE).unwrap();
+    assert_eq!(credentials, Creds::Federated(Federated::new(github())));
+}
+
+#[test]
+fn unlink_provider_of_the_last_link_falls_back_to_the_password() {
+    let mut credentials = both();
+    credentials.unlink_provider(&Provider::GOOGLE).unwrap();
+    assert_eq!(credentials, password_only());
+}
+
+#[test]
+fn unlink_provider_of_the_last_link_without_a_password_is_refused() {
+    let mut credentials = federated_only();
+    assert_eq!(
+        credentials.unlink_provider(&Provider::GOOGLE),
+        Err(LoginMethodError::LastLoginMethod)
+    );
+    assert_eq!(credentials, federated_only());
+}
+
+#[test]
+fn unlink_provider_of_an_unknown_provider_is_refused() {
+    for mut credentials in [password_only(), federated_only(), both()] {
+        assert_eq!(
+            credentials.unlink_provider(&Provider::GITHUB),
             Err(LoginMethodError::NotLinked)
         );
     }
