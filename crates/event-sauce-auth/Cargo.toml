@@ -38,6 +38,7 @@ sha2.workspace = true
 sqlx = { workspace = true, optional = true }
 subtle = { workspace = true, optional = true }
 thiserror.workspace = true
+tokio = { workspace = true, features = ["rt", "sync"] }
 totp-rs = { workspace = true, optional = true }
 tracing.workspace = true
 uuid.workspace = true

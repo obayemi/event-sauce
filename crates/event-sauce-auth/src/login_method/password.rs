@@ -1,10 +1,9 @@
 //! Password login: [`PasswordAttempt`] and [`PasswordLogin`].
 
-use std::sync::OnceLock;
-
 use async_trait::async_trait;
 use event_sauce_core::EntityId;
 use secrecy::SecretString;
+use tokio::sync::OnceCell;
 
 use crate::{
     ClaimLocator, HasPassword, HashError, Identity, LocateError, LoginId, LoginMethod, Password,
@@ -50,7 +49,7 @@ impl<L: LoginId> PasswordAttempt<L> {
 /// # tokio_test::block_on(async {
 /// let method = PasswordLogin::new(event_sauce_auth::Argon2Hasher::default());
 /// let secret = SecretString::from("correct horse");
-/// let hash = event_sauce_auth::Argon2Hasher::default().hash(&secret)?;
+/// let hash = event_sauce_auth::Argon2Hasher::default().hash(&secret).await?;
 /// let identity = Identity::Registered(Password::new(Email::parse("ada@example.com")?, hash));
 /// let attempt = PasswordAttempt::new(Email::parse("ada@example.com")?, secret);
 /// assert!(method.verify(&identity, &attempt).await.is_ok());
@@ -60,7 +59,7 @@ impl<L: LoginId> PasswordAttempt<L> {
 #[derive(Debug)]
 pub struct PasswordLogin<H> {
     hasher: H,
-    dummy: OnceLock<Option<PasswordHash>>,
+    dummy: OnceCell<Option<PasswordHash>>,
 }
 
 impl<H: PasswordHasher> PasswordLogin<H> {
@@ -69,16 +68,22 @@ impl<H: PasswordHasher> PasswordLogin<H> {
     pub fn new(hasher: H) -> Self {
         Self {
             hasher,
-            dummy: OnceLock::new(),
+            dummy: OnceCell::new(),
         }
     }
 
-    fn equalise_timing(&self, password: &SecretString) {
+    async fn equalise_timing(&self, password: &SecretString) {
         let dummy = self
             .dummy
-            .get_or_init(|| self.hasher.hash(&SecretString::from(DUMMY_PASSWORD)).ok());
+            .get_or_init(|| async {
+                self.hasher
+                    .hash(&SecretString::from(DUMMY_PASSWORD))
+                    .await
+                    .ok()
+            })
+            .await;
         if let Some(dummy) = dummy {
-            let _: Result<bool, HashError> = self.hasher.verify(password, dummy);
+            let _: Result<bool, HashError> = self.hasher.verify(password, dummy).await;
         }
     }
 }
@@ -111,10 +116,10 @@ where
             .and_then(HasPassword::password)
             .map(Password::hash);
         let Some(hash) = stored else {
-            self.equalise_timing(&attempt.password);
+            self.equalise_timing(&attempt.password).await;
             return Err(Rejected::Mismatch);
         };
-        if self.hasher.verify(&attempt.password, hash)? {
+        if self.hasher.verify(&attempt.password, hash).await? {
             Ok(())
         } else {
             Err(Rejected::Mismatch)
@@ -122,7 +127,7 @@ where
     }
 
     async fn on_unknown(&self, attempt: &Self::Attempt) {
-        self.equalise_timing(&attempt.password);
+        self.equalise_timing(&attempt.password).await;
     }
 }
 

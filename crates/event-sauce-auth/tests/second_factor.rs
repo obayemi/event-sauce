@@ -220,7 +220,7 @@ impl World {
     }
 
     async fn register(&self, login: &str, enrolled: bool) -> EntityId {
-        let hash = cheap_hasher().hash(&secret("correct-horse")).unwrap();
+        let hash = cheap_hasher().hash(&secret("correct-horse")).await.unwrap();
         let credentials = Secured {
             password: Password::new(Email::parse(login).unwrap(), hash),
             totp: enrolled.then(totp_secret),

@@ -119,13 +119,13 @@ fn google(subject: &str) -> FederatedId {
     FederatedId::new(Provider::GOOGLE, subject)
 }
 
-fn password_credentials(login: &str, password: &str) -> UserCredentials {
-    let hash = cheap_hasher().hash(&secret(password)).unwrap();
+async fn password_credentials(login: &str, password: &str) -> UserCredentials {
+    let hash = cheap_hasher().hash(&secret(password)).await.unwrap();
     PasswordOrFederated::Password(Password::new(email(login), hash))
 }
 
-fn both_credentials(login: &str, password: &str, subject: &str) -> UserCredentials {
-    let mut credentials = password_credentials(login, password);
+async fn both_credentials(login: &str, password: &str, subject: &str) -> UserCredentials {
+    let mut credentials = password_credentials(login, password).await;
     credentials.link(google(subject)).unwrap();
     credentials
 }
@@ -207,10 +207,10 @@ fn authenticated(outcome: LoginOutcome<User>) -> event_sauce_core::AggregateRoot
 async fn the_right_password_authenticates_the_user_that_holds_the_login() {
     let world = World::new();
     let id = world
-        .register(password_credentials("ada@example.com", "correct-horse"))
+        .register(password_credentials("ada@example.com", "correct-horse").await)
         .await;
     world
-        .register(password_credentials("eve@example.com", "battery-staple"))
+        .register(password_credentials("eve@example.com", "battery-staple").await)
         .await;
 
     let outcome = world
@@ -228,7 +228,7 @@ async fn the_right_password_authenticates_the_user_that_holds_the_login() {
 async fn the_wrong_password_is_invalid_credentials() {
     let world = World::new();
     world
-        .register(password_credentials("ada@example.com", "correct-horse"))
+        .register(password_credentials("ada@example.com", "correct-horse").await)
         .await;
 
     let error = world
@@ -244,7 +244,7 @@ async fn the_wrong_password_is_invalid_credentials() {
 async fn an_unknown_login_hands_the_attempt_back() {
     let world = World::new();
     world
-        .register(password_credentials("ada@example.com", "correct-horse"))
+        .register(password_credentials("ada@example.com", "correct-horse").await)
         .await;
 
     let error = world
@@ -265,7 +265,7 @@ async fn an_unknown_login_hands_the_attempt_back() {
 async fn a_linked_federated_identity_authenticates_the_user() {
     let world = World::new();
     let id = world
-        .register(both_credentials("ada@example.com", "correct-horse", "g-1"))
+        .register(both_credentials("ada@example.com", "correct-horse", "g-1").await)
         .await;
 
     let outcome = world
@@ -281,7 +281,7 @@ async fn a_linked_federated_identity_authenticates_the_user() {
 async fn an_unlinked_federated_identity_is_unknown() {
     let world = World::new();
     world
-        .register(both_credentials("ada@example.com", "correct-horse", "g-1"))
+        .register(both_credentials("ada@example.com", "correct-horse", "g-1").await)
         .await;
 
     let error = world
@@ -302,7 +302,7 @@ async fn an_unlinked_federated_identity_is_unknown() {
 async fn a_password_only_app_authenticates_with_password_login_alone() {
     let world = World::new();
     let id = world
-        .register(password_credentials("ada@example.com", "correct-horse"))
+        .register(password_credentials("ada@example.com", "correct-horse").await)
         .await;
     let authenticator = world.authenticator(PasswordLogin::new(cheap_hasher()));
 
@@ -321,7 +321,7 @@ async fn a_password_only_app_authenticates_with_password_login_alone() {
 async fn a_federated_only_app_authenticates_with_federated_login_alone() {
     let world = World::new();
     let id = world
-        .register(both_credentials("ada@example.com", "pw", "g-1"))
+        .register(both_credentials("ada@example.com", "pw", "g-1").await)
         .await;
     let authenticator = world.authenticator(FederatedLogin);
 
@@ -340,7 +340,7 @@ async fn a_federated_only_app_authenticates_with_federated_login_alone() {
 async fn an_inactive_user_is_refused_by_every_method() {
     let world = World::new();
     let id = world
-        .register(both_credentials("ada@example.com", "correct-horse", "g-1"))
+        .register(both_credentials("ada@example.com", "correct-horse", "g-1").await)
         .await;
     world.deactivate(id).await;
 
@@ -421,12 +421,13 @@ async fn a_located_user_that_does_not_exist_is_a_store_error() {
 
 struct BrokenHasher;
 
+#[async_trait]
 impl PasswordHasher for BrokenHasher {
-    fn hash(&self, _: &SecretString) -> Result<PasswordHash, HashError> {
+    async fn hash(&self, _: &SecretString) -> Result<PasswordHash, HashError> {
         Err(HashError("broken".into()))
     }
 
-    fn verify(&self, _: &SecretString, _: &PasswordHash) -> Result<bool, HashError> {
+    async fn verify(&self, _: &SecretString, _: &PasswordHash) -> Result<bool, HashError> {
         Err(HashError("broken".into()))
     }
 }
@@ -435,7 +436,7 @@ impl PasswordHasher for BrokenHasher {
 async fn a_hasher_failure_is_a_hash_error() {
     let world = World::new();
     world
-        .register(password_credentials("ada@example.com", "correct-horse"))
+        .register(password_credentials("ada@example.com", "correct-horse").await)
         .await;
     let authenticator = world.authenticator(PasswordLogin::new(BrokenHasher));
 
@@ -454,10 +455,11 @@ async fn a_hasher_failure_is_a_hash_error() {
 async fn a_login_is_unique_across_users() {
     let world = World::new();
     world
-        .register(password_credentials("ada@example.com", "correct-horse"))
+        .register(password_credentials("ada@example.com", "correct-horse").await)
         .await;
 
-    let mut duplicate = User::register(password_credentials("ADA@example.com", "other")).unwrap();
+    let mut duplicate =
+        User::register(password_credentials("ADA@example.com", "other").await).unwrap();
     let error = world
         .store
         .repository::<User>()
@@ -472,7 +474,7 @@ async fn a_login_is_unique_across_users() {
 async fn the_store_resolves_the_claims_the_credentials_declare() {
     let world = World::new();
     let id = world
-        .register(both_credentials("ada@example.com", "correct-horse", "g-1"))
+        .register(both_credentials("ada@example.com", "correct-horse", "g-1").await)
         .await;
 
     let by_login = world

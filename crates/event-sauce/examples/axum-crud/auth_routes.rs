@@ -43,7 +43,7 @@ pub async fn register(
     Json(form): Json<Registration>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let email = Email::parse(&form.email)?;
-    let hash = hash_password(&hasher, form.password)?;
+    let hash = hash_password(&hasher, form.password).await?;
     let mut member = Member::join(form.nickname, Password::new(email, hash))?;
     members.save(&mut member).await?;
     Ok((
@@ -77,7 +77,7 @@ pub async fn change_password(
     member: CurrentUser<Backend>,
     Json(form): Json<NewPassword>,
 ) -> Result<StatusCode, ApiError> {
-    let hash = hash_password(&hasher, form.password)?;
+    let hash = hash_password(&hasher, form.password).await?;
     members
         .modify(member.entity_id(), |member| member.change_password(hash))
         .await?;
@@ -92,7 +92,7 @@ pub async fn me(member: CurrentUser<Backend>) -> Json<Value> {
     }))
 }
 
-fn hash_password(hasher: &Argon2Hasher, password: String) -> Result<PasswordHash, ApiError> {
+async fn hash_password(hasher: &Argon2Hasher, password: String) -> Result<PasswordHash, ApiError> {
     check_password(&password)?;
-    Ok(hasher.hash(&SecretString::from(password))?)
+    Ok(hasher.hash(&SecretString::from(password)).await?)
 }

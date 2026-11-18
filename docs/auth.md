@@ -242,12 +242,15 @@ The outcome is `LoginOutcome::Authenticated(root)` or
 
 ### Password Hashing
 
-`PasswordHasher` has two methods, `hash` and `verify`. `Argon2Hasher` ships
-behind the `argon2` feature, with configurable parameters:
+`PasswordHasher` has two async methods, `hash` and `verify`. `Argon2Hasher`
+ships behind the `argon2` feature, with configurable parameters, and runs the
+Argon2 work on tokio's blocking pool so it never stalls the executor. A
+task that fails there surfaces as a `HashError`:
 
 ```rust
 let hasher = Argon2Hasher::default();
 let cheap = Argon2Hasher::new(argon2::Params::new(8, 1, 1, None)?);
+let hash = hasher.hash(&SecretString::from("correct horse")).await?;
 ```
 
 Use cheap parameters in tests, never in production. `PasswordHash` is a PHC

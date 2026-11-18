@@ -61,9 +61,10 @@ fn hasher() -> Argon2Hasher {
     Argon2Hasher::new(argon2::Params::new(8, 1, 1, None).unwrap())
 }
 
-fn hash(password: &str) -> PasswordHash {
+async fn hash(password: &str) -> PasswordHash {
     hasher()
         .hash(&secrecy::SecretString::from(password))
+        .await
         .unwrap()
 }
 
@@ -72,7 +73,7 @@ async fn a_user_aggregate_registers_through_the_facade_alone() {
     let store = Arc::new(InMemoryEventStore::builder().build());
     let mut member = Member::join(Password::new(
         Email::parse("ada@example.com").unwrap(),
-        hash("correct-horse"),
+        hash("correct-horse").await,
     ))
     .unwrap();
     store
@@ -95,7 +96,8 @@ async fn a_user_aggregate_registers_through_the_facade_alone() {
 async fn the_facade_authenticator_logs_a_registered_user_in() {
     let store = Arc::new(InMemoryEventStore::builder().build());
     let login = Email::parse("ada@example.com").unwrap();
-    let mut member = Member::join(Password::new(login.clone(), hash("correct-horse"))).unwrap();
+    let mut member =
+        Member::join(Password::new(login.clone(), hash("correct-horse").await)).unwrap();
     store
         .repository::<Member>()
         .save(&mut member)
@@ -116,13 +118,15 @@ async fn the_facade_authenticator_logs_a_registered_user_in() {
     ));
 }
 
-#[test]
-fn changing_the_password_changes_the_session_fingerprint() {
+#[tokio::test]
+async fn changing_the_password_changes_the_session_fingerprint() {
     let login = Email::parse("ada@example.com").unwrap();
-    let mut member = Member::join(Password::new(login, hash("correct-horse"))).unwrap();
+    let mut member = Member::join(Password::new(login, hash("correct-horse").await)).unwrap();
     let before = member.identity().session_fingerprint();
 
-    member.change_password(hash("battery-staple")).unwrap();
+    member
+        .change_password(hash("battery-staple").await)
+        .unwrap();
 
     assert_ne!(member.identity().session_fingerprint(), before);
 }

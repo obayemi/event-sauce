@@ -49,14 +49,14 @@ struct NewPassword {
     password: String,
 }
 
-fn hash_password(hasher: &Argon2Hasher, password: String) -> Option<PasswordHash> {
-    hasher.hash(&SecretString::from(password)).ok()
+async fn hash_password(hasher: &Argon2Hasher, password: String) -> Option<PasswordHash> {
+    hasher.hash(&SecretString::from(password)).await.ok()
 }
 
 async fn register(State(state): State<AppState>, Json(form): Json<Registration>) -> Response {
     let (Ok(email), Some(hash)) = (
         Email::parse(&form.email),
-        hash_password(&state.hasher, form.password),
+        hash_password(&state.hasher, form.password).await,
     ) else {
         return StatusCode::BAD_REQUEST.into_response();
     };
@@ -99,7 +99,7 @@ async fn change_password(
     member: CurrentUser<Backend>,
     Json(form): Json<NewPassword>,
 ) -> StatusCode {
-    let Some(hash) = hash_password(&state.hasher, form.password) else {
+    let Some(hash) = hash_password(&state.hasher, form.password).await else {
         return StatusCode::BAD_REQUEST;
     };
     let changed = state

@@ -343,7 +343,7 @@ The library ships three:
 - **`PasswordLogin<H: PasswordHasher>`** implements `LoginMethod<C>`
   for every `C: HasPassword`:
   - Its attempt is `PasswordAttempt<C::Login> { login, password: SecretString }`.
-  - `verify` runs `H::verify` against the stored hash.
+  - `verify` awaits `H::verify` against the stored hash.
   - `on_unknown` verifies against a fixed dummy hash, so the timing does
     not reveal which logins exist.
 - **`FederatedLogin`** implements `LoginMethod<C>` for every
@@ -376,11 +376,17 @@ which `get_profile_aggregate_unchecked` (`profile.rs:779`) skips today.
 The hashing trait:
 
 ```rust
+#[async_trait]
 pub trait PasswordHasher: Send + Sync {
-    fn hash(&self, password: &SecretString) -> Result<PasswordHash, HashError>;
-    fn verify(&self, password: &SecretString, hash: &PasswordHash) -> Result<bool, HashError>;
+    async fn hash(&self, password: &SecretString) -> Result<PasswordHash, HashError>;
+    async fn verify(
+        &self,
+        password: &SecretString,
+        hash: &PasswordHash,
+    ) -> Result<bool, HashError>;
 }
-// feature "argon2" (default): Argon2Hasher, with configurable params.
+// feature "argon2" (default): Argon2Hasher, with configurable params; it runs
+// the Argon2 work on `tokio::task::spawn_blocking`.
 ```
 
 On top sits the `Authenticator` trait:

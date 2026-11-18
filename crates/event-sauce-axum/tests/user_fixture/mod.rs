@@ -179,8 +179,11 @@ pub fn cheap_hasher() -> Argon2Hasher {
     Argon2Hasher::new(Params::new(8, 1, 1, None).unwrap())
 }
 
-pub fn hash(password: &str) -> PasswordHash {
-    cheap_hasher().hash(&SecretString::from(password)).unwrap()
+pub async fn hash(password: &str) -> PasswordHash {
+    cheap_hasher()
+        .hash(&SecretString::from(password))
+        .await
+        .unwrap()
 }
 
 #[derive(Deserialize)]
@@ -197,7 +200,7 @@ pub struct CodeForm {
 /// Saves Ada, with `code` as her second factor when there is one.
 pub async fn register<S: EventStore + 'static>(store: &Arc<S>, code: Option<&str>) -> EntityId {
     let account = Account {
-        password: Password::new(Email::parse(ADA).unwrap(), hash(PASSWORD)),
+        password: Password::new(Email::parse(ADA).unwrap(), hash(PASSWORD).await),
         code: code.map(str::to_owned),
     };
     let mut user = User::register(account).unwrap();
@@ -212,7 +215,7 @@ pub async fn change_password<S: EventStore + 'static>(
     id: EntityId,
     password: &str,
 ) {
-    let hash = hash(password);
+    let hash = hash(password).await;
     store
         .repository::<User>()
         .modify(id, |user| user.change_password(hash.clone()))

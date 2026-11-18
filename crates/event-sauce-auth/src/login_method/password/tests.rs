@@ -7,8 +7,8 @@ use crate::{
     Credentials, Email, FederatedId, Fingerprint, LoginId, PasswordOrFederated, Provider, Username,
 };
 
-fn registered(hasher: &FakeHasher, login: &str, password: &str) -> Identity<Password<Email>> {
-    let hash = hasher.hash(&secret(password)).unwrap();
+async fn registered(hasher: &FakeHasher, login: &str, password: &str) -> Identity<Password<Email>> {
+    let hash = hasher.hash(&secret(password)).await.unwrap();
     Identity::Registered(Password::new(email(login), hash))
 }
 
@@ -55,7 +55,7 @@ async fn locate_finds_nobody_for_an_unclaimed_login() {
 async fn verify_accepts_the_stored_password() {
     let hasher = FakeHasher::default();
     let method = PasswordLogin::new(hasher.clone());
-    let identity = registered(&method.hasher, "ada@example.com", "correct-horse");
+    let identity = registered(&method.hasher, "ada@example.com", "correct-horse").await;
 
     let result = method
         .verify(&identity, &attempt("ada@example.com", "correct-horse"))
@@ -68,7 +68,7 @@ async fn verify_accepts_the_stored_password() {
 async fn verify_rejects_another_password() {
     let hasher = FakeHasher::default();
     let method = PasswordLogin::new(hasher.clone());
-    let identity = registered(&method.hasher, "ada@example.com", "correct-horse");
+    let identity = registered(&method.hasher, "ada@example.com", "correct-horse").await;
 
     let result = method
         .verify(&identity, &attempt("ada@example.com", "battery-staple"))
@@ -186,7 +186,7 @@ impl HasPassword for Staff {
 async fn an_app_defined_credentials_type_logs_in_through_password_login() {
     let hasher = FakeHasher::default();
     let method = PasswordLogin::new(hasher.clone());
-    let hash = hasher.hash(&secret("correct-horse")).unwrap();
+    let hash = hasher.hash(&secret("correct-horse")).await.unwrap();
     let identity = Identity::Registered(Staff {
         password: Password::new(Username::parse("ada").unwrap(), hash),
         badge: 7,

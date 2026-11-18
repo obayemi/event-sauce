@@ -6,8 +6,8 @@ use crate::{
     Email, Federated, FederatedId, Password, PasswordHasher, PasswordOrFederated, Provider,
 };
 
-fn both(hasher: &FakeHasher) -> Identity<PasswordOrFederated<Email>> {
-    let hash = hasher.hash(&secret("correct-horse")).unwrap();
+async fn both(hasher: &FakeHasher) -> Identity<PasswordOrFederated<Email>> {
+    let hash = hasher.hash(&secret("correct-horse")).await.unwrap();
     Identity::Registered(PasswordOrFederated::Both(
         Password::new(email("ada@example.com"), hash),
         Federated::new(FederatedId::new(Provider::GOOGLE, "g-1")),
@@ -65,7 +65,7 @@ async fn a_federated_attempt_is_located_by_its_federated_claim() {
 async fn a_user_with_both_logs_in_with_either() {
     let hasher = FakeHasher::default();
     let method = PasswordOrFederatedLogin::new(hasher.clone());
-    let identity = both(&hasher);
+    let identity = both(&hasher).await;
 
     let with_password = method
         .verify(&identity, &password("ada@example.com", "correct-horse"))
@@ -81,7 +81,7 @@ async fn a_user_with_both_logs_in_with_either() {
 async fn each_attempt_is_checked_by_its_own_method() {
     let hasher = FakeHasher::default();
     let method = PasswordOrFederatedLogin::new(hasher.clone());
-    let identity = both(&hasher);
+    let identity = both(&hasher).await;
 
     let wrong_password = method
         .verify(&identity, &password("ada@example.com", "battery-staple"))

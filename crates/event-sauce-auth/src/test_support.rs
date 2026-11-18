@@ -63,8 +63,9 @@ impl FakeHasher {
     }
 }
 
+#[async_trait]
 impl PasswordHasher for FakeHasher {
-    fn hash(&self, password: &SecretString) -> Result<PasswordHash, HashError> {
+    async fn hash(&self, password: &SecretString) -> Result<PasswordHash, HashError> {
         self.hashes.fetch_add(1, Ordering::SeqCst);
         if self.broken {
             return Err(HashError("broken".into()));
@@ -72,7 +73,11 @@ impl PasswordHasher for FakeHasher {
         PasswordHash::new(fake_phc(password)).map_err(|e| HashError(e.to_string()))
     }
 
-    fn verify(&self, password: &SecretString, hash: &PasswordHash) -> Result<bool, HashError> {
+    async fn verify(
+        &self,
+        password: &SecretString,
+        hash: &PasswordHash,
+    ) -> Result<bool, HashError> {
         self.verifies.fetch_add(1, Ordering::SeqCst);
         if self.broken {
             return Err(HashError("broken".into()));
