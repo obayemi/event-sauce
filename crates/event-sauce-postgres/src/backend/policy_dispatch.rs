@@ -319,7 +319,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_dispatch_policies_to_outbox_routes_matching_events() {
-        let (url, _container) = start_test_db().await;
+        let (url, _database) = start_test_db().await;
         let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
         let outbox = crate::PostgresPolicyOutbox::new(backend.pool().clone(), "event_sauce");
         outbox.migrate().await.unwrap();
@@ -404,7 +404,7 @@ mod tests {
     /// itself) arbitrary.
     #[tokio::test]
     async fn test_dispatch_enqueues_each_events_own_log_position() {
-        let (url, _container) = start_test_db().await;
+        let (url, _database) = start_test_db().await;
         let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
         let outbox = crate::PostgresPolicyOutbox::new(backend.pool().clone(), "event_sauce");
         outbox.migrate().await.unwrap();
@@ -502,7 +502,7 @@ mod tests {
     /// Order events, so this whole (single-fetch) batch is a miss.
     #[tokio::test]
     async fn test_dispatch_checkpoint_advances_over_wholly_unmatched_batch() {
-        let (url, _container) = start_test_db().await;
+        let (url, _database) = start_test_db().await;
         let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
         let outbox = crate::PostgresPolicyOutbox::new(backend.pool().clone(), "event_sauce");
         outbox.migrate().await.unwrap();
@@ -549,7 +549,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_dispatch_then_drain_via_skip_locked() {
-        let (url, _container) = start_test_db().await;
+        let (url, _database) = start_test_db().await;
         let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
         let outbox = crate::PostgresPolicyOutbox::new(backend.pool().clone(), "event_sauce");
         outbox.migrate().await.unwrap();
@@ -650,7 +650,7 @@ mod tests {
     /// it already produced) are untouched by sharing a call with it.
     #[tokio::test]
     async fn test_dispatch_a_policys_progress_is_independent_of_the_set_it_ran_in() {
-        let (url, _container) = start_test_db().await;
+        let (url, _database) = start_test_db().await;
         let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
         let outbox = crate::PostgresPolicyOutbox::new(backend.pool().clone(), "event_sauce");
         outbox.migrate().await.unwrap();
@@ -736,7 +736,7 @@ mod tests {
     /// the pruned policy already handled.
     #[tokio::test]
     async fn test_dispatch_adding_a_policy_after_prune_does_not_redeliver_to_existing_ones() {
-        let (url, _container) = start_test_db().await;
+        let (url, _database) = start_test_db().await;
         let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
         let outbox = crate::PostgresPolicyOutbox::new(backend.pool().clone(), "event_sauce");
         outbox.migrate().await.unwrap();
@@ -804,7 +804,7 @@ mod tests {
     /// past all 3 events.
     #[tokio::test]
     async fn test_dispatch_seeds_new_policy_checkpoint_from_legacy_shared_row() {
-        let (url, _container) = start_test_db().await;
+        let (url, _database) = start_test_db().await;
         let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
         let outbox = crate::PostgresPolicyOutbox::new(backend.pool().clone(), "event_sauce");
         outbox.migrate().await.unwrap();
@@ -848,7 +848,7 @@ mod tests {
     /// distinct name.
     #[tokio::test]
     async fn test_dispatch_tolerates_a_repeated_policy_name() {
-        let (url, _container) = start_test_db().await;
+        let (url, _database) = start_test_db().await;
         let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
         let outbox = crate::PostgresPolicyOutbox::new(backend.pool().clone(), "event_sauce");
         outbox.migrate().await.unwrap();
@@ -882,7 +882,7 @@ mod tests {
     /// must be free again for another worker to acquire.
     #[tokio::test]
     async fn test_dispatch_runs_only_the_policies_whose_lease_it_holds() {
-        let (url, _container) = start_test_db().await;
+        let (url, _database) = start_test_db().await;
         let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
         let outbox = crate::PostgresPolicyOutbox::new(backend.pool().clone(), "event_sauce");
         outbox.migrate().await.unwrap();
@@ -946,7 +946,7 @@ mod tests {
     /// silently completing with zero progress.
     #[tokio::test]
     async fn test_dispatch_busy_only_when_every_policy_lease_is_held_elsewhere() {
-        let (url, _container) = start_test_db().await;
+        let (url, _database) = start_test_db().await;
         let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
         let outbox = crate::PostgresPolicyOutbox::new(backend.pool().clone(), "event_sauce");
         outbox.migrate().await.unwrap();
@@ -985,7 +985,7 @@ mod tests {
     /// caller has no `held` list of its own to release from.
     #[tokio::test]
     async fn test_dispatch_error_while_acquiring_releases_earlier_leases() {
-        let (url, _container) = start_test_db().await;
+        let (url, _database) = start_test_db().await;
         let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
         let outbox = crate::PostgresPolicyOutbox::new(backend.pool().clone(), "event_sauce");
         outbox.migrate().await.unwrap();
@@ -1049,7 +1049,7 @@ mod tests {
     /// checkpoint claims to have seen.
     #[tokio::test]
     async fn test_dispatch_lease_stolen_mid_batch_rolls_back_every_policy() {
-        let (url, _container) = start_test_db().await;
+        let (url, _database) = start_test_db().await;
         let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
         let outbox = crate::PostgresPolicyOutbox::new(backend.pool().clone(), "event_sauce");
         outbox.migrate().await.unwrap();

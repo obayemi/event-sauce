@@ -405,7 +405,7 @@ mod tests {
     #[tokio::test]
     async fn test_builder_migrate_creates_schema() {
         // Create a fresh database
-        let (_container, connection_string) = crate::test_support::start_postgres_url().await;
+        let (_database, connection_string) = crate::test_support::fresh_database().await;
 
         let pool = PgPool::connect(&connection_string).await.unwrap();
 
@@ -451,7 +451,7 @@ mod tests {
     #[tokio::test]
     async fn test_builder_operations_use_custom_schema() {
         // Create a fresh database
-        let (_container, connection_string) = crate::test_support::start_postgres_url().await;
+        let (_database, connection_string) = crate::test_support::fresh_database().await;
 
         let pool = PgPool::connect(&connection_string).await.unwrap();
 

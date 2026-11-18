@@ -364,25 +364,26 @@ mod tests {
     use super::*;
     use event_sauce_core::CryptoKeyStore;
     use sqlx::PgPool;
-    use testcontainers_modules::postgres::Postgres;
     use uuid::Uuid;
 
     /// Test database helper using testcontainers.
     struct TestDatabase {
         pool: PgPool,
-        #[allow(dead_code)]
-        container: testcontainers_modules::testcontainers::ContainerAsync<Postgres>,
+        _database: crate::test_support::FreshDatabase,
     }
 
     impl TestDatabase {
         async fn new() -> Result<Self> {
-            let (container, connection_string) = crate::test_support::start_postgres_url().await;
+            let (database, connection_string) = crate::test_support::fresh_database().await;
 
             let pool = PgPool::connect(&connection_string)
                 .await
                 .map_err(|e| Error::backend("Failed to connect", e))?;
 
-            Ok(Self { pool, container })
+            Ok(Self {
+                pool,
+                _database: database,
+            })
         }
 
         fn pool(&self) -> &PgPool {

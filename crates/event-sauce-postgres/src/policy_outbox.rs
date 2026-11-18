@@ -506,19 +506,20 @@ impl PostgresPolicyOutbox {
 mod tests {
     use super::*;
     use std::collections::HashSet;
-    use testcontainers_modules::postgres::Postgres;
 
     struct TestDb {
         pool: PgPool,
-        #[allow(dead_code)]
-        container: testcontainers_modules::testcontainers::ContainerAsync<Postgres>,
+        _database: crate::test_support::FreshDatabase,
     }
 
     impl TestDb {
         async fn new() -> Self {
-            let (container, url) = crate::test_support::start_postgres_url().await;
+            let (database, url) = crate::test_support::fresh_database().await;
             let pool = PgPool::connect(&url).await.expect("connect");
-            Self { pool, container }
+            Self {
+                pool,
+                _database: database,
+            }
         }
     }
 

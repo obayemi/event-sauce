@@ -156,17 +156,16 @@ mod tests {
         StreamId,
     };
     use serde_json::json;
-    use testcontainers_modules::postgres::Postgres;
     use uuid::Uuid;
 
     struct TestDb {
         pool: PgPool,
-        _container: testcontainers_modules::testcontainers::ContainerAsync<Postgres>,
+        _database: crate::test_support::FreshDatabase,
     }
 
     impl TestDb {
         async fn new() -> Self {
-            let (container, url) = crate::test_support::start_postgres_url().await;
+            let (database, url) = crate::test_support::fresh_database().await;
             let pool = PgPool::connect(&url).await.expect("connect");
             let store = PostgresEventStore::builder()
                 .pool(pool.clone())
@@ -176,7 +175,7 @@ mod tests {
             store.migrate().await.expect("migrate");
             Self {
                 pool,
-                _container: container,
+                _database: database,
             }
         }
 

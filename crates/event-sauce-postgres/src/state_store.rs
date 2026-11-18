@@ -643,20 +643,21 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Mutex;
     use std::time::Duration;
-    use testcontainers_modules::postgres::Postgres;
     use uuid::Uuid;
 
     struct TestDb {
         pool: PgPool,
-        #[allow(dead_code)]
-        container: testcontainers_modules::testcontainers::ContainerAsync<Postgres>,
+        _database: crate::test_support::FreshDatabase,
     }
 
     impl TestDb {
         async fn new() -> Self {
-            let (container, url) = crate::test_support::start_postgres_url().await;
+            let (database, url) = crate::test_support::fresh_database().await;
             let pool = PgPool::connect(&url).await.expect("connect");
-            Self { pool, container }
+            Self {
+                pool,
+                _database: database,
+            }
         }
 
         fn store_builder(&self) -> PostgresStateStoreBuilder {

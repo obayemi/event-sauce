@@ -101,6 +101,7 @@ parking_lot = "0.12"
 
 # Development dependencies
 criterion = "0.5"
+dtor = "1.0.7"
 
 [profile.dev]
 opt-level = 0

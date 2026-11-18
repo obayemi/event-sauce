@@ -197,7 +197,7 @@ mod tests {
     /// table raced across replicas.
     #[tokio::test]
     async fn test_concurrent_replica_setup_does_not_race() {
-        let (_container, url) = crate::test_support::start_postgres_url().await;
+        let (_database, url) = crate::test_support::fresh_database().await;
 
         let handles: Vec<_> = (0..6)
             .map(|_| {
@@ -237,7 +237,7 @@ mod tests {
     /// EXISTS` and the shared `aggregate_claims` table.
     #[tokio::test]
     async fn test_concurrent_migrate_across_store_kinds_on_shared_schema() {
-        let (_container, url) = crate::test_support::start_postgres_url().await;
+        let (_database, url) = crate::test_support::fresh_database().await;
         let pool = PgPool::connect(&url).await.expect("connect");
 
         let event_store = PostgresEventStore::builder()
@@ -282,7 +282,7 @@ mod tests {
     /// waiting to acquire one.
     #[tokio::test]
     async fn test_migrate_succeeds_on_single_connection_pool() {
-        let (_container, url) = crate::test_support::start_postgres_url().await;
+        let (_database, url) = crate::test_support::fresh_database().await;
         let pool = PgPoolOptions::new()
             .max_connections(1)
             .acquire_timeout(std::time::Duration::from_secs(5))

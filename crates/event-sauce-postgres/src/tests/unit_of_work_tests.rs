@@ -7,27 +7,22 @@ use event_sauce_core::{
 use serde_json::json;
 use sqlx::{PgConnection, PgPool};
 use std::time::Duration;
-use testcontainers_modules::postgres::Postgres;
-use testcontainers_modules::testcontainers::ContainerAsync;
 
 use crate::event_store::PostgresEventStoreBuilder;
 use crate::state_store::PostgresStateStoreBuilder;
 
 struct TestDb {
     pool: PgPool,
-    url: String,
-    #[allow(dead_code)]
-    container: ContainerAsync<Postgres>,
+    _database: crate::test_support::FreshDatabase,
 }
 
 impl TestDb {
     async fn new() -> Self {
-        let (container, url) = crate::test_support::start_postgres_url().await;
+        let (database, url) = crate::test_support::fresh_database().await;
         let pool = PgPool::connect(&url).await.expect("connect");
         Self {
             pool,
-            url,
-            container,
+            _database: database,
         }
     }
 
@@ -121,15 +116,16 @@ fn manual_state_commit(
 
 #[tokio::test]
 async fn test_new_refuses_stores_on_different_databases() {
-    let db = TestDb::new().await;
-    let events = Arc::new(PostgresEventStore::new(db.pool.clone()));
+    let (_container, url) = crate::test_support::start_postgres_url().await;
+    let pool = PgPool::connect(&url).await.expect("connect");
+    let events = Arc::new(PostgresEventStore::new(pool.clone()));
 
     sqlx::query("CREATE DATABASE other_db")
-        .execute(&db.pool)
+        .execute(&pool)
         .await
         .expect("create other database");
-    let cut = db.url.rfind('/').expect("url has a database segment");
-    let other_url = format!("{}other_db", &db.url[..=cut]);
+    let cut = url.rfind('/').expect("url has a database segment");
+    let other_url = format!("{}other_db", &url[..=cut]);
     let other_pool = PgPool::connect(&other_url).await.expect("connect");
     let states = Arc::new(PostgresStateStore::new(other_pool));
 

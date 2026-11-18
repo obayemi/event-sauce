@@ -650,7 +650,6 @@ mod tests {
     use futures::StreamExt;
     use serde_json::json;
     use sqlx::PgPool;
-    use testcontainers_modules::postgres::Postgres;
     use uuid::Uuid;
 
     /// Test database helper using testcontainers for isolated `PostgreSQL` testing.
@@ -659,8 +658,7 @@ mod tests {
     /// own tests, which need the exact same real-migration setup.
     pub(super) struct TestDatabase {
         pool: PgPool,
-        #[allow(dead_code)]
-        container: testcontainers_modules::testcontainers::ContainerAsync<Postgres>,
+        _database: crate::test_support::FreshDatabase,
     }
 
     impl TestDatabase {
@@ -669,7 +667,7 @@ mod tests {
         /// hand-synced copy of its schema, so tests exercise the exact
         /// schema production gets.
         pub(super) async fn new() -> Result<Self> {
-            let (container, connection_string) = crate::test_support::start_postgres_url().await;
+            let (database, connection_string) = crate::test_support::fresh_database().await;
 
             // Connect to database
             let pool = PgPool::connect(&connection_string)
@@ -684,7 +682,10 @@ mod tests {
                 .migrate()
                 .await?;
 
-            Ok(Self { pool, container })
+            Ok(Self {
+                pool,
+                _database: database,
+            })
         }
 
         pub(super) fn pool(&self) -> &PgPool {
@@ -734,7 +735,7 @@ mod tests {
     /// the same database concurrently.
     #[tokio::test]
     async fn test_concurrent_migrate_calls_do_not_crash() {
-        let (_container, url) = crate::test_support::start_postgres_url().await;
+        let (_database, url) = crate::test_support::fresh_database().await;
         let pool = PgPool::connect(&url).await.unwrap();
 
         let handles: Vec<_> = (0..8)
@@ -2427,7 +2428,7 @@ mod tests {
     /// forever for a connection the stream never releases.
     #[tokio::test]
     async fn test_process_pending_does_not_hold_a_connection_while_handlers_run() {
-        let (_container, url) = crate::test_support::start_postgres_url().await;
+        let (_database, url) = crate::test_support::fresh_database().await;
         let pool = sqlx::postgres::PgPoolOptions::new()
             .max_connections(1)
             .acquire_timeout(std::time::Duration::from_secs(5))
