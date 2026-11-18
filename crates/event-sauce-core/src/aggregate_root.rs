@@ -671,4 +671,5 @@ where
 }
 
 #[cfg(test)]
+#[path = "tests/aggregate_root_tests.rs"]
 mod tests;

@@ -53,4 +53,5 @@ impl<E> From<E> for CommandError<E> {
 }
 
 #[cfg(test)]
+#[path = "tests/error_tests.rs"]
 mod tests;

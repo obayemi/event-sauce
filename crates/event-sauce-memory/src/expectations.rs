@@ -28,4 +28,5 @@ pub(crate) fn check_expectations(
 }
 
 #[cfg(test)]
+#[path = "tests/expectations_tests.rs"]
 mod tests;

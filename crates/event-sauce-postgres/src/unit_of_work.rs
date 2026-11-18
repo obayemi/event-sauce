@@ -216,4 +216,5 @@ impl PostgresTransactionalStore {
 }
 
 #[cfg(test)]
+#[path = "tests/unit_of_work_tests.rs"]
 mod tests;

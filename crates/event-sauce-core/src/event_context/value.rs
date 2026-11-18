@@ -29,4 +29,5 @@ impl<T: Display> From<DisplayValue<T>> for Value {
 }
 
 #[cfg(test)]
+#[path = "tests/value_tests.rs"]
 mod tests;

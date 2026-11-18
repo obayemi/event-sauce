@@ -189,4 +189,5 @@ impl<A: Aggregate> From<Loaded<A>> for Root<A> {
 }
 
 #[cfg(test)]
+#[path = "tests/root_tests.rs"]
 mod tests;

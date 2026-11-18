@@ -845,4 +845,5 @@ macro_rules! __aggregate_command_internal {
 }
 
 #[cfg(test)]
+#[path = "tests/aggregate_command_tests.rs"]
 mod tests;

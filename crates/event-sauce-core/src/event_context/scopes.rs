@@ -51,4 +51,5 @@ pub(crate) fn reaction_context(metadata: &EventMetadata, policy: &str) -> EventC
 }
 
 #[cfg(test)]
+#[path = "tests/scopes_tests.rs"]
 mod tests;

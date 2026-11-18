@@ -62,4 +62,5 @@ impl SnapshotDecl {
 }
 
 #[cfg(test)]
+#[path = "tests/snapshots_tests.rs"]
 mod tests;

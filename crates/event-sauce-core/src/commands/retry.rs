@@ -194,4 +194,5 @@ fn scale(duration: Duration, factor: f64) -> Duration {
 }
 
 #[cfg(test)]
+#[path = "tests/retry_tests.rs"]
 mod tests;

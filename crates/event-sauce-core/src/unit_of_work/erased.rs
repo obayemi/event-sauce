@@ -190,4 +190,5 @@ where
 }
 
 #[cfg(test)]
+#[path = "tests/erased_tests.rs"]
 mod tests;

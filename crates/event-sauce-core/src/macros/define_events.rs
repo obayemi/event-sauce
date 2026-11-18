@@ -1151,4 +1151,5 @@ macro_rules! define_events {
 #[allow(clippy::match_same_arms)]
 #[allow(clippy::unnecessary_wraps)]
 #[allow(clippy::default_trait_access)]
+#[path = "tests/define_events_tests.rs"]
 mod tests;

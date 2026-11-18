@@ -122,4 +122,5 @@ fn command_lifecycle_error_widens_to_the_lifecycle_variant() {
     feature = "commands",
     any(feature = "event-sourcing", feature = "state-store")
 ))]
+#[path = "execute_tests/engine.rs"]
 mod engine;

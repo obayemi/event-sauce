@@ -114,4 +114,5 @@ macro_rules! event_context {
 }
 
 #[cfg(test)]
+#[path = "tests/event_context_tests.rs"]
 mod tests;
