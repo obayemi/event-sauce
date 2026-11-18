@@ -5,7 +5,7 @@ use std::ops::Deref;
 use std::sync::Arc;
 
 use axum_login::AuthUser;
-use event_sauce_auth::UserAggregate;
+use event_sauce_auth::{Authenticated, UserAggregate};
 use event_sauce_core::{AggregateRoot, EntityId};
 
 /// A user aggregate as `axum-login` sees it.
@@ -15,16 +15,16 @@ use event_sauce_core::{AggregateRoot, EntityId};
 /// its session auth hash. Any credential change alters the fingerprint, so
 /// every session opened before the change stops resolving to a user.
 ///
-/// Build one from the aggregate a login produced, then hand it to
-/// `AuthSession::login`:
+/// The only public way to build one is from an [`Authenticated`], which a
+/// login yields only once its whole process ended, so `AuthSession::login`
+/// cannot be handed a user nobody authenticated:
 ///
 /// ```
+/// use event_sauce_auth::{Authenticated, UserAggregate};
 /// use event_sauce_axum::SessionUser;
-/// use event_sauce_auth::UserAggregate;
-/// use event_sauce_core::AggregateRoot;
 ///
-/// fn session_user<U: UserAggregate>(root: AggregateRoot<U>) -> SessionUser<U> {
-///     SessionUser::from(root)
+/// fn session_user<U: UserAggregate>(authenticated: Authenticated<U>) -> SessionUser<U> {
+///     SessionUser::from(authenticated)
 /// }
 /// ```
 pub struct SessionUser<U: UserAggregate> {
@@ -44,18 +44,19 @@ impl<U: UserAggregate> SessionUser<U> {
     pub fn into_user(self) -> Arc<AggregateRoot<U>> {
         self.user
     }
-}
 
-impl<U: UserAggregate> From<Arc<AggregateRoot<U>>> for SessionUser<U> {
-    fn from(user: Arc<AggregateRoot<U>>) -> Self {
+    pub(crate) fn from_loaded(user: Arc<AggregateRoot<U>>) -> Self {
         let fingerprint = user.identity().session_fingerprint();
         Self { user, fingerprint }
     }
 }
 
-impl<U: UserAggregate> From<AggregateRoot<U>> for SessionUser<U> {
-    fn from(user: AggregateRoot<U>) -> Self {
-        Self::from(Arc::new(user))
+impl<U: UserAggregate> From<Authenticated<U>> for SessionUser<U> {
+    fn from(authenticated: Authenticated<U>) -> Self {
+        Self {
+            fingerprint: authenticated.session_fingerprint(),
+            user: authenticated.into_user(),
+        }
     }
 }
 

@@ -12,23 +12,25 @@ use axum::{
 };
 use axum_login::{AuthManagerLayerBuilder, AuthSession};
 use event_sauce::auth::{
-    Argon2Hasher, ClaimAuthenticator, Email, LoginId, Password, PasswordAttempt, PasswordHash,
-    PasswordHasher, PasswordLogin,
+    AlwaysDone, Argon2Hasher, AuthError, Email, FirstFactor, LoginId, Logins, Password,
+    PasswordAttempt, PasswordHash, PasswordHasher, PasswordLogin,
 };
-use event_sauce::axum::{CorrelationLayer, CurrentUser, EventSauceBackend};
+use event_sauce::axum::{CorrelationLayer, CurrentUser, EventSauceBackend, SessionUser};
 use event_sauce::memory::InMemoryEventStore;
 use event_sauce::prelude::*;
 use secrecy::SecretString;
 use serde::Deserialize;
 use tower_sessions::{MemoryStore, SessionManagerLayer};
 
-type Authenticator = ClaimAuthenticator<Member, PasswordLogin<Argon2Hasher>, InMemoryEventStore>;
-type Backend = EventSauceBackend<Member, Authenticator, InMemoryEventStore>;
+type Backend = EventSauceBackend<Member, InMemoryEventStore>;
+type Factor = FirstFactor<PasswordLogin<Argon2Hasher>, AlwaysDone>;
 
 #[derive(Clone)]
 struct AppState {
     store: Arc<InMemoryEventStore>,
     hasher: Argon2Hasher,
+    logins: Logins<Member>,
+    first: Arc<Factor>,
 }
 
 #[derive(Deserialize)]
@@ -68,17 +70,27 @@ async fn register(State(state): State<AppState>, Json(form): Json<Registration>)
     }
 }
 
-async fn login(mut auth: AuthSession<Backend>, Json(form): Json<LoginForm>) -> StatusCode {
+async fn login(
+    mut auth: AuthSession<Backend>,
+    State(state): State<AppState>,
+    Json(form): Json<LoginForm>,
+) -> StatusCode {
     let Ok(email) = Email::parse(&form.email) else {
         return StatusCode::UNAUTHORIZED;
     };
     let attempt = PasswordAttempt::new(email, SecretString::from(form.password));
-    match auth.authenticate(attempt).await {
-        Ok(Some(member)) => match auth.login(&member).await {
-            Ok(()) => StatusCode::NO_CONTENT,
-            Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
-        },
-        Ok(None) => StatusCode::UNAUTHORIZED,
+    let login = match state.logins.begin(&state.first, attempt).await {
+        Ok(login) => login,
+        Err(AuthError::InvalidCredentials | AuthError::Inactive | AuthError::Unknown { .. }) => {
+            return StatusCode::UNAUTHORIZED;
+        }
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    let Ok(authenticated) = login.finish().await else {
+        return StatusCode::UNAUTHORIZED;
+    };
+    match auth.login(&SessionUser::from(authenticated)).await {
+        Ok(()) => StatusCode::NO_CONTENT,
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
@@ -120,9 +132,17 @@ async fn change_password(
 /// layers.
 pub fn router(hasher: Argon2Hasher) -> Router {
     let store = Arc::new(InMemoryEventStore::builder().build());
-    let authenticator: Authenticator =
-        ClaimAuthenticator::new(store.clone(), PasswordLogin::new(hasher.clone()));
-    let backend = EventSauceBackend::new(authenticator, store.clone());
+    let backend = Backend::new(store.clone());
+    let first = Arc::new(FirstFactor::new(
+        PasswordLogin::new(hasher.clone()),
+        AlwaysDone,
+    ));
+    let state = AppState {
+        logins: Logins::new(store.clone()),
+        store,
+        hasher,
+        first,
+    };
     let sessions = SessionManagerLayer::new(MemoryStore::default());
     Router::new()
         .route("/members", post(register))
@@ -130,7 +150,7 @@ pub fn router(hasher: Argon2Hasher) -> Router {
         .route("/logout", post(logout))
         .route("/me", get(me))
         .route("/password", post(change_password))
-        .with_state(AppState { store, hasher })
+        .with_state(state)
         .layer(AuthManagerLayerBuilder::new(backend, sessions).build())
         .layer(CorrelationLayer::new())
 }

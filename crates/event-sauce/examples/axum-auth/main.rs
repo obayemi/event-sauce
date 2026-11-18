@@ -1,8 +1,10 @@
 //! # axum Auth Example — Password Login on an Event-Sourced User
 //!
 //! A `Member` aggregate carries its own password credentials. Registering
-//! saves it, `POST /login` opens a session, and the guarded routes read the
-//! logged-in member through the `CurrentUser` extractor. Changing the
+//! saves it, `POST /login` starts a login whose single step is the password,
+//! finishes it and opens a session from the `Authenticated` member it yields,
+//! and the guarded routes read the logged-in member through the `CurrentUser`
+//! extractor. Changing the
 //! password ends every session of the member, because the session is tied to
 //! the credentials' fingerprint.
 //!

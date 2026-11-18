@@ -207,7 +207,7 @@ hasher, an LDAP bind) without touching the credentials:
 `FederatedLogin` runs no OAuth flow. Your callback checks the provider's
 token, then builds the `VerifiedFederated` attempt: the name says the proof
 is already done. Linking a new provider subject to an existing user by the
-provider's email is your policy, applied when the authenticator hands an
+provider's email is your policy, applied when `Logins::begin` hands an
 unknown attempt back.
 
 `PasswordLogin` verifies against a fixed dummy hash when the login is

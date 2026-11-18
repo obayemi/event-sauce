@@ -1,14 +1,28 @@
-//! The user aggregate, its credentials and second factor, shared by the
-//! login and app integration tests.
+//! The user aggregate, its credentials, the steps of its login and the
+//! handlers that drive them, shared by the login and app integration tests.
+//!
+//! A user logs in with a password. One who enrolled a code is then asked for
+//! it, then for the code mailed to them, and only then gets a session.
+
+use std::sync::Arc;
 
 use argon2::Params;
 use async_trait::async_trait;
-use event_sauce_auth::{
-    Argon2Hasher, Credentials, Email, Fingerprint, HasPassword, HasSecondFactor, Identity, LoginId,
-    LoginStore, Password, PasswordHash, PasswordHasher, Rejected, SecondFactor, UserAggregate,
+use axum::{
+    extract::State,
+    http::{header::SET_COOKIE, StatusCode},
+    response::{IntoResponse, Response},
+    routing::post,
+    Json, Router,
 };
-use std::sync::Arc;
-
+use axum_login::AuthSession;
+use event_sauce_auth::{
+    Advance, Argon2Hasher, Credentials, Done, Email, Entered, Fingerprint, FirstFactor,
+    HasPassword, Identity, Login, LoginId, LoginState, Logins, Password, PasswordAttempt,
+    PasswordHash, PasswordHasher, PasswordLogin, PendingLogins, Rejected, Route, Step,
+    UserAggregate,
+};
+use event_sauce_axum::{EventSauceBackend, PendingLogin};
 use event_sauce_core::{
     aggregate_command, define_events, Aggregate, AggregateClaim, AggregateError, Entity, EntityId,
     EventStore, Repository,
@@ -19,6 +33,7 @@ use serde::{Deserialize, Serialize};
 pub const ADA: &str = "ada@example.com";
 pub const PASSWORD: &str = "correct-horse";
 pub const CODE: &str = "424242";
+pub const MAIL_CODE: &str = "654321";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Account {
@@ -47,32 +62,89 @@ impl HasPassword for Account {
     }
 }
 
-impl HasSecondFactor for Account {
-    fn requires_second_factor(&self) -> bool {
-        self.code.is_some()
+#[derive(Debug, Serialize, Deserialize)]
+pub struct NeedCode;
+
+impl LoginState for NeedCode {
+    const TAG: &'static str = "fixture.code";
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct NeedMail {
+    sent: String,
+}
+
+impl LoginState for NeedMail {
+    const TAG: &'static str = "fixture.mail";
+}
+
+#[async_trait]
+impl Step<User> for NeedCode {
+    type Proof = String;
+    type Verifier = ();
+    type Next = Login<User, NeedMail>;
+
+    async fn verify(
+        advance: Advance<User, Self>,
+        (): &(),
+        code: String,
+    ) -> Result<Login<User, NeedMail>, Rejected> {
+        let enrolled = advance
+            .login()
+            .user()
+            .identity()
+            .credentials()
+            .and_then(|account| account.code.as_ref());
+        if enrolled == Some(&code) {
+            Ok(advance.to(NeedMail {
+                sent: MAIL_CODE.to_owned(),
+            }))
+        } else {
+            Err(Rejected::Mismatch)
+        }
     }
 }
 
-pub struct FixedCode;
-
 #[async_trait]
-impl SecondFactor<Account> for FixedCode {
-    type Challenge = ();
-    type Response = String;
-
-    fn challenge(&self, _stored: &Account) {}
+impl Step<User> for NeedMail {
+    type Proof = String;
+    type Verifier = ();
+    type Next = Login<User, Done>;
 
     async fn verify(
-        &self,
-        stored: &Account,
-        _challenge: &(),
-        response: &String,
-        _store: &dyn LoginStore,
-    ) -> Result<(), Rejected> {
-        if stored.code.as_ref() == Some(response) {
-            Ok(())
+        advance: Advance<User, Self>,
+        (): &(),
+        code: String,
+    ) -> Result<Login<User, Done>, Rejected> {
+        if code == advance.login().state().sent {
+            Ok(advance.to(Done))
         } else {
             Err(Rejected::Mismatch)
+        }
+    }
+}
+
+pub enum AfterPassword {
+    Done(Login<User, Done>),
+    Code(Login<User, NeedCode>),
+}
+
+pub struct CodeIfEnrolled;
+
+impl Route<User> for CodeIfEnrolled {
+    type Next = AfterPassword;
+
+    fn route(&self, entered: Advance<User, Entered>) -> AfterPassword {
+        let enrolled = entered
+            .login()
+            .user()
+            .identity()
+            .credentials()
+            .is_some_and(|account| account.code.is_some());
+        if enrolled {
+            AfterPassword::Code(entered.to(NeedCode))
+        } else {
+            AfterPassword::Done(entered.to(Done))
         }
     }
 }
@@ -221,4 +293,99 @@ pub async fn change_password<S: EventStore + 'static>(
         .modify(id, |user| user.change_password(hash.clone()))
         .await
         .unwrap();
+}
+
+pub type PasswordFactor = FirstFactor<PasswordLogin<Argon2Hasher>, CodeIfEnrolled>;
+
+/// What the login handlers share: where logins start, where they wait, and
+/// the factor they start with.
+#[derive(Clone)]
+pub struct Flow {
+    pub logins: Logins<User>,
+    pub pending: PendingLogins<User>,
+    pub first: Arc<PasswordFactor>,
+}
+
+pub type Backend<S> = EventSauceBackend<User, S>;
+
+async fn open_session<S: EventStore + 'static>(
+    mut auth: AuthSession<Backend<S>>,
+    login: Login<User, Done>,
+) -> Response {
+    let cleared = [(SET_COOKIE, PendingLogin::clear_cookie())];
+    let Ok(authenticated) = login.finish().await else {
+        return (StatusCode::UNAUTHORIZED, cleared).into_response();
+    };
+    let user = auth.authenticate(authenticated).await.unwrap().unwrap();
+    auth.login(&user).await.unwrap();
+    (StatusCode::NO_CONTENT, cleared).into_response()
+}
+
+async fn hold<S: LoginState>(pending: &PendingLogins<User>, login: Login<User, S>) -> Response {
+    let id = pending.save(login).await.unwrap();
+    (
+        StatusCode::ACCEPTED,
+        [(SET_COOKIE, PendingLogin::set_cookie::<S>(id))],
+    )
+        .into_response()
+}
+
+fn refused() -> Response {
+    (
+        StatusCode::UNAUTHORIZED,
+        [(SET_COOKIE, PendingLogin::clear_cookie())],
+    )
+        .into_response()
+}
+
+pub async fn login<S: EventStore + 'static>(
+    auth: AuthSession<Backend<S>>,
+    State(flow): State<Flow>,
+    Json(form): Json<LoginForm>,
+) -> Response {
+    let attempt = PasswordAttempt::new(
+        Email::parse(&form.email).unwrap(),
+        SecretString::from(form.password),
+    );
+    match flow.logins.begin(&flow.first, attempt).await {
+        Ok(AfterPassword::Done(login)) => open_session(auth, login).await,
+        Ok(AfterPassword::Code(login)) => hold::<NeedCode>(&flow.pending, login).await,
+        Err(_) => StatusCode::UNAUTHORIZED.into_response(),
+    }
+}
+
+pub async fn code(
+    State(flow): State<Flow>,
+    pending: PendingLogin,
+    Json(form): Json<CodeForm>,
+) -> Response {
+    let Ok(login) = flow.pending.resume::<NeedCode>(pending.id()).await else {
+        return refused();
+    };
+    match login.prove(&(), form.code).await {
+        Ok(next) => hold::<NeedMail>(&flow.pending, next).await,
+        Err(_) => refused(),
+    }
+}
+
+pub async fn mail<S: EventStore + 'static>(
+    auth: AuthSession<Backend<S>>,
+    State(flow): State<Flow>,
+    pending: PendingLogin,
+    Json(form): Json<CodeForm>,
+) -> Response {
+    let Ok(login) = flow.pending.resume::<NeedMail>(pending.id()).await else {
+        return refused();
+    };
+    match login.prove(&(), form.code).await {
+        Ok(done) => open_session(auth, done).await,
+        Err(_) => refused(),
+    }
+}
+
+pub fn login_routes<S: EventStore + 'static>() -> Router<Flow> {
+    Router::new()
+        .route("/login", post(login::<S>))
+        .route("/login/code", post(code))
+        .route("/login/mail", post(mail::<S>))
 }

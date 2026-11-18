@@ -262,16 +262,19 @@ explicitly rather than gated behind a major version bump.
   and never reject. `Store` has no repository method of its own: get a
   repository from `Repo` or `store.arc().repository()`.
 
-  Behind the default `login` feature it adds `EventSauceBackend`, an
-  `axum-login` backend over any `Authenticator` whose `get_user` goes
-  through `CachedUserLoader` (optional `with_cache`, or `with_shared_cache`
-  to share one `Arc<dyn UserCache<U>>` between backends);
-  `EventSauceBackend::start(attempt)` and, with a `TwoFactor` stage,
-  `complete(pending, response)`, which serve the second-factor logins that
-  `authenticate` reports as `BackendError::SecondFactorRequired`;
-  `SessionUser`, whose session auth hash is the identity session
-  fingerprint; `PendingLogin`, the short-lived cookie that carries a login
-  waiting for its second factor; and the `CurrentUser<B>`, `MaybeUser<B>`
+  Behind the default `login` feature it adds `EventSauceBackend<U, S>`, an
+  `axum-login` backend whose credentials are the `Authenticated<U>` a
+  finished login yields, so `authenticate` cannot open a session before the
+  whole login process ended. Its `get_user` goes through `CachedUserLoader`
+  (optional `with_cache`, or `with_shared_cache` to share one
+  `Arc<dyn UserCache<U>>` with `Logins`), and `renew(&session_user)` reloads
+  the user of a session after the request changed its own credentials.
+  `BackendError` has one variant, `Store`. `SessionUser`, whose session auth
+  hash is the identity session fingerprint, is built only from an
+  `Authenticated<U>`: there is no conversion from a raw aggregate.
+  `PendingLogin`, the short-lived cookie that carries a login between two
+  requests, lives as long as the state it waits in
+  (`PendingLogin::set_cookie::<S>(id)` uses `S::TTL`). The `CurrentUser<B>`, `MaybeUser<B>`
   and `Registered<B>` extractors, which read the user `axum-login` already
   resolved and reject with `401` or `403`. The extractors are generic over
   the `UserBackend` trait, which names the user aggregate of a backend.
@@ -279,12 +282,15 @@ explicitly rather than gated behind a major version bump.
   Behind the default `app` feature it adds `EventSauceApp::postgres(pool)`,
   a builder that wires the Postgres event store, a `PostgresLoginStore` in
   its own `event_sauce_login` schema, a `MokaUserCache` of 10 000 entries,
-  a `ClaimAuthenticator` and the `CorrelationLayer`. `build` runs every
+  a `FirstFactor` and the `CorrelationLayer`. `build` runs every
   migration and is idempotent. The overrides are `event_store`,
   `login_store_schema`, `user_cache`, `user_cache_capacity`,
-  `no_user_cache`, `correlation_header` and `second_factor`, and
-  `App::layer(router, session_layer)` applies the correlation, session and
-  authentication layers. Call `user::<U, _>(method)`: Rust cannot infer
+  `no_user_cache`, `correlation_header` and `route`, which swaps the
+  default `AlwaysDone` for the `Route` that sends logins to the next step:
+  credentials that can hold a second factor do not compile with the default.
+  `App` exposes `store`, `backend`, `logins`, `pending`, `first_factor` and
+  `login_store`, and `App::layer(router, session_layer)` applies the
+  correlation, session and authentication layers. Call `user::<U, _>(method)`: Rust cannot infer
   only the method type.
 
 - Facade features `auth`, `auth-postgres`, `auth-moka`, `auth-redis`,

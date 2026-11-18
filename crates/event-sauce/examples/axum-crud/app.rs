@@ -1,11 +1,13 @@
 //! The state, the backend and the router of the example.
 
+use std::sync::Arc;
+
 use axum::{
     extract::FromRef,
     routing::{get, post, put},
     Router,
 };
-use event_sauce::auth::{Argon2Hasher, ClaimAuthenticator, PasswordLogin};
+use event_sauce::auth::{AlwaysDone, Argon2Hasher, FirstFactor, Logins, PasswordLogin};
 use event_sauce::axum::{EventSauceApp, EventSauceBackend, Store};
 use event_sauce::postgres::PostgresEventStore;
 use sqlx::PgPool;
@@ -15,18 +17,22 @@ use crate::member::Member;
 use crate::projection::Projector;
 use crate::{auth_routes, note_routes};
 
-type Authenticator = ClaimAuthenticator<Member, PasswordLogin<Argon2Hasher>, PostgresEventStore>;
-
 /// The `axum-login` backend of the members, as the extractors name it.
-pub type Backend = EventSauceBackend<Member, Authenticator, PostgresEventStore>;
+pub type Backend = EventSauceBackend<Member, PostgresEventStore>;
+
+/// The first factor of the members: their password, which is all they need.
+pub type Factor = FirstFactor<PasswordLogin<Argon2Hasher>, AlwaysDone>;
 
 /// What the handlers reach through `FromRef`: the event store behind `Repo`,
-/// the pool the read model is queried on and the password hasher.
+/// the pool the read model is queried on, the password hasher and what a
+/// login starts from.
 #[derive(Clone, FromRef)]
 pub struct AppState {
     store: Store<PostgresEventStore>,
     pool: PgPool,
     hasher: Argon2Hasher,
+    logins: Logins<Member>,
+    first: Arc<Factor>,
 }
 
 /// The application: its router and the projector that feeds the list of
@@ -75,6 +81,8 @@ pub async fn build(pool: PgPool, hasher: Argon2Hasher) -> anyhow::Result<Service
         store: app.store(),
         pool,
         hasher,
+        logins: app.logins(),
+        first: app.first_factor(),
     };
     let sessions = SessionManagerLayer::new(MemoryStore::default()).with_secure(false);
     Ok(Service {

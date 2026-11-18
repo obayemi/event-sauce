@@ -1,11 +1,13 @@
 //! Registration, login, logout, password change and the profile.
 
+use std::sync::Arc;
+
 use axum::{extract::State, http::StatusCode, Json};
 use axum_login::AuthSession;
 use event_sauce::auth::{
-    Argon2Hasher, Email, LoginId, Password, PasswordAttempt, PasswordHash, PasswordHasher,
+    Argon2Hasher, Email, LoginId, Logins, Password, PasswordAttempt, PasswordHash, PasswordHasher,
 };
-use event_sauce::axum::{CurrentUser, Repo};
+use event_sauce::axum::{CurrentUser, Repo, SessionUser};
 use event_sauce::postgres::PostgresEventStore;
 use event_sauce::prelude::*;
 use secrecy::SecretString;
@@ -13,7 +15,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::result::Result;
 
-use crate::app::Backend;
+use crate::app::{Backend, Factor};
 use crate::error::ApiError;
 use crate::member::{check_password, Member, MemberCommands};
 
@@ -54,15 +56,19 @@ pub async fn register(
 
 pub async fn login(
     mut auth: AuthSession<Backend>,
+    State(logins): State<Logins<Member>>,
+    State(first): State<Arc<Factor>>,
     Json(form): Json<LoginForm>,
 ) -> Result<StatusCode, ApiError> {
     let email = Email::parse(&form.email).map_err(|_| ApiError::Unauthorized)?;
     let attempt = PasswordAttempt::new(email, SecretString::from(form.password));
-    let member = auth
-        .authenticate(attempt)
+    let authenticated = logins
+        .begin(&first, attempt)
         .await?
-        .ok_or(ApiError::Unauthorized)?;
-    auth.login(&member).await?;
+        .finish()
+        .await
+        .map_err(|_| ApiError::Unauthorized)?;
+    auth.login(&SessionUser::from(authenticated)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

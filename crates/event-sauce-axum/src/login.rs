@@ -1,6 +1,6 @@
-//! Login for axum applications: an `axum-login` backend over an
-//! [`Authenticator`](event_sauce_auth::Authenticator), the session user, the
-//! pending second-factor login and the extractors of the current user.
+//! Login for axum applications: an `axum-login` backend that opens a session
+//! from a finished login, the session user, the pending login cookie and the
+//! extractors of the current user.
 
 mod backend;
 mod current_user;

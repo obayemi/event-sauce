@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use event_sauce_auth::{
-    ClaimAuthenticator, HasSecondFactor, InvalidSchemaName, LoginStore, LoginStoreError,
-    MokaUserCache, NoSecondFactor, PostgresLoginStore, SecondFactor, UserAggregate, UserCache,
+    AlwaysDone, FirstFactor, InvalidSchemaName, LoginMethod, LoginStore, LoginStoreError, Logins,
+    MokaUserCache, PostgresLoginStore, Route, UserAggregate, UserCache,
 };
 use event_sauce_core::EventStore;
 use event_sauce_postgres::PostgresEventStore;
@@ -12,7 +12,7 @@ use http::HeaderName;
 use serde::{de::DeserializeOwned, Serialize};
 use sqlx::PgPool;
 
-use super::{App, SecondFactorStage, WithSecondFactor};
+use super::App;
 use crate::{CorrelationLayer, EventSauceBackend, Store};
 
 const DEFAULT_CACHE_CAPACITY: u64 = 10_000;
@@ -36,7 +36,8 @@ pub enum BuildError {
 ///
 /// [`EventSauceApp::postgres`] wires the common case with `PostgreSQL` behind
 /// everything: the event store, the login store in a schema of its own, an
-/// in-process user cache, the authenticator and the correlation layer.
+/// in-process user cache, the first factor with its route, and the correlation
+/// layer.
 /// [`UserAppBuilder::build`] runs every migration, and
 /// [`App::layer`] applies the result to a router.
 ///
@@ -92,7 +93,7 @@ impl AppBuilder {
             event_store: None,
             login_schema: None,
             method,
-            second_factor: NoSecondFactor,
+            route: AlwaysDone,
             cache: CacheChoice::Moka(DEFAULT_CACHE_CAPACITY),
             correlation: CorrelationLayer::new(),
         }
@@ -109,17 +110,17 @@ enum CacheChoice<U: UserAggregate> {
 ///
 /// The defaults are the ones of [`EventSauceApp`]. Every override is
 /// optional, and the last call on a setting wins.
-pub struct UserAppBuilder<U: UserAggregate, M, T = NoSecondFactor> {
+pub struct UserAppBuilder<U: UserAggregate, M, R = AlwaysDone> {
     pool: PgPool,
     event_store: Option<Arc<PostgresEventStore>>,
     login_schema: Option<String>,
     method: M,
-    second_factor: T,
+    route: R,
     cache: CacheChoice<U>,
     correlation: CorrelationLayer,
 }
 
-impl<U: UserAggregate, M, T> UserAppBuilder<U, M, T> {
+impl<U: UserAggregate, M, R> UserAppBuilder<U, M, R> {
     /// Uses `store` as the event store instead of a default one on the pool.
     ///
     /// It is migrated by [`build`](Self::build) like the default one.
@@ -169,58 +170,60 @@ impl<U: UserAggregate, M, T> UserAppBuilder<U, M, T> {
         self.correlation = CorrelationLayer::header(name);
         self
     }
-}
 
-impl<U: UserAggregate, M> UserAppBuilder<U, M> {
-    /// Demands `factor` from the users whose credentials require one.
+    /// Sends the logins that passed the first factor through `route`, which
+    /// decides the state each one continues in.
     ///
-    /// Pending logins are kept in the login store, so they survive across
-    /// instances.
+    /// The default, [`AlwaysDone`], ends every login there and fits only
+    /// credentials that cannot hold a second factor. For the others there is
+    /// no usable default: [`build`](Self::build) does not compile until
+    /// `route` sends their users to the next step, so a login cannot skip a
+    /// factor the application forgot.
     #[must_use]
-    pub fn second_factor<F>(self, factor: F) -> UserAppBuilder<U, M, WithSecondFactor<F>>
-    where
-        U::Credentials: HasSecondFactor,
-        F: SecondFactor<U::Credentials>,
-    {
+    pub fn route<R2: Route<U>>(self, route: R2) -> UserAppBuilder<U, M, R2> {
         UserAppBuilder {
             pool: self.pool,
             event_store: self.event_store,
             login_schema: self.login_schema,
             method: self.method,
-            second_factor: WithSecondFactor(factor),
+            route,
             cache: self.cache,
             correlation: self.correlation,
         }
     }
 }
 
-type StagedAuthenticator<U, M, S, T> =
-    ClaimAuthenticator<U, M, S, <T as SecondFactorStage<U>>::Stage>;
-
-impl<U, M, T> UserAppBuilder<U, M, T>
+impl<U, M, R> UserAppBuilder<U, M, R>
 where
-    U: UserAggregate + 'static,
+    U: UserAggregate,
     U::DeletedState: Serialize + DeserializeOwned,
-    T: SecondFactorStage<U>,
+    M: LoginMethod<U::Credentials>,
+    R: Route<U>,
 {
-    /// Builds the application over `store` and `logins`.
+    /// Builds the application over `store` and `login_store`.
     pub(super) fn assemble<S: EventStore + 'static>(
         self,
         store: Arc<S>,
-        logins: Arc<dyn LoginStore>,
-    ) -> App<U, StagedAuthenticator<U, M, S, T>, S> {
-        let authenticator = self
-            .second_factor
-            .apply(ClaimAuthenticator::new(store.clone(), self.method), logins);
-        let backend = EventSauceBackend::new(authenticator, store.clone());
-        let backend = match self.cache {
-            CacheChoice::Moka(capacity) => backend.with_cache(MokaUserCache::new(capacity)),
-            CacheChoice::Shared(cache) => backend.with_shared_cache(cache),
-            CacheChoice::Disabled => backend,
+        login_store: Arc<dyn LoginStore>,
+    ) -> App<U, FirstFactor<M, R>, S> {
+        let cache: Option<Arc<dyn UserCache<U>>> = match self.cache {
+            CacheChoice::Moka(capacity) => Some(Arc::new(MokaUserCache::new(capacity))),
+            CacheChoice::Shared(cache) => Some(cache),
+            CacheChoice::Disabled => None,
         };
+        let mut backend = EventSauceBackend::new(store.clone());
+        let mut logins = Logins::new(store.clone());
+        if let Some(cache) = cache {
+            backend = backend.with_shared_cache(cache.clone());
+            logins = logins.with_shared_cache(cache);
+        }
         App {
             store: Store::from(store),
             backend,
+            pending: logins.pending(login_store.clone()),
+            logins,
+            first_factor: Arc::new(FirstFactor::new(self.method, self.route)),
+            login_store,
             correlation: self.correlation,
         }
     }
@@ -235,12 +238,7 @@ where
     ///
     /// Returns [`BuildError`] when the login schema is invalid or a store
     /// cannot be built or migrated.
-    pub async fn build(
-        self,
-    ) -> Result<
-        App<U, StagedAuthenticator<U, M, PostgresEventStore, T>, PostgresEventStore>,
-        BuildError,
-    > {
+    pub async fn build(self) -> Result<App<U, FirstFactor<M, R>, PostgresEventStore>, BuildError> {
         let logins = match &self.login_schema {
             Some(schema) => PostgresLoginStore::new(self.pool.clone()).with_schema(schema)?,
             None => PostgresLoginStore::new(self.pool.clone()),

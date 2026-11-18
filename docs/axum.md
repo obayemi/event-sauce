@@ -4,7 +4,7 @@ This guide explains how to serve an event-sauce application with axum:
 tagging every event with the request id, reaching stores and repositories
 from handlers, logging users in with `axum-login`, and wiring the whole stack
 on Postgres in one builder. The login model itself (credentials, login
-methods, second factors) is in the [auth guide](auth.md).
+methods, typestate logins) is in the [auth guide](auth.md).
 
 ## Table of Contents
 
@@ -16,7 +16,7 @@ methods, second factors) is in the [auth guide](auth.md).
   - [The Backend](#the-backend)
   - [Logging In and Out](#logging-in-and-out)
   - [Guarding Routes](#guarding-routes)
-  - [Logins With a Second Factor](#logins-with-a-second-factor)
+  - [Logins With Several Steps](#logins-with-several-steps)
   - [Sessions End When Credentials Change](#sessions-end-when-credentials-change)
 - [The App Builder](#the-app-builder)
 - [A Runnable Example](#a-runnable-example)
@@ -33,8 +33,8 @@ methods, second factors) is in the [auth guide](auth.md).
 - **`Store`, `Repo` and `UnitOfWork`** are extractors over your application
   state. There is no registry: a repository is built per request from the
   shared store.
-- **`EventSauceBackend`** plugs an `Authenticator` into `axum-login`, and
-  **`CurrentUser`**, **`MaybeUser`** and **`Registered`** hand the logged-in
+- **`EventSauceBackend`** turns a finished login into an `axum-login`
+  session, and **`CurrentUser`**, **`MaybeUser`** and **`Registered`** hand the logged-in
   user to handlers.
 - **`EventSauceApp::postgres`** builds all of the above on one `PgPool`.
 
@@ -113,45 +113,59 @@ async fn rename(Repo(orders): Repo<Order, PostgresEventStore>, /* ... */) { /* .
 
 ## Login with axum-login
 
+A login is a process the [auth guide](auth.md#multi-step-logins) types: it
+runs through `Logins`, and only its end yields an `Authenticated<U>`. The
+axum integration turns that end into a session, and carries the process
+across requests when it needs more than one.
+
 ### The Backend
 
 ```rust
-let authenticator = ClaimAuthenticator::<Member, _, _>::new(
-    store.clone(),
-    PasswordLogin::new(Argon2Hasher::default()),
-);
-let backend = EventSauceBackend::new(authenticator, store.clone())
-    .with_cache(MokaUserCache::new(10_000));        // any UserCache<U>
+let cache: Arc<dyn UserCache<Member>> = Arc::new(MokaUserCache::new(10_000));
+let backend = EventSauceBackend::<Member, _>::new(store.clone())
+    .with_shared_cache(cache.clone());
+let logins = Logins::<Member>::new(store).with_shared_cache(cache);
 let auth_layer = AuthManagerLayerBuilder::new(backend, session_layer).build();
 ```
 
-`EventSauceBackend<U, A, S>` implements `axum_login::AuthnBackend`:
+`EventSauceBackend<U, S>` implements `axum_login::AuthnBackend`. `S` is the
+event store the users live in. The backend authenticates nothing itself:
 
-- `Credentials` is whatever the authenticator's attempt is
-  (`PasswordAttempt<Email>` for a password login);
+- `Credentials` is `Authenticated<U>`, so `authenticate` accepts only a
+  finished login and answers `Ok(Some(SessionUser))`;
 - `User` is `SessionUser<U>`, a shared `Arc<AggregateRoot<U>>`, whose
   `id()` is the `EntityId` and whose `session_auth_hash()` is the identity's
-  session fingerprint;
-- `authenticate` delegates to the authenticator. A wrong password, an unknown
-  login and an inactive user all answer `Ok(None)`;
+  session fingerprint. Its only public constructor is
+  `From<Authenticated<U>>`, so `auth.login(&user)` cannot be handed a user
+  nobody authenticated;
 - `get_user` goes through the `CachedUserLoader` of the [auth
   guide](auth.md#the-user-cache): a hit is version-checked, so a stale or
   deactivated user is never served. `with_shared_cache(Arc<dyn UserCache<U>>)`
-  takes a cache that other backends share. Without a cache, every request
-  loads the user in full.
+  takes a cache that `Logins` and other backends share. Without a cache,
+  every request loads the user in full;
+- `renew(&session_user)` reloads the user of a session after the request
+  changed its own credentials, so the session that changed a password logs
+  in again with the new fingerprint instead of ending with the others.
+
+`BackendError` has one variant, `Store`: `authenticate` cannot fail.
 
 You choose the session store and the session layer. The backend does not.
 
 ### Logging In and Out
 
+A login handler begins the login, and opens the session once the process
+ended. A flow with no step after the password finishes in the same request:
+
 ```rust
-async fn login(mut auth: AuthSession<Backend>, Json(form): Json<LoginForm>) -> StatusCode {
-    let attempt = PasswordAttempt::new(Email::parse(&form.email).unwrap(), form.password.into());
-    match auth.authenticate(attempt).await {
-        Ok(Some(member)) => { auth.login(&member).await.unwrap(); StatusCode::NO_CONTENT }
-        Ok(None) => StatusCode::UNAUTHORIZED,
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
-    }
+async fn login(
+    mut auth: AuthSession<Backend>,
+    State(app): State<AppState>,
+    Json(form): Json<LoginForm>,
+) -> Result<StatusCode, LoginFailed> {
+    let attempt = PasswordAttempt::new(Email::parse(&form.email)?, form.password.into());
+    let authenticated = app.logins.begin(&app.first, attempt).await?.finish().await?;
+    auth.login(&SessionUser::from(authenticated)).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn logout(mut auth: AuthSession<Backend>) -> StatusCode {
@@ -160,9 +174,11 @@ async fn logout(mut auth: AuthSession<Backend>) -> StatusCode {
 }
 ```
 
-`SessionUser::from(root)` builds the session user of an aggregate you
-already hold, for flows that log a user in without a form, such as
-registration that signs in directly.
+`begin` answers `AuthError::InvalidCredentials`, `Inactive` or `Unknown`
+for the attempts to refuse with `401`, and the other variants are the
+failures of a store or a verifier. A flow that signs a user up and logs them
+in at once uses `Logins::sign_up(root)`, whose `Login<U, Done>` finishes the
+same way.
 
 ### Guarding Routes
 
@@ -189,48 +205,65 @@ is an `AggregateRoot<U>`, so it passes straight to `@actor(U)` commands.
 
 A missing `axum-login` layer is a wiring error, answered with `500`.
 
-### Logins With a Second Factor
+### Logins With Several Steps
 
-`authenticate` fails with `BackendError::SecondFactorRequired(id)` when the
-authenticator holds the login back, so no session opens by accident. A
-handler serving such logins calls `backend.start(attempt)` instead, and
-carries the pending id to the next request in a short-lived cookie:
+When the process needs another request, a handler saves the login in the
+`PendingLogins` and answers with a cookie holding the id. The next request
+resumes it, proves the next step and either saves it again or finishes. Here
+is the password-then-TOTP flow, with `TotpIfEnrolled` as the route:
 
 ```rust
-async fn login(mut auth: AuthSession<Backend>, Json(form): Json<LoginForm>) -> Response {
-    match auth.backend.start(attempt(form)).await {
-        Ok(LoginOutcome::Authenticated(root)) => {
-            auth.login(&SessionUser::from(root)).await.unwrap();
-            StatusCode::NO_CONTENT.into_response()
+async fn login(
+    mut auth: AuthSession<Backend>,
+    State(app): State<AppState>,
+    Json(attempt): Json<PasswordAttempt<Email>>,
+) -> Result<Response, LoginFailed> {
+    match app.logins.begin(&app.first, attempt).await? {
+        TotpOrDone::Done(login) => {
+            auth.login(&SessionUser::from(login.finish().await?)).await?;
+            Ok(StatusCode::NO_CONTENT.into_response())
         }
-        Ok(LoginOutcome::SecondFactorRequired(id)) => (
-            StatusCode::ACCEPTED,
-            [(SET_COOKIE, PendingLogin::set_cookie(id, PendingLogin::DEFAULT_TTL))],
-        ).into_response(),
-        _ => StatusCode::UNAUTHORIZED.into_response(),
+        TotpOrDone::Totp(login) => {
+            let id = app.pending.save(login).await?;
+            Ok(([(SET_COOKIE, PendingLogin::set_cookie::<NeedTotp>(id))], StatusCode::ACCEPTED)
+                .into_response())
+        }
     }
 }
 
-async fn second_factor(
+async fn totp(
     mut auth: AuthSession<Backend>,
+    State(app): State<AppState>,
     pending: PendingLogin,
-    Json(form): Json<CodeForm>,
-) -> Response {
-    let cleared = [(SET_COOKIE, PendingLogin::clear_cookie())];
-    match auth.backend.complete(pending.id(), &form.code).await {
-        Ok(user) => { auth.login(&user).await.unwrap(); (StatusCode::NO_CONTENT, cleared).into_response() }
-        Err(_) => (StatusCode::UNAUTHORIZED, cleared).into_response(),
-    }
+    Json(code): Json<TotpCode>,
+) -> Result<Response, LoginFailed> {
+    let login = app.pending.resume::<NeedTotp>(pending.id()).await?;
+    let user = login.prove(&app.totp, code.0).await?.finish().await?;
+    auth.login(&SessionUser::from(user)).await?;
+    Ok(([(SET_COOKIE, PendingLogin::clear_cookie())], StatusCode::NO_CONTENT).into_response())
 }
 ```
 
-- The cookie is `HttpOnly`, `Secure`, `SameSite=Lax` and `Path=/`.
+A flow with more steps repeats the pattern: `resume::<Step>`, `prove`, then
+`save` the next login, with `PendingLogin::set_cookie::<Next>(id)` replacing
+the cookie, until `finish`.
+
+- `PendingLogin::set_cookie::<S>(id)` lives as long as the saved login, which
+  is `S::TTL`. The cookie is `HttpOnly`, `Secure`, `SameSite=Lax` and
+  `Path=/`. `PendingLogin::clear_cookie()` removes it.
 - As an extractor, `PendingLogin` rejects with `401` when the cookie is
   missing or malformed.
-- `complete` exists only when the authenticator has a `TwoFactor` stage.
-  Call `auth.login` only after it succeeds.
-- A pending login is single use: a replayed or forged cookie, a wrong code
-  and a second attempt all end in `401`.
+- The cookie holds the id only. The state the login is in and the user it
+  belongs to stay in the login store, so a client cannot skip a step by
+  editing it.
+- `resume` takes the login out of the store, so a pending login is single
+  use. A replayed or forged cookie, a cookie of another state than the one
+  the handler resumes, and a second attempt all end in `401`, and a login
+  that was resumed and failed is over. It also refuses a user that was
+  deactivated, or whose credentials changed, since the login was saved.
+- Call `auth.login` only with what `finish` returned. It is the only thing
+  that builds a `SessionUser`.
+
 
 ### Sessions End When Credentials Change
 
@@ -241,13 +274,18 @@ hash stored in the session with the one of the freshly loaded user.
 Deactivating a user does the same, because `get_user` answers `None` for an
 inactive one. Both hold with and without a cache.
 
+The session that changes its own credentials ends with the others, unless the
+handler calls `backend.renew(&session_user)` and logs in again with the
+result.
+
 ## The App Builder
 
 With the `app` feature, `EventSauceApp` wires the common case on Postgres:
 
 ```rust
 let app = EventSauceApp::postgres(pool)
-    .user::<Member, _>(PasswordLogin::new(Argon2Hasher::default()))
+    .user::<Member, _>(PasswordOrFederatedLogin::new(Argon2Hasher::default()))
+    .route(TotpIfEnrolled)         // default: AlwaysDone
     .build()
     .await?;                       // runs every migration below
 
@@ -263,8 +301,17 @@ login store migrations. It is idempotent.
 | event store | `PostgresEventStore` on the pool | `.event_store(store)` |
 | login store | `PostgresLoginStore` in the `event_sauce_login` schema | `.login_store_schema("...")` |
 | user cache | `MokaUserCache`, 10 000 entries | `.user_cache(cache)`, `.user_cache_capacity(n)`, `.no_user_cache()` |
-| authenticator | `ClaimAuthenticator` over the given login method | `.second_factor(factor)` keeps pending logins in the login store |
+| first factor | `FirstFactor` over the given login method, routed by `AlwaysDone` | `.route(route)` |
+| logins | `Logins<U>` on the event store and `PendingLogins<U>` in the login store, sharing the user cache with the backend | none |
 | correlation | `CorrelationLayer` on `x-request-id` | `.correlation_header(HeaderName)` |
+
+`.route(route)` swaps the default `AlwaysDone`, which ends every login right
+after the first factor. `build` requires `R: Route<U>`, and `AlwaysDone` is a
+route only for credentials marked `SingleFactor`, so an app whose credentials
+can hold a second factor does not compile until it names a route that sends
+users to it. The builder builds no verifier for the later steps, because those
+states are the app's: build them from what the app exposes, as in
+`Totp::new(app.login_store())`.
 
 The login store gets its own schema, so it can be dropped, granted or
 excluded from backups independently of the event store. The builder sets no
@@ -275,14 +322,14 @@ layer, your session layer, then the `axum-login` layer built on the backend.
 The session layer stays an argument: the builder does not choose a session
 store for you.
 
-The app gives `app.store()` (a `Store<PostgresEventStore>`) and
-`app.backend()` instead of an opaque state. Keep your own `AppState` with
-`FromRef`, as in [State](#state-store-repo-and-unitofwork).
+The app gives `app.store()` (a `Store<PostgresEventStore>`), `app.backend()`,
+`app.logins()`, `app.pending()`, `app.first_factor()` and `app.login_store()`
+instead of an opaque state. Keep your own `AppState` with `FromRef`, as in [State](#state-store-repo-and-unitofwork).
 
-The builder is Postgres-only for now. It takes neither a custom login store
-(a Redis one, say) nor a custom authenticator: an app that needs them builds
-`EventSauceBackend` by hand and applies the layers itself, as in [The
-Backend](#the-backend). `.user_cache(...)` accepts any `UserCache`, so
+The builder is Postgres-only for now. It takes no custom login store (a Redis
+one, say): an app that needs one builds `EventSauceBackend`, `Logins` and
+`PendingLogins` by hand and applies the layers itself, as in
+[The Backend](#the-backend). `.user_cache(...)` accepts any `UserCache`, so
 `RedisUserCache` works with the builder.
 
 ## A Runnable Example
@@ -295,8 +342,8 @@ cargo run --example axum-auth --features axum-login
 ```
 
 It has a `Member` user aggregate (`#[aggregate(user)]`), registration, a
-password login, logout, a guarded `/me` and a guarded password change that
-ends every session. Its tests drive the same flow through the router with
+password login (a `FirstFactor` routed by `AlwaysDone`), logout, a guarded
+`/me` and a guarded password change that ends every session. Its tests drive the same flow through the router with
 `tower::ServiceExt::oneshot`, so `cargo test --examples` keeps it honest.
 
 `crates/event-sauce/examples/axum-crud` is the same login on Postgres with
@@ -359,7 +406,7 @@ let response = router.clone().oneshot(request).await?;
 
 ## Related Documentation
 
-- [Auth Guide](auth.md) - credentials, login methods, second factors
+- [Auth Guide](auth.md) - credentials, login methods, typestate logins
 - [Event Context](event-context.md) - what the correlation layer sets
 - [Unit of Work](unit-of-work.md) - the `UnitOfWork` extractor's store
 - [Design proposal](proposals/auth-and-axum.md) - the reasoning behind the design

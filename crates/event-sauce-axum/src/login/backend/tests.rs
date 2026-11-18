@@ -1,61 +1,88 @@
-use event_sauce_auth::{AuthError, HashError, LoginOutcome, PendingLoginError, PendingLoginId};
+use std::sync::Arc;
 
-use super::{into_session_user, BackendError};
-use crate::login::test_support::{registered, Member};
+use axum_login::{AuthUser, AuthnBackend};
+use event_sauce_core::{EntityId, EventStore, Repository};
+use event_sauce_memory::InMemoryEventStore;
 
-type Result = std::result::Result<LoginOutcome<Member>, AuthError<&'static str>>;
+use super::EventSauceBackend;
+use crate::login::test_support::{authenticated, registered, Member};
+use crate::SessionUser;
 
-#[test]
-fn an_authenticated_user_opens_a_session_user() {
+fn backend() -> (
+    EventSauceBackend<Member, InMemoryEventStore>,
+    Arc<InMemoryEventStore>,
+) {
+    let store = Arc::new(InMemoryEventStore::new());
+    (EventSauceBackend::new(store.clone()), store)
+}
+
+#[tokio::test]
+async fn a_finished_login_authenticates_into_a_session_user() {
+    let (backend, _store) = backend();
     let root = registered();
     let id = root.entity_id();
 
-    let user = into_session_user(Result::Ok(LoginOutcome::Authenticated(root)))
+    let user = backend
+        .authenticate(authenticated(root).await)
+        .await
         .unwrap()
         .unwrap();
 
-    assert_eq!(user.entity_id(), id);
+    assert_eq!(user.id(), id);
 }
 
-#[test]
-fn a_refused_login_is_no_user_rather_than_an_error() {
-    for refusal in [
-        AuthError::InvalidCredentials,
-        AuthError::Inactive,
-        AuthError::Unknown { attempt: "ada" },
-    ] {
-        assert!(into_session_user(Result::Err(refusal)).unwrap().is_none());
-    }
+#[tokio::test]
+async fn an_unknown_id_resolves_to_no_user() {
+    let (backend, _store) = backend();
+
+    assert!(backend.get_user(&EntityId::new()).await.unwrap().is_none());
 }
 
-#[test]
-fn a_required_second_factor_is_an_error_carrying_the_pending_id() {
-    let pending = PendingLoginId::new();
+#[tokio::test]
+async fn a_stored_user_resolves_from_its_id() {
+    let (backend, store) = backend();
+    let mut root = registered();
+    let id = root.entity_id();
+    store.repository::<Member>().save(&mut root).await.unwrap();
 
-    let error =
-        into_session_user(Result::Ok(LoginOutcome::SecondFactorRequired(pending))).unwrap_err();
+    let user = backend.get_user(&id).await.unwrap().unwrap();
 
-    assert!(matches!(error, BackendError::SecondFactorRequired(id) if id == pending));
+    assert_eq!(user.id(), id);
 }
 
-#[test]
-fn infrastructure_failures_stay_errors() {
-    let store = event_sauce_core::Error::cascade_depth_exceeded(1, 1);
-    let hash = HashError("broken".to_owned());
+#[tokio::test]
+async fn renewing_reloads_the_user_of_the_session() {
+    let (backend, store) = backend();
+    let mut root = registered();
+    let id = root.entity_id();
+    store.repository::<Member>().save(&mut root).await.unwrap();
+    let session = backend.get_user(&id).await.unwrap().unwrap();
 
-    assert!(matches!(
-        into_session_user(Result::Err(AuthError::Store(store))),
-        Err(BackendError::Store(_))
-    ));
-    assert!(matches!(
-        into_session_user(Result::Err(AuthError::Hash(hash))),
-        Err(BackendError::Hash(_))
-    ));
-    let malformed = serde_json::from_str::<u8>("x").unwrap_err();
-    assert!(matches!(
-        into_session_user(Result::Err(AuthError::Pending(
-            PendingLoginError::Encoding(malformed)
-        ))),
-        Err(BackendError::Pending(_))
-    ));
+    let renewed = backend.renew(&session).await.unwrap().unwrap();
+
+    assert_eq!(renewed.id(), id);
+    assert_eq!(renewed.session_auth_hash(), session.session_auth_hash());
+}
+
+#[tokio::test]
+async fn renewing_a_user_that_is_gone_resolves_to_no_user() {
+    let (backend, _store) = backend();
+    let session = SessionUser::from(authenticated(registered()).await);
+
+    assert!(backend.renew(&session).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn a_shared_cache_serves_the_stored_user() {
+    let store = Arc::new(InMemoryEventStore::new());
+    let backend = EventSauceBackend::<Member, _>::new(store.clone())
+        .with_cache(event_sauce_auth::MokaUserCache::new(10));
+    let mut root = registered();
+    let id = root.entity_id();
+    store.repository::<Member>().save(&mut root).await.unwrap();
+
+    let first = backend.get_user(&id).await.unwrap().unwrap();
+    let second = backend.get_user(&id).await.unwrap().unwrap();
+
+    assert_eq!(first.id(), second.id());
 }

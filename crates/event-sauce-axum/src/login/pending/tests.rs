@@ -1,9 +1,16 @@
-use std::time::Duration;
-
-use event_sauce_auth::{LoginTtl, PendingLoginId};
+use event_sauce_auth::{Done, LoginState, LoginTtl, PendingLoginId};
 use http::{header::COOKIE, HeaderMap, HeaderValue};
+use serde::{Deserialize, Serialize};
 
 use super::PendingLogin;
+
+#[derive(Serialize, Deserialize)]
+struct Brief;
+
+impl LoginState for Brief {
+    const TAG: &'static str = "test.brief";
+    const TTL: LoginTtl = LoginTtl::ONE_HOUR;
+}
 
 fn headers(cookie: &str) -> HeaderMap {
     let mut headers = HeaderMap::new();
@@ -14,7 +21,7 @@ fn headers(cookie: &str) -> HeaderMap {
 #[test]
 fn the_cookie_round_trips_the_pending_login_id() {
     let id = PendingLoginId::new();
-    let header = PendingLogin::set_cookie(id, PendingLogin::DEFAULT_TTL);
+    let header = PendingLogin::set_cookie::<Done>(id);
     let sent = header.split(';').next().unwrap();
 
     let pending = PendingLogin::from_headers(&headers(sent)).unwrap();
@@ -23,18 +30,23 @@ fn the_cookie_round_trips_the_pending_login_id() {
 }
 
 #[test]
-fn the_cookie_is_short_lived_and_locked_down() {
-    let set = PendingLogin::set_cookie(
-        PendingLoginId::new(),
-        LoginTtl::new(Duration::from_secs(90)).unwrap(),
-    );
+fn the_cookie_is_locked_down() {
+    let set = PendingLogin::set_cookie::<Done>(PendingLoginId::new());
 
     assert!(set.starts_with(&format!("{}=", PendingLogin::COOKIE)));
-    assert!(set.contains("Max-Age=90"));
     assert!(set.contains("HttpOnly"));
     assert!(set.contains("Secure"));
     assert!(set.contains("SameSite=Lax"));
     assert!(set.contains("Path=/"));
+}
+
+#[test]
+fn the_cookie_lives_as_long_as_the_state_it_waits_in() {
+    let five_minutes = PendingLogin::set_cookie::<Done>(PendingLoginId::new());
+    let one_hour = PendingLogin::set_cookie::<Brief>(PendingLoginId::new());
+
+    assert!(five_minutes.contains("Max-Age=300"));
+    assert!(one_hour.contains("Max-Age=3600"));
 }
 
 #[test]
@@ -78,9 +90,4 @@ fn a_malformed_id_means_no_pending_login() {
     let cookie = format!("{}=not-a-uuid", PendingLogin::COOKIE);
 
     assert!(PendingLogin::from_headers(&headers(&cookie)).is_none());
-}
-
-#[test]
-fn the_cookie_lives_as_long_as_the_pending_login_of_the_default_stage() {
-    assert_eq!(PendingLogin::DEFAULT_TTL, LoginTtl::FIVE_MINUTES);
 }

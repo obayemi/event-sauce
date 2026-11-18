@@ -1,4 +1,4 @@
-//! Login, logout, second factor and session invalidation through a real
+//! Login, logout, multi-step logins and session invalidation through a real
 //! axum router, with tower-sessions' memory store and the in-memory event
 //! store.
 
@@ -12,29 +12,30 @@ use std::{
 
 use async_trait::async_trait;
 use axum::{
-    extract::State,
+    extract::{FromRef, State},
     http::{header::SET_COOKIE, StatusCode},
-    response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
 use axum_login::{AuthManagerLayerBuilder, AuthSession};
 use event_sauce_auth::{
-    Argon2Hasher, ClaimAuthenticator, Email, LoginId, LoginKey, LoginOutcome, LoginStore,
-    LoginStoreError, LoginTtl, MokaUserCache, PasswordAttempt, PasswordLogin, TwoFactor,
+    FirstFactor, LoginKey, LoginStore, LoginStoreError, LoginTtl, Logins, MokaUserCache,
+    PasswordLogin, UserCache,
 };
 use event_sauce_axum::{
-    BackendError, CurrentUser, EventSauceBackend, MaybeUser, PendingLogin, Registered, SessionUser,
+    CurrentUser, EventSauceBackend, MaybeUser, PendingLogin, Registered, SessionUser,
 };
-use event_sauce_core::{AggregateRoot, EntityId, EventStore, Repository};
+use event_sauce_core::{EntityId, EventStore, Repository};
 use event_sauce_memory::InMemoryEventStore;
-use secrecy::SecretString;
+use serde::Deserialize;
 use support::Client;
 use tower_sessions::{MemoryStore, SessionManagerLayer};
 use user_fixture::{
-    change_password, cheap_hasher, register, CodeForm, FixedCode, LoginForm, User, UserCommands,
-    ADA, CODE, PASSWORD,
+    change_password, cheap_hasher, hash, login_routes, register, Backend as FixtureBackend,
+    CodeIfEnrolled, Flow, User, UserCommands, ADA, CODE, MAIL_CODE, PASSWORD,
 };
+
+type Backend = FixtureBackend<InMemoryEventStore>;
 
 #[derive(Default)]
 struct MemoryLoginStore {
@@ -65,70 +66,15 @@ impl LoginStore for MemoryLoginStore {
     }
 }
 
-type Authenticator =
-    ClaimAuthenticator<User, PasswordLogin<Argon2Hasher>, InMemoryEventStore, TwoFactor<FixedCode>>;
-type Backend = EventSauceBackend<User, Authenticator, InMemoryEventStore>;
-
-fn attempt(form: LoginForm) -> PasswordAttempt<Email> {
-    PasswordAttempt::new(
-        Email::parse(&form.email).unwrap(),
-        SecretString::from(form.password),
-    )
+#[derive(Clone, FromRef)]
+struct AppState {
+    flow: Flow,
+    events: Arc<InMemoryEventStore>,
 }
 
-fn describe(root: &AggregateRoot<User>) -> String {
-    root.entity_id().to_string()
-}
-
-async fn login(mut auth: AuthSession<Backend>, Json(form): Json<LoginForm>) -> Response {
-    match auth.backend.start(attempt(form)).await {
-        Ok(LoginOutcome::Authenticated(root)) => {
-            auth.login(&SessionUser::from(root)).await.unwrap();
-            StatusCode::NO_CONTENT.into_response()
-        }
-        Ok(LoginOutcome::SecondFactorRequired(id)) => (
-            StatusCode::ACCEPTED,
-            [(
-                SET_COOKIE,
-                PendingLogin::set_cookie(id, PendingLogin::DEFAULT_TTL),
-            )],
-        )
-            .into_response(),
-        Ok(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-        Err(_) => StatusCode::UNAUTHORIZED.into_response(),
-    }
-}
-
-async fn login_through_axum_login(
-    mut auth: AuthSession<Backend>,
-    Json(form): Json<LoginForm>,
-) -> Response {
-    match auth.authenticate(attempt(form)).await {
-        Ok(Some(user)) => {
-            auth.login(&user).await.unwrap();
-            StatusCode::NO_CONTENT.into_response()
-        }
-        Ok(None) => StatusCode::UNAUTHORIZED.into_response(),
-        Err(axum_login::Error::Backend(BackendError::SecondFactorRequired(id))) => {
-            (StatusCode::ACCEPTED, id.to_string()).into_response()
-        }
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    }
-}
-
-async fn second_factor(
-    mut auth: AuthSession<Backend>,
-    pending: PendingLogin,
-    Json(form): Json<CodeForm>,
-) -> Response {
-    let cleared = [(SET_COOKIE, PendingLogin::clear_cookie())];
-    match auth.backend.complete(pending.id(), &form.code).await {
-        Ok(user) => {
-            auth.login(&user).await.unwrap();
-            (StatusCode::NO_CONTENT, cleared).into_response()
-        }
-        Err(_) => (StatusCode::UNAUTHORIZED, cleared).into_response(),
-    }
+#[derive(Deserialize)]
+struct PasswordForm {
+    password: String,
 }
 
 async fn logout(mut auth: AuthSession<Backend>) -> StatusCode {
@@ -136,26 +82,48 @@ async fn logout(mut auth: AuthSession<Backend>) -> StatusCode {
     StatusCode::NO_CONTENT
 }
 
-async fn become_anonymous(
+async fn become_anonymous(mut auth: AuthSession<Backend>, State(flow): State<Flow>) -> StatusCode {
+    let authenticated = flow
+        .logins
+        .sign_up(User::anonymous().unwrap())
+        .await
+        .unwrap()
+        .finish()
+        .await
+        .unwrap();
+    auth.login(&SessionUser::from(authenticated)).await.unwrap();
+    StatusCode::NO_CONTENT
+}
+
+async fn change_own_password(
     mut auth: AuthSession<Backend>,
-    State(store): State<Arc<InMemoryEventStore>>,
+    State(events): State<Arc<InMemoryEventStore>>,
+    Json(form): Json<PasswordForm>,
 ) -> StatusCode {
-    let mut user = User::anonymous().unwrap();
-    store.repository::<User>().save(&mut user).await.unwrap();
-    auth.login(&SessionUser::from(user)).await.unwrap();
+    let session = auth.user.clone().unwrap();
+    let hash = hash(&form.password).await;
+    events
+        .repository::<User>()
+        .modify(session.entity_id(), |user| {
+            user.change_password(hash.clone())
+        })
+        .await
+        .unwrap();
+    let renewed = auth.backend.renew(&session).await.unwrap().unwrap();
+    auth.login(&renewed).await.unwrap();
     StatusCode::NO_CONTENT
 }
 
 async fn me(user: CurrentUser<Backend>) -> String {
-    describe(&user)
+    user.entity_id().to_string()
 }
 
 async fn maybe(MaybeUser(user): MaybeUser<Backend>) -> String {
-    user.map_or_else(|| "nobody".to_owned(), |user| describe(&user))
+    user.map_or_else(|| "nobody".to_owned(), |user| user.entity_id().to_string())
 }
 
 async fn registered(user: Registered<Backend>) -> String {
-    describe(&user)
+    user.entity_id().to_string()
 }
 
 struct World {
@@ -165,33 +133,42 @@ struct World {
 
 impl World {
     fn new() -> Self {
-        Self::with_backend(|backend| backend)
+        Self::with_cache(None)
     }
 
     fn cached() -> Self {
-        Self::with_backend(|backend| backend.with_cache(MokaUserCache::new(100)))
+        Self::with_cache(Some(Arc::new(MokaUserCache::new(100))))
     }
 
-    fn with_backend(configure: impl FnOnce(Backend) -> Backend) -> Self {
+    fn with_cache(cache: Option<Arc<dyn UserCache<User>>>) -> Self {
         let events = Arc::new(InMemoryEventStore::new());
-        let authenticator =
-            ClaimAuthenticator::new(events.clone(), PasswordLogin::new(cheap_hasher()))
-                .with_second_factor(TwoFactor::new(
-                    FixedCode,
-                    Arc::new(MemoryLoginStore::default()),
-                ));
-        let backend = configure(EventSauceBackend::new(authenticator, events.clone()));
+        let mut backend = EventSauceBackend::new(events.clone());
+        let mut logins = Logins::<User>::new(events.clone());
+        if let Some(cache) = cache {
+            backend = backend.with_shared_cache(cache.clone());
+            logins = logins.with_shared_cache(cache);
+        }
+        let flow = Flow {
+            pending: logins.pending(Arc::new(MemoryLoginStore::default())),
+            logins,
+            first: Arc::new(FirstFactor::new(
+                PasswordLogin::new(cheap_hasher()),
+                CodeIfEnrolled,
+            )),
+        };
         let sessions = SessionManagerLayer::new(MemoryStore::default());
-        let router = Router::new()
-            .route("/login", post(login))
-            .route("/login/axum-login", post(login_through_axum_login))
-            .route("/login/second-factor", post(second_factor))
+        let router = Router::<AppState>::new()
+            .merge(login_routes::<InMemoryEventStore>().with_state(flow.clone()))
             .route("/logout", post(logout))
             .route("/anonymous", post(become_anonymous))
+            .route("/password", post(change_own_password))
             .route("/me", get(me))
             .route("/maybe", get(maybe))
             .route("/registered", get(registered))
-            .with_state(events.clone())
+            .with_state(AppState {
+                flow,
+                events: events.clone(),
+            })
             .layer(AuthManagerLayerBuilder::new(backend, sessions).build());
         Self {
             events,
@@ -222,20 +199,24 @@ impl World {
             .await
             .unwrap();
     }
+
+    async fn status(&mut self, uri: &str) -> StatusCode {
+        self.client.get(uri).await.status
+    }
+
+    async fn pending_cookie_after_the_password(&mut self) -> String {
+        self.register(Some(CODE)).await;
+        self.client.log_in(ADA, PASSWORD).await;
+        self.client.cookies[PendingLogin::COOKIE].clone()
+    }
 }
 
 #[tokio::test]
 async fn a_visitor_is_unauthorized_where_a_user_is_required() {
     let mut world = World::new();
 
-    assert_eq!(
-        world.client.get("/me").await.status,
-        StatusCode::UNAUTHORIZED
-    );
-    assert_eq!(
-        world.client.get("/registered").await.status,
-        StatusCode::UNAUTHORIZED
-    );
+    assert_eq!(world.status("/me").await, StatusCode::UNAUTHORIZED);
+    assert_eq!(world.status("/registered").await, StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
@@ -273,10 +254,7 @@ async fn a_wrong_password_opens_no_session() {
     let login = world.client.log_in(ADA, "wrong-horse").await;
 
     assert_eq!(login.status, StatusCode::UNAUTHORIZED);
-    assert_eq!(
-        world.client.get("/me").await.status,
-        StatusCode::UNAUTHORIZED
-    );
+    assert_eq!(world.status("/me").await, StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
@@ -299,10 +277,7 @@ async fn logging_out_ends_the_session_for_good() {
     let logout = world.client.post("/logout", None).await;
 
     assert_eq!(logout.status, StatusCode::NO_CONTENT);
-    assert_eq!(
-        world.client.get("/me").await.status,
-        StatusCode::UNAUTHORIZED
-    );
+    assert_eq!(world.status("/me").await, StatusCode::UNAUTHORIZED);
     assert_eq!(thief.get("/me").await.status, StatusCode::UNAUTHORIZED);
 }
 
@@ -319,22 +294,43 @@ async fn the_session_id_changes_at_login() {
 }
 
 #[tokio::test]
-async fn a_second_factor_holds_the_login_back_until_it_is_proven() {
+async fn a_session_opens_only_after_the_last_step() {
     let mut world = World::new();
     world.register(Some(CODE)).await;
 
-    let first = world.client.log_in(ADA, PASSWORD).await;
-    let before = world.client.get("/me").await;
-    let second = world.client.send_code(CODE).await;
-    let after = world.client.get("/me").await;
+    let password = world.client.log_in(ADA, PASSWORD).await;
+    let after_password = world.status("/me").await;
+    let first_cookie = world.client.cookies[PendingLogin::COOKIE].clone();
+    let code = world.client.send_code(CODE).await;
+    let after_code = world.status("/me").await;
+    let second_cookie = world.client.cookies[PendingLogin::COOKIE].clone();
+    let mail = world.client.send_mail(MAIL_CODE).await;
+    let after_mail = world.status("/me").await;
 
-    assert_eq!(first.status, StatusCode::ACCEPTED);
-    assert!(first.headers.get_all(SET_COOKIE).iter().any(|cookie| cookie
-        .as_bytes()
-        .starts_with(PendingLogin::COOKIE.as_bytes())));
-    assert_eq!(before.status, StatusCode::UNAUTHORIZED);
-    assert_eq!(second.status, StatusCode::NO_CONTENT);
-    assert_eq!(after.status, StatusCode::OK);
+    assert_eq!(password.status, StatusCode::ACCEPTED);
+    assert_eq!(after_password, StatusCode::UNAUTHORIZED);
+    assert_eq!(code.status, StatusCode::ACCEPTED);
+    assert_eq!(after_code, StatusCode::UNAUTHORIZED);
+    assert_ne!(first_cookie, second_cookie);
+    assert_eq!(mail.status, StatusCode::NO_CONTENT);
+    assert_eq!(after_mail, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn the_pending_cookie_lives_as_long_as_the_state_it_waits_in() {
+    let mut world = World::new();
+    world.register(Some(CODE)).await;
+
+    let password = world.client.log_in(ADA, PASSWORD).await;
+
+    let cookie = password
+        .headers
+        .get_all(SET_COOKIE)
+        .iter()
+        .map(|value| value.to_str().unwrap())
+        .find(|cookie| cookie.starts_with(PendingLogin::COOKIE))
+        .unwrap();
+    assert!(cookie.contains("Max-Age=300"));
 }
 
 #[tokio::test]
@@ -342,8 +338,9 @@ async fn completing_the_login_removes_the_pending_cookie() {
     let mut world = World::new();
     world.register(Some(CODE)).await;
     world.client.log_in(ADA, PASSWORD).await;
-
     world.client.send_code(CODE).await;
+
+    world.client.send_mail(MAIL_CODE).await;
 
     assert!(!world.client.cookies.contains_key(PendingLogin::COOKIE));
 }
@@ -351,50 +348,113 @@ async fn completing_the_login_removes_the_pending_cookie() {
 #[tokio::test]
 async fn a_wrong_code_opens_no_session_and_ends_the_pending_login() {
     let mut world = World::new();
-    world.register(Some(CODE)).await;
-    world.client.log_in(ADA, PASSWORD).await;
-    let stale = world.client.cookies.clone();
+    let stale = world.pending_cookie_after_the_password().await;
 
     let wrong = world.client.send_code("000000").await;
-    world.client.cookies = stale;
+    world
+        .client
+        .cookies
+        .insert(PendingLogin::COOKIE.to_owned(), stale);
     let retry = world.client.send_code(CODE).await;
 
     assert_eq!(wrong.status, StatusCode::UNAUTHORIZED);
     assert_eq!(retry.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(world.status("/me").await, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn a_wrong_mailed_code_opens_no_session_and_ends_the_pending_login() {
+    let mut world = World::new();
+    world.pending_cookie_after_the_password().await;
+    world.client.send_code(CODE).await;
+    let stale = world.client.cookies[PendingLogin::COOKIE].clone();
+
+    let wrong = world.client.send_mail("000000").await;
+    world
+        .client
+        .cookies
+        .insert(PendingLogin::COOKIE.to_owned(), stale);
+    let retry = world.client.send_mail(MAIL_CODE).await;
+
+    assert_eq!(wrong.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(retry.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(world.status("/me").await, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn a_step_cannot_be_replayed() {
+    let mut world = World::new();
+    let first = world.pending_cookie_after_the_password().await;
+    world.client.send_code(CODE).await;
+    let mut replay = world.client.fork();
+    replay
+        .cookies
+        .insert(PendingLogin::COOKIE.to_owned(), first);
+
+    let reply = replay.send_code(CODE).await;
+
+    assert_eq!(reply.status, StatusCode::UNAUTHORIZED);
     assert_eq!(
-        world.client.get("/me").await.status,
-        StatusCode::UNAUTHORIZED
+        world.client.send_mail(MAIL_CODE).await.status,
+        StatusCode::NO_CONTENT
     );
 }
 
 #[tokio::test]
-async fn a_pending_login_completes_only_once() {
+async fn a_finished_login_cannot_be_replayed() {
     let mut world = World::new();
-    world.register(Some(CODE)).await;
-    world.client.log_in(ADA, PASSWORD).await;
-    let stale = world.client.cookies.clone();
+    world.pending_cookie_after_the_password().await;
     world.client.send_code(CODE).await;
+    let last = world.client.cookies[PendingLogin::COOKIE].clone();
+    world.client.send_mail(MAIL_CODE).await;
     let mut replay = world.client.fork();
-    replay.cookies = stale;
+    replay.cookies.insert(PendingLogin::COOKIE.to_owned(), last);
 
-    let reply = replay.send_code(CODE).await;
+    let reply = replay.send_mail(MAIL_CODE).await;
 
     assert_eq!(reply.status, StatusCode::UNAUTHORIZED);
     assert_eq!(replay.get("/me").await.status, StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
-async fn the_second_factor_needs_the_pending_cookie() {
+async fn a_step_cannot_be_skipped() {
     let mut world = World::new();
-    world.register(Some(CODE)).await;
+    world.pending_cookie_after_the_password().await;
 
-    let reply = world.client.send_code(CODE).await;
+    let skipped = world.client.send_mail(MAIL_CODE).await;
+    let honest = world.client.send_code(CODE).await;
 
-    assert_eq!(reply.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(skipped.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(honest.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(world.status("/me").await, StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
-async fn a_pending_login_cannot_be_completed_by_a_forged_cookie() {
+async fn a_login_cannot_go_back_to_a_step_it_passed() {
+    let mut world = World::new();
+    world.pending_cookie_after_the_password().await;
+    world.client.send_code(CODE).await;
+
+    let again = world.client.send_code(CODE).await;
+
+    assert_eq!(again.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(world.status("/me").await, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn a_step_needs_the_pending_cookie() {
+    let mut world = World::new();
+    world.register(Some(CODE)).await;
+
+    let code = world.client.send_code(CODE).await;
+    let mail = world.client.send_mail(MAIL_CODE).await;
+
+    assert_eq!(code.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(mail.status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn a_pending_login_cannot_be_continued_with_a_forged_cookie() {
     let mut world = World::new();
     world.register(Some(CODE)).await;
     world.client.cookies.insert(
@@ -402,57 +462,52 @@ async fn a_pending_login_cannot_be_completed_by_a_forged_cookie() {
         event_sauce_auth::PendingLoginId::new().to_string(),
     );
 
-    let reply = world.client.send_code(CODE).await;
+    let code = world.client.send_code(CODE).await;
+    let mail = world.client.send_mail(MAIL_CODE).await;
 
-    assert_eq!(reply.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(code.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(mail.status, StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
-async fn axum_login_authenticate_reports_the_pending_login_as_an_error() {
+async fn deactivating_the_user_after_the_password_ends_the_login() {
     let mut world = World::new();
-    world.register(Some(CODE)).await;
+    let id = world.register(Some(CODE)).await;
+    world.client.log_in(ADA, PASSWORD).await;
 
-    let reply = world
-        .client
-        .log_in_at("/login/axum-login", ADA, PASSWORD)
-        .await;
+    world.deactivate(id).await;
+    let code = world.client.send_code(CODE).await;
 
-    assert_eq!(reply.status, StatusCode::ACCEPTED);
-    assert!(reply
-        .body
-        .parse::<event_sauce_auth::PendingLoginId>()
-        .is_ok());
-    assert_eq!(
-        world.client.get("/me").await.status,
-        StatusCode::UNAUTHORIZED
-    );
+    assert_eq!(code.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(world.status("/me").await, StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
-async fn axum_login_authenticate_opens_a_session_without_a_second_factor() {
+async fn deactivating_the_user_before_the_last_step_ends_the_login() {
     let mut world = World::new();
-    world.register(None).await;
+    let id = world.register(Some(CODE)).await;
+    world.client.log_in(ADA, PASSWORD).await;
+    world.client.send_code(CODE).await;
 
-    let reply = world
-        .client
-        .log_in_at("/login/axum-login", ADA, PASSWORD)
-        .await;
+    world.deactivate(id).await;
+    let mail = world.client.send_mail(MAIL_CODE).await;
 
-    assert_eq!(reply.status, StatusCode::NO_CONTENT);
-    assert_eq!(world.client.get("/me").await.status, StatusCode::OK);
+    assert_eq!(mail.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(world.status("/me").await, StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
-async fn axum_login_authenticate_refuses_a_wrong_password_without_an_error() {
+async fn changing_the_password_during_the_login_ends_it() {
     let mut world = World::new();
-    world.register(None).await;
+    let id = world.register(Some(CODE)).await;
+    world.client.log_in(ADA, PASSWORD).await;
+    world.client.send_code(CODE).await;
 
-    let reply = world
-        .client
-        .log_in_at("/login/axum-login", ADA, "wrong-horse")
-        .await;
+    world.change_password(id, "new-horse").await;
+    let mail = world.client.send_mail(MAIL_CODE).await;
 
-    assert_eq!(reply.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(mail.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(world.status("/me").await, StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
@@ -461,12 +516,9 @@ async fn an_anonymous_user_is_current_but_not_registered() {
 
     world.client.post("/anonymous", None).await;
 
-    assert_eq!(world.client.get("/me").await.status, StatusCode::OK);
+    assert_eq!(world.status("/me").await, StatusCode::OK);
     assert_ne!(world.client.get("/maybe").await.body, "nobody");
-    assert_eq!(
-        world.client.get("/registered").await.status,
-        StatusCode::FORBIDDEN
-    );
+    assert_eq!(world.status("/registered").await, StatusCode::FORBIDDEN);
 }
 
 async fn changing_the_password_ends_other_sessions(mut world: World) {
@@ -478,10 +530,7 @@ async fn changing_the_password_ends_other_sessions(mut world: World) {
 
     world.change_password(id, "new-horse").await;
 
-    assert_eq!(
-        world.client.get("/me").await.status,
-        StatusCode::UNAUTHORIZED
-    );
+    assert_eq!(world.status("/me").await, StatusCode::UNAUTHORIZED);
     assert_eq!(other.get("/me").await.status, StatusCode::UNAUTHORIZED);
     assert_eq!(world.client.get("/maybe").await.body, "nobody");
     assert_eq!(
@@ -492,7 +541,7 @@ async fn changing_the_password_ends_other_sessions(mut world: World) {
         world.client.log_in(ADA, "new-horse").await.status,
         StatusCode::NO_CONTENT
     );
-    assert_eq!(world.client.get("/me").await.status, StatusCode::OK);
+    assert_eq!(world.status("/me").await, StatusCode::OK);
 }
 
 #[tokio::test]
@@ -505,6 +554,35 @@ async fn changing_the_password_ends_other_sessions_with_a_cache() {
     changing_the_password_ends_other_sessions(World::cached()).await;
 }
 
+async fn renewing_keeps_the_session_that_changed_the_password(mut world: World) {
+    let id = world.register(None).await;
+    world.client.log_in(ADA, PASSWORD).await;
+    let mut other = world.client.fork();
+    other.log_in(ADA, PASSWORD).await;
+
+    let change = world
+        .client
+        .post(
+            "/password",
+            Some(serde_json::json!({ "password": "new-horse" })),
+        )
+        .await;
+
+    assert_eq!(change.status, StatusCode::NO_CONTENT);
+    assert_eq!(world.client.get("/me").await.body, id.to_string());
+    assert_eq!(other.get("/me").await.status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn renewing_keeps_the_session_that_changed_the_password_without_a_cache() {
+    renewing_keeps_the_session_that_changed_the_password(World::new()).await;
+}
+
+#[tokio::test]
+async fn renewing_keeps_the_session_that_changed_the_password_with_a_cache() {
+    renewing_keeps_the_session_that_changed_the_password(World::cached()).await;
+}
+
 #[tokio::test]
 async fn enrolling_a_second_factor_ends_other_sessions() {
     let mut world = World::new();
@@ -513,10 +591,7 @@ async fn enrolling_a_second_factor_ends_other_sessions() {
 
     world.enroll_second_factor(id).await;
 
-    assert_eq!(
-        world.client.get("/me").await.status,
-        StatusCode::UNAUTHORIZED
-    );
+    assert_eq!(world.status("/me").await, StatusCode::UNAUTHORIZED);
 }
 
 async fn deactivating_a_user_ends_their_sessions(mut world: World) {
@@ -526,10 +601,7 @@ async fn deactivating_a_user_ends_their_sessions(mut world: World) {
 
     world.deactivate(id).await;
 
-    assert_eq!(
-        world.client.get("/me").await.status,
-        StatusCode::UNAUTHORIZED
-    );
+    assert_eq!(world.status("/me").await, StatusCode::UNAUTHORIZED);
     assert_eq!(
         world.client.log_in(ADA, PASSWORD).await.status,
         StatusCode::UNAUTHORIZED

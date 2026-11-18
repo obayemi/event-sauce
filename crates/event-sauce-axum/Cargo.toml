@@ -54,10 +54,15 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time"] }
 tower = { workspace = true, features = ["util"] }
 tower-sessions = { workspace = true, features = ["memory-store"] }
+trybuild.workspace = true
 
 [[test]]
 name = "login"
 required-features = ["login"]
+
+[[test]]
+name = "compile_fail"
+required-features = ["app"]
 
 [[test]]
 name = "app"

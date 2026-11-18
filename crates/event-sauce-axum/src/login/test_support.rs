@@ -1,9 +1,14 @@
 //! A user aggregate the unit tests of the login modules share.
 
-use event_sauce_auth::{Email, Identity, LoginId, Password, PasswordHash, UserAggregate};
+use std::sync::Arc;
+
+use event_sauce_auth::{
+    Authenticated, Email, Identity, LoginId, Logins, Password, PasswordHash, UserAggregate,
+};
 use event_sauce_core::{
     aggregate_command, define_events, Aggregate, AggregateError, AggregateRoot, Entity, EntityId,
 };
+use event_sauce_memory::InMemoryEventStore;
 use serde::{Deserialize, Serialize};
 
 const PHC: &str =
@@ -89,4 +94,14 @@ pub fn registered_with_another_password() -> AggregateRoot<Member> {
 
 pub fn anonymous() -> AggregateRoot<Member> {
     Member::join_anonymously().unwrap()
+}
+
+pub async fn authenticated(root: AggregateRoot<Member>) -> Authenticated<Member> {
+    Logins::<Member>::new(Arc::new(InMemoryEventStore::new()))
+        .sign_up(root)
+        .await
+        .unwrap()
+        .finish()
+        .await
+        .unwrap()
 }

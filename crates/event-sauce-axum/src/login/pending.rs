@@ -1,22 +1,27 @@
-//! [`PendingLogin`]: the login waiting for its second factor.
+//! [`PendingLogin`]: the login waiting for its next step.
 
 use std::future::{ready, Future};
 
 use axum::extract::FromRequestParts;
 use axum_login::tower_sessions::cookie::{time, Cookie, SameSite};
-use event_sauce_auth::{LoginTtl, PendingLoginId};
+use event_sauce_auth::{LoginState, PendingLoginId};
 use http::{header::COOKIE, request::Parts, HeaderMap};
 
 use crate::login::AuthRejection;
 
-/// The login a client started and has yet to finish with a second factor.
+/// The login a client started and has yet to finish.
 ///
-/// A handler that gets
-/// [`LoginOutcome::SecondFactorRequired`](event_sauce_auth::LoginOutcome::SecondFactorRequired)
-/// answers with [`PendingLogin::set_cookie`]. The next request, which carries
-/// the second factor, extracts the pending login from that cookie and passes
-/// its id to the backend's `complete`. No session exists in between, and
-/// the cookie dies with the pending login.
+/// A handler whose login needs another request saves it in the
+/// [`PendingLogins`](event_sauce_auth::PendingLogins) and answers with
+/// [`PendingLogin::set_cookie`] for the saved id. The next request, which
+/// carries the proof of the next step, extracts the pending login from that
+/// cookie and resumes the login with its id. No session exists in between,
+/// and the cookie is cleared with [`PendingLogin::clear_cookie`] once the
+/// login ends.
+///
+/// The cookie holds the id only. The state the login is in and the user it
+/// belongs to stay on the server, so a client cannot skip a step by editing
+/// it.
 ///
 /// Extraction is rejected with [`AuthRejection::Unauthenticated`] when the
 /// cookie is missing or malformed.
@@ -24,13 +29,13 @@ use crate::login::AuthRejection;
 /// ```
 /// use axum::http::header::SET_COOKIE;
 /// use axum::response::IntoResponse;
-/// use event_sauce_auth::PendingLoginId;
+/// use event_sauce_auth::{Done, PendingLoginId};
 /// use event_sauce_axum::PendingLogin;
 ///
-/// fn ask_for_the_second_factor(id: PendingLoginId) -> impl IntoResponse {
-///     ([(SET_COOKIE, PendingLogin::set_cookie(id, PendingLogin::DEFAULT_TTL))], "second factor required")
+/// fn ask_for_the_next_step(id: PendingLoginId) -> impl IntoResponse {
+///     ([(SET_COOKIE, PendingLogin::set_cookie::<Done>(id))], "one more step")
 /// }
-/// # let _ = ask_for_the_second_factor;
+/// # let _ = ask_for_the_next_step;
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PendingLogin(PendingLoginId);
@@ -38,11 +43,6 @@ pub struct PendingLogin(PendingLoginId);
 impl PendingLogin {
     /// The name of the cookie that carries the pending login id.
     pub const COOKIE: &'static str = "event_sauce_pending_login";
-
-    /// How long a pending login lives unless the stage says otherwise:
-    /// five minutes, the default of
-    /// [`TwoFactor`](event_sauce_auth::TwoFactor).
-    pub const DEFAULT_TTL: LoginTtl = event_sauce_auth::DEFAULT_PENDING_TTL;
 
     /// The id of the waiting login.
     #[must_use]
@@ -64,12 +64,13 @@ impl PendingLogin {
             .map(Self)
     }
 
-    /// The `Set-Cookie` value that hands `id` to the client for `ttl`.
+    /// The `Set-Cookie` value that hands `id` to the client for as long as a
+    /// login saved in the state `S` lives, which is `S::TTL`.
     ///
     /// The cookie is `HttpOnly`, `Secure` and `SameSite=Lax`.
     #[must_use]
-    pub fn set_cookie(id: PendingLoginId, ttl: LoginTtl) -> String {
-        let max_age = time::Duration::try_from(ttl.as_duration()).unwrap_or(time::Duration::MAX);
+    pub fn set_cookie<S: LoginState>(id: PendingLoginId) -> String {
+        let max_age = time::Duration::try_from(S::TTL.as_duration()).unwrap_or(time::Duration::MAX);
         Self::cookie(id.to_string(), max_age)
     }
 

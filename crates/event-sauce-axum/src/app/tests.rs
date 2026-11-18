@@ -7,8 +7,8 @@ use axum_login::{
     AuthnBackend,
 };
 use event_sauce_auth::{
-    Argon2Hasher, ClaimAuthenticator, LoginKey, LoginStore, LoginStoreError, LoginTtl,
-    PasswordLogin,
+    Advance, AlwaysDone, Argon2Hasher, Done, Entered, FirstFactor, Login, LoginKey, LoginStore,
+    LoginStoreError, LoginTtl, PasswordLogin, Route,
 };
 use event_sauce_core::{EventStore, Repository};
 use event_sauce_memory::InMemoryEventStore;
@@ -38,9 +38,9 @@ impl LoginStore for NoLoginStore {
 }
 
 type Method = PasswordLogin<Argon2Hasher>;
-type Authenticator = ClaimAuthenticator<Member, Method, InMemoryEventStore>;
-type TestApp = App<Member, Authenticator, InMemoryEventStore>;
-type Backend = EventSauceBackend<Member, Authenticator, InMemoryEventStore>;
+type Factor = FirstFactor<Method, AlwaysDone>;
+type TestApp = App<Member, Factor, InMemoryEventStore>;
+type Backend = EventSauceBackend<Member, InMemoryEventStore>;
 
 pub(super) fn builder() -> UserAppBuilder<Member, Method> {
     let pool = PgPool::connect_lazy("postgres://nobody@localhost/none").unwrap();
@@ -105,4 +105,67 @@ async fn the_backend_resolves_the_users_of_the_apps_store() {
     let found = app.backend().get_user(&id).await.unwrap();
 
     assert_eq!(found.map(|user| user.entity_id()), Some(id));
+}
+
+#[tokio::test]
+async fn the_logins_run_on_the_apps_store_and_end_in_a_session_user() {
+    let app = assembled(builder());
+    let root = registered();
+    let id = root.entity_id();
+
+    let authenticated = app
+        .logins()
+        .sign_up(root)
+        .await
+        .unwrap()
+        .finish()
+        .await
+        .unwrap();
+    let session = app.backend().authenticate(authenticated).await.unwrap();
+
+    assert_eq!(session.map(|user| user.entity_id()), Some(id));
+    assert!(app
+        .store()
+        .arc()
+        .repository::<Member>()
+        .exists(id)
+        .await
+        .unwrap());
+}
+
+#[tokio::test]
+async fn the_app_exposes_the_pieces_a_handler_needs() {
+    let app = assembled(builder());
+
+    let _pending: event_sauce_auth::PendingLogins<Member> = app.pending();
+    let _first: Arc<Factor> = app.first_factor();
+    let store: Arc<dyn LoginStore> = app.login_store();
+
+    assert!(store
+        .take(&LoginKey::new(
+            "none",
+            event_sauce_auth::PendingLoginId::new()
+        ))
+        .await
+        .unwrap()
+        .is_none());
+}
+
+struct StraightThrough;
+
+impl Route<Member> for StraightThrough {
+    type Next = Login<Member, Done>;
+
+    fn route(&self, entered: Advance<Member, Entered>) -> Login<Member, Done> {
+        entered.to(Done)
+    }
+}
+
+#[tokio::test]
+async fn the_route_replaces_the_default_one() {
+    let app = builder()
+        .route(StraightThrough)
+        .assemble(Arc::new(InMemoryEventStore::new()), Arc::new(NoLoginStore));
+
+    let _: &Arc<FirstFactor<Method, StraightThrough>> = &app.first_factor();
 }

@@ -20,7 +20,7 @@ events.
 - **[Events](events.md)** - Domain events and event modeling
 - **[Validation](validation.md)** - Event validation and business rules
 - **[Claims](claims.md)** - Cross-aggregate uniqueness constraints (e.g., unique emails)
-- **[Auth](auth.md)** - Credentials inside the user aggregate, login methods, second factors, user cache and password reset tokens
+- **[Auth](auth.md)** - Credentials inside the user aggregate, login methods, typestate logins, user cache and password reset tokens
 - **[axum](axum.md)** - Correlation layer, `Store`/`Repo` extractors, `axum-login` sessions and the Postgres app builder
 
 ## Event Sourcing

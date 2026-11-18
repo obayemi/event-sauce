@@ -101,7 +101,12 @@ impl Client {
     }
 
     pub async fn send_code(&mut self, code: &str) -> Reply {
-        self.post("/login/second-factor", Some(json!({ "code": code })))
+        self.post("/login/code", Some(json!({ "code": code })))
+            .await
+    }
+
+    pub async fn send_mail(&mut self, code: &str) -> Reply {
+        self.post("/login/mail", Some(json!({ "code": code })))
             .await
     }
 }

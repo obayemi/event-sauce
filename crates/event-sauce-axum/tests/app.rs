@@ -8,100 +8,56 @@ mod user_fixture;
 use std::{sync::Arc, time::Duration};
 
 use axum::{
-    http::{header::SET_COOKIE, HeaderName, StatusCode},
-    response::{IntoResponse, Response},
-    routing::{get, post},
-    Json, Router,
+    http::{HeaderName, StatusCode},
+    routing::get,
+    Router,
 };
-use axum_login::{AuthSession, AuthnBackend};
-use event_sauce_auth::{
-    Argon2Hasher, ClaimAuthenticator, Email, LoginId, MokaUserCache, PasswordAttempt,
-    PasswordLogin, TwoFactor,
-};
-use event_sauce_axum::{
-    BackendError, CurrentUser, EventSauceApp, EventSauceBackend, PendingLogin, UserBackend,
-};
+use event_sauce_auth::{Argon2Hasher, MokaUserCache, PasswordLogin};
+use event_sauce_axum::{App, CurrentUser, EventSauceApp, UserAppBuilder, UserBackend};
 use event_sauce_core::{EventStore, Repository};
 use event_sauce_postgres::PostgresEventStore;
-use secrecy::SecretString;
 use sqlx::{postgres::PgPoolOptions, PgPool};
 use support::Client;
 use testcontainers::{runners::AsyncRunner, ImageExt};
 use testcontainers_modules::{postgres::Postgres, testcontainers::ContainerAsync};
 use tower_sessions::{MemoryStore, SessionManagerLayer};
 use user_fixture::{
-    change_password, cheap_hasher, register, CodeForm, FixedCode, LoginForm, User, ADA, CODE,
-    PASSWORD,
+    change_password, cheap_hasher, login_routes, register, Backend, CodeIfEnrolled, Flow,
+    PasswordFactor, User, ADA, CODE, MAIL_CODE, PASSWORD,
 };
 
-type Plain = EventSauceBackend<
-    User,
-    ClaimAuthenticator<User, PasswordLogin<Argon2Hasher>, PostgresEventStore>,
-    PostgresEventStore,
->;
-type Guarded = EventSauceBackend<
-    User,
-    ClaimAuthenticator<User, PasswordLogin<Argon2Hasher>, PostgresEventStore, TwoFactor<FixedCode>>,
-    PostgresEventStore,
->;
+type Method = PasswordLogin<Argon2Hasher>;
+type Built = App<User, PasswordFactor, PostgresEventStore>;
 
-fn method() -> PasswordLogin<Argon2Hasher> {
+fn method() -> Method {
     PasswordLogin::new(cheap_hasher())
 }
 
-async fn login<B>(mut auth: AuthSession<B>, Json(form): Json<LoginForm>) -> Response
-where
-    B: UserBackend<Aggregate = User>
-        + AuthnBackend<Credentials = PasswordAttempt<Email>, Error = BackendError>,
-{
-    let attempt = PasswordAttempt::new(
-        Email::parse(&form.email).unwrap(),
-        SecretString::from(form.password),
-    );
-    match auth.authenticate(attempt).await {
-        Ok(Some(user)) => {
-            auth.login(&user).await.unwrap();
-            StatusCode::NO_CONTENT.into_response()
-        }
-        Ok(None) => StatusCode::UNAUTHORIZED.into_response(),
-        Err(axum_login::Error::Backend(BackendError::SecondFactorRequired(id))) => (
-            StatusCode::ACCEPTED,
-            [(
-                SET_COOKIE,
-                PendingLogin::set_cookie(id, PendingLogin::DEFAULT_TTL),
-            )],
-        )
-            .into_response(),
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    }
+fn builder(pool: PgPool) -> UserAppBuilder<User, Method> {
+    EventSauceApp::postgres(pool).user::<User, _>(method())
 }
 
-async fn second_factor(
-    mut auth: AuthSession<Guarded>,
-    pending: PendingLogin,
-    Json(form): Json<CodeForm>,
-) -> Response {
-    match auth.backend.complete(pending.id(), &form.code).await {
-        Ok(user) => {
-            auth.login(&user).await.unwrap();
-            StatusCode::NO_CONTENT.into_response()
-        }
-        Err(_) => StatusCode::UNAUTHORIZED.into_response(),
-    }
+async fn built(pool: PgPool) -> Built {
+    builder(pool).route(CodeIfEnrolled).build().await.unwrap()
 }
 
 async fn me<B: UserBackend<Aggregate = User>>(user: CurrentUser<B>) -> String {
     user.entity_id().to_string()
 }
 
-fn routes<B>() -> Router
-where
-    B: UserBackend<Aggregate = User>
-        + AuthnBackend<Credentials = PasswordAttempt<Email>, Error = BackendError>,
-{
-    Router::new()
-        .route("/login", post(login::<B>))
-        .route("/me", get(me::<B>))
+fn flow(app: &Built) -> Flow {
+    Flow {
+        logins: app.logins(),
+        pending: app.pending(),
+        first: app.first_factor(),
+    }
+}
+
+fn router(app: &Built) -> Router {
+    let routes = login_routes::<PostgresEventStore>()
+        .route("/me", get(me::<Backend<PostgresEventStore>>))
+        .with_state(flow(app));
+    app.layer(routes, sessions())
 }
 
 async fn start_database() -> (ContainerAsync<Postgres>, PgPool) {
@@ -142,19 +98,24 @@ fn sessions() -> SessionManagerLayer<MemoryStore> {
     SessionManagerLayer::new(MemoryStore::default())
 }
 
+async fn held_logins(pool: &PgPool) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM event_sauce_login.entries")
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
 async fn check_password_change_ends_sessions(
     pool: PgPool,
-    configure: impl FnOnce(
-        event_sauce_axum::UserAppBuilder<User, PasswordLogin<Argon2Hasher>>,
-    ) -> event_sauce_axum::UserAppBuilder<User, PasswordLogin<Argon2Hasher>>,
+    configure: impl FnOnce(UserAppBuilder<User, Method>) -> UserAppBuilder<User, Method>,
 ) {
-    let app = configure(EventSauceApp::postgres(pool).user::<User, _>(method()))
+    let app = configure(builder(pool))
+        .route(CodeIfEnrolled)
         .build()
         .await
         .unwrap();
-    let router = app.layer(routes::<Plain>(), sessions());
     let id = register(app.store().arc(), None).await;
-    let mut client = Client::new(router);
+    let mut client = Client::new(router(&app));
     assert_eq!(
         client.log_in(ADA, PASSWORD).await.status,
         StatusCode::NO_CONTENT
@@ -177,16 +138,8 @@ async fn check_password_change_ends_sessions(
 async fn build_creates_the_login_schema_and_is_idempotent() {
     let (_guard, pool) = start_database().await;
 
-    EventSauceApp::postgres(pool.clone())
-        .user::<User, _>(method())
-        .build()
-        .await
-        .unwrap();
-    let again = EventSauceApp::postgres(pool.clone())
-        .user::<User, _>(method())
-        .build()
-        .await
-        .unwrap();
+    built(pool.clone()).await;
+    let again = built(pool.clone()).await;
 
     assert!(schema_exists(&pool, "event_sauce_login").await);
     register(again.store().arc(), None).await;
@@ -196,8 +149,8 @@ async fn build_creates_the_login_schema_and_is_idempotent() {
 async fn the_login_store_lives_in_the_schema_it_is_given() {
     let (_guard, pool) = start_database().await;
 
-    EventSauceApp::postgres(pool.clone())
-        .user::<User, _>(method())
+    builder(pool.clone())
+        .route(CodeIfEnrolled)
         .login_store_schema("auth_logins")
         .build()
         .await
@@ -210,13 +163,9 @@ async fn the_login_store_lives_in_the_schema_it_is_given() {
 #[tokio::test]
 async fn a_login_opens_a_session_and_the_response_carries_a_request_id() {
     let (_guard, pool) = start_database().await;
-    let app = EventSauceApp::postgres(pool)
-        .user::<User, _>(method())
-        .build()
-        .await
-        .unwrap();
+    let app = built(pool).await;
     let id = register(app.store().arc(), None).await;
-    let mut client = Client::new(app.layer(routes::<Plain>(), sessions()));
+    let mut client = Client::new(router(&app));
 
     let before = client.get("/me").await;
     let login = client.log_in(ADA, PASSWORD).await;
@@ -234,13 +183,13 @@ async fn a_login_opens_a_session_and_the_response_carries_a_request_id() {
 #[tokio::test]
 async fn the_correlation_header_is_configurable() {
     let (_guard, pool) = start_database().await;
-    let app = EventSauceApp::postgres(pool)
-        .user::<User, _>(method())
+    let app = builder(pool)
+        .route(CodeIfEnrolled)
         .correlation_header(HeaderName::from_static("x-correlation-id"))
         .build()
         .await
         .unwrap();
-    let mut client = Client::new(app.layer(routes::<Plain>(), sessions()));
+    let mut client = Client::new(router(&app));
 
     let reply = client.get("/me").await;
 
@@ -257,7 +206,7 @@ async fn a_password_change_ends_sessions_with_the_default_cache() {
 #[tokio::test]
 async fn a_password_change_ends_sessions_without_a_cache() {
     let (_guard, pool) = start_database().await;
-    check_password_change_ends_sessions(pool, |builder| builder.no_user_cache()).await;
+    check_password_change_ends_sessions(pool, UserAppBuilder::no_user_cache).await;
 }
 
 #[tokio::test]
@@ -274,35 +223,44 @@ async fn a_password_change_ends_sessions_with_a_custom_cache() {
 }
 
 #[tokio::test]
-async fn a_second_factor_is_held_in_the_postgres_login_store() {
+async fn a_multi_step_login_waits_in_the_postgres_login_store() {
     let (_guard, pool) = start_database().await;
-    let app = EventSauceApp::postgres(pool.clone())
-        .user::<User, _>(method())
-        .second_factor(FixedCode)
-        .build()
-        .await
-        .unwrap();
+    let app = built(pool.clone()).await;
     register(app.store().arc(), Some(CODE)).await;
-    let router = app.layer(
-        routes::<Guarded>().route("/login/second-factor", post(second_factor)),
-        sessions(),
-    );
-    let mut client = Client::new(router);
+    let mut client = Client::new(router(&app));
 
-    let first = client.log_in(ADA, PASSWORD).await;
-    let held: i64 = sqlx::query_scalar("SELECT count(*) FROM event_sauce_login.entries")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let password = client.log_in(ADA, PASSWORD).await;
+    let held = held_logins(&pool).await;
     let before = client.get("/me").await;
-    let second = client.send_code(CODE).await;
+    let code = client.send_code(CODE).await;
+    let mail = client.send_mail(MAIL_CODE).await;
     let after = client.get("/me").await;
 
-    assert_eq!(first.status, StatusCode::ACCEPTED);
+    assert_eq!(password.status, StatusCode::ACCEPTED);
     assert_eq!(held, 1);
     assert_eq!(before.status, StatusCode::UNAUTHORIZED);
-    assert_eq!(second.status, StatusCode::NO_CONTENT);
+    assert_eq!(code.status, StatusCode::ACCEPTED);
+    assert_eq!(mail.status, StatusCode::NO_CONTENT);
     assert_eq!(after.status, StatusCode::OK);
+    assert_eq!(held_logins(&pool).await, 0);
+}
+
+#[tokio::test]
+async fn a_pending_login_resumes_once_across_instances() {
+    let (_guard, pool) = start_database().await;
+    let first = built(pool.clone()).await;
+    let second = built(pool).await;
+    register(first.store().arc(), Some(CODE)).await;
+    let mut client = Client::new(router(&first));
+    let mut elsewhere = Client::new(router(&second));
+    client.log_in(ADA, PASSWORD).await;
+    elsewhere.cookies.clone_from(&client.cookies);
+
+    let there = elsewhere.send_code(CODE).await;
+    let here = client.send_code(CODE).await;
+
+    assert_eq!(there.status, StatusCode::ACCEPTED);
+    assert_eq!(here.status, StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
@@ -316,8 +274,8 @@ async fn a_given_event_store_is_migrated_and_used() {
             .unwrap(),
     );
 
-    let app = EventSauceApp::postgres(pool.clone())
-        .user::<User, _>(method())
+    let app = builder(pool.clone())
+        .route(CodeIfEnrolled)
         .event_store(events)
         .build()
         .await

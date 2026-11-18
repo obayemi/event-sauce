@@ -8,14 +8,14 @@
 //! - [`Store`], [`Repo`] and [`UnitOfWork`] are extractors over the
 //!   application state: there is no registry, a repository is built per
 //!   request from the shared store.
-//! - With the `login` feature, `EventSauceBackend` plugs an
-//!   `Authenticator` into `axum-login`.
-//!   `SessionUser` ties a session to the identity's fingerprint,
-//!   `PendingLogin` carries a login that waits for its second factor, and
-//!   `CurrentUser`, `MaybeUser` and `Registered` hand the logged-in
-//!   user to handlers.
+//! - With the `login` feature, `EventSauceBackend` turns a
+//!   finished login into an `axum-login` session. `SessionUser` ties a
+//!   session to the identity's fingerprint and can be built only from an
+//!   `Authenticated` user, `PendingLogin` carries a login that waits for its
+//!   next step, and `CurrentUser`, `MaybeUser` and `Registered` hand the
+//!   logged-in user to handlers.
 //! - With the `app` feature, `EventSauceApp::postgres` builds the whole
-//!   stack, stores, cache, authenticator and layers, on one pool.
+//!   stack, stores, cache, first factor and layers, on one pool.
 
 #![deny(missing_docs)]
 #![deny(clippy::all)]
@@ -32,9 +32,7 @@ mod store;
 mod unit_of_work;
 
 #[cfg(feature = "app")]
-pub use app::{
-    App, AppBuilder, BuildError, EventSauceApp, SecondFactorStage, UserAppBuilder, WithSecondFactor,
-};
+pub use app::{App, AppBuilder, BuildError, EventSauceApp, UserAppBuilder};
 pub use correlation::{Correlation, CorrelationLayer, ResponseFuture, DEFAULT_HEADER};
 pub use http::HeaderName;
 #[cfg(feature = "login")]

@@ -482,7 +482,7 @@ use event_sauce::crypto::Aes256GcmProvider;
 - `state-store` (default) - The state-stored persistence style: `StateStore`, in-transaction projections
 - `postgres` - PostgreSQL backend (implies `event-sourcing` and `state-store`)
 - `crypto` - Encryption support (AES-256-GCM provider, key stores); implies `event-sourcing`; turns on encryption in whichever backends are enabled
-- `auth` - Credentials, login methods and authenticators for user aggregates, as `event_sauce::auth` (with `auth-postgres`, `auth-moka`, `auth-redis`, `auth-reset` and `auth-totp` for its optional parts)
+- `auth` - Credentials, login methods and typestate logins for user aggregates, as `event_sauce::auth` (with `auth-postgres`, `auth-moka`, `auth-redis`, `auth-reset` and `auth-totp` for its optional parts)
 - `axum` - Correlation layer and `Store`/`Repo`/`UnitOfWork` extractors, as `event_sauce::axum`; `axum-login` adds the login backend and user extractors (implies `auth`), `axum-app` adds the Postgres app builder (implies `postgres`)
 - `full` - All features enabled
 

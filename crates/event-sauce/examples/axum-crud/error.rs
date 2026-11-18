@@ -4,7 +4,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use event_sauce::auth::EmailError;
+use event_sauce::auth::{AuthError, EmailError};
 use event_sauce::prelude::{Error, ModifyError};
 
 use crate::app::Backend;
@@ -31,6 +31,8 @@ pub enum ApiError {
     Store(#[from] Error),
     #[error(transparent)]
     Database(#[from] sqlx::Error),
+    #[error("the login could not be checked")]
+    Login,
     #[error("the session failed: {0}")]
     Session(#[from] axum_login::Error<Backend>),
 }
@@ -49,9 +51,24 @@ impl ApiError {
             Self::Store(error) if error.is_not_found() || error.is_aggregate_deleted() => {
                 StatusCode::NOT_FOUND
             }
-            Self::Hashing(_) | Self::Store(_) | Self::Database(_) | Self::Session(_) => {
-                StatusCode::INTERNAL_SERVER_ERROR
+            Self::Hashing(_)
+            | Self::Store(_)
+            | Self::Database(_)
+            | Self::Login
+            | Self::Session(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        }
+    }
+}
+
+impl<A> From<AuthError<A>> for ApiError {
+    fn from(error: AuthError<A>) -> Self {
+        match error {
+            AuthError::InvalidCredentials | AuthError::Inactive | AuthError::Unknown { .. } => {
+                Self::Unauthorized
             }
+            AuthError::Store(error) => Self::Store(error),
+            AuthError::Hash(error) => Self::Hashing(error),
+            AuthError::LoginStore(_) | AuthError::Unavailable(_) => Self::Login,
         }
     }
 }
