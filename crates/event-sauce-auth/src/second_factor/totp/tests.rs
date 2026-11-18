@@ -3,7 +3,7 @@ use event_sauce_core::AggregateClaim;
 use serde::{Deserialize, Serialize};
 
 use super::*;
-use crate::{test_support::FakeLoginStore, Credentials, FixedClock, LoginTtl, Sha256};
+use crate::{test_support::FakeLoginStore, Credentials, Fingerprint, FixedClock, LoginTtl};
 
 const T0: i64 = 1_700_000_010;
 const STEP: i64 = 30;
@@ -16,8 +16,8 @@ impl Credentials for Enrolled {
         Vec::new()
     }
 
-    fn fingerprint(&self, digest: &mut Sha256) {
-        self.feed_totp_fingerprint(digest);
+    fn fingerprint(&self, fingerprint: &mut Fingerprint) {
+        self.feed_totp_fingerprint(fingerprint);
     }
 }
 

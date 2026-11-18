@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Credentials, Digest, Sha256};
+use crate::{Credentials, Fingerprint};
 
 /// Why an identity transition was refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -17,7 +17,7 @@ pub enum IdentityError {
 /// # Examples
 ///
 /// ```
-/// use event_sauce_auth::{Credentials, Digest, Identity, IdentityError, Sha256};
+/// use event_sauce_auth::{Credentials, Fingerprint, Identity, IdentityError};
 /// use event_sauce_core::AggregateClaim;
 /// use serde::{Deserialize, Serialize};
 ///
@@ -29,8 +29,8 @@ pub enum IdentityError {
 ///         vec![AggregateClaim::new("app.api_key", self.0.clone().into())]
 ///     }
 ///
-///     fn fingerprint(&self, digest: &mut Sha256) {
-///         digest.update(self.0.as_bytes());
+///     fn fingerprint(&self, fingerprint: &mut Fingerprint) {
+///         fingerprint.str_field(&self.0);
 ///     }
 /// }
 ///
@@ -84,14 +84,14 @@ impl<C: Credentials> Identity<C> {
     /// so every session opened before the change stops being valid.
     #[must_use]
     pub fn session_fingerprint(&self) -> [u8; 32] {
-        let mut digest = Sha256::new();
+        let mut fingerprint = Fingerprint::new();
         if let Self::Registered(credentials) = self {
-            digest.update(b"registered");
-            credentials.fingerprint(&mut digest);
+            fingerprint.str_field("registered");
+            credentials.fingerprint(&mut fingerprint);
         } else {
-            digest.update(b"anonymous");
+            fingerprint.str_field("anonymous");
         }
-        digest.finalize().into()
+        fingerprint.finish()
     }
 }
 

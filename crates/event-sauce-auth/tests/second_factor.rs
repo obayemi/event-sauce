@@ -11,9 +11,9 @@ use async_trait::async_trait;
 use chrono::DateTime;
 use event_sauce_auth::{
     Argon2Hasher, AuthError, Authenticator, ClaimAuthenticator, CompleteError, Credentials, Email,
-    FixedClock, HasPassword, HasSecondFactor, HasTotp, Identity, LoginId, LoginKey, LoginOutcome,
-    LoginStore, LoginStoreError, LoginTtl, Password, PasswordAttempt, PasswordHasher,
-    PasswordLogin, PendingLoginId, Sha256, Totp, TotpSecret, TwoFactor, UserAggregate,
+    Fingerprint, FixedClock, HasPassword, HasSecondFactor, HasTotp, Identity, LoginId, LoginKey,
+    LoginOutcome, LoginStore, LoginStoreError, LoginTtl, Password, PasswordAttempt, PasswordHasher,
+    PasswordLogin, PendingLoginId, Totp, TotpSecret, TwoFactor, UserAggregate,
 };
 use event_sauce_core::{
     aggregate_command, define_events, Aggregate, AggregateClaim, AggregateError, AggregateRoot,
@@ -37,9 +37,9 @@ impl Credentials for Secured {
         self.password.claims()
     }
 
-    fn fingerprint(&self, digest: &mut Sha256) {
-        self.password.fingerprint(digest);
-        self.feed_totp_fingerprint(digest);
+    fn fingerprint(&self, fingerprint: &mut Fingerprint) {
+        self.password.fingerprint(fingerprint);
+        self.feed_totp_fingerprint(fingerprint);
     }
 }
 

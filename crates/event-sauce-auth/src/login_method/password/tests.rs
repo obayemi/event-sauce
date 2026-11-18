@@ -4,8 +4,7 @@ use serde::{Deserialize, Serialize};
 use super::*;
 use crate::test_support::{email, fake_phc, secret, FakeHasher, FakeLocator};
 use crate::{
-    Credentials, Digest, Email, FederatedId, LoginId, PasswordOrFederated, Provider, Sha256,
-    Username,
+    Credentials, Email, FederatedId, Fingerprint, LoginId, PasswordOrFederated, Provider, Username,
 };
 
 fn registered(hasher: &FakeHasher, login: &str, password: &str) -> Identity<Password<Email>> {
@@ -169,9 +168,9 @@ impl Credentials for Staff {
         self.password.claims()
     }
 
-    fn fingerprint(&self, digest: &mut Sha256) {
-        self.password.fingerprint(digest);
-        digest.update(self.badge.to_be_bytes());
+    fn fingerprint(&self, fingerprint: &mut Fingerprint) {
+        self.password.fingerprint(fingerprint);
+        fingerprint.field(&self.badge.to_be_bytes());
     }
 }
 

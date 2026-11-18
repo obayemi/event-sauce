@@ -2,7 +2,7 @@ use event_sauce_core::AggregateClaim;
 use serde::{Deserialize, Serialize};
 
 use super::*;
-use crate::{Digest, Sha256};
+use crate::Fingerprint;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct Fake {
@@ -24,10 +24,8 @@ impl Credentials for Fake {
         vec![AggregateClaim::new("fake.login", self.login.clone().into())]
     }
 
-    fn fingerprint(&self, digest: &mut Sha256) {
-        digest.update(self.login.as_bytes());
-        digest.update([0]);
-        digest.update(self.secret.as_bytes());
+    fn fingerprint(&self, fingerprint: &mut Fingerprint) {
+        fingerprint.str_field(&self.login).str_field(&self.secret);
     }
 }
 
@@ -80,13 +78,13 @@ fn fingerprint_changes_when_registering() {
 }
 
 #[test]
-fn fingerprint_is_the_sha256_of_the_tagged_credentials() {
-    let mut expected = Sha256::new();
-    expected.update(b"registered");
+fn fingerprint_is_the_tagged_credentials_fingerprint() {
+    let mut expected = Fingerprint::new();
+    expected.str_field("registered");
     Fake::new("ada", "s1").fingerprint(&mut expected);
     assert_eq!(
         registered("ada", "s1").session_fingerprint(),
-        <[u8; 32]>::from(expected.finalize())
+        expected.finish()
     );
 }
 

@@ -4,9 +4,8 @@
 use argon2::Params;
 use async_trait::async_trait;
 use event_sauce_auth::{
-    Argon2Hasher, Credentials, Digest, Email, HasPassword, HasSecondFactor, Identity, LoginId,
-    LoginStore, Password, PasswordHash, PasswordHasher, Rejected, SecondFactor, Sha256,
-    UserAggregate,
+    Argon2Hasher, Credentials, Email, Fingerprint, HasPassword, HasSecondFactor, Identity, LoginId,
+    LoginStore, Password, PasswordHash, PasswordHasher, Rejected, SecondFactor, UserAggregate,
 };
 use std::sync::Arc;
 
@@ -32,10 +31,10 @@ impl Credentials for Account {
         self.password.claims()
     }
 
-    fn fingerprint(&self, digest: &mut Sha256) {
-        self.password.fingerprint(digest);
+    fn fingerprint(&self, fingerprint: &mut Fingerprint) {
+        self.password.fingerprint(fingerprint);
         if let Some(code) = &self.code {
-            digest.update(code.as_bytes());
+            fingerprint.str_field(code);
         }
     }
 }

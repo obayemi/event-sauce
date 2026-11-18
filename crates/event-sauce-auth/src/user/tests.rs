@@ -14,8 +14,8 @@ impl Credentials for Pass {
         Vec::new()
     }
 
-    fn fingerprint(&self, digest: &mut crate::Sha256) {
-        crate::Digest::update(digest, self.0.as_bytes());
+    fn fingerprint(&self, fingerprint: &mut crate::Fingerprint) {
+        fingerprint.str_field(&self.0);
     }
 }
 

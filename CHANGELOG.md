@@ -228,7 +228,9 @@ explicitly rather than gated behind a major version bump.
   as `LoginTtl::FIVE_MINUTES`. `DEFAULT_PENDING_TTL` (five minutes) is the
   default lifetime of a login waiting for its second factor. `Federated` and `PasswordOrFederated` unlink one identity with
   `unlink(&FederatedId)` or every identity of a provider with
-  `unlink_provider(&Provider)`. The `argon2` and `postgres` features are
+  `unlink_provider(&Provider)`. `Credentials::fingerprint` feeds a
+  `Fingerprint` whose `field` and `str_field` length-prefix every field, so
+  two different credential states never share a byte stream. The `argon2` and `postgres` features are
   on by default; `moka`, `redis`, `reset` and `totp` are optional.
 
 - `event-sauce-axum` crate. `CorrelationLayer` reads `x-request-id` (or the

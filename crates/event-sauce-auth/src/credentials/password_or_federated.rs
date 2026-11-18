@@ -4,8 +4,8 @@ use event_sauce_core::AggregateClaim;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Credentials, Federated, FederatedId, HasFederated, HasPassword, LoginId, LoginMethodError,
-    Password, Provider, Sha256,
+    Credentials, Federated, FederatedId, Fingerprint, HasFederated, HasPassword, LoginId,
+    LoginMethodError, Password, Provider,
 };
 
 /// Credentials that log in with a password, with federated links, or with
@@ -134,12 +134,12 @@ impl<L: LoginId> Credentials for PasswordOrFederated<L> {
         password.into_iter().chain(federated).flatten().collect()
     }
 
-    fn fingerprint(&self, digest: &mut Sha256) {
+    fn fingerprint(&self, fingerprint: &mut Fingerprint) {
         if let Some(password) = self.password() {
-            password.fingerprint(digest);
+            password.fingerprint(fingerprint);
         }
         if let Some(federated) = self.federated() {
-            federated.fingerprint(digest);
+            federated.fingerprint(fingerprint);
         }
     }
 }

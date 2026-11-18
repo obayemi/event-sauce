@@ -105,7 +105,7 @@ pub trait Credentials:
 
     /// Feeds every secret and identifier that grants access, so that any
     /// change to them changes the session fingerprint.
-    fn fingerprint(&self, digest: &mut Sha256);
+    fn fingerprint(&self, fingerprint: &mut Fingerprint);
 }
 ```
 

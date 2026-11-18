@@ -13,10 +13,12 @@ use event_sauce_core::{AggregateClaim, EntityId};
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 
+use sha2::{Digest, Sha256};
+
 use crate::{
-    ClaimLocator, Credentials, Digest, Email, FederatedId, HasSecondFactor, HashError, LocateError,
-    LoginId, LoginKey, LoginStore, LoginStoreError, LoginTtl, PasswordHash, PasswordHasher,
-    Provider, Sha256,
+    ClaimLocator, Credentials, Email, FederatedId, Fingerprint, HasSecondFactor, HashError,
+    LocateError, LoginId, LoginKey, LoginStore, LoginStoreError, LoginTtl, PasswordHash,
+    PasswordHasher, Provider,
 };
 
 pub(crate) const HASH_A: &str =
@@ -208,8 +210,8 @@ impl Credentials for SecondFactorCredentials {
         Vec::new()
     }
 
-    fn fingerprint(&self, digest: &mut Sha256) {
-        digest.update([u8::from(self.second_factor)]);
+    fn fingerprint(&self, fingerprint: &mut Fingerprint) {
+        fingerprint.field(&[u8::from(self.second_factor)]);
     }
 }
 

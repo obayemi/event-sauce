@@ -6,7 +6,7 @@ use event_sauce_core::AggregateClaim;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::{credentials::feed, Credentials, HasFederated, LoginMethodError, NonEmpty, Sha256};
+use crate::{Credentials, Fingerprint, HasFederated, LoginMethodError, NonEmpty};
 
 /// The identity provider a federated login goes through.
 ///
@@ -186,11 +186,12 @@ impl Credentials for Federated {
         self.0.iter().map(FederatedId::claim).collect()
     }
 
-    fn fingerprint(&self, digest: &mut Sha256) {
-        feed(digest, b"federated");
+    fn fingerprint(&self, fingerprint: &mut Fingerprint) {
+        fingerprint.str_field("federated");
         for id in &self.0 {
-            feed(digest, id.provider.as_str().as_bytes());
-            feed(digest, id.subject.as_bytes());
+            fingerprint
+                .str_field(id.provider.as_str())
+                .str_field(&id.subject);
         }
     }
 }

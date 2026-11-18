@@ -8,8 +8,8 @@ use async_trait::async_trait;
 use secrecy::{ExposeSecret, SecretString};
 
 use crate::{
-    credentials::feed, Clock, Digest, HasSecondFactor, LoginKey, LoginStore, LoginTtl, Rejected,
-    SecondFactor, Sha256, SystemClock,
+    Clock, Fingerprint, HasSecondFactor, LoginKey, LoginStore, LoginTtl, Rejected, SecondFactor,
+    SystemClock,
 };
 
 pub use totp_rs::Secret as TotpSecret;
@@ -26,7 +26,7 @@ const REPLAY_NAMESPACE: &str = "totp";
 /// # Examples
 ///
 /// ```
-/// use event_sauce_auth::{Credentials, HasSecondFactor, HasTotp, Sha256, TotpSecret};
+/// use event_sauce_auth::{Credentials, Fingerprint, HasSecondFactor, HasTotp, TotpSecret};
 /// use event_sauce_core::AggregateClaim;
 /// use serde::{Deserialize, Serialize};
 ///
@@ -40,8 +40,8 @@ const REPLAY_NAMESPACE: &str = "totp";
 ///         Vec::new()
 ///     }
 ///
-///     fn fingerprint(&self, digest: &mut Sha256) {
-///         self.feed_totp_fingerprint(digest);
+///     fn fingerprint(&self, fingerprint: &mut Fingerprint) {
+///         self.feed_totp_fingerprint(fingerprint);
 ///     }
 /// }
 ///
@@ -65,11 +65,8 @@ pub trait HasTotp: HasSecondFactor {
     fn totp_secret(&self) -> Option<&TotpSecret>;
 
     /// Feeds the secret to a session fingerprint.
-    fn feed_totp_fingerprint(&self, digest: &mut Sha256) {
-        feed(
-            digest,
-            self.totp_secret().map_or(&[][..], TotpSecret::as_bytes),
-        );
+    fn feed_totp_fingerprint(&self, fingerprint: &mut Fingerprint) {
+        fingerprint.field(self.totp_secret().map_or(&[][..], TotpSecret::as_bytes));
     }
 }
 
@@ -102,10 +99,11 @@ impl Totp {
     }
 
     fn replay_key(secret: &TotpSecret, step: u64) -> LoginKey {
-        let mut digest = Sha256::new();
-        feed(&mut digest, b"event-sauce-auth totp");
-        feed(&mut digest, secret.as_bytes());
-        let digest = hex::encode(digest.finalize());
+        let mut fingerprint = Fingerprint::new();
+        fingerprint
+            .str_field("event-sauce-auth totp")
+            .field(secret.as_bytes());
+        let digest = hex::encode(fingerprint.finish());
         LoginKey::new(REPLAY_NAMESPACE, format_args!("{digest}:{step}"))
     }
 }

@@ -3,7 +3,7 @@
 use event_sauce_core::AggregateClaim;
 use serde::{Deserialize, Serialize};
 
-use crate::{credentials::feed, Credentials, HasPassword, LoginId, PasswordHash, Sha256};
+use crate::{Credentials, Fingerprint, HasPassword, LoginId, PasswordHash};
 
 /// A login identifier and the hash of its password.
 ///
@@ -86,10 +86,11 @@ impl<L: LoginId> Credentials for Password<L> {
     ///
     /// Panics when the login identifier cannot be serialized to JSON,
     /// which no [`LoginId`] may do.
-    fn fingerprint(&self, digest: &mut Sha256) {
-        feed(digest, b"password");
-        feed(digest, login_key(&self.login).to_string().as_bytes());
-        feed(digest, self.hash.as_str().as_bytes());
+    fn fingerprint(&self, fingerprint: &mut Fingerprint) {
+        fingerprint
+            .str_field("password")
+            .str_field(&login_key(&self.login).to_string())
+            .str_field(self.hash.as_str());
     }
 }
 

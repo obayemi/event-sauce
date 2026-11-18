@@ -89,9 +89,9 @@ pub use authenticator::{
 };
 pub use clock::{Clock, FixedClock, SystemClock};
 pub use credentials::{
-    Credentials, Digest, EmptyError, Federated, FederatedId, HasFederated, HasPassword, Identity,
-    IdentityError, LoginMethodError, NonEmpty, Password, PasswordHash, PasswordHashError,
-    PasswordOrFederated, Provider, Sha256,
+    Credentials, EmptyError, Federated, FederatedId, Fingerprint, HasFederated, HasPassword,
+    Identity, IdentityError, LoginMethodError, NonEmpty, Password, PasswordHash, PasswordHashError,
+    PasswordOrFederated, Provider,
 };
 pub use login_id::{Email, EmailError, LoginId, Username, UsernameError};
 pub use login_method::{

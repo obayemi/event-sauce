@@ -5,11 +5,10 @@ use std::fmt::Debug;
 use event_sauce_core::AggregateClaim;
 use serde::{de::DeserializeOwned, Serialize};
 
-pub use sha2::{Digest, Sha256};
-
 mod capabilities;
 mod error;
 mod federated;
+mod fingerprint;
 mod identity;
 mod non_empty;
 mod password;
@@ -19,6 +18,7 @@ mod password_or_federated;
 pub use capabilities::{HasFederated, HasPassword};
 pub use error::LoginMethodError;
 pub use federated::{Federated, FederatedId, Provider};
+pub use fingerprint::Fingerprint;
 pub use identity::{Identity, IdentityError};
 pub use non_empty::{EmptyError, NonEmpty};
 pub use password::Password;
@@ -43,20 +43,13 @@ pub trait Credentials:
     ///
     /// Any change to what is fed changes the session fingerprint, so
     /// sessions opened before the change stop being valid.
-    fn fingerprint(&self, digest: &mut Sha256);
-}
-
-/// Feeds `bytes` behind a length prefix, so that two different sequences of
-/// fields never feed the same byte stream.
-pub(crate) fn feed(digest: &mut Sha256, bytes: &[u8]) {
-    digest.update((bytes.len() as u64).to_be_bytes());
-    digest.update(bytes);
+    fn fingerprint(&self, fingerprint: &mut Fingerprint);
 }
 
 /// The fingerprint `credentials` alone would produce.
 #[cfg(test)]
 pub(crate) fn fingerprint_of(credentials: &impl Credentials) -> [u8; 32] {
-    let mut digest = Sha256::new();
-    credentials.fingerprint(&mut digest);
-    digest.finalize().into()
+    let mut fingerprint = Fingerprint::new();
+    credentials.fingerprint(&mut fingerprint);
+    fingerprint.finish()
 }

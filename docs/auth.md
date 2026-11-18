@@ -139,7 +139,7 @@ pub trait Credentials:
 
     /// Feeds every secret and identifier that grants access, so any change
     /// to them changes the session fingerprint.
-    fn fingerprint(&self, digest: &mut Sha256);
+    fn fingerprint(&self, fingerprint: &mut Fingerprint);
 }
 ```
 
@@ -376,6 +376,10 @@ any other way, the fingerprint changes and every other session of the user
 ends on its next request. Credentials types feed the fingerprint from
 `Credentials::fingerprint`; forget a field there and changing it will not
 log anyone out.
+
+`Fingerprint` feeds only length-prefixed fields: `field(&[u8])` and
+`str_field(&str)`. Two different credential states therefore never produce
+the same byte stream, however their fields are split.
 
 ## Feature Flags
 
