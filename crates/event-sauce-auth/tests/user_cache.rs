@@ -10,7 +10,7 @@ use std::sync::{
 
 use async_trait::async_trait;
 use event_sauce_auth::{CacheError, CachedUserLoader, MokaUserCache, UserCache};
-use event_sauce_core::{AggregateRoot, AggregateVersion, EntityId};
+use event_sauce_core::{AggregateRoot, EntityId, StoredVersion};
 use event_sauce_memory::InMemoryEventStore;
 use user_fixture::{join, rename, suspend, Member};
 
@@ -51,7 +51,7 @@ impl UserCache<Member> for CountingCache {
     async fn get(
         &self,
         id: EntityId,
-        version: AggregateVersion,
+        version: StoredVersion,
     ) -> Result<Option<Arc<AggregateRoot<Member>>>, CacheError> {
         self.gets.fetch_add(1, Ordering::SeqCst);
         if self.broken {

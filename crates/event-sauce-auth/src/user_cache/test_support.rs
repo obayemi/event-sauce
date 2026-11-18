@@ -1,8 +1,8 @@
 //! A user aggregate and its stored form, for the unit tests of the caches.
 
 use event_sauce_core::{
-    define_events, Aggregate, AggregateError, AggregateRoot, AggregateVersion, Entity, EntityId,
-    StoredVersion,
+    define_events, Aggregate, AggregateError, AggregateRoot, AggregateVersion, DefaultEntity,
+    Entity, EntityId, StoredVersion,
 };
 use serde::{Deserialize, Serialize};
 
@@ -18,10 +18,20 @@ pub struct CacheUser {
 }
 
 impl Entity for CacheUser {
+    fn new(id: EntityId) -> Self {
+        Self {
+            id,
+            identity: Identity::Anonymous,
+            name: String::new(),
+        }
+    }
+
     fn entity_id(&self) -> EntityId {
         self.id
     }
 }
+
+impl DefaultEntity for CacheUser {}
 
 #[derive(Debug, thiserror::Error)]
 #[error("cache user error")]
@@ -53,12 +63,15 @@ define_events! {
     }
 }
 
+/// The stored version `n`, which must be positive.
+pub(crate) fn stored(n: i64) -> StoredVersion {
+    StoredVersion::try_from(AggregateVersion::new(n)).expect("a stored version is positive")
+}
+
 /// A stored user at `version`, as a repository would load it.
 pub(crate) fn cache_user_at(id: EntityId, name: &str, version: i64) -> AggregateRoot<CacheUser> {
-    let version = StoredVersion::try_from(AggregateVersion::new(version))
-        .expect("a stored version is positive");
     AggregateRoot::restore(
-        version,
+        stored(version),
         CacheUser {
             id,
             identity: Identity::Anonymous,

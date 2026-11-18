@@ -5,7 +5,7 @@ use std::fmt::Debug;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use event_sauce_core::{AggregateRoot, AggregateVersion, EntityId};
+use event_sauce_core::{AggregateRoot, EntityId, StoredVersion};
 
 use crate::UserAggregate;
 
@@ -79,7 +79,7 @@ pub trait UserCache<U: UserAggregate>: Debug + Send + Sync {
     async fn get(
         &self,
         id: EntityId,
-        version: AggregateVersion,
+        version: StoredVersion,
     ) -> Result<Option<Arc<AggregateRoot<U>>>, CacheError>;
 
     /// Caches `user` at the version it was loaded at.
@@ -92,8 +92,15 @@ pub trait UserCache<U: UserAggregate>: Debug + Send + Sync {
     async fn put(&self, user: Arc<AggregateRoot<U>>) -> Result<(), CacheError>;
 }
 
-/// Whether `user` still is exactly what the event store holds.
+/// The version `user` has in the event store, or `None` when `user` is not
+/// exactly what the store holds: it has uncommitted changes, or was never saved.
 #[cfg(any(feature = "moka", feature = "redis"))]
-fn is_stored<U: UserAggregate>(user: &AggregateRoot<U>) -> bool {
-    user.pending_events().is_empty() && !user.is_poisoned()
+fn stored_version<U: UserAggregate>(user: &AggregateRoot<U>) -> Option<StoredVersion> {
+    if !user.pending_events().is_empty() || user.is_poisoned() {
+        return None;
+    }
+    StoredVersion::try_from(user.version()).ok()
 }
+
+#[cfg(all(test, any(feature = "moka", feature = "redis")))]
+mod tests;

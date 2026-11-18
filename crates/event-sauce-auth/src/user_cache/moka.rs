@@ -3,10 +3,10 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use event_sauce_core::{AggregateRoot, AggregateVersion, EntityId};
+use event_sauce_core::{AggregateRoot, AggregateVersion, EntityId, StoredVersion};
 use moka::{ops::compute::Op, sync::Cache};
 
-use super::is_stored;
+use super::stored_version;
 use crate::{CacheError, UserAggregate, UserCache};
 
 /// A [`UserCache`] that keeps users in this process, bounded by a number of
@@ -55,16 +55,16 @@ where
     async fn get(
         &self,
         id: EntityId,
-        version: AggregateVersion,
+        version: StoredVersion,
     ) -> Result<Option<Arc<AggregateRoot<U>>>, CacheError> {
         Ok(self
             .entries
             .get(&id)
-            .filter(|user| user.version() == version))
+            .filter(|user| user.version() == AggregateVersion::from(version)))
     }
 
     async fn put(&self, user: Arc<AggregateRoot<U>>) -> Result<(), CacheError> {
-        if is_stored(&user) {
+        if stored_version(&user).is_some() {
             self.entries
                 .entry(user.entity_id())
                 .and_compute_with(|current| match current {

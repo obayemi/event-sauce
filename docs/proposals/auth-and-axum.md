@@ -915,7 +915,7 @@ Loading the current user goes through a pluggable cache:
 #[async_trait]
 pub trait UserCache<U: UserAggregate>: Debug + Send + Sync {
     /// Returns the cached user only if it is exactly at `version`.
-    async fn get(&self, id: EntityId, version: AggregateVersion)
+    async fn get(&self, id: EntityId, version: StoredVersion)
         -> Result<Option<Arc<AggregateRoot<U>>>, CacheError>;
     /// Caches `user` at the version it was loaded at. A user with pending
     /// events, or a poisoned one, is skipped: a cache only holds users as stored.
@@ -930,8 +930,8 @@ what step 12 builds `get_user` on. `new(store)` loads without a cache,
 `with_cache(cache)` or `with_shared_cache(arc)` adds one, and
 `load(id) -> Result<Option<Arc<AggregateRoot<U>>>, Error>` does the
 following:
-1. Read the stored version (one cheap query). The initial version means no such
-   user: `None`.
+1. Read the stored version (one cheap query). A version below
+   `StoredVersion::FIRST` means no such user: `None`.
 2. Serve a cached user at exactly that version.
 3. Otherwise load in full and fill the cache. A missing or deleted user is
    `None`.

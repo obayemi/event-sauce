@@ -245,10 +245,10 @@ explicitly rather than gated behind a major version bump.
   `unlink_provider(&Provider)`. `Credentials::fingerprint` feeds a
   `Fingerprint` whose `field` and `str_field` length-prefix every field, so
   two different credential states never share a byte stream. `LoginId` requires `AsRef<str>`, the canonical normalised
-  string that keys the login claim and feeds the fingerprint; `Password::claim_for` no longer panics. `PasswordHasher::hash` and `verify` are async, and
-  `Argon2Hasher` runs the Argon2 work, the dummy verification of unknown
-  logins included, on `tokio::task::spawn_blocking`, mapping a failed task to
-  `HashError`. The `argon2` and `postgres` features are
+  string that keys the login claim and feeds the fingerprint; `Password::claim_for` no longer panics. `UserCache::get` takes the `StoredVersion` the event store
+  holds, so a version no stored user has cannot be asked for. `PasswordHasher::hash` and `verify` are async, and `Argon2Hasher` runs the
+  Argon2 work, the dummy verification of unknown logins included, on
+  `tokio::task::spawn_blocking`, mapping a failed task to `HashError`. The `argon2` and `postgres` features are
   on by default; `moka`, `redis`, `reset` and `totp` are optional.
 
 - `event-sauce-axum` crate. `CorrelationLayer` reads `x-request-id` (or the

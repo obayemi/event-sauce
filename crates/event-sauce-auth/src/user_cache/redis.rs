@@ -4,13 +4,13 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use event_sauce_core::{AggregateRoot, AggregateVersion, EntityId, EventStore};
+use event_sauce_core::{AggregateRoot, EntityId, EventStore, StoredVersion};
 use redis::aio::ConnectionManager;
 use redis::{AsyncCommands, SetOptions};
 use serde::{de::DeserializeOwned, Serialize};
 
 use self::sealed::Sealer;
-use super::is_stored;
+use super::stored_version;
 use crate::{CacheError, LoginTtl, UserAggregate, UserCache};
 
 mod sealed;
@@ -123,7 +123,7 @@ where
     async fn get(
         &self,
         id: EntityId,
-        version: AggregateVersion,
+        version: StoredVersion,
     ) -> Result<Option<Arc<AggregateRoot<U>>>, CacheError> {
         let stored: Option<Vec<u8>> = self
             .connection
@@ -138,10 +138,10 @@ where
     }
 
     async fn put(&self, user: Arc<AggregateRoot<U>>) -> Result<(), CacheError> {
-        if !is_stored(&user) {
+        let Some(version) = stored_version(&user) else {
             return Ok(());
-        }
-        let Some(bytes) = self.sealer.seal(&user).await? else {
+        };
+        let Some(bytes) = self.sealer.seal(&user, version).await? else {
             return Ok(());
         };
         let options = SetOptions::default().with_expiration(self.ttl.redis_expiry());

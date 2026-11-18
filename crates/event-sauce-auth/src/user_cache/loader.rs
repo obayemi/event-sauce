@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use event_sauce_core::{
-    AggregateRoot, AggregateVersion, EntityId, EventSourcedRepository, EventStore, Repository,
+    AggregateRoot, EntityId, EventSourcedRepository, EventStore, Repository, StoredVersion,
 };
 use serde::{de::DeserializeOwned, Serialize};
 
@@ -13,7 +13,8 @@ use crate::{CacheError, UserAggregate, UserCache};
 ///
 /// This is how a session resolves its user on every request:
 ///
-/// 1. the stored version is read, which is one cheap query;
+/// 1. the stored version is read, which is one cheap query, and a user the
+///    store has never saved is `None`;
 /// 2. a cached user at exactly that version is served as is, so a stale or
 ///    deactivated user is never served;
 /// 3. otherwise the user is loaded in full, which decrypts it and replays it
@@ -69,10 +70,9 @@ where
         &self,
         id: EntityId,
     ) -> Result<Option<Arc<AggregateRoot<U>>>, event_sauce_core::Error> {
-        let version = self.repository.version_by_id(id).await?;
-        if version == AggregateVersion::initial() {
+        let Ok(version) = StoredVersion::try_from(self.repository.version_by_id(id).await?) else {
             return Ok(None);
-        }
+        };
         let user = match self.cached(id, version).await {
             Some(user) => Some(user),
             None => self.load_in_full(id).await?,
@@ -80,11 +80,7 @@ where
         Ok(user.filter(|user| user.is_active()))
     }
 
-    async fn cached(
-        &self,
-        id: EntityId,
-        version: AggregateVersion,
-    ) -> Option<Arc<AggregateRoot<U>>> {
+    async fn cached(&self, id: EntityId, version: StoredVersion) -> Option<Arc<AggregateRoot<U>>> {
         let cache = self.cache.as_ref()?;
         match cache.get(id, version).await {
             Ok(user) => user,

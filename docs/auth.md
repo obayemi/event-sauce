@@ -393,9 +393,9 @@ that picks the time step.
 
 Loading the current user goes through `CachedUserLoader`:
 
-1. read the stored version (one cheap query); the initial version means
-   there is no such user;
-2. serve a cached user that is at exactly that version;
+1. read the stored version (one cheap query); a version below the first
+   stored one means there is no such user;
+2. serve a cached user that is at exactly that `StoredVersion`;
 3. otherwise load in full and fill the cache;
 4. a missing, deleted or inactive user is `None`.
 

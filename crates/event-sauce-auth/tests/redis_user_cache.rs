@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use event_sauce_auth::{CacheError, LoginTtl, RedisUserCache, UserAggregate, UserCache};
-use event_sauce_core::{AggregateVersion, EntityId, EventStore};
+use event_sauce_core::{AggregateRoot, AggregateVersion, EntityId, EventStore, StoredVersion};
 use event_sauce_memory::InMemoryEventStore;
 use redis::aio::ConnectionManager;
 use testcontainers::ImageExt;
@@ -57,8 +57,12 @@ impl World {
     }
 }
 
-fn version(n: i64) -> AggregateVersion {
-    AggregateVersion::new(n)
+fn version(n: i64) -> StoredVersion {
+    StoredVersion::try_from(AggregateVersion::new(n)).unwrap()
+}
+
+fn stored(user: &AggregateRoot<Member>) -> StoredVersion {
+    StoredVersion::try_from(user.version()).unwrap()
 }
 
 #[tokio::test]
@@ -70,7 +74,7 @@ async fn a_user_is_a_hit_at_the_version_it_was_cached_at() {
 
     cache.put(user.clone()).await.unwrap();
 
-    let hit = cache.get(id, user.version()).await.unwrap().unwrap();
+    let hit = cache.get(id, stored(&user)).await.unwrap().unwrap();
     assert_eq!(hit.nickname, "ada");
     assert_eq!(hit.version(), user.version());
     assert_eq!(hit.entity_id(), id);
@@ -96,16 +100,10 @@ async fn any_other_stored_version_is_a_miss() {
     let cache = world.cache();
     cache.put(user.clone()).await.unwrap();
 
-    assert!(cache
-        .get(id, AggregateVersion::new(user.version().as_i64() + 1))
-        .await
-        .unwrap()
-        .is_none());
-    assert!(cache
-        .get(id, AggregateVersion::new(user.version().as_i64() - 1))
-        .await
-        .unwrap()
-        .is_none());
+    let current = user.version().as_i64();
+    for other in [current + 1, current + 2] {
+        assert!(cache.get(id, version(other)).await.unwrap().is_none());
+    }
 }
 
 #[tokio::test]
@@ -117,10 +115,10 @@ async fn an_edited_user_is_cached_at_its_new_version() {
 
     rename(&world.store, id, "countess").await;
     let edited = load(&world.store, id).await;
-    assert!(cache.get(id, edited.version()).await.unwrap().is_none());
+    assert!(cache.get(id, stored(&edited)).await.unwrap().is_none());
     cache.put(edited.clone()).await.unwrap();
 
-    let hit = cache.get(id, edited.version()).await.unwrap().unwrap();
+    let hit = cache.get(id, stored(&edited)).await.unwrap().unwrap();
     assert_eq!(hit.nickname, "countess");
 }
 
@@ -134,7 +132,7 @@ async fn a_cache_does_not_judge_activity() {
 
     cache.put(user.clone()).await.unwrap();
 
-    let hit = cache.get(id, user.version()).await.unwrap().unwrap();
+    let hit = cache.get(id, stored(&user)).await.unwrap().unwrap();
     assert!(!hit.is_active());
 }
 
@@ -155,7 +153,7 @@ async fn an_encrypted_user_is_stored_only_as_ciphertext() {
             String::from_utf8_lossy(secret)
         );
     }
-    assert!(cache.get(id, user.version()).await.unwrap().is_some());
+    assert!(cache.get(id, stored(&user)).await.unwrap().is_some());
 }
 
 #[tokio::test]
@@ -174,7 +172,7 @@ async fn a_shredded_key_turns_a_hit_into_a_miss() {
         .await
         .unwrap();
 
-    assert!(cache.get(id, user.version()).await.unwrap().is_none());
+    assert!(cache.get(id, stored(&user)).await.unwrap().is_none());
 }
 
 #[tokio::test]
@@ -206,7 +204,7 @@ async fn an_encrypted_user_cannot_be_cached_without_crypto() {
 
     assert!(matches!(error, CacheError::Crypto(_)));
     assert!(world.raw(id).await.is_none());
-    assert!(cache.get(id, user.version()).await.unwrap().is_none());
+    assert!(cache.get(id, stored(&user)).await.unwrap().is_none());
 }
 
 #[tokio::test]
@@ -249,6 +247,6 @@ async fn prefixes_isolate_caches_sharing_a_server() {
 
     first.put(user.clone()).await.unwrap();
 
-    assert!(second.get(id, user.version()).await.unwrap().is_none());
-    assert!(first.get(id, user.version()).await.unwrap().is_some());
+    assert!(second.get(id, stored(&user)).await.unwrap().is_none());
+    assert!(first.get(id, stored(&user)).await.unwrap().is_some());
 }
