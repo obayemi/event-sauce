@@ -225,8 +225,8 @@ explicitly rather than gated behind a major version bump.
   aggregates. Its main types are `Identity`, `Credentials` (`Password`,
   `Federated`, `PasswordOrFederated`), `LoginId` (`Email`, `Username`),
   `LoginMethod` (`PasswordLogin`, `FederatedLogin`,
-  `PasswordOrFederatedLogin`), `Logins`, `PasswordHasher`,
-  `LoginStore` and `CachedUserLoader`. Logins are typestate: `Logins::begin` runs a
+  `PasswordOrFederatedLogin`), `Logins`, `PasswordHasher`, `LoginStore` and
+  `CachedUserLoader`. Logins are typestate: `Logins::begin` runs a
   `FirstFactor` (a `LoginMethod` and a `Route`), and the `Login<U, S>` it
   yields moves through states the app names, each state's `Step` being the
   only way out of it. `Login::finish`, which exists only for a `Complete`
@@ -238,18 +238,22 @@ explicitly rather than gated behind a major version bump.
   initial version and logs it in, and behind `totp`, `Totp`, `NeedTotp` and
   `TotpIfEnrolled` are the ready-made TOTP step. `UserAggregate` requires
   `'static`. `Rejected::Unavailable` and `AuthError::Unavailable` report a
-  verifier that could not check at all. `LoginTtl` is the validated time to live of every login store and user
-  cache entry: never zero, at most 366 days, with infallible constants such
-  as `LoginTtl::FIVE_MINUTES`. `Federated` and `PasswordOrFederated` unlink one identity with
+  verifier that could not check at all. `LoginTtl` is the validated time to
+  live of every login store and user cache entry: never zero, at most 366
+  days, with infallible constants such as `LoginTtl::FIVE_MINUTES`.
+  `Federated` and `PasswordOrFederated` unlink one identity with
   `unlink(&FederatedId)` or every identity of a provider with
   `unlink_provider(&Provider)`. `Credentials::fingerprint` feeds a
   `Fingerprint` whose `field` and `str_field` length-prefix every field, so
-  two different credential states never share a byte stream. `LoginId` requires `AsRef<str>`, the canonical normalised
-  string that keys the login claim and feeds the fingerprint; `Password::claim_for` no longer panics. `UserCache::get` takes the `StoredVersion` the event store
-  holds, so a version no stored user has cannot be asked for. `PasswordHasher::hash` and `verify` are async, and `Argon2Hasher` runs the
-  Argon2 work, the dummy verification of unknown logins included, on
-  `tokio::task::spawn_blocking`, mapping a failed task to `HashError`. The `argon2` and `postgres` features are
-  on by default; `moka`, `redis`, `reset` and `totp` are optional.
+  two different credential states never share a byte stream. `LoginId`
+  requires `AsRef<str>`, the canonical normalised string that keys the login
+  claim and feeds the fingerprint; `Password::claim_for` no longer panics.
+  `UserCache::get` takes the `StoredVersion` the event store holds, so a
+  version no stored user has cannot be asked for. `PasswordHasher::hash` and
+  `verify` are async, and `Argon2Hasher` runs the Argon2 work, the dummy
+  verification of unknown logins included, on `tokio::task::spawn_blocking`,
+  mapping a failed task to `HashError`. The `argon2` and `postgres` features
+  are on by default; `moka`, `redis`, `reset` and `totp` are optional.
 
 - `event-sauce-axum` crate. `CorrelationLayer` reads `x-request-id` (or the
   `HeaderName` given to `header(name)`), keeps it when it is a valid

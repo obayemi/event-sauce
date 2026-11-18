@@ -357,6 +357,12 @@ operation over several aggregates is a `UnitOfWorkCommand` (see
   `docs/auth.md`)
 - Logins resolve users through claims (`EventStore::resolve_claim`), never
   through a projection
+- A login is a typestate: `Logins::begin` runs a `FirstFactor` (a
+  `LoginMethod` and a `Route`) and yields a `Login<U, S>`; each state's
+  `Step` is the only way out of it, and only `Login::finish` on a `Complete`
+  state yields the `Authenticated<U>` a session is opened from. Model a new
+  factor as a new state with its own `Step`, never as a flag checked by the
+  handler; save a login between requests with `PendingLogins`
 - A hot aggregate declares its snapshot strategy on the aggregate itself:
   `#[aggregate(..., snapshots(every = N))]` (also `always`, `never`,
   `with = "path"`); a store `per_type_override` still wins over it
