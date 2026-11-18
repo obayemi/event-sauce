@@ -1,16 +1,22 @@
 # Proposal: pluggable auth and axum integration
 
-Status: **implemented**. Every step of the build order (section 8) is on
-`feat/auth`. Where the code deliberately differs from the first draft of
-this proposal, the sections below describe the code. Supersedes the "extract `event-sauce-auth` from
-saxy-p" plan in saxy-p's `PLAN.md`.
+Status: **implemented, except typestate logins**. Steps 1 to 14 of the
+build order (section 8) are on `feat/auth`. Typestate logins (sections 3.4,
+3.6, 4.2 and 4.4) are designed here and replace the `ClaimAuthenticator`,
+`TwoFactor` and second-factor builder stage those steps shipped; steps 15
+to 17 build them. Where the code deliberately differs from the first draft
+of this proposal, the sections below describe the code. Supersedes the
+"extract `event-sauce-auth` from saxy-p" plan in saxy-p's `PLAN.md`.
 
 Two new optional crates:
 
 - `event-sauce-auth`: a `user` marker on one aggregate, a typed login
-  model, and a pluggable `Authenticator` trait for login.
+  model, and typestate logins: a login is a `Login<U, S>` moving through
+  states the app declares, and only a finished one yields the
+  `Authenticated<U>` a session needs.
 - `event-sauce-axum`: correlation-id middleware, a cached current-user
-  extractor, an `axum-login` backend, and state helpers.
+  extractor, an `axum-login` backend that opens sessions only from an
+  `Authenticated<U>`, and state helpers.
 
 Both are reached from the facade through the `auth` and `axum` features
 and their sub-features (see section 5).
@@ -43,6 +49,9 @@ Goals:
   credentials, verification method, hasher, authenticator, federated
   linking policy.
 - One user load per request, and none at all when the cache is hit.
+- No session before the whole login process ends, however many steps or
+  branches it has: a session needs an `Authenticated<U>`, and the types
+  allow one only at the end of the process the app declared.
 
 Non-goals:
 
@@ -52,9 +61,9 @@ Non-goals:
   already models authorization separately (`AccessScope`, 170 `@actor`
   validators).
 - **Session storage.** That is tower-sessions' job.
-- **Rate limiting and lockout.** Both can be added by wrapping
-  `Authenticator` in a decorator (see section 3.5). They are not part of
-  v1.
+- **Rate limiting and lockout.** Both can be added by wrapping a
+  `LoginMethod`, or a step's verifier, in a decorator (see section 3.5).
+  They are not part of v1.
 - **Recording logins as events.** That would bloat the user stream with
   data that is neither domain state nor needed for replay. Login audit
   belongs in tracing or an audit sink.
@@ -143,9 +152,13 @@ pub trait HasFederated: Credentials {
 
 | Type | Shape | Claims | Capabilities |
 |---|---|---|---|
-| `Password<L: LoginId>` | `{ login: L, hash: PasswordHash }` | `"auth.login"` keyed by `L.as_ref()` | `HasPassword` (always `Some`) |
-| `Federated` | `NonEmpty<FederatedId>` | one `"auth.federated"` per link, keyed by `[provider, subject]` | `HasFederated` (always `Some`) |
-| `PasswordOrFederated<L>` | `enum { Password(Password<L>), Federated(Federated), Both(Password<L>, Federated) }` | those of what it holds | both |
+| `Password<L: LoginId>` | `{ login: L, hash: PasswordHash }` | `"auth.login"` keyed by `L.as_ref()` | `HasPassword` (always `Some`), `SingleFactor` |
+| `Federated` | `NonEmpty<FederatedId>` | one `"auth.federated"` per link, keyed by `[provider, subject]` | `HasFederated` (always `Some`), `SingleFactor` |
+| `PasswordOrFederated<L>` | `enum { Password(Password<L>), Federated(Federated), Both(Password<L>, Federated) }` | those of what it holds | both, `SingleFactor` |
+
+`SingleFactor` is a marker (section 3.6): these types hold nothing beyond
+the first factor, so a login with them may end right after it. An app type
+that holds a second factor does not implement it.
 
 `PasswordOrFederated` is a concrete enum written out in the library, not
 a generic combination. Its three variants make "registered with no way
@@ -335,9 +348,14 @@ pub trait ClaimLocator: Send + Sync {
 // implemented for every `S: EventStore + ?Sized`
 ```
 
-`LocateError` is an alias of `event_sauce_core::Error`. `Rejected` is an
-enum with three variants: `Mismatch` (the attempt does not match what is
-stored), `Hash(HashError)` and `LoginStore(LoginStoreError)`.
+`LocateError` is an alias of `event_sauce_core::Error`. `Rejected` is
+what every check of a login answers, a login method's `verify` as well as
+a later step's (section 3.6). It has four variants: `Mismatch` (the proof
+does not match what is stored), `Hash(HashError)`,
+`LoginStore(LoginStoreError)`, and
+`Unavailable(Box<dyn Error + Send + Sync>)` for an app verifier that could
+not check the proof at all (a mailer or a device-link store that failed),
+built with `Rejected::unavailable(error)`.
 
 The library ships three:
 
@@ -365,8 +383,9 @@ The library ships three:
 An app with its own credentials type either reuses these, through the
 capability traits, or implements `LoginMethod` for its own method.
 
-saxy-p's QR device link is such an app method, `DeviceLinkLogin`:
-- `locate` reads the confirmed link from saxy-p's `DeviceLinkStore`.
+saxy-p's QR device link is such an app method, `DeviceLinkLogin`
+(written out in section 3.6):
+- `locate` takes the confirmed link from saxy-p's `DeviceLinkStore`.
 - `verify` accepts any identity, anonymous included, because the
   already-logged-in device vouched for it.
 
@@ -390,74 +409,61 @@ pub trait PasswordHasher: Send + Sync {
 // the Argon2 work on `tokio::task::spawn_blocking`.
 ```
 
-On top sits the `Authenticator` trait:
+A login method is only the **first step** of a login. It does not decide
+whether the login is over: `FirstFactor::new(method, route)` pairs it with
+a `Route` that picks, per user, the state the login moves to next, and
+`Logins::begin` runs both (section 3.6):
+
+1. `method.locate(&*store, &attempt)`: the event store is the locator.
+2. If no user matches, run `on_unknown` and return
+   `AuthError::Unknown { attempt }`. `Unknown` hands the attempt back so the
+   app can apply its own policy:
+   - for a federated attempt, link the subject to an existing user by
+     email and call `begin` again, or create a profile and call `sign_up`
+     (what saxy-p does in `auth.rs:161-202`);
+   - for a password attempt, map it to `InvalidCredentials` before it
+     reaches the client.
+3. Load the user, which decrypts the aggregate. Snapshots bound the replay
+   cost, and a configured user cache serves a version-checked hit.
+4. `is_active()`, otherwise return `Inactive`. This check runs for every
+   method.
+5. `method.verify(identity, &attempt)`.
+6. Pin the identity's session fingerprint and the start time, and hand the
+   login to the route, which returns `Login<U, Done>` or a login in a
+   further state. Nothing here is a session yet.
 
 ```rust
-#[async_trait]
-pub trait Authenticator<U: UserAggregate>: Send + Sync {
-    type Attempt: Send + Sync;
-    async fn authenticate(&self, attempt: Self::Attempt)
-        -> Result<LoginOutcome<U>, AuthError<Self::Attempt>>;
-}
-
-pub enum LoginOutcome<U: Aggregate> {
-    /// Fully authenticated: the caller may open a session.
-    Authenticated(AggregateRoot<U>),
-    /// First factor accepted; a second factor is required (section 3.6).
-    SecondFactorRequired(PendingLoginId),
-}
-// `LoginOutcome` is `#[non_exhaustive]`.
-
 #[derive(Debug, thiserror::Error)]
 pub enum AuthError<A> {
-    #[error("invalid credentials")] InvalidCredentials,
-    #[error("account inactive")]    Inactive,
+    #[error("invalid credentials")]    InvalidCredentials,
+    #[error("account inactive")]       Inactive,
     #[error("no user for this login")] Unknown { attempt: A },
-    #[error(transparent)]           Store(#[from] event_sauce_core::Error),
-    #[error(transparent)]           Hash(#[from] HashError),
-    #[error(transparent)]           Pending(#[from] PendingLoginError),
+    #[error(transparent)]              Store(#[from] event_sauce_core::Error),
+    #[error(transparent)]              Hash(#[from] HashError),
+    #[error(transparent)]              LoginStore(#[from] LoginStoreError),
+    #[error("the attempt could not be checked")]
+                                       Unavailable(Box<dyn Error + Send + Sync>),
 }
 ```
 
 `Rejected` converts into `AuthError`: `Mismatch` becomes
-`InvalidCredentials`, `Hash` stays `Hash`, and a login store failure
-becomes `Pending`.
+`InvalidCredentials`, and the other three keep their name.
 
-The default implementation is `ClaimAuthenticator<U, M, S, T = NoSecondFactor>`,
-for any `M: LoginMethod<U::Credentials>` and any event store `S`. It is the
-generic code every backend gets, and `ClaimAuthenticator::new(store: Arc<S>,
-method)` builds it. `S` is inferred, so callers name only the user type. The
-fourth parameter is the login stage of section 3.6.
-
-1. `method.locate(&*store, &attempt)`: the event store is the locator.
-2. If no user matches, run `on_unknown` and return `Unknown { attempt }`.
-   `Unknown` hands the attempt back so the app can apply its own policy:
-   - for a federated attempt, link the subject to an existing user by
-     email, or create a profile (what saxy-p does in
-     `auth.rs:161-202`);
-   - for a password attempt, map it to `InvalidCredentials` before it
-     reaches the client.
-3. `load_by_id`, which decrypts the aggregate. Snapshots bound the replay
-   cost.
-4. `is_active()`, otherwise return `Inactive`. This check runs for every
-   method.
-5. `method.verify(identity, &attempt)`.
-6. Ask the login stage `T` (section 3.6). If the user's credentials require
-   a second factor, it stores a pending login and the outcome is
-   `SecondFactorRequired`. Otherwise the outcome is `Authenticated`.
-
-saxy-p's login becomes:
+saxy-p's password-or-Google login becomes:
 
 ```rust
-ClaimAuthenticator::<Profile, _, _>::new(
-    store.clone(),
+let password_or_google = FirstFactor::new(
     PasswordOrFederatedLogin::new(Argon2Hasher::default()),
-)
+    AlwaysDone,
+);
+let next: Login<Profile, Done> = logins.begin(&password_or_google, attempt).await?;
 ```
 
 A password-only app passes `PasswordLogin` alone. Passing
 `FederatedLogin` to a password-only `Profile` fails to compile, because
-`Password<Email>` does not implement `HasFederated`.
+`Password<Email>` does not implement `HasFederated`. Routing a user whose
+credentials can hold a second factor through `AlwaysDone` fails to compile
+too (section 3.6).
 
 ### 3.5 Password reset tokens (optional `reset` module)
 
@@ -470,92 +476,377 @@ saxy-p's `pending_password_reset` generalises into
 - `ResetTokenHash::verify(&token, issued_at, now, ttl)`. The clock is a
   parameter, so the check is pure.
 
-Lockout and rate limiting would be `Authenticator` decorators, for
-example `Throttled<A, T: AttemptStore>`, outside v1.
+Lockout and rate limiting would be decorators of a `LoginMethod` or of a
+step's verifier, for example `Throttled<M, T: AttemptStore>`, outside v1.
 
-### 3.6 Multi-step logins and the login store
+### 3.6 Typestate logins and the login store
 
-**Second factors.** A second factor (TOTP, WebAuthn) is stored in the
-app's credentials type and verified by a `SecondFactor` implementation:
+A login can take more than one proof: a password then a TOTP code, a
+TOTP code *or* a recovery code, a third factor for some users, or a step
+another device performs for the user. Whatever the process, **no session
+may open before it ends**. The library makes that a type error rather
+than a convention: a session needs an `Authenticated<U>`, and the only way
+to get one is to finish a login that reached a state the app marked
+`Complete`.
+
+**The types.**
 
 ```rust
-/// Credentials that may demand a second factor after the first succeeds.
-pub trait HasSecondFactor: Credentials {
-    fn requires_second_factor(&self) -> bool;
+/// A user who went through a whole login process. There is no public
+/// constructor, no `Default`, no `Deserialize`: `Login::finish` is the only
+/// way to get one.
+pub struct Authenticated<U: UserAggregate> { /* private */ }
+
+impl<U: UserAggregate> Authenticated<U> {
+    pub fn user(&self) -> &Arc<AggregateRoot<U>>;
+    pub fn into_user(self) -> Arc<AggregateRoot<U>>;
+    /// The fingerprint the session is opened with (section 3.1).
+    pub fn session_fingerprint(&self) -> [u8; 32];
 }
 
-#[async_trait]
-pub trait SecondFactor<C: HasSecondFactor>: Send + Sync {
-    /// Sent to the client: nothing for TOTP, a signed nonce for WebAuthn.
-    type Challenge: Serialize + DeserializeOwned + Send + Sync;
-    type Response: Send + Sync;
+/// A login in progress for one user, in the app-named state `S`.
+///
+/// It holds the loaded user, the session fingerprint pinned when the first
+/// factor passed, the start time, and the state's data. There is no public
+/// constructor, and it is neither `Clone` nor serialisable: a login moves
+/// forward by value, once.
+pub struct Login<U: UserAggregate, S> { /* private */ }
 
-    fn challenge(&self, stored: &C) -> Self::Challenge;
-    async fn verify(&self, stored: &C, challenge: &Self::Challenge,
-                    response: &Self::Response, store: &dyn LoginStore)
-        -> Result<(), Rejected>;
+impl<U: UserAggregate, S> Login<U, S> {
+    pub fn user(&self) -> &AggregateRoot<U>;
+    pub fn state(&self) -> &S;
+    pub fn started_at(&self) -> DateTime<Utc>;
+}
+
+impl<U: UserAggregate, S: Step<U>> Login<U, S> {
+    /// Checks `proof` with `verifier` and moves the login to the state the
+    /// step picks. The login is consumed: a wrong proof ends it.
+    pub async fn prove(self, verifier: &S::Verifier, proof: S::Proof)
+        -> Result<S::Next, Rejected>;
+}
+
+impl<U: UserAggregate, S: Complete> Login<U, S> {
+    /// Re-reads the stored version. When it moved since the login loaded the
+    /// user, reloads the user and checks it again: still there, still
+    /// active, same fingerprint.
+    pub async fn finish(self) -> Result<Authenticated<U>, FinishError>;
 }
 ```
 
-The library ships `Totp` behind the `totp` feature:
-- The secret lives in the app's credentials type, through a `HasTotp`
-  accessor, and is part of `fingerprint()`. Enrolling a second factor
-  therefore logs out other sessions.
-- `verify` rejects a time step that was already used, through
-  `LoginStore::mark_once`. This replay protection writes nothing to the
-  user's event stream.
-- `Totp::with_clock` injects the `Clock` that picks the time step.
-  `Clock` is a small trait (`now() -> DateTime<Utc>`) with `SystemClock`
-  and the test double `FixedClock`. Everything that reads the time takes
-  one: `Totp`, and `TwoFactor` for `PendingLogin::created_at`.
-
-WebAuthn is left to the app or a later release. The `Challenge` type is
-what makes it possible.
-
-**The login stage.** The fourth parameter of `ClaimAuthenticator` is a
-`LoginStage<C>`, which decides after the first factor whether the login is
-complete:
+The app names its states. A state is plain data, serialised with the login
+while the client is away:
 
 ```rust
+/// A state a login can be in.
+pub trait LoginState: Serialize + DeserializeOwned + Send + Sync + 'static {
+    /// Unique among the app's states; checked when a saved login resumes.
+    const TAG: &'static str;
+    /// How long a login saved in this state waits for the client.
+    const TTL: LoginTtl = LoginTtl::FIVE_MINUTES;
+}
+
+/// A state that ends the login process: `finish` exists only for these.
+pub trait Complete: LoginState {}
+
+/// The only way out of the state `Self`.
 #[async_trait]
-pub trait LoginStage<C: Credentials>: Send + Sync {
-    /// `Some(id)` when a pending login was stored, `None` when the login is complete.
-    async fn begin(&self, user: EntityId, identity: &Identity<C>)
-        -> Result<Option<PendingLoginId>, PendingLoginError>;
+pub trait Step<U: UserAggregate>: LoginState {
+    /// What the client sends: a code, an enum of alternatives, nothing.
+    type Proof: Send;
+    /// The service that checks it: `Totp`, a mailer, a device-link store.
+    type Verifier: Send + Sync;
+    /// Where the login may go: one `Login<U, T>`, or an app enum of them,
+    /// picked per user.
+    type Next: Send;
+
+    async fn verify(advance: Advance<U, Self>, verifier: &Self::Verifier, proof: Self::Proof)
+        -> Result<Self::Next, Rejected>;
+}
+
+/// The right to move one login out of the state `S`. Only the library
+/// builds one: `Login::prove` hands it to the step of `S`, and
+/// `Logins::begin` to the route after the first factor.
+pub struct Advance<U: UserAggregate, S> { /* private */ }
+
+impl<U: UserAggregate, S> Advance<U, S> {
+    pub fn login(&self) -> &Login<U, S>;
+    pub fn to<T: LoginState>(self, state: T) -> Login<U, T>;
 }
 ```
 
-- `NoSecondFactor` is the default stage. It never holds a login back, so an
-  app whose credentials implement `HasSecondFactor` must not keep it.
-- `TwoFactor<F>` holds back the logins whose credentials report
-  `requires_second_factor()`. It is opt-in:
-  `.with_second_factor(TwoFactor::new(factor, login_store))` turns a
-  `ClaimAuthenticator<U, M, S>` into a
-  `ClaimAuthenticator<U, M, S, TwoFactor<F>>`, which compiles only for
-  `U::Credentials: HasSecondFactor` and `F: SecondFactor<U::Credentials>`.
-  A pending login lives five minutes by default, `with_pending_ttl(ttl)`
-  changes it, and `with_clock(clock)` injects the clock.
+The first step is a `LoginMethod` (section 3.4) paired with a `Route`.
+Before it there is no user, so it is not a `Login` state:
 
-**Completing the login.** `complete(pending_id, response)` exists on the
-`TwoFactor` variant only, so an authenticator with no second factor cannot
-call it. It returns `Result<AggregateRoot<U>, CompleteError>`, and
-performs these steps:
-1. `take` the pending login from the store. A pending login is single
-   use and expires; an unknown, expired or already taken one is
-   `CompleteError::NotInProgress`.
-2. Reload the user and re-check that it is active (`Inactive` otherwise).
-3. Run `SecondFactor::verify`; a wrong response is `InvalidResponse`. The
-   pending login was already taken, so a wrong response ends the login and
-   the user starts again from the first factor.
-4. Return the user.
+```rust
+/// Located and verified by the first factor, nowhere yet. It is not a
+/// `LoginState`, so it can be neither saved nor finished.
+pub struct Entered;
 
-`CompleteError` also carries `Store`, `Hash` and `Pending`. No session
-exists before step 4. The pending login is not a partial session.
+/// Picks, per user, where a login goes once the first factor passed.
+pub trait Route<U: UserAggregate>: Send + Sync {
+    type Next: Send;
+    fn route(&self, entered: Advance<U, Entered>) -> Self::Next;
+}
+
+pub struct FirstFactor<M, R> { /* method, route */ }
+impl<M, R> FirstFactor<M, R> {
+    pub fn new(method: M, route: R) -> Self;
+}
+```
+
+`Logins<U>` starts logins, and `PendingLogins<U>` keeps them between two
+requests. Both are cheap to clone and carry no event store parameter: the
+store sits behind a trait object, so `Login<U, S>` does not name it either.
+
+```rust
+impl<U: UserAggregate> Logins<U> {
+    pub fn new<S: EventStore + 'static>(store: Arc<S>) -> Self
+    where U::DeletedState: Serialize + DeserializeOwned;
+    /// Loads users through the same version-checked cache as the backend.
+    pub fn with_shared_cache(self, cache: Arc<dyn UserCache<U>>) -> Self;
+    pub fn with_clock(self, clock: Arc<dyn Clock>) -> Self;
+
+    /// Runs the first factor (section 3.4) and its route.
+    pub async fn begin<M, R>(&self, first: &FirstFactor<M, R>, attempt: M::Attempt)
+        -> Result<R::Next, AuthError<M::Attempt>>
+    where M: LoginMethod<U::Credentials>, R: Route<U>;
+
+    /// Commits a brand-new user and starts its login in `Done`. The commit
+    /// expects the initial version, so it fails on an id that exists: this
+    /// can never log into an account somebody already holds.
+    pub async fn sign_up(&self, user: AggregateRoot<U>) -> Result<Login<U, Done>, SignUpError>;
+
+    pub fn pending(&self, store: Arc<dyn LoginStore>) -> PendingLogins<U>;
+}
+
+impl<U: UserAggregate> PendingLogins<U> {
+    /// Stores the login for `S::TTL` and returns the id the client keeps.
+    pub async fn save<S: LoginState>(&self, login: Login<U, S>)
+        -> Result<PendingLoginId, PendingLoginError>;
+    /// Takes the login back, single use, if it was saved in the state `S`.
+    pub async fn resume<S: LoginState>(&self, id: PendingLoginId)
+        -> Result<Login<U, S>, ResumeError>;
+}
+```
+
+`resume` performs these steps:
+1. `take` the entry: unknown, expired or already taken is
+   `ResumeError::NotInProgress`.
+2. Compare its tag with `S::TAG`. A login saved in another state is
+   `NotInProgress` too, and is used up: a client cannot replay it at
+   another step.
+3. Reload the user: missing, deleted or inactive is `Inactive`.
+4. Compare the identity's fingerprint with the one pinned at the first
+   factor. A password change, a new link or a new TOTP secret since then
+   is `CredentialsChanged`, and the login starts over.
+
+The errors: `ResumeError { NotInProgress, Inactive, CredentialsChanged,
+Store, Pending }`, `FinishError { Inactive, CredentialsChanged, Store }`,
+`SignUpError { NotNew, Store }` (a claim conflict surfaces through
+`Error::as_claim_conflict`, as on any commit), and `PendingLoginError
+{ Store, Encoding }` as today.
+
+**What the library ships.**
+
+| Item | What it is |
+|---|---|
+| `Done` | The ready-made `Complete` state, tag `"event_sauce.done"`. |
+| `SingleFactor` | Marker trait: credentials holding nothing beyond the first factor. `Password<L>`, `Federated` and `PasswordOrFederated<L>` implement it. |
+| `AlwaysDone` | `Route<U>` with `Next = Login<U, Done>`, only for `U::Credentials: SingleFactor`. |
+| `HasTotp` (feature `totp`) | `totp_secret() -> Option<&TotpSecret>` and `feed_totp_fingerprint`. It no longer extends a `HasSecondFactor`. |
+| `Totp` (feature `totp`) | The verifier: `Totp::new(replays: Arc<dyn LoginStore>)`, `with_clock`, and `check(&secret, &code) -> Result<(), Rejected>`, which accepts a time step once through `mark_once`, so replaying a code writes nothing to the user's stream. Apps reuse `check` in their own steps. |
+| `NeedTotp` (feature `totp`) | `Step<U>` for `U::Credentials: HasTotp`, tag `"event_sauce.totp"`: `Proof = SecretString`, `Verifier = Totp`, `Next = Login<U, Done>`. |
+| `TotpIfEnrolled` (feature `totp`) | `Route<U>` with `Next = TotpOrDone<U>`, an enum `{ Done(Login<U, Done>), Totp(Login<U, NeedTotp>) }`. It fails closed: a user with any TOTP secret goes to `NeedTotp`, and only a user with none at all goes to `Done`. |
+
+So a password step never sends a user with an enrolled second factor
+straight to `Done`. `AlwaysDone` does not compile for credentials that
+could hold one, unless the app asserts `SingleFactor` for them, and
+`TotpIfEnrolled` routes on the secret itself.
+
+**How the guarantee holds.** Each link of the chain is either a type or a
+check the library performs:
+
+| Link | Held by |
+|---|---|
+| A session needs an `Authenticated<U>` | type: `SessionUser::from(Authenticated<U>)` is its only public constructor (section 4.2) |
+| An `Authenticated<U>` needs a finished login in a `Complete` state | type: private fields, `finish` bounded by `S: Complete` |
+| A `Login` exists only after a proof | type: built only by `begin` (after `locate` and `verify`), `sign_up` (after committing a new user), `resume` (what `save` stored) and `Advance::to` |
+| A login leaves a state only through that state's step | type: `Advance<U, S>` is built only by `prove` for `S: Step<U>`, and for `Entered` by `begin` |
+| The states reachable from `S` are the ones `S::Next` names | type: the step returns `S::Next`, and the app reads its declaration |
+| A login is used once | type: `prove`, `finish` and `save` consume it, and it is not `Clone`; at runtime, `take` is single use |
+| A saved login resumes in the state it was saved in | runtime: tag check in `resume` |
+| Nothing changed underneath | runtime: active and fingerprint checks in `resume` and `finish` |
+
+**An app-defined three-factor flow.** A password, then a TOTP code or a
+recovery code, then a code sent by email. Users without a second factor
+enrolled stop after the password:
+
+```rust
+#[derive(Serialize, Deserialize)]
+struct NeedSecond;
+impl LoginState for NeedSecond { const TAG: &'static str = "app.second"; }
+
+#[derive(Serialize, Deserialize)]
+struct NeedEmailCode { code_hash: [u8; 32] }
+impl LoginState for NeedEmailCode {
+    const TAG: &'static str = "app.email_code";
+    const TTL: LoginTtl = LoginTtl::ONE_HOUR;
+}
+
+enum AfterPassword {
+    Done(Login<Profile, Done>),
+    Second(Login<Profile, NeedSecond>),
+}
+
+struct ByEnrolment;
+impl Route<Profile> for ByEnrolment {
+    type Next = AfterPassword;
+    fn route(&self, entered: Advance<Profile, Entered>) -> AfterPassword {
+        match entered.login().user().identity().credentials() {
+            Some(credentials) if !credentials.second_factor_enrolled() => {
+                AfterPassword::Done(entered.to(Done))
+            }
+            _ => AfterPassword::Second(entered.to(NeedSecond)),
+        }
+    }
+}
+
+enum SecondProof { Totp(SecretString), Recovery(RecoveryCode) }
+
+struct SecondVerifier { totp: Totp, recovery: RecoveryCodes, mailer: Mailer }
+
+#[async_trait]
+impl Step<Profile> for NeedSecond {
+    type Proof = SecondProof;
+    type Verifier = SecondVerifier;
+    type Next = Login<Profile, NeedEmailCode>;
+
+    async fn verify(advance: Advance<Profile, Self>, v: &SecondVerifier, proof: SecondProof)
+        -> Result<Self::Next, Rejected>
+    {
+        let user = advance.login().user();
+        let credentials = user.identity().credentials().ok_or(Rejected::Mismatch)?;
+        match proof {
+            SecondProof::Totp(code) => {
+                let secret = credentials.totp_secret().ok_or(Rejected::Mismatch)?;
+                v.totp.check(secret, &code).await?;
+            }
+            SecondProof::Recovery(code) => v.recovery.check(credentials, &code).await?,
+        }
+        let code_hash = v.mailer.send_code(user).await.map_err(Rejected::unavailable)?;
+        Ok(advance.to(NeedEmailCode { code_hash }))
+    }
+}
+
+#[async_trait]
+impl Step<Profile> for NeedEmailCode {
+    type Proof = SecretString;
+    type Verifier = ();
+    type Next = Login<Profile, Done>;
+
+    async fn verify(advance: Advance<Profile, Self>, _: &(), code: SecretString)
+        -> Result<Self::Next, Rejected>
+    {
+        let expected = &advance.login().state().code_hash;
+        if !constant_time_eq(&sha256(code.expose_secret()), expected) {
+            return Err(Rejected::Mismatch);
+        }
+        Ok(advance.to(Done))
+    }
+}
+
+let password = FirstFactor::new(PasswordLogin::new(Argon2Hasher::default()), ByEnrolment);
+```
+
+Each HTTP request resumes the state its endpoint serves, proves, and
+either saves the next state or finishes:
+
+```rust
+// POST /login
+match logins.begin(&password, attempt).await? {
+    AfterPassword::Done(login) => open_session(login.finish().await?),
+    AfterPassword::Second(login) => wait_for::<NeedSecond>(pending.save(login).await?),
+}
+// POST /login/second
+let login = pending.resume::<NeedSecond>(id).await?;
+wait_for::<NeedEmailCode>(pending.save(login.prove(&second, proof).await?).await?)
+// POST /login/email
+let login = pending.resume::<NeedEmailCode>(id).await?;
+open_session(login.prove(&(), code).await?.finish().await?)
+```
+
+`wait_for::<S>(id)` answers with the pending-login cookie for `S::TTL`
+(section 4.2). `open_session` takes an `Authenticated<Profile>`, so
+calling it with anything but a finished login does not compile. A branch
+the client chooses (TOTP or recovery code) is one state whose `Proof` is
+an enum, so each endpoint resumes exactly one state.
+
+A recovery code is single use: `RecoveryCodes::check` records its hash
+with `mark_once` to close the race between two logins, and the handler
+commits `RecoveryCodeUsed` after `finish`. The app feeds the recovery code
+*set*, not the used codes, to the fingerprint, so using a code does not
+end the session it opens.
+
+A WebAuthn step is the same shape: its state carries the challenge the
+server issued, and its proof is the client's assertion.
+
+**saxy-p's device link.** The new device has no user until the other
+device confirms the link, so the link is a first factor, a `LoginMethod`
+whose proof the logged-in device supplied:
+
+```rust
+struct DeviceLinkLogin { links: Arc<DeviceLinkStore> }
+
+#[async_trait]
+impl LoginMethod<PasswordOrFederated<Email>> for DeviceLinkLogin {
+    type Attempt = DeviceLinkId;
+
+    /// The confirming device recorded which profile vouched; taking the
+    /// link uses it up.
+    async fn locate(&self, _: &dyn ClaimLocator, link: &DeviceLinkId)
+        -> Result<Option<EntityId>, LocateError>
+    {
+        self.links.take_confirmed(link).await
+    }
+
+    /// Any identity, anonymous included: the other device vouched for it.
+    async fn verify(&self, _: &Identity<PasswordOrFederated<Email>>, _: &DeviceLinkId)
+        -> Result<(), Rejected>
+    {
+        Ok(())
+    }
+}
+
+let device_link = FirstFactor::new(DeviceLinkLogin { links }, AlwaysDone);
+let login: Login<Profile, Done> = logins.begin(&device_link, link_id).await?;
+```
+
+The QR code, the SSE and the confirmation stay app UX. A link that should
+only *add* a proof, for a user who already passed a password, is a later
+step instead: a state `AwaitingDevice { link: DeviceLinkId }` whose
+verifier checks that the link was confirmed for `advance.login().user()`.
+
+**Limits.** The types guarantee the order of the process, not the quality
+of each check:
+- The app decides which states are `Complete`. Marking a state complete
+  too early is a logic bug no type catches.
+- A step's `verify` is code. The types make sure it ran; whether it checks
+  the proof well is its own business. The library's steps are tested.
+- `SingleFactor` is an assertion by the credentials type. An app type that
+  holds a second factor and implements it anyway gets `AlwaysDone` back.
+- Across requests the binding is the server-side store plus a runtime tag
+  check, not a type: the client holds only a random `PendingLoginId`. Tags
+  must be unique within the app (the library's start with
+  `event_sauce.`), and anyone who can write the login store directly can
+  forge a pending login.
+- `Advance::to` builds any state while the step runs. A step that smuggles
+  a login out through a side channel instead of returning it defeats
+  `Next`, which only states the intended edges.
 
 **The login store.** In-progress login state goes in a small pluggable
 store, separate from the event store:
-- pending second factors;
-- consumed TOTP time steps;
+- saved logins;
+- consumed TOTP time steps and recovery codes;
 - optionally, the app's device-link challenges.
 
 It cannot live in the session, because device links span two devices and
@@ -574,17 +865,17 @@ pub trait LoginStore: Send + Sync {
 ```
 
 `LoginKey` is a namespaced key such as `pending:{uuid}` or
-`totp:{user}:{step}`. `PendingLogins`, which is not generic, wraps an
-`Arc<dyn LoginStore>` and a ttl, and serialises
-`PendingLogin<Ch> { user, challenge, created_at }` as JSON over the raw
-bytes, once for every backend. `PendingLoginId` is a random UUID.
+`totp:{digest}:{step}`. `PendingLogins<U>` serialises
+`{ tag, user, fingerprint, started_at, state }` as JSON over the raw
+bytes, once for every backend, under `pending:{id}`. `PendingLoginId` is a
+random UUID.
 
 `put` and `mark_once` take a `LoginTtl`, a newtype validated at construction:
 greater than zero, at most 366 days, rounded up to whole milliseconds
 (`LoginTtl::new` fails with `LoginTtlError`). It has infallible constants
 (`ONE_MINUTE`, `FIVE_MINUTES`, `ONE_HOUR`, `ONE_DAY`, `MAX`) and
-`from_millis(NonZeroU32)`, so no store call fails on its ttl. `take` has no
-ttl.
+`from_millis(NonZeroU32)`, so no store call fails on its ttl, and a state's
+`TTL` is a constant. `take` has no ttl.
 
 | Implementation | Feature | `take` | `mark_once` | Expiry |
 |---|---|---|---|---|
@@ -595,11 +886,23 @@ ttl.
 `with_prefix` says otherwise.
 
 As decided, there is no in-memory login store. A login in progress must
-survive across instances. The crate's unit tests use a private fake.
+survive across instances. The crate's unit tests use a private fake. A
+login that never waits between requests (`AlwaysDone`) needs no login
+store at all.
 
 The Postgres store keeps its table in its own schema, `event_sauce_login`
 by default, created by `PostgresLoginStore::migrate()`.
 
+**What this replaces.** The typestate login deletes, in
+`event-sauce-auth`: `Authenticator`, `ClaimAuthenticator`, `LoginOutcome`
+(with `SecondFactorRequired`), `CompleteError`, `LoginStage`,
+`NoSecondFactor`, `TwoFactor`, `SecondFactor`, `HasSecondFactor`, the
+non-generic `PendingLogins`, the `PendingLogin<Ch>` record,
+`DEFAULT_PENDING_TTL` and `AuthError::Pending`. `Totp` stops implementing
+`SecondFactor` and becomes `NeedTotp`'s verifier, holding its replay store
+itself. `Clock` stays, a small trait (`now() -> DateTime<Utc>`) with
+`SystemClock` and the test double `FixedClock`: `Totp` reads the time step
+from it and `Logins` the start of a login.
 ### 3.7 The user cache
 
 Loading the current user goes through a pluggable cache:
@@ -680,7 +983,7 @@ their feature.
 |---|---|
 | `argon2` (default) | `Argon2Hasher` (`argon2`) |
 | `reset` | reset tokens (`base64`, `rand`, `subtle`) |
-| `totp` | `Totp` second factor (`totp-rs`, `hex`) |
+| `totp` | `Totp`, `HasTotp`, `NeedTotp` and `TotpIfEnrolled` (`totp-rs`, `hex`) |
 | `moka` | `MokaUserCache` (`moka`) |
 | `postgres` (default) | `PostgresLoginStore` (`sqlx`, workspace version) |
 | `redis` | `RedisLoginStore`, `RedisUserCache` (`redis` crate, `zeroize`) |
@@ -726,31 +1029,36 @@ inside a handler does **not** inherit it. The fix is
 ### 4.2 Login backend and current user (feature `login`)
 
 ```rust
-let authenticator = ClaimAuthenticator::<Profile, _, _>::new(
-    store.clone(),
-    PasswordLogin::new(Argon2Hasher::default()),
-);
-let backend = EventSauceBackend::new(authenticator, store)
-    .with_cache(MokaUserCache::new(10_000));    // any UserCache<U>
+let cache: Arc<dyn UserCache<Profile>> = Arc::new(MokaUserCache::new(10_000));
+let backend = EventSauceBackend::<Profile, _>::new(store.clone()).with_shared_cache(cache.clone());
+let logins = Logins::<Profile>::new(store).with_shared_cache(cache);
 let auth_layer = AuthManagerLayerBuilder::new(backend, session_layer).build();
 ```
 
-`EventSauceBackend<U, A, S>` implements `axum_login::AuthnBackend`. `A` is
-the authenticator and `S` the event store the users live in:
+`EventSauceBackend<U, S>` implements `axum_login::AuthnBackend`. `S` is
+the event store the users live in. The backend no longer authenticates
+anything: logins run through `Logins` (section 3.6), and the backend only
+turns their end result into a session.
 
-- `Credentials = A::Attempt`: the submitted form is whatever the chosen
-  login methods accept (`PasswordOrFederatedAttempt` for
-  saxy-p).
+- `Credentials = Authenticated<U>`: `authenticate` accepts nothing but a
+  finished login, and answers `Ok(Some(SessionUser::from(authenticated)))`.
 - `User = SessionUser<U>`, which shares an `Arc<AggregateRoot<U>>` and
   implements `AuthUser`:
   - `id()` is the `EntityId`.
   - `session_auth_hash()` is `identity().session_fingerprint()`, computed
     once when the `SessionUser` is built. This fixes the bug where changing
     a password left other sessions logged in.
-- `authenticate` delegates to the `Authenticator`. A wrong password, an
-  unknown login and an inactive user are `Ok(None)`, as axum-login expects.
+  - Its only public constructor is `From<Authenticated<U>>`. The
+    `From<AggregateRoot<U>>` and `From<Arc<AggregateRoot<U>>>` impls are
+    gone, so `auth_session.login(&user)` cannot be handed a user nobody
+    authenticated. The crate builds the others itself, in `get_user`.
 - `get_user(id)` goes through a `CachedUserLoader` (section 3.7) and
   returns `None` for a missing, deleted or inactive user.
+- `renew(&session_user) -> Result<Option<SessionUser<U>>, BackendError>`
+  reloads the same user after the request changed its own credentials,
+  so the session that changed a password, or claimed an anonymous account,
+  can log in again with the new fingerprint. It never changes the user id,
+  and returns `None` for a user that is gone or inactive.
 
 `get_user` goes through the configured `UserCache`:
 - A hit is checked against the version, so it never serves a stale or
@@ -759,22 +1067,53 @@ the authenticator and `S` the event store the users live in:
   cache.
 - Without `with_cache`, every request does a full load, as today.
 
-Second factor: `authenticate` fails with
-`BackendError::SecondFactorRequired(id)` when the outcome is
-`SecondFactorRequired`, so no session is opened. A handler that serves such
-logins calls `backend.start(attempt) -> LoginOutcome` instead, and, once the
-client answers, `backend.complete(pending, response) -> SessionUser<U>`.
-`complete` exists only when the authenticator is a
-`ClaimAuthenticator` with a `TwoFactor` stage.
+`BackendError` keeps one variant, `Store`: `authenticate` cannot fail.
 
-`PendingLogin` carries the pending id between the two requests, in a
+A login handler opens the session from the end of the process, and saves
+the login when the process needs another request:
+
+```rust
+async fn login(
+    mut auth: AuthSession<Backend>,
+    State(app): State<AppState>,
+    Json(attempt): Json<PasswordAttempt<Email>>,
+) -> Result<Response, LoginFailed> {
+    match app.logins.begin(&app.password, attempt).await? {
+        TotpOrDone::Done(login) => {
+            auth.login(&SessionUser::from(login.finish().await?)).await?;
+            Ok(StatusCode::NO_CONTENT.into_response())
+        }
+        TotpOrDone::Totp(login) => {
+            let id = app.pending.save(login).await?;
+            Ok(([(SET_COOKIE, PendingLogin::set_cookie::<NeedTotp>(id))], StatusCode::ACCEPTED)
+                .into_response())
+        }
+    }
+}
+
+async fn totp(
+    mut auth: AuthSession<Backend>,
+    State(app): State<AppState>,
+    pending: PendingLogin,
+    Json(code): Json<TotpCode>,
+) -> Result<Response, LoginFailed> {
+    let login = app.pending.resume::<NeedTotp>(pending.id()).await?;
+    let user = login.prove(&app.totp, code.0).await?.finish().await?;
+    auth.login(&SessionUser::from(user)).await?;
+    Ok(([(SET_COOKIE, PendingLogin::clear_cookie())], StatusCode::NO_CONTENT).into_response())
+}
+```
+
+`PendingLogin` carries the `PendingLoginId` between requests, in a
 short-lived `HttpOnly`, `Secure`, `SameSite=Lax` cookie:
-- `PendingLogin::set_cookie(id, ttl: LoginTtl)` is the `Set-Cookie` value the handler
-  answers with after `start`, and `PendingLogin::clear_cookie()` removes it
-  once the login is done.
+- `PendingLogin::set_cookie::<S: LoginState>(id)` is the `Set-Cookie` value
+  the handler answers with after `save`. It lives `S::TTL`, as long as the
+  saved login. `PendingLogin::clear_cookie()` removes it once the login is
+  done. `PendingLogin::DEFAULT_TTL` is gone with `DEFAULT_PENDING_TTL`.
 - As an extractor, `PendingLogin` rejects with `401` when the cookie is
-  missing or malformed. `pending.id()` goes to `complete`.
-- The handler calls `auth_session.login` only after `complete` succeeds.
+  missing or malformed. `pending.id()` goes to `resume`.
+- The cookie holds the id only. Which state the login is in, for which
+  user, stays on the server, so a client cannot skip a step by editing it.
 
 Extractors, generic over the backend type `B` (a `UserBackend`, which every
 `EventSauceBackend` is) so that they find the `AuthSession<B>` axum-login
@@ -792,9 +1131,15 @@ with a version-checked cache hit. Because `CurrentUser` *is* an
 `AggregateRoot<U>`, it can be passed straight to `@actor(U)` commands.
 That removes saxy-p's second replay in `ActorGuard::resolve`.
 
-Login helper: `auth_session.login(&SessionUser::from(root))` replaces the
-nine hand-built `SessionUser { .. }` literals.
+Login helper: `auth_session.login(&SessionUser::from(authenticated))`
+replaces the nine hand-built `SessionUser { .. }` literals. Each of them
+now starts from `Logins::begin`, `Logins::sign_up` or
+`EventSauceBackend::renew`.
 
+This deletes, in `event-sauce-axum`: the authenticator parameter `A` of
+`EventSauceBackend` and `App`, `EventSauceBackend::start` and `complete`,
+`BackendError::{SecondFactorRequired, Hash, Pending}`, and the two
+`SessionUser` conversions from a raw aggregate.
 ### 4.3 State: extractors, not a registry
 
 A runtime "store registry" (a `TypeId` map of repositories) was rejected.
@@ -834,21 +1179,31 @@ the default for everything:
 ```rust
 let app = EventSauceApp::postgres(pool)
     .user::<Profile, _>(PasswordOrFederatedLogin::new(Argon2Hasher::default()))
+    .route(TotpIfEnrolled)         // default: AlwaysDone
     .build()
     .await?;                       // runs every migration below
 
 let router = app.layer(Router::new().route(…), session_layer);
-// AppState holds `app.store()` and `app.backend()`, both reachable via FromRef
+// AppState holds `app.store()`, `app.logins()`, `app.pending()`,
+// `app.first_factor()` and `app.backend()`, all reachable via FromRef
+let totp = Totp::new(app.login_store());
 ```
+
+`user::<U, _>(method)` returns a `UserAppBuilder<U, M, R = AlwaysDone>`,
+and `.route(route)` swaps `R`. `build` requires
+`M: LoginMethod<U::Credentials>` and `R: Route<U>`, so an app whose
+credentials can hold a second factor does not compile until it names a
+route that sends users to it: the default fails closed at compile time.
 
 What `build` sets up by default, all on the same pool:
 
 | Piece | Default | Postgres schema | Override |
 |---|---|---|---|
 | event store | `PostgresEventStore` | its existing schema | `.event_store(store)` |
-| login store | `PostgresLoginStore` | `event_sauce_login` | `.login_store_schema("…")` |
-| user cache | `MokaUserCache`, 10 000 entries | — | `.user_cache(RedisUserCache::new(conn))`, `.user_cache_capacity(n)`, `.no_user_cache()` |
-| authenticator | `ClaimAuthenticator` over the given login method | — | `.second_factor(factor)` keeps pending logins in the login store |
+| login store | `PostgresLoginStore`, behind `app.login_store()` | `event_sauce_login` | `.login_store_schema("…")` |
+| user cache | `MokaUserCache`, 10 000 entries, shared by the backend and `Logins` | — | `.user_cache(RedisUserCache::new(conn))`, `.user_cache_capacity(n)`, `.no_user_cache()` |
+| first factor | `FirstFactor` over the given login method, routed by `AlwaysDone` | — | `.route(route)` |
+| logins | `Logins<U>` on the event store, and `PendingLogins<U>` in the login store | — | — |
 | correlation | `CorrelationLayer` on `x-request-id` | — | `.correlation_header(HeaderName)` |
 
 The login store gets its own schema. It can then be dropped, given
@@ -857,9 +1212,17 @@ The builder sets no snapshot policy: the user aggregate declares its own
 (section 3.7). The `app` feature enables `event-sauce-auth/moka` and
 `event-sauce-auth/postgres`.
 
-The builder does not take a custom login store or a custom authenticator:
-an app that needs a Redis login store or its own `Authenticator` builds an
-`EventSauceBackend` by hand and applies the layers itself.
+The builder builds no step verifiers: the states after the first factor
+are the app's, so their verifiers are too, built from what `App` exposes
+(`Totp::new(app.login_store())` above). The builder does not take a custom
+login store either: an app that needs a Redis login store builds
+`EventSauceBackend`, `Logins` and `PendingLogins` by hand and applies the
+layers itself.
+
+`App<U, F, S>` replaces the authenticator parameter with the first factor
+`F = FirstFactor<M, R>`. `UserAppBuilder::second_factor`, the
+`SecondFactorStage` trait and `WithSecondFactor` are deleted: `.route`
+covers what they did, and any number of steps after it.
 
 `app.layer(router, session_layer)` applies, outermost first:
 1. `CorrelationLayer`;
@@ -894,21 +1257,34 @@ session store for the app.
    `auth.federated`. This is done by re-saving claims through a replay.
 3. Replace `hash_password`/`verify_password` with `Argon2Hasher`. Existing
    PHC hashes stay valid.
-4. Replace `AuthStore` with `EventSauceBackend<Profile, _, _>` over
-   `PasswordOrFederatedLogin`. Keep the Google
-   link/create policy on `AuthError::Unknown` for federated attempts.
+4. Replace `AuthStore` with `EventSauceBackend<Profile, _>` and log in
+   through `Logins::begin` with
+   `FirstFactor::new(PasswordOrFederatedLogin::new(..), AlwaysDone)`.
+   `PasswordOrFederated<Email>` is `SingleFactor`, so `AlwaysDone` compiles
+   as long as saxy-p has no second factor; adding one means an app
+   credentials type and a route, which the compiler then demands. Keep the
+   Google policy on `AuthError::Unknown` for federated attempts: link the
+   subject to the existing profile and call `begin` again, or create the
+   profile and call `sign_up`.
 5. Replace `CurrentUser`/`RegisteredUser`/`ActorGuard` with the crate
    extractors. Drop the second replay.
 6. Turn the device-link login into `DeviceLinkLogin`, a `LoginMethod`
-   whose `locate` reads `DeviceLinkStore`. This replaces the hand-rolled
-   `get_profile_aggregate_unchecked` path, and the active check then
-   applies to it.
-7. Wire everything through `EventSauceApp::postgres(pool)`. Its default
+   whose `locate` takes the confirmed link from `DeviceLinkStore`, run as
+   `FirstFactor::new(DeviceLinkLogin { .. }, AlwaysDone)` (section 3.6).
+   This replaces the hand-rolled `get_profile_aggregate_unchecked` path,
+   and the active check then applies to it.
+7. Replace the nine `auth_session.login(&SessionUser { .. })` sites with
+   `SessionUser::from(authenticated)`. Each gets its `Authenticated` from
+   a finished login: `begin` for password, Google and device link,
+   `sign_up` for `AnonymousCreated` and Google sign-up, and
+   `EventSauceBackend::renew` after `AccountClaimed` or a password change
+   in the session itself.
+8. Wire everything through `EventSauceApp::postgres(pool)`. Its default
    login store creates the `event_sauce_login` schema, and the user cache
    is Moka, in process. This replaces most of `src/main.rs:139-349`.
-8. Replace `request_id.rs` with `CorrelationLayer`.
-9. Drop the `password_hash` column from `projections.profile_auth`.
-   Delete the projection if nothing besides login reads it.
+9. Replace `request_id.rs` with `CorrelationLayer`.
+10. Drop the `password_hash` column from `projections.profile_auth`.
+    Delete the projection if nothing besides login reads it.
 
 ## 7. Tests
 
@@ -924,16 +1300,33 @@ The lowest level that can prove each behaviour, and only there:
   - `ResetTokenHash::verify` with injected times.
   - `PasswordLogin`, `FederatedLogin` and `PasswordOrFederatedLogin` against fixed
     credentials, including the dummy-hash path for unknown logins.
-  - `ClaimAuthenticator` against fakes:
+  - `Logins::begin` against fakes:
     - inactive users are rejected for every method;
     - anonymous users are accepted only by methods that allow it;
-    - `SecondFactorRequired` is returned, then `complete` succeeds only
-      once.
-  - `Totp` verification with an injected clock, rejecting a reused step.
+    - an unknown attempt comes back in `Unknown`;
+    - the route receives the located user and its pinned fingerprint.
+  - `Logins::sign_up` commits a new user and refuses one that exists
+    (`NotNew` for a root past its initial version, a conflict for an id
+    taken meanwhile).
+  - `Login` and `PendingLogins` against a fake login store:
+    - `save` then `resume` in the same state restores the login, once;
+    - `resume` in another state is `NotInProgress` and uses the entry up;
+    - a credential change between `save` and `resume` is
+      `CredentialsChanged`, and so is one between `begin` and `finish`;
+    - a user deactivated meanwhile is `Inactive` at `resume` and `finish`;
+    - a wrong proof consumes the login;
+    - an app-defined three-step flow with a branching proof reaches
+      `Done` only through every step.
+  - `AlwaysDone` and `TotpIfEnrolled` routing, including a user with an
+    unusable TOTP secret going to `NeedTotp`.
+  - `Totp::check` with an injected clock, rejecting a reused step.
   - `MokaUserCache`: a version mismatch is a miss.
   - trybuild compile-fail cases: `#[user(identity)]` missing,
     `FederatedLogin` on a password-only user, `remove_password` on
-    `Password<L>`.
+    `Password<L>`, `finish` on a state that is not `Complete`, building
+    `Login`, `Advance` or `Authenticated` outside the crate, `AlwaysDone`
+    for credentials that are not `SingleFactor`, and
+    `SessionUser::from(AggregateRoot<U>)`.
 - **Integration:**
   - `resolve_claim` on memory and postgres (testcontainers).
   - Login claims are enforced on commit.
@@ -948,16 +1341,20 @@ The lowest level that can prove each behaviour, and only there:
     - a shredded key turns a hit into a miss.
   - `EventSauceApp::postgres` creates the login schema and is idempotent
     on a second `build`.
+  - `event-sauce-axum`'s `tests/login.rs`: a TOTP login across two
+    requests through the `PendingLogin` cookie opens no session before the
+    code, one after it, and none on a replayed cookie; `renew` keeps the
+    session that changed its own password.
 - **System:** the `axum-auth` example
   (`crates/event-sauce/examples/axum-auth/`, tests in `tests.rs`, run by
   `cargo test --examples`) drives register → login → guarded route →
-  password change → old session rejected on the in-memory store. The TOTP
-  or second-factor login is covered by `event-sauce-axum`'s integration
-  tests `tests/login.rs` and `tests/app.rs`.
+  password change → old session rejected on the in-memory store, with
+  `AlwaysDone` and no login store.
 
 ## 8. Build order
 
-Each step is its own commit, test first:
+Each step is its own commit, test first. Steps 1 to 14 are on
+`feat/auth`:
 
 1. `resolve_claim` in core and both backends.
 2. `event-sauce-auth`: `Credentials`, `Identity`, `LoginId`/`Email`.
@@ -976,6 +1373,35 @@ Each step is its own commit, test first:
 14. Facade features, CI (Redis through testcontainers, so no service),
     docs (`docs/auth.md`, `docs/axum.md`) and the example.
 
+Typestate logins replace what steps 4, 7, 12 and 13 built around the
+authenticator. Each step deletes what it supersedes in the same commit:
+
+15. `event-sauce-auth` core and library steps: `Authenticated`, `Login`,
+    `LoginState`, `Complete`, `Step`, `Advance`, `Entered`, `Route`,
+    `FirstFactor`, `Logins` (`begin`, `sign_up`), the generic
+    `PendingLogins<U>` (`save`, `resume`), `ResumeError`, `FinishError`,
+    `SignUpError`, `Rejected::Unavailable`; then `Done`, `SingleFactor`,
+    `AlwaysDone`, and behind `totp` the reworked `Totp`, `NeedTotp` and
+    `TotpIfEnrolled`. Deletes `Authenticator`, `ClaimAuthenticator`,
+    `LoginOutcome`, `CompleteError`, `LoginStage`, `NoSecondFactor`,
+    `TwoFactor`, `SecondFactor`, `HasSecondFactor`, the old
+    `PendingLogins` and `PendingLogin<Ch>`, `DEFAULT_PENDING_TTL` and
+    `AuthError::Pending`, with their tests (`tests/claim_authenticator.rs`
+    and `tests/second_factor.rs` become `tests/login.rs`) and the compile-fail
+    cases of section 7.
+16. `event-sauce-axum`: `EventSauceBackend<U, S>` with
+    `Credentials = Authenticated<U>` and `renew`, `SessionUser` built only
+    from `Authenticated<U>`, `PendingLogin::set_cookie::<S>`, and the
+    builder's `.route(..)` with `App` exposing `logins`, `pending`,
+    `first_factor` and `login_store`. Deletes `start`, `complete`, the
+    `A` parameter, `BackendError::{SecondFactorRequired, Hash, Pending}`,
+    `PendingLogin::DEFAULT_TTL`, `UserAppBuilder::second_factor`,
+    `SecondFactorStage` and `WithSecondFactor`.
+17. The `axum-auth` example on `Logins` and `sign_up`, the facade
+    re-exports, `docs/auth.md`, `docs/axum.md`, `docs/architecture.md`,
+    the crate READMEs and rustdoc, and the `CHANGELOG.md` Unreleased
+    entries, rewritten to describe typestate logins only.
+
 ## 9. Open questions
 
 - **Several login ids for one password.** Logging in with either an
@@ -991,5 +1417,5 @@ Each step is its own commit, test first:
   the latest snapshot and the tail in a single query. That would speed
   up every aggregate load, including a user cache miss. It belongs in
   `event-sauce-postgres` and is out of scope for this proposal.
-- **WebAuthn.** `SecondFactor::Challenge` makes it possible, but the
-  crate does not ship it in v1.
+- **WebAuthn.** A step whose state carries the issued challenge makes it
+  possible (section 3.6), but the crate does not ship one in v1.
