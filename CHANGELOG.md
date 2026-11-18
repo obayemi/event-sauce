@@ -506,6 +506,13 @@ explicitly rather than gated behind a major version bump.
   is replaced by its maintained fork, `pastey`. Callers of
   `define_events!`/`command_handler!` are unaffected either way, since
   neither was ever a direct dependency.
+- `ClaimAuthenticator`, `CachedUserLoader`, `EventSauceBackend` and the app
+  builder ask for fewer bounds: `U::Event`, `U` itself and, on
+  construction, the login method no longer need `Serialize +
+  DeserializeOwned` or `LoginMethod` spelled out, since the aggregate
+  traits already imply them. `AppBuilder::user` no longer checks the login
+  method, so a method that does not fit the user's credentials is reported
+  at `build`.
 
 ### Migration Steps
 

@@ -3,9 +3,8 @@
 use std::sync::Arc;
 
 use event_sauce_auth::{
-    ClaimAuthenticator, HasSecondFactor, InvalidSchemaName, LoginMethod, LoginStore,
-    LoginStoreError, MokaUserCache, NoSecondFactor, PostgresLoginStore, SecondFactor,
-    UserAggregate, UserCache,
+    ClaimAuthenticator, HasSecondFactor, InvalidSchemaName, LoginStore, LoginStoreError,
+    MokaUserCache, NoSecondFactor, PostgresLoginStore, SecondFactor, UserAggregate, UserCache,
 };
 use event_sauce_core::EventStore;
 use event_sauce_postgres::PostgresEventStore;
@@ -87,7 +86,6 @@ impl AppBuilder {
     pub fn user<U, M>(self, method: M) -> UserAppBuilder<U, M>
     where
         U: UserAggregate,
-        M: LoginMethod<U::Credentials>,
     {
         UserAppBuilder {
             pool: self.pool,
@@ -203,7 +201,6 @@ impl<U, M, T> UserAppBuilder<U, M, T>
 where
     U: UserAggregate + 'static,
     U::DeletedState: Serialize + DeserializeOwned,
-    M: LoginMethod<U::Credentials>,
     T: SecondFactorStage<U>,
 {
     /// Builds the application over `store` and `logins`.

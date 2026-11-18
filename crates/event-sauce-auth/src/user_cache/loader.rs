@@ -31,9 +31,8 @@ pub struct CachedUserLoader<U: UserAggregate, S> {
 impl<U, S> CachedUserLoader<U, S>
 where
     S: EventStore + 'static,
-    U: UserAggregate + Serialize + DeserializeOwned,
+    U: UserAggregate,
     U::DeletedState: Serialize + DeserializeOwned,
-    U::Event: Serialize + DeserializeOwned,
 {
     /// A loader for the users of `store`, with no cache.
     #[must_use]

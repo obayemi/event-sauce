@@ -156,9 +156,8 @@ pub trait Authenticator<U: UserAggregate>: Send + Sync {
 /// fn password_only<U, S>(store: Arc<S>) -> impl Authenticator<U>
 /// where
 ///     S: EventStore + 'static,
-///     U: UserAggregate<Credentials = Password<Email>> + Serialize + DeserializeOwned,
+///     U: UserAggregate<Credentials = Password<Email>>,
 ///     U::DeletedState: Serialize + DeserializeOwned,
-///     U::Event: Serialize + DeserializeOwned,
 /// {
 ///     ClaimAuthenticator::<U, _, _>::new(store, PasswordLogin::new(Argon2Hasher::default()))
 /// }
@@ -168,10 +167,9 @@ pub trait Authenticator<U: UserAggregate>: Send + Sync {
 /// fn with_totp<U, S>(store: Arc<S>, login_store: Arc<dyn LoginStore>) -> WithTotp<U, S>
 /// where
 ///     S: EventStore + 'static,
-///     U: UserAggregate + Serialize + DeserializeOwned,
+///     U: UserAggregate,
 ///     U::Credentials: HasPassword + HasTotp,
 ///     U::DeletedState: Serialize + DeserializeOwned,
-///     U::Event: Serialize + DeserializeOwned,
 /// {
 ///     ClaimAuthenticator::new(store, PasswordLogin::new(Argon2Hasher::default()))
 ///         .with_second_factor(TwoFactor::new(Totp::new(), login_store))
@@ -184,10 +182,9 @@ pub trait Authenticator<U: UserAggregate>: Send + Sync {
 /// ) -> Result<AggregateRoot<U>, CompleteError>
 /// where
 ///     S: EventStore + 'static,
-///     U: UserAggregate + Serialize + DeserializeOwned,
+///     U: UserAggregate,
 ///     U::Credentials: HasPassword + HasTotp,
 ///     U::DeletedState: Serialize + DeserializeOwned,
-///     U::Event: Serialize + DeserializeOwned,
 /// {
 ///     authenticator.complete(pending, code).await
 /// }
@@ -204,10 +201,8 @@ pub struct ClaimAuthenticator<U, M, S, T = NoSecondFactor> {
 impl<U, M, S> ClaimAuthenticator<U, M, S>
 where
     S: EventStore + 'static,
-    U: UserAggregate + Serialize + DeserializeOwned,
+    U: UserAggregate,
     U::DeletedState: Serialize + DeserializeOwned,
-    U::Event: Serialize + DeserializeOwned,
-    M: LoginMethod<U::Credentials>,
 {
     /// An authenticator for the users of `store`, verifying attempts with
     /// `method`.
@@ -249,10 +244,9 @@ impl<U, M, S> ClaimAuthenticator<U, M, S> {
 impl<U, M, S, F> ClaimAuthenticator<U, M, S, TwoFactor<F>>
 where
     S: EventStore + 'static,
-    U: UserAggregate + Serialize + DeserializeOwned,
+    U: UserAggregate,
     U::Credentials: HasSecondFactor,
     U::DeletedState: Serialize + DeserializeOwned,
-    U::Event: Serialize + DeserializeOwned,
     F: SecondFactor<U::Credentials>,
 {
     /// Completes the login held under `pending` with the client's `response`
@@ -289,9 +283,8 @@ where
 impl<U, M, S, T> Authenticator<U> for ClaimAuthenticator<U, M, S, T>
 where
     S: EventStore + 'static,
-    U: UserAggregate + Serialize + DeserializeOwned,
+    U: UserAggregate,
     U::DeletedState: Serialize + DeserializeOwned,
-    U::Event: Serialize + DeserializeOwned,
     M: LoginMethod<U::Credentials>,
     T: LoginStage<U::Credentials>,
 {
