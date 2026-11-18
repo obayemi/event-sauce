@@ -100,7 +100,7 @@ A `LoginId` is the identifier inside a `Password`. The library ships:
 - `Username`, trimmed, lowercased and limited to `a-z`, `0-9`, `_`, `-` and
   `.`, between `Username::MIN_LEN` and `Username::MAX_LEN` characters.
 
-`LoginId::parse(raw)` normalises raw user input. A different alphabet or
+`LoginId::parse(raw)` normalises raw user input. `AsRef<str>` is its canonical string: it keys the `auth.login` claim and feeds the session fingerprint, so an implementation only has to expose the normalised form. A different alphabet or
 normalisation, such as an allowed set of Unicode letters with confusable
 rejection, is a `LoginId` of your own: without it, two look-alike names
 both pass the uniqueness claim.

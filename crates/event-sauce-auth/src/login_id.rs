@@ -13,9 +13,11 @@ pub use username::{Username, UsernameError};
 /// The identifier a password login names, such as an email or a username.
 ///
 /// Implementations normalise raw user input, so that two spellings of the
-/// same identifier are equal and claim the same uniqueness slot.
+/// same identifier are equal and claim the same uniqueness slot. The
+/// [`AsRef<str>`] view is that canonical, normalised string: it keys the
+/// login claim and feeds the session fingerprint.
 pub trait LoginId:
-    Clone + Eq + Debug + Serialize + DeserializeOwned + Send + Sync + 'static
+    AsRef<str> + Clone + Eq + Debug + Serialize + DeserializeOwned + Send + Sync + 'static
 {
     /// The reason raw input is not a valid identifier.
     type ParseError: std::error::Error + Send + Sync + 'static;

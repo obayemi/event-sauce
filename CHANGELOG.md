@@ -230,7 +230,8 @@ explicitly rather than gated behind a major version bump.
   `unlink(&FederatedId)` or every identity of a provider with
   `unlink_provider(&Provider)`. `Credentials::fingerprint` feeds a
   `Fingerprint` whose `field` and `str_field` length-prefix every field, so
-  two different credential states never share a byte stream. The `argon2` and `postgres` features are
+  two different credential states never share a byte stream. `LoginId` requires `AsRef<str>`, the canonical normalised
+  string that keys the login claim and feeds the fingerprint; `Password::claim_for` no longer panics. The `argon2` and `postgres` features are
   on by default; `moka`, `redis`, `reset` and `totp` are optional.
 
 - `event-sauce-axum` crate. `CorrelationLayer` reads `x-request-id` (or the

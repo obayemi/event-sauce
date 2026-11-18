@@ -143,7 +143,7 @@ pub trait HasFederated: Credentials {
 
 | Type | Shape | Claims | Capabilities |
 |---|---|---|---|
-| `Password<L: LoginId>` | `{ login: L, hash: PasswordHash }` | `"auth.login"` keyed by `L` | `HasPassword` (always `Some`) |
+| `Password<L: LoginId>` | `{ login: L, hash: PasswordHash }` | `"auth.login"` keyed by `L.as_ref()` | `HasPassword` (always `Some`) |
 | `Federated` | `NonEmpty<FederatedId>` | one `"auth.federated"` per link, keyed by `[provider, subject]` | `HasFederated` (always `Some`) |
 | `PasswordOrFederated<L>` | `enum { Password(Password<L>), Federated(Federated), Both(Password<L>, Federated) }` | those of what it holds | both |
 
@@ -167,7 +167,7 @@ its syntax checked, and `Username`:
 
 ```rust
 pub trait LoginId:
-    Clone + Eq + Debug + Serialize + DeserializeOwned + Send + Sync + 'static
+    AsRef<str> + Clone + Eq + Debug + Serialize + DeserializeOwned + Send + Sync + 'static
 {
     type ParseError: std::error::Error + Send + Sync + 'static;
     /// Parses raw user input, normalising it (trim, case-fold, …).

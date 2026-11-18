@@ -58,38 +58,21 @@ impl<L: LoginId> Password<L> {
     }
 
     /// The claim that makes `login` unique across users.
-    ///
-    /// # Panics
-    ///
-    /// Panics when the login identifier cannot be serialized to JSON,
-    /// which no [`LoginId`] may do.
     #[must_use]
     pub fn claim_for(login: &L) -> AggregateClaim {
-        AggregateClaim::new(Self::CLAIM_TYPE, login_key(login))
+        AggregateClaim::new(Self::CLAIM_TYPE, login.as_ref().into())
     }
 }
 
-fn login_key(login: &impl LoginId) -> serde_json::Value {
-    serde_json::to_value(login).expect("a LoginId serializes to JSON")
-}
-
 impl<L: LoginId> Credentials for Password<L> {
-    /// # Panics
-    ///
-    /// Panics when the login identifier cannot be serialized to JSON,
-    /// which no [`LoginId`] may do.
     fn claims(&self) -> Vec<AggregateClaim> {
         vec![Self::claim_for(&self.login)]
     }
 
-    /// # Panics
-    ///
-    /// Panics when the login identifier cannot be serialized to JSON,
-    /// which no [`LoginId`] may do.
     fn fingerprint(&self, fingerprint: &mut Fingerprint) {
         fingerprint
             .str_field("password")
-            .str_field(&login_key(&self.login).to_string())
+            .str_field(self.login.as_ref())
             .str_field(self.hash.as_str());
     }
 }

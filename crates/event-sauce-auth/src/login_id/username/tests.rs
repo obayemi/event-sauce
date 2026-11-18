@@ -98,3 +98,9 @@ proptest! {
         }
     }
 }
+
+#[test]
+fn as_ref_is_the_normalised_username() {
+    let username = Username::parse(" Ada_99 ").unwrap();
+    assert_eq!(AsRef::<str>::as_ref(&username), "ada_99");
+}

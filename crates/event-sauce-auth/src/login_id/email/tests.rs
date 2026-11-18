@@ -63,3 +63,9 @@ proptest! {
         }
     }
 }
+
+#[test]
+fn as_ref_is_the_normalised_address() {
+    let email = Email::parse("  Ada@Example.COM ").unwrap();
+    assert_eq!(AsRef::<str>::as_ref(&email), "ada@example.com");
+}

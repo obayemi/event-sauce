@@ -79,6 +79,12 @@ fn is_allowed(c: char) -> bool {
     c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '_' | '-' | '.')
 }
 
+impl AsRef<str> for Username {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
 impl TryFrom<String> for Username {
     type Error = UsernameError;
 
