@@ -2,7 +2,6 @@
 
 use std::marker::PhantomData;
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use event_sauce_core::{AggregateRoot, AggregateVersion, EntityId, EventStore};
@@ -12,7 +11,7 @@ use serde::{de::DeserializeOwned, Serialize};
 
 use self::sealed::Sealer;
 use super::is_stored;
-use crate::{ttl, CacheError, UserAggregate, UserCache};
+use crate::{CacheError, LoginTtl, UserAggregate, UserCache};
 
 mod sealed;
 
@@ -21,7 +20,7 @@ mod sealed;
 const DEFAULT_PREFIX: &str = "event_sauce:user:";
 
 /// How long an entry lives unless told otherwise.
-const DEFAULT_TTL: Duration = Duration::from_hours(24);
+const DEFAULT_TTL: LoginTtl = LoginTtl::ONE_DAY;
 
 fn backend(context: &'static str) -> impl FnOnce(redis::RedisError) -> CacheError {
     move |error| CacheError::backend(context, error)
@@ -60,7 +59,7 @@ fn backend(context: &'static str) -> impl FnOnce(redis::RedisError) -> CacheErro
 pub struct RedisUserCache<U> {
     connection: ConnectionManager,
     prefix: String,
-    ttl: Duration,
+    ttl: LoginTtl,
     sealer: Sealer,
     user: PhantomData<fn() -> U>,
 }
@@ -87,10 +86,8 @@ impl<U> RedisUserCache<U> {
     }
 
     /// Lets entries live for `ttl` instead of a day.
-    ///
-    /// A ttl of zero, or of more than a leap year, makes every `put` fail.
     #[must_use]
-    pub fn with_ttl(mut self, ttl: Duration) -> Self {
+    pub fn with_ttl(mut self, ttl: LoginTtl) -> Self {
         self.ttl = ttl;
         self
     }
@@ -105,10 +102,6 @@ impl<U> RedisUserCache<U> {
 
     fn key(&self, id: EntityId) -> String {
         format!("{}{id}", self.prefix)
-    }
-
-    fn millis(&self) -> Result<i64, CacheError> {
-        ttl::millis(self.ttl).ok_or(CacheError::InvalidTtl(self.ttl))
     }
 }
 
@@ -151,7 +144,7 @@ where
         let Some(bytes) = self.sealer.seal(&user).await? else {
             return Ok(());
         };
-        let options = SetOptions::default().with_expiration(ttl::redis_expiry(self.millis()?));
+        let options = SetOptions::default().with_expiration(self.ttl.redis_expiry());
         self.connection
             .clone()
             .set_options::<_, _, ()>(self.key(user.entity_id()), bytes, options)

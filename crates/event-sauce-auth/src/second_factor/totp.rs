@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use secrecy::{ExposeSecret, SecretString};
 
 use crate::{
-    credentials::feed, Clock, Digest, HasSecondFactor, LoginKey, LoginStore, Rejected,
+    credentials::feed, Clock, Digest, HasSecondFactor, LoginKey, LoginStore, LoginTtl, Rejected,
     SecondFactor, Sha256, SystemClock,
 };
 
@@ -139,9 +139,10 @@ impl<C: HasTotp> SecondFactor<C> for Totp {
         let step = totp
             .check(response.expose_secret(), now)
             .ok_or(Rejected::Mismatch)?;
-        let window = (2 * u64::from(totp.skew()) + 1) * totp.step();
+        let window = Duration::from_secs((2 * u64::from(totp.skew()) + 1) * totp.step());
+        let ttl = LoginTtl::new(window).map_err(|_| Rejected::Mismatch)?;
         let first_use = store
-            .mark_once(&Self::replay_key(secret, step), Duration::from_secs(window))
+            .mark_once(&Self::replay_key(secret, step), ttl)
             .await?;
         if first_use {
             Ok(())

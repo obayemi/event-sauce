@@ -3,7 +3,7 @@ use event_sauce_core::AggregateClaim;
 use serde::{Deserialize, Serialize};
 
 use super::*;
-use crate::{test_support::FakeLoginStore, Credentials, FixedClock, Sha256};
+use crate::{test_support::FakeLoginStore, Credentials, FixedClock, LoginTtl, Sha256};
 
 const T0: i64 = 1_700_000_010;
 const STEP: i64 = 30;
@@ -199,7 +199,10 @@ async fn a_used_step_is_remembered_for_the_whole_window_it_could_be_replayed_in(
         .await
         .unwrap();
 
-    assert_eq!(store.ttls(), [Duration::from_secs(90)]);
+    assert_eq!(
+        store.ttls(),
+        [LoginTtl::new(Duration::from_secs(90)).unwrap()]
+    );
 }
 
 #[tokio::test]

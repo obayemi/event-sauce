@@ -7,7 +7,7 @@ mod user_fixture;
 use std::sync::Arc;
 use std::time::Duration;
 
-use event_sauce_auth::{CacheError, RedisUserCache, UserAggregate, UserCache};
+use event_sauce_auth::{CacheError, LoginTtl, RedisUserCache, UserAggregate, UserCache};
 use event_sauce_core::{AggregateVersion, EntityId, EventStore};
 use event_sauce_memory::InMemoryEventStore;
 use redis::aio::ConnectionManager;
@@ -229,7 +229,9 @@ async fn an_entry_that_is_not_ours_is_an_error() {
 async fn entries_expire() {
     let world = World::start().await;
     let id = join(&world.store, "ada").await;
-    let cache = world.cache().with_ttl(Duration::from_secs(90));
+    let cache = world
+        .cache()
+        .with_ttl(LoginTtl::new(Duration::from_secs(90)).unwrap());
 
     cache.put(load(&world.store, id).await).await.unwrap();
 
@@ -249,15 +251,4 @@ async fn prefixes_isolate_caches_sharing_a_server() {
 
     assert!(second.get(id, user.version()).await.unwrap().is_none());
     assert!(first.get(id, user.version()).await.unwrap().is_some());
-}
-
-#[tokio::test]
-async fn a_zero_ttl_is_refused() {
-    let world = World::start().await;
-    let id = join(&world.store, "ada").await;
-    let cache = world.cache().with_ttl(Duration::ZERO);
-
-    let error = cache.put(load(&world.store, id).await).await.unwrap_err();
-
-    assert!(matches!(error, CacheError::InvalidTtl(Duration::ZERO)));
 }

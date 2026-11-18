@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use super::*;
 use crate::{
     test_support::{FakeLoginStore, SecondFactorCredentials},
-    FixedClock, LoginKey,
+    FixedClock, LoginKey, LoginTtl,
 };
 
 type Creds = SecondFactorCredentials;
@@ -42,7 +42,7 @@ impl SecondFactor<Creds> for Arc<FakeFactor> {
             .unwrap()
             .push((challenge.clone(), response.clone()));
         store
-            .put(&LoginKey::new("fake", "seen"), b"", Duration::from_secs(1))
+            .put(&LoginKey::new("fake", "seen"), b"", LoginTtl::ONE_MINUTE)
             .await
             .map_err(Rejected::from)?;
         if response == "right" {
@@ -144,15 +144,14 @@ async fn a_pending_login_lives_for_five_minutes_by_default() {
 
     assert_eq!(
         store.ttl_of(&LoginKey::new("pending", id)),
-        Some(Duration::from_secs(300))
+        Some(LoginTtl::FIVE_MINUTES)
     );
 }
 
 #[tokio::test]
 async fn the_pending_ttl_is_configurable() {
     let (store, factor, _) = setup();
-    let two_factor =
-        TwoFactor::new(factor, store.clone()).with_pending_ttl(Duration::from_secs(60));
+    let two_factor = TwoFactor::new(factor, store.clone()).with_pending_ttl(LoginTtl::ONE_HOUR);
 
     let id = two_factor
         .begin(EntityId::new(), &registered(true))
@@ -162,7 +161,7 @@ async fn the_pending_ttl_is_configurable() {
 
     assert_eq!(
         store.ttl_of(&LoginKey::new("pending", id)),
-        Some(Duration::from_secs(60))
+        Some(LoginTtl::ONE_HOUR)
     );
 }
 

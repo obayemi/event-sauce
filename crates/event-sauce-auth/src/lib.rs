@@ -74,14 +74,13 @@ mod credentials;
 mod login_id;
 mod login_method;
 mod login_store;
+mod login_ttl;
 mod password_hasher;
 #[cfg(feature = "reset")]
 mod reset;
 mod second_factor;
 #[cfg(test)]
 mod test_support;
-#[cfg(any(feature = "postgres", feature = "redis"))]
-mod ttl;
 mod user;
 mod user_cache;
 
@@ -104,6 +103,7 @@ pub use login_store::RedisLoginStore;
 #[cfg(feature = "postgres")]
 pub use login_store::{InvalidSchemaName, PostgresLoginStore};
 pub use login_store::{LoginKey, LoginStore, LoginStoreError};
+pub use login_ttl::{LoginTtl, LoginTtlError};
 #[cfg(feature = "argon2")]
 pub use password_hasher::Argon2Hasher;
 pub use password_hasher::{HashError, PasswordHasher};

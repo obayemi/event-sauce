@@ -223,9 +223,10 @@ explicitly rather than gated behind a major version bump.
   `Federated`, `PasswordOrFederated`), `LoginId` (`Email`, `Username`),
   `LoginMethod` (`PasswordLogin`, `FederatedLogin`,
   `PasswordOrFederatedLogin`), `ClaimAuthenticator`, `PasswordHasher`,
-  `LoginStore` and `CachedUserLoader`. `DEFAULT_PENDING_TTL` (five
-  minutes) is the default lifetime of a login waiting for its second
-  factor. `Federated` and `PasswordOrFederated` unlink one identity with
+  `LoginStore` and `CachedUserLoader`. `LoginTtl` is the validated time to live of every login store and user
+  cache entry: never zero, at most 366 days, with infallible constants such
+  as `LoginTtl::FIVE_MINUTES`. `DEFAULT_PENDING_TTL` (five minutes) is the
+  default lifetime of a login waiting for its second factor. `Federated` and `PasswordOrFederated` unlink one identity with
   `unlink(&FederatedId)` or every identity of a provider with
   `unlink_provider(&Provider)`. The `argon2` and `postgres` features are
   on by default; `moka`, `redis`, `reset` and `totp` are optional.

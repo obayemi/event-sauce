@@ -4,7 +4,6 @@
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
-    time::Duration,
 };
 
 use argon2::Params;
@@ -13,8 +12,8 @@ use chrono::DateTime;
 use event_sauce_auth::{
     Argon2Hasher, AuthError, Authenticator, ClaimAuthenticator, CompleteError, Credentials, Email,
     FixedClock, HasPassword, HasSecondFactor, HasTotp, Identity, LoginId, LoginKey, LoginOutcome,
-    LoginStore, LoginStoreError, Password, PasswordAttempt, PasswordHasher, PasswordLogin,
-    PendingLoginId, Sha256, Totp, TotpSecret, TwoFactor, UserAggregate,
+    LoginStore, LoginStoreError, LoginTtl, Password, PasswordAttempt, PasswordHasher,
+    PasswordLogin, PendingLoginId, Sha256, Totp, TotpSecret, TwoFactor, UserAggregate,
 };
 use event_sauce_core::{
     aggregate_command, define_events, Aggregate, AggregateClaim, AggregateError, AggregateRoot,
@@ -148,7 +147,7 @@ impl MemoryLoginStore {
 
 #[async_trait]
 impl LoginStore for MemoryLoginStore {
-    async fn put(&self, key: &LoginKey, value: &[u8], _: Duration) -> Result<(), LoginStoreError> {
+    async fn put(&self, key: &LoginKey, value: &[u8], _: LoginTtl) -> Result<(), LoginStoreError> {
         self.entries
             .lock()
             .unwrap()
@@ -160,7 +159,7 @@ impl LoginStore for MemoryLoginStore {
         Ok(self.entries.lock().unwrap().remove(key.as_str()))
     }
 
-    async fn mark_once(&self, key: &LoginKey, _: Duration) -> Result<bool, LoginStoreError> {
+    async fn mark_once(&self, key: &LoginKey, _: LoginTtl) -> Result<bool, LoginStoreError> {
         Ok(self
             .entries
             .lock()

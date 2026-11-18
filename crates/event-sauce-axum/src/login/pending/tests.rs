@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use event_sauce_auth::PendingLoginId;
+use event_sauce_auth::{LoginTtl, PendingLoginId};
 use http::{header::COOKIE, HeaderMap, HeaderValue};
 
 use super::PendingLogin;
@@ -24,7 +24,10 @@ fn the_cookie_round_trips_the_pending_login_id() {
 
 #[test]
 fn the_cookie_is_short_lived_and_locked_down() {
-    let set = PendingLogin::set_cookie(PendingLoginId::new(), Duration::from_secs(90));
+    let set = PendingLogin::set_cookie(
+        PendingLoginId::new(),
+        LoginTtl::new(Duration::from_secs(90)).unwrap(),
+    );
 
     assert!(set.starts_with(&format!("{}=", PendingLogin::COOKIE)));
     assert!(set.contains("Max-Age=90"));
@@ -79,5 +82,5 @@ fn a_malformed_id_means_no_pending_login() {
 
 #[test]
 fn the_cookie_lives_as_long_as_the_pending_login_of_the_default_stage() {
-    assert_eq!(PendingLogin::DEFAULT_TTL, Duration::from_secs(300));
+    assert_eq!(PendingLogin::DEFAULT_TTL, LoginTtl::FIVE_MINUTES);
 }

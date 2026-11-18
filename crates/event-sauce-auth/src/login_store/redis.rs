@@ -1,13 +1,11 @@
 //! The Redis [`LoginStore`].
 
-use std::time::Duration;
-
 use async_trait::async_trait;
 use redis::aio::ConnectionManager;
 use redis::{AsyncCommands, ExistenceCheck, SetOptions};
 
 use super::backend;
-use crate::{ttl, LoginKey, LoginStore, LoginStoreError};
+use crate::{LoginKey, LoginStore, LoginStoreError, LoginTtl};
 
 /// The prefix a [`RedisLoginStore`] puts before every key unless told
 /// otherwise.
@@ -76,10 +74,9 @@ impl LoginStore for RedisLoginStore {
         &self,
         key: &LoginKey,
         value: &[u8],
-        ttl: Duration,
+        ttl: LoginTtl,
     ) -> Result<(), LoginStoreError> {
-        let millis = ttl::millis(ttl).ok_or(LoginStoreError::InvalidTtl(ttl))?;
-        let options = SetOptions::default().with_expiration(ttl::redis_expiry(millis));
+        let options = SetOptions::default().with_expiration(ttl.redis_expiry());
         self.connection
             .clone()
             .set_options::<_, _, ()>(storage_key(&self.prefix, key), value, options)
@@ -95,11 +92,10 @@ impl LoginStore for RedisLoginStore {
             .map_err(backend("take entry"))
     }
 
-    async fn mark_once(&self, key: &LoginKey, ttl: Duration) -> Result<bool, LoginStoreError> {
-        let millis = ttl::millis(ttl).ok_or(LoginStoreError::InvalidTtl(ttl))?;
+    async fn mark_once(&self, key: &LoginKey, ttl: LoginTtl) -> Result<bool, LoginStoreError> {
         let options = SetOptions::default()
             .conditional_set(ExistenceCheck::NX)
-            .with_expiration(ttl::redis_expiry(millis));
+            .with_expiration(ttl.redis_expiry());
         let recorded: Option<String> = self
             .connection
             .clone()

@@ -3,9 +3,8 @@
 mod support;
 
 use std::sync::Arc;
-use std::time::Duration;
 
-use event_sauce_auth::{LoginKey, LoginStore, RedisLoginStore};
+use event_sauce_auth::{LoginKey, LoginStore, LoginTtl, RedisLoginStore};
 use testcontainers::ImageExt;
 use testcontainers_modules::{redis::Redis, testcontainers::ContainerAsync};
 
@@ -39,10 +38,7 @@ async fn prefixes_isolate_stores_sharing_a_server() {
         .with_prefix("b:");
     let key = LoginKey::new("test", "scoped");
 
-    first
-        .put(&key, b"v", Duration::from_secs(60))
-        .await
-        .unwrap();
+    first.put(&key, b"v", LoginTtl::ONE_MINUTE).await.unwrap();
 
     assert_eq!(second.take(&key).await.unwrap(), None);
     assert!(first.take(&key).await.unwrap().is_some());

@@ -1,19 +1,19 @@
 //! What happens between the first factor and the session: [`LoginStage`],
 //! [`NoSecondFactor`] and [`TwoFactor`].
 
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use event_sauce_core::EntityId;
 
 use crate::{
-    Clock, Credentials, HasSecondFactor, Identity, LoginStore, PendingLogin, PendingLoginError,
-    PendingLoginId, PendingLogins, Rejected, SecondFactor, SystemClock,
+    Clock, Credentials, HasSecondFactor, Identity, LoginStore, LoginTtl, PendingLogin,
+    PendingLoginError, PendingLoginId, PendingLogins, Rejected, SecondFactor, SystemClock,
 };
 
 /// How long a pending login lives unless the stage says otherwise: five
 /// minutes.
-pub const DEFAULT_PENDING_TTL: Duration = Duration::from_secs(300);
+pub const DEFAULT_PENDING_TTL: LoginTtl = LoginTtl::FIVE_MINUTES;
 
 /// Decides whether a login that passed its first factor is complete.
 ///
@@ -78,7 +78,7 @@ impl<F> TwoFactor<F> {
 
     /// Keeps pending logins for `ttl` instead of five minutes.
     #[must_use]
-    pub fn with_pending_ttl(mut self, ttl: Duration) -> Self {
+    pub fn with_pending_ttl(mut self, ttl: LoginTtl) -> Self {
         self.pending = self.pending.with_ttl(ttl);
         self
     }

@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use axum::{body::Body, routing::get, Router};
@@ -8,7 +7,8 @@ use axum_login::{
     AuthnBackend,
 };
 use event_sauce_auth::{
-    Argon2Hasher, ClaimAuthenticator, LoginKey, LoginStore, LoginStoreError, PasswordLogin,
+    Argon2Hasher, ClaimAuthenticator, LoginKey, LoginStore, LoginStoreError, LoginTtl,
+    PasswordLogin,
 };
 use event_sauce_core::{EventStore, Repository};
 use event_sauce_memory::InMemoryEventStore;
@@ -24,7 +24,7 @@ struct NoLoginStore;
 
 #[async_trait]
 impl LoginStore for NoLoginStore {
-    async fn put(&self, _: &LoginKey, _: &[u8], _: Duration) -> Result<(), LoginStoreError> {
+    async fn put(&self, _: &LoginKey, _: &[u8], _: LoginTtl) -> Result<(), LoginStoreError> {
         Ok(())
     }
 
@@ -32,7 +32,7 @@ impl LoginStore for NoLoginStore {
         Ok(None)
     }
 
-    async fn mark_once(&self, _: &LoginKey, _: Duration) -> Result<bool, LoginStoreError> {
+    async fn mark_once(&self, _: &LoginKey, _: LoginTtl) -> Result<bool, LoginStoreError> {
         Ok(true)
     }
 }

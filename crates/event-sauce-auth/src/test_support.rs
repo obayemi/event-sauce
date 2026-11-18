@@ -6,7 +6,6 @@ use std::{
         atomic::{AtomicUsize, Ordering},
         Arc, Mutex,
     },
-    time::Duration,
 };
 
 use async_trait::async_trait;
@@ -16,7 +15,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     ClaimLocator, Credentials, Digest, Email, FederatedId, HasSecondFactor, HashError, LocateError,
-    LoginId, LoginKey, LoginStore, LoginStoreError, PasswordHash, PasswordHasher, Provider, Sha256,
+    LoginId, LoginKey, LoginStore, LoginStoreError, LoginTtl, PasswordHash, PasswordHasher,
+    Provider, Sha256,
 };
 
 pub(crate) const HASH_A: &str =
@@ -110,7 +110,7 @@ pub(crate) fn fake_phc(password: &SecretString) -> String {
 /// A login store held in a map that remembers the ttl of every entry.
 #[derive(Debug, Default)]
 pub(crate) struct FakeLoginStore {
-    entries: Mutex<HashMap<String, (Vec<u8>, Duration)>>,
+    entries: Mutex<HashMap<String, (Vec<u8>, LoginTtl)>>,
     broken: bool,
 }
 
@@ -122,7 +122,7 @@ impl FakeLoginStore {
         }
     }
 
-    pub(crate) fn ttl_of(&self, key: &LoginKey) -> Option<Duration> {
+    pub(crate) fn ttl_of(&self, key: &LoginKey) -> Option<LoginTtl> {
         self.entries
             .lock()
             .unwrap()
@@ -131,7 +131,7 @@ impl FakeLoginStore {
     }
 
     #[cfg(feature = "totp")]
-    pub(crate) fn ttls(&self) -> Vec<Duration> {
+    pub(crate) fn ttls(&self) -> Vec<LoginTtl> {
         self.entries
             .lock()
             .unwrap()
@@ -166,7 +166,7 @@ impl LoginStore for FakeLoginStore {
         &self,
         key: &LoginKey,
         value: &[u8],
-        ttl: Duration,
+        ttl: LoginTtl,
     ) -> Result<(), LoginStoreError> {
         self.check()?;
         self.entries
@@ -186,7 +186,7 @@ impl LoginStore for FakeLoginStore {
             .map(|(value, _)| value))
     }
 
-    async fn mark_once(&self, key: &LoginKey, ttl: Duration) -> Result<bool, LoginStoreError> {
+    async fn mark_once(&self, key: &LoginKey, ttl: LoginTtl) -> Result<bool, LoginStoreError> {
         self.check()?;
         let mut entries = self.entries.lock().unwrap();
         if entries.contains_key(key.as_str()) {

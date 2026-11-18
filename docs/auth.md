@@ -275,7 +275,7 @@ let root = authenticator.complete(pending, &code).await?;
 ```
 
 `complete` exists only on the `TwoFactor` variant. A pending login is single
-use and expires after five minutes (`TwoFactor::with_pending_ttl` changes it): an
+use and expires after five minutes (`TwoFactor::with_pending_ttl(LoginTtl)` changes it): an
 unknown, expired or already used one is `CompleteError::NotInProgress`, and
 a wrong response ends the login, so the user starts again from the first
 factor. No session exists before `complete` succeeds: the pending login is
@@ -294,15 +294,17 @@ is per user, not per session:
 ```rust
 #[async_trait]
 pub trait LoginStore: Send + Sync {
-    async fn put(&self, key: &LoginKey, value: &[u8], ttl: Duration) -> Result<(), LoginStoreError>;
+    async fn put(&self, key: &LoginKey, value: &[u8], ttl: LoginTtl) -> Result<(), LoginStoreError>;
     async fn take(&self, key: &LoginKey) -> Result<Option<Vec<u8>>, LoginStoreError>;
-    async fn mark_once(&self, key: &LoginKey, ttl: Duration) -> Result<bool, LoginStoreError>;
+    async fn mark_once(&self, key: &LoginKey, ttl: LoginTtl) -> Result<bool, LoginStoreError>;
 }
 ```
 
-Every entry is single use (`take` reads and deletes atomically). A ttl must
-be above zero and at most 366 days, or the call fails with
-`LoginStoreError::InvalidTtl`.
+Every entry is single use (`take` reads and deletes atomically). A `LoginTtl`
+is never zero and never longer than 366 days, so every store accepts it:
+`LoginTtl::new(duration)` checks and rounds up to whole milliseconds, and
+`LoginTtl::ONE_MINUTE`, `FIVE_MINUTES`, `ONE_HOUR`, `ONE_DAY`, `MAX` and
+`LoginTtl::from_millis(NonZeroU32)` cannot fail.
 
 | Implementation | Feature | Expiry |
 |---|---|---|

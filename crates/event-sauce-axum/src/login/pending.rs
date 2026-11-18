@@ -1,11 +1,10 @@
 //! [`PendingLogin`]: the login waiting for its second factor.
 
 use std::future::{ready, Future};
-use std::time::Duration;
 
 use axum::extract::FromRequestParts;
 use axum_login::tower_sessions::cookie::{time, Cookie, SameSite};
-use event_sauce_auth::PendingLoginId;
+use event_sauce_auth::{LoginTtl, PendingLoginId};
 use http::{header::COOKIE, request::Parts, HeaderMap};
 
 use crate::login::AuthRejection;
@@ -43,7 +42,7 @@ impl PendingLogin {
     /// How long a pending login lives unless the stage says otherwise:
     /// five minutes, the default of
     /// [`TwoFactor`](event_sauce_auth::TwoFactor).
-    pub const DEFAULT_TTL: Duration = event_sauce_auth::DEFAULT_PENDING_TTL;
+    pub const DEFAULT_TTL: LoginTtl = event_sauce_auth::DEFAULT_PENDING_TTL;
 
     /// The id of the waiting login.
     #[must_use]
@@ -69,8 +68,8 @@ impl PendingLogin {
     ///
     /// The cookie is `HttpOnly`, `Secure` and `SameSite=Lax`.
     #[must_use]
-    pub fn set_cookie(id: PendingLoginId, ttl: Duration) -> String {
-        let max_age = time::Duration::try_from(ttl).unwrap_or(time::Duration::MAX);
+    pub fn set_cookie(id: PendingLoginId, ttl: LoginTtl) -> String {
+        let max_age = time::Duration::try_from(ttl.as_duration()).unwrap_or(time::Duration::MAX);
         Self::cookie(id.to_string(), max_age)
     }
 

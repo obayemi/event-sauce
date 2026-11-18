@@ -2,10 +2,10 @@
 
 mod support;
 
+use std::num::NonZeroU32;
 use std::sync::Arc;
-use std::time::Duration;
 
-use event_sauce_auth::{LoginKey, LoginStore, PostgresLoginStore};
+use event_sauce_auth::{LoginKey, LoginStore, LoginTtl, PostgresLoginStore};
 use sqlx::{postgres::PgPoolOptions, PgPool};
 use testcontainers::ImageExt;
 use testcontainers_modules::{postgres::Postgres, testcontainers::ContainerAsync};
@@ -60,11 +60,7 @@ async fn migrate_is_idempotent_and_keeps_existing_entries() {
     let store = PostgresLoginStore::new(pool);
     store.migrate().await.unwrap();
     store
-        .put(
-            &LoginKey::new("test", "kept"),
-            b"v",
-            Duration::from_secs(60),
-        )
+        .put(&LoginKey::new("test", "kept"), b"v", LoginTtl::ONE_MINUTE)
         .await
         .unwrap();
 
@@ -106,10 +102,7 @@ async fn a_custom_schema_holds_its_own_entries() {
     second.migrate().await.unwrap();
     let key = LoginKey::new("test", "scoped");
 
-    first
-        .put(&key, b"v", Duration::from_secs(60))
-        .await
-        .unwrap();
+    first.put(&key, b"v", LoginTtl::ONE_MINUTE).await.unwrap();
 
     assert_eq!(second.take(&key).await.unwrap(), None);
     assert!(first.take(&key).await.unwrap().is_some());
@@ -120,7 +113,7 @@ async fn purge_expired_removes_only_expired_entries() {
     let (_guard, pool) = start_database().await;
     let store = PostgresLoginStore::new(pool.clone());
     store.migrate().await.unwrap();
-    let short = Duration::from_millis(200);
+    let short = LoginTtl::from_millis(NonZeroU32::new(200).unwrap());
     store
         .put(&LoginKey::new("test", "a"), b"v", short)
         .await
@@ -130,14 +123,10 @@ async fn purge_expired_removes_only_expired_entries() {
         .await
         .unwrap());
     store
-        .put(
-            &LoginKey::new("test", "live"),
-            b"v",
-            Duration::from_secs(60),
-        )
+        .put(&LoginKey::new("test", "live"), b"v", LoginTtl::ONE_MINUTE)
         .await
         .unwrap();
-    tokio::time::sleep(short * 3).await;
+    tokio::time::sleep(short.as_duration() * 3).await;
 
     assert_eq!(store.purge_expired().await.unwrap(), 2);
 

@@ -41,9 +41,6 @@ pub enum CacheError {
     /// A user could not be encrypted or decrypted.
     #[error("cached user could not be encrypted or decrypted")]
     Crypto(#[from] event_sauce_core::Error),
-    /// The time to live is zero or longer than the cache accepts.
-    #[error("invalid time to live: {0:?}")]
-    InvalidTtl(std::time::Duration),
     /// An entry does not have the shape a cache wrote.
     #[error("cache entry is malformed")]
     Malformed,

@@ -558,11 +558,11 @@ TOTP replay protection is per user, not per session.
 #[async_trait]
 pub trait LoginStore: Send + Sync {
     /// Stores `value` under `key` until `ttl` elapses.
-    async fn put(&self, key: &LoginKey, value: &[u8], ttl: Duration) -> Result<(), LoginStoreError>;
+    async fn put(&self, key: &LoginKey, value: &[u8], ttl: LoginTtl) -> Result<(), LoginStoreError>;
     /// Atomically reads and deletes `key`: every entry is single use.
     async fn take(&self, key: &LoginKey) -> Result<Option<Vec<u8>>, LoginStoreError>;
     /// Records `key` if absent; `false` means it was already recorded.
-    async fn mark_once(&self, key: &LoginKey, ttl: Duration) -> Result<bool, LoginStoreError>;
+    async fn mark_once(&self, key: &LoginKey, ttl: LoginTtl) -> Result<bool, LoginStoreError>;
 }
 ```
 
@@ -572,8 +572,12 @@ pub trait LoginStore: Send + Sync {
 `PendingLogin<Ch> { user, challenge, created_at }` as JSON over the raw
 bytes, once for every backend. `PendingLoginId` is a random UUID.
 
-`put` and `mark_once` accept a ttl greater than zero and at most 366 days.
-Anything else fails with `LoginStoreError::InvalidTtl`. `take` has no ttl.
+`put` and `mark_once` take a `LoginTtl`, a newtype validated at construction:
+greater than zero, at most 366 days, rounded up to whole milliseconds
+(`LoginTtl::new` fails with `LoginTtlError`). It has infallible constants
+(`ONE_MINUTE`, `FIVE_MINUTES`, `ONE_HOUR`, `ONE_DAY`, `MAX`) and
+`from_millis(NonZeroU32)`, so no store call fails on its ttl. `take` has no
+ttl.
 
 | Implementation | Feature | `take` | `mark_once` | Expiry |
 |---|---|---|---|---|
@@ -653,8 +657,7 @@ it does for events and snapshots. A missing key is a miss, not an error.
 The cache finds that key and provider through the event store the users
 live in, which the app passes with
 `RedisUserCache::new(connection).with_crypto_from(store)`. Entries live for
-one day by default, `with_ttl` changes it (zero or more than 366 days makes
-`put` fail with `CacheError::InvalidTtl`), and keys are prefixed with
+one day by default, `with_ttl(LoginTtl)` changes it, and keys are prefixed with
 `event_sauce:user:` unless `with_prefix` says otherwise.
 
 The trait stays open, so an app can plug in another shared cache.
@@ -759,7 +762,7 @@ client answers, `backend.complete(pending, response) -> SessionUser<U>`.
 
 `PendingLogin` carries the pending id between the two requests, in a
 short-lived `HttpOnly`, `Secure`, `SameSite=Lax` cookie:
-- `PendingLogin::set_cookie(id, ttl)` is the `Set-Cookie` value the handler
+- `PendingLogin::set_cookie(id, ttl: LoginTtl)` is the `Set-Cookie` value the handler
   answers with after `start`, and `PendingLogin::clear_cookie()` removes it
   once the login is done.
 - As an extractor, `PendingLogin` rejects with `401` when the cookie is

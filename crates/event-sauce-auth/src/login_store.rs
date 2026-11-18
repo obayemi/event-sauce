@@ -2,9 +2,10 @@
 
 use std::error::Error as StdError;
 use std::fmt;
-use std::time::Duration;
 
 use async_trait::async_trait;
+
+use crate::LoginTtl;
 
 #[cfg(feature = "postgres")]
 mod postgres;
@@ -52,9 +53,6 @@ impl fmt::Display for LoginKey {
 /// Why a [`LoginStore`] operation failed.
 #[derive(Debug, thiserror::Error)]
 pub enum LoginStoreError {
-    /// The time to live is zero or longer than the stores accept.
-    #[error("invalid time to live: {0:?}")]
-    InvalidTtl(Duration),
     /// The backend failed.
     #[error("login store backend failed: {context}")]
     Backend {
@@ -95,17 +93,14 @@ fn backend<E: StdError + Send + Sync + 'static>(
 /// `postgres`) and `RedisLoginStore` (feature `redis`). There is deliberately
 /// no in-memory implementation: state that does not survive across instances
 /// would break a login in progress.
-///
-/// Every operation takes a time to live that must be greater than zero and at
-/// most a year, and fails with [`LoginStoreError::InvalidTtl`] otherwise.
 #[async_trait]
 pub trait LoginStore: Send + Sync {
     /// Stores `value` under `key` until `ttl` elapses, replacing any entry.
     ///
     /// # Errors
     ///
-    /// Fails if `ttl` is invalid or the backend fails.
-    async fn put(&self, key: &LoginKey, value: &[u8], ttl: Duration)
+    /// Fails if the backend fails.
+    async fn put(&self, key: &LoginKey, value: &[u8], ttl: LoginTtl)
         -> Result<(), LoginStoreError>;
 
     /// Atomically reads and deletes `key`, so every entry is single use.
@@ -124,8 +119,8 @@ pub trait LoginStore: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Fails if `ttl` is invalid or the backend fails.
-    async fn mark_once(&self, key: &LoginKey, ttl: Duration) -> Result<bool, LoginStoreError>;
+    /// Fails if the backend fails.
+    async fn mark_once(&self, key: &LoginKey, ttl: LoginTtl) -> Result<bool, LoginStoreError>;
 }
 
 #[cfg(test)]

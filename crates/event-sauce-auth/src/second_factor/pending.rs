@@ -1,13 +1,13 @@
 //! Logins held between the first and the second factor.
 
-use std::{fmt, str::FromStr, sync::Arc, time::Duration};
+use std::{fmt, str::FromStr, sync::Arc};
 
 use chrono::{DateTime, Utc};
 use event_sauce_core::EntityId;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{LoginKey, LoginStore, LoginStoreError};
+use crate::{LoginKey, LoginStore, LoginStoreError, LoginTtl};
 
 const NAMESPACE: &str = "pending";
 
@@ -72,7 +72,7 @@ pub enum PendingLoginError {
 #[derive(Clone)]
 pub struct PendingLogins {
     store: Arc<dyn LoginStore>,
-    ttl: Duration,
+    ttl: LoginTtl,
 }
 
 impl fmt::Debug for PendingLogins {
@@ -86,13 +86,13 @@ impl fmt::Debug for PendingLogins {
 impl PendingLogins {
     /// Pending logins kept in `store`, each for `ttl`.
     #[must_use]
-    pub fn new(store: Arc<dyn LoginStore>, ttl: Duration) -> Self {
+    pub fn new(store: Arc<dyn LoginStore>, ttl: LoginTtl) -> Self {
         Self { store, ttl }
     }
 
     /// The same pending logins, kept for `ttl` instead.
     #[must_use]
-    pub fn with_ttl(mut self, ttl: Duration) -> Self {
+    pub fn with_ttl(mut self, ttl: LoginTtl) -> Self {
         self.ttl = ttl;
         self
     }

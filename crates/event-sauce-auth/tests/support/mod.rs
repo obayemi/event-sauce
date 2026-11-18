@@ -35,13 +35,13 @@ pub async fn start_with_retry<I: Image>(
 macro_rules! login_store_contract {
     ($start:ident) => {
         mod contract {
+            use std::num::NonZeroU32;
             use std::sync::Arc;
-            use std::time::Duration;
 
-            use event_sauce_auth::{LoginKey, LoginStore, LoginStoreError};
+            use event_sauce_auth::{LoginKey, LoginStore, LoginTtl};
 
-            const LONG: Duration = Duration::from_secs(60);
-            const SHORT: Duration = Duration::from_millis(300);
+            const LONG: LoginTtl = LoginTtl::ONE_MINUTE;
+            const SHORT: LoginTtl = LoginTtl::from_millis(NonZeroU32::new(300).unwrap());
             const CONTENDERS: usize = 16;
 
             fn key(name: &str) -> LoginKey {
@@ -130,7 +130,7 @@ macro_rules! login_store_contract {
                 let (_guard, store) = super::$start().await;
                 store.put(&key("short"), b"v", SHORT).await.unwrap();
 
-                tokio::time::sleep(SHORT * 3).await;
+                tokio::time::sleep(SHORT.as_duration() * 3).await;
 
                 assert_eq!(store.take(&key("short")).await.unwrap(), None);
             }
@@ -140,23 +140,19 @@ macro_rules! login_store_contract {
                 let (_guard, store) = super::$start().await;
                 assert!(store.mark_once(&key("step"), SHORT).await.unwrap());
 
-                tokio::time::sleep(SHORT * 3).await;
+                tokio::time::sleep(SHORT.as_duration() * 3).await;
 
                 assert!(store.mark_once(&key("step"), LONG).await.unwrap());
             }
 
             #[tokio::test]
-            async fn a_zero_ttl_is_refused_by_every_operation() {
+            async fn the_longest_ttl_is_honoured_by_every_operation() {
                 let (_guard, store) = super::$start().await;
 
-                assert!(matches!(
-                    store.put(&key("a"), b"v", Duration::ZERO).await,
-                    Err(LoginStoreError::InvalidTtl(_))
-                ));
-                assert!(matches!(
-                    store.mark_once(&key("a"), Duration::ZERO).await,
-                    Err(LoginStoreError::InvalidTtl(_))
-                ));
+                store.put(&key("a"), b"v", LoginTtl::MAX).await.unwrap();
+                assert!(store.mark_once(&key("b"), LoginTtl::MAX).await.unwrap());
+
+                assert_eq!(store.take(&key("a")).await.unwrap(), Some(b"v".to_vec()));
             }
 
             async fn race<F, Fut>(store: &Arc<dyn LoginStore>, attempt: F) -> usize

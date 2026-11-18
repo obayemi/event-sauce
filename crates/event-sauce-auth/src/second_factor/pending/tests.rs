@@ -1,9 +1,7 @@
-use std::time::Duration;
-
 use super::*;
 use crate::test_support::FakeLoginStore;
 
-const TTL: Duration = Duration::from_secs(300);
+const TTL: LoginTtl = LoginTtl::FIVE_MINUTES;
 
 fn pending(user: EntityId) -> PendingLogin<String> {
     PendingLogin {

@@ -1,12 +1,10 @@
 //! The `PostgreSQL` [`LoginStore`].
 
-use std::time::Duration;
-
 use async_trait::async_trait;
 use sqlx::PgPool;
 
 use super::backend;
-use crate::{ttl, LoginKey, LoginStore, LoginStoreError};
+use crate::{LoginKey, LoginStore, LoginStoreError, LoginTtl};
 
 /// The schema a [`PostgresLoginStore`] uses unless told otherwise.
 const DEFAULT_SCHEMA: &str = "event_sauce_login";
@@ -135,9 +133,8 @@ impl LoginStore for PostgresLoginStore {
         &self,
         key: &LoginKey,
         value: &[u8],
-        ttl: Duration,
+        ttl: LoginTtl,
     ) -> Result<(), LoginStoreError> {
-        let millis = ttl::millis(ttl).ok_or(LoginStoreError::InvalidTtl(ttl))?;
         sqlx::query(&format!(
             "INSERT INTO {0}.entries (key, value, expires_at)
              VALUES ($1, $2, now() + $3::bigint * interval '1 millisecond')
@@ -147,7 +144,7 @@ impl LoginStore for PostgresLoginStore {
         ))
         .bind(key.as_str())
         .bind(value)
-        .bind(millis)
+        .bind(ttl.sql_millis())
         .execute(&self.pool)
         .await
         .map(drop)
@@ -166,8 +163,7 @@ impl LoginStore for PostgresLoginStore {
         Ok(taken.and_then(|(value, live)| live.then_some(value)))
     }
 
-    async fn mark_once(&self, key: &LoginKey, ttl: Duration) -> Result<bool, LoginStoreError> {
-        let millis = ttl::millis(ttl).ok_or(LoginStoreError::InvalidTtl(ttl))?;
+    async fn mark_once(&self, key: &LoginKey, ttl: LoginTtl) -> Result<bool, LoginStoreError> {
         sqlx::query(&format!(
             "INSERT INTO {0}.entries AS entry (key, value, expires_at)
              VALUES ($1, ''::bytea, now() + $2::bigint * interval '1 millisecond')
@@ -177,7 +173,7 @@ impl LoginStore for PostgresLoginStore {
             self.schema
         ))
         .bind(key.as_str())
-        .bind(millis)
+        .bind(ttl.sql_millis())
         .execute(&self.pool)
         .await
         .map(|done| done.rows_affected() == 1)
