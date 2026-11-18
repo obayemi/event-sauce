@@ -9,6 +9,7 @@ use event_sauce_auth::{
 };
 use event_sauce_core::EventStore;
 use event_sauce_postgres::PostgresEventStore;
+use http::HeaderName;
 use serde::{de::DeserializeOwned, Serialize};
 use sqlx::PgPool;
 
@@ -165,12 +166,8 @@ impl<U: UserAggregate, M, T> UserAppBuilder<U, M, T> {
 
     /// Reads and echoes the request id in the header `name` instead of
     /// `x-request-id`.
-    ///
-    /// # Panics
-    ///
-    /// Panics when `name` is not a valid lowercase HTTP header name.
     #[must_use]
-    pub fn correlation_header(mut self, name: &'static str) -> Self {
+    pub fn correlation_header(mut self, name: HeaderName) -> Self {
         self.correlation = CorrelationLayer::header(name);
         self
     }

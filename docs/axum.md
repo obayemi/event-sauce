@@ -67,7 +67,7 @@ itself, with the versions above: `axum-login` 0.18 needs `tower-sessions`
 let router = Router::new()
     .route("/orders", post(create_order))
     .layer(CorrelationLayer::new());              // header "x-request-id"
-// CorrelationLayer::header("x-correlation-id") for another header
+// CorrelationLayer::header(HeaderName::from_static("x-correlation-id")) for another header
 ```
 
 For each request the layer:
@@ -264,7 +264,7 @@ login store migrations. It is idempotent.
 | login store | `PostgresLoginStore` in the `event_sauce_login` schema | `.login_store_schema("...")` |
 | user cache | `MokaUserCache`, 10 000 entries | `.user_cache(cache)`, `.user_cache_capacity(n)`, `.no_user_cache()` |
 | authenticator | `ClaimAuthenticator` over the given login method | `.second_factor(factor)` keeps pending logins in the login store |
-| correlation | `CorrelationLayer` on `x-request-id` | `.correlation_header("...")` |
+| correlation | `CorrelationLayer` on `x-request-id` | `.correlation_header(HeaderName)` |
 
 The login store gets its own schema, so it can be dropped, granted or
 excluded from backups independently of the event store. The builder sets no

@@ -235,12 +235,12 @@ explicitly rather than gated behind a major version bump.
   on by default; `moka`, `redis`, `reset` and `totp` are optional.
 
 - `event-sauce-axum` crate. `CorrelationLayer` reads `x-request-id` (or the
-  header chosen with `header(name)`), keeps it when it is a valid
+  `HeaderName` given to `header(name)`), keeps it when it is a valid
   `RequestId` (1 to 128 characters of `[A-Za-z0-9._-]`) and mints a UUID v4
   otherwise, runs the request in a root `EventContext` carrying that
   correlation id, echoes the id on the response, and opens a `request`
   tracing span behind the default `tracing` feature. Tasks spawned by a
-  handler do not inherit the context. The `Store<S>`, `Repo<A, S>` and
+  handler do not inherit the context. `CorrelationLayer::header` and `correlation_header` take a `http::HeaderName` (re-exported as `HeaderName`), and `DEFAULT_HEADER` is a `HeaderName`, so no header name can panic. The `Store<S>`, `Repo<A, S>` and
   `UnitOfWork<T>` extractors reach the application state through `FromRef`
   and never reject. `Store` has no repository method of its own: get a
   repository from `Repo` or `store.arc().repository()`.

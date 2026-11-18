@@ -36,6 +36,7 @@ pub use app::{
     App, AppBuilder, BuildError, EventSauceApp, SecondFactorStage, UserAppBuilder, WithSecondFactor,
 };
 pub use correlation::{Correlation, CorrelationLayer, ResponseFuture, DEFAULT_HEADER};
+pub use http::HeaderName;
 #[cfg(feature = "login")]
 pub use login::{
     AuthRejection, BackendError, CurrentUser, EventSauceBackend, MaybeUser, PendingLogin,

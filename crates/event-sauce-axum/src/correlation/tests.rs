@@ -1,6 +1,6 @@
 use std::convert::Infallible;
 
-use http::{Request, Response};
+use http::{HeaderName, Request, Response};
 use tower::{service_fn, Layer, ServiceExt};
 
 use super::*;
@@ -49,7 +49,7 @@ async fn a_malformed_id_is_replaced_by_a_uuid() {
 
 #[tokio::test]
 async fn a_custom_header_is_read_and_echoed_instead_of_the_default() {
-    let layer = CorrelationLayer::header("x-correlation-id");
+    let layer = CorrelationLayer::header(HeaderName::from_static("x-correlation-id"));
     let response = call(layer, Some(("x-correlation-id", "corr-9"))).await;
     assert_eq!(echoed(&response, "x-correlation-id"), "corr-9");
     assert!(response.headers().get("x-request-id").is_none());
@@ -57,7 +57,7 @@ async fn a_custom_header_is_read_and_echoed_instead_of_the_default() {
 
 #[tokio::test]
 async fn the_default_header_is_ignored_when_a_custom_one_is_configured() {
-    let layer = CorrelationLayer::header("x-correlation-id");
+    let layer = CorrelationLayer::header(HeaderName::from_static("x-correlation-id"));
     let response = call(layer, Some(("x-request-id", "req-1"))).await;
     assert_ne!(echoed(&response, "x-correlation-id"), "req-1");
 }
@@ -89,4 +89,17 @@ async fn an_inner_error_passes_through_untouched() {
         .await
         .expect_err("inner error propagates");
     assert_eq!(error, "boom");
+}
+
+#[test]
+fn the_default_header_is_x_request_id() {
+    assert_eq!(DEFAULT_HEADER, "x-request-id");
+    assert_eq!(CorrelationLayer::new().header, DEFAULT_HEADER);
+}
+
+#[tokio::test]
+async fn a_header_name_built_at_runtime_is_accepted() {
+    let name = HeaderName::from_bytes(b"X-Trace-Id").unwrap();
+    let response = call(CorrelationLayer::header(name), Some(("x-trace-id", "t-1"))).await;
+    assert_eq!(echoed(&response, "x-trace-id"), "t-1");
 }

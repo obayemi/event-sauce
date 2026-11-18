@@ -8,7 +8,7 @@ mod user_fixture;
 use std::{sync::Arc, time::Duration};
 
 use axum::{
-    http::{header::SET_COOKIE, StatusCode},
+    http::{header::SET_COOKIE, HeaderName, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
@@ -236,7 +236,7 @@ async fn the_correlation_header_is_configurable() {
     let (_guard, pool) = start_database().await;
     let app = EventSauceApp::postgres(pool)
         .user::<User, _>(method())
-        .correlation_header("x-correlation-id")
+        .correlation_header(HeaderName::from_static("x-correlation-id"))
         .build()
         .await
         .unwrap();

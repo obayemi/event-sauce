@@ -12,7 +12,7 @@ use event_sauce_auth::{
 };
 use event_sauce_core::{EventStore, Repository};
 use event_sauce_memory::InMemoryEventStore;
-use http::{Request, StatusCode};
+use http::{HeaderName, Request, StatusCode};
 use sqlx::PgPool;
 use tower::ServiceExt;
 
@@ -80,7 +80,10 @@ async fn the_layer_installs_the_authentication_and_echoes_the_default_header() {
 
 #[tokio::test]
 async fn the_layer_echoes_the_configured_header() {
-    let response = serve(&assembled(builder().correlation_header("x-correlation-id"))).await;
+    let response = serve(&assembled(
+        builder().correlation_header(HeaderName::from_static("x-correlation-id")),
+    ))
+    .await;
 
     assert_eq!(response.status(), StatusCode::OK);
     assert!(response.headers().contains_key("x-correlation-id"));

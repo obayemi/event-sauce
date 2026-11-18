@@ -696,7 +696,7 @@ feature adds `event-sauce-postgres` and `sqlx`, and turns on
 Router::new()
     .route(…)
     .layer(CorrelationLayer::new());              // header "x-request-id"
-// .layer(CorrelationLayer::header("x-correlation-id"))
+// .layer(CorrelationLayer::header(HeaderName::from_static("x-correlation-id")))
 ```
 
 This lifts saxy-p's `correlate` into a `tower::Layer`:
@@ -842,7 +842,7 @@ What `build` sets up by default, all on the same pool:
 | login store | `PostgresLoginStore` | `event_sauce_login` | `.login_store_schema("…")` |
 | user cache | `MokaUserCache`, 10 000 entries | — | `.user_cache(RedisUserCache::new(conn))`, `.user_cache_capacity(n)`, `.no_user_cache()` |
 | authenticator | `ClaimAuthenticator` over the given login method | — | `.second_factor(factor)` keeps pending logins in the login store |
-| correlation | `CorrelationLayer` on `x-request-id` | — | `.correlation_header("…")` |
+| correlation | `CorrelationLayer` on `x-request-id` | — | `.correlation_header(HeaderName)` |
 
 The login store gets its own schema. It can then be dropped, given
 permissions, or excluded from backups independently of the event store.

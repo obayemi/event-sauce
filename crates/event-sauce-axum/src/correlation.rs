@@ -11,7 +11,7 @@ use tracing::{info_span, instrument::Instrumented, Instrument};
 use crate::RequestId;
 
 /// The header carrying the request id when none is configured.
-pub const DEFAULT_HEADER: &str = "x-request-id";
+pub const DEFAULT_HEADER: HeaderName = HeaderName::from_static("x-request-id");
 
 #[cfg(feature = "tracing")]
 type Scoped<F> = Instrumented<WithEventContext<F>>;
@@ -52,10 +52,11 @@ type Scoped<F> = WithEventContext<F>;
 ///
 /// ```
 /// use axum::Router;
-/// use event_sauce_axum::CorrelationLayer;
+/// use event_sauce_axum::{CorrelationLayer, HeaderName};
 ///
 /// let app: Router = Router::new().layer(CorrelationLayer::new());
-/// let custom: Router = Router::new().layer(CorrelationLayer::header("x-correlation-id"));
+/// let name = HeaderName::from_static("x-correlation-id");
+/// let custom: Router = Router::new().layer(CorrelationLayer::header(name));
 /// ```
 #[derive(Debug, Clone)]
 pub struct CorrelationLayer {
@@ -70,15 +71,9 @@ impl CorrelationLayer {
     }
 
     /// A layer reading and echoing the header `name` instead.
-    ///
-    /// # Panics
-    ///
-    /// Panics when `name` is not a valid lowercase HTTP header name.
     #[must_use]
-    pub fn header(name: &'static str) -> Self {
-        Self {
-            header: HeaderName::from_static(name),
-        }
+    pub const fn header(name: HeaderName) -> Self {
+        Self { header: name }
     }
 }
 

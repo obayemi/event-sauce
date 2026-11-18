@@ -293,7 +293,7 @@ correlation id.
   id the same way; a closure has no name, so `command` stays empty.
 - **HTTP requests.** `event_sauce_axum::CorrelationLayer` runs each request in
   a root context whose correlation id is the request's well-formed
-  `x-request-id` (or the header given to `CorrelationLayer::header`), and a
+  `x-request-id` (or the `HeaderName` given to `CorrelationLayer::header`), and a
   fresh UUID v4 otherwise. The id is echoed on the response, the events of
   every handler share it, and `Repository::execute` keeps it. A task a handler
   spawns does not inherit the context: wrap it with
