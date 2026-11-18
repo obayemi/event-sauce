@@ -52,6 +52,14 @@ pub enum Identity<C: Credentials> {
     Registered(C),
 }
 
+/// An identity starts anonymous, so a user aggregate with no init event
+/// can build its empty state from `Default` without requiring `C: Default`.
+impl<C: Credentials> Default for Identity<C> {
+    fn default() -> Self {
+        Self::Anonymous
+    }
+}
+
 impl<C: Credentials> Identity<C> {
     /// Moves an anonymous identity to registered.
     ///

@@ -185,6 +185,7 @@ its `define_events!` apply closures and `@validate` blocks.
 |---|---|
 | `Identity::register(c)` | Moves `Anonymous` to `Registered`. Errors with `AlreadyRegistered` otherwise. |
 | `Identity::credentials() -> Option<&C>` | `None` when anonymous. |
+| `Identity::default()` | `Anonymous`, so a `user` aggregate without an init event starts anonymous. |
 | `Identity::session_fingerprint() -> [u8; 32]` | SHA-256 over `C::fingerprint`. Any credential change invalidates other sessions. |
 | `Password::set_hash(hash)`, `Password::change_login(l)` | Always allowed; the claim follows on commit. |
 | `Federated::link(id)` | Errors with `AlreadyLinked`. |

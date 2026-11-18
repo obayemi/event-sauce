@@ -8,7 +8,7 @@ use event_sauce_auth::{
 };
 use event_sauce_core::{
     aggregate_command, define_events, Aggregate, AggregateClaim, AggregateError, DomainEvent,
-    EntityId, EventApplicator, EventStore, EventVersion, Repository,
+    Entity, EntityId, EventApplicator, EventStore, EventVersion, Repository,
 };
 use event_sauce_memory::InMemoryEventStore;
 use serde::{Deserialize, Serialize};
@@ -124,6 +124,17 @@ struct Guest {
 }
 
 plain_event!(GuestEvent, Guest);
+
+#[event_sauce_macros::aggregate(event = "VisitorEvent", error = "FixtureError", user)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Visitor {
+    #[id]
+    id: EntityId,
+    #[user(identity)]
+    identity: Identity<Login>,
+}
+
+plain_event!(VisitorEvent, Visitor);
 
 fn member(identity: Identity<Login>, is_active: bool) -> Member {
     Member {
@@ -249,4 +260,11 @@ async fn distinct_logins_and_anonymous_users_coexist() {
         let mut member = Member::join(nickname.into(), login).unwrap();
         repository.save(&mut member).await.unwrap();
     }
+}
+
+#[test]
+fn a_user_without_init_events_starts_anonymous() {
+    let visitor = Visitor::new(EntityId::new());
+    assert_eq!(visitor.identity(), &Identity::Anonymous);
+    assert!(visitor.claims().is_empty());
 }

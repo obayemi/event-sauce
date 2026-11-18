@@ -207,6 +207,9 @@ explicitly rather than gated behind a major version bump.
 
 ### Added
 
+- `Identity<C>` implements `Default` as `Anonymous`, so `#[aggregate(user)]`
+  works on an aggregate without an init event.
+
 - `EventStore::resolve_claim` returns the aggregate currently holding an
   `AggregateClaim`, in one indexed lookup. The in-memory and PostgreSQL
   stores implement it, and a claim released by its aggregate no longer

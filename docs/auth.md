@@ -173,6 +173,10 @@ registrations with the same email therefore conflict, and the conflict
 surfaces like any other claim conflict (`Error::as_claim_conflict`).
 
 - `#[user(identity)]` is required, once, on a field of type `Identity<C>`.
+  `Identity<C>` implements `Default` as `Anonymous`, so a user aggregate
+  does not need an `init` event: without one, every other field must be
+  `Default` as for any aggregate, and a registration event calls
+  `Identity::register`.
 - `#[user(active)]` is optional, on a `bool`. Without it the user is always
   active. An inactive user cannot log in with any method, and an inactive
   user already logged in is no longer served by the cache loader.

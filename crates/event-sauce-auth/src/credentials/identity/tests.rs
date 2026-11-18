@@ -34,6 +34,11 @@ fn registered(login: &str, secret: &str) -> Identity<Fake> {
 }
 
 #[test]
+fn the_default_identity_is_anonymous() {
+    assert_eq!(Identity::<Fake>::default(), Identity::Anonymous);
+}
+
+#[test]
 fn anonymous_has_no_credentials() {
     assert_eq!(Identity::<Fake>::Anonymous.credentials(), None);
 }
