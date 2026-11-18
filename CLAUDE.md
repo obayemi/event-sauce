@@ -39,11 +39,35 @@ RED → GREEN → REFACTOR → COMMIT
 #### Testing Standards
 
 **File Organization**:
+
+Unit tests are an inline `#[cfg(test)] mod tests { ... }` by default. When they
+are split out, they live in a `tests/` folder next to the source file, named
+`<module>_tests.rs` and wired with `#[path]`:
+
+```rust
+// src/aggregate_root.rs
+#[cfg(test)]
+#[path = "tests/aggregate_root_tests.rs"]
+mod tests;
+```
+
 ```
 src/
-  module.rs
-  module/
-    tests.rs        # Unit tests alongside code
+  aggregate_root.rs
+  tests/
+    aggregate_root_tests.rs # Unit tests of aggregate_root.rs
+  commands/
+    mod.rs
+    tests/
+      commands_tests.rs     # mod.rs is named after its module, not mod_tests.rs
+```
+
+A test module with child modules puts them in `tests/<module>_tests/` and
+declares each with an explicit `#[path = "<module>_tests/<name>.rs"]`.
+
+The crate-root `tests/` directory remains for integration tests:
+
+```
 tests/
   integration/
     feature_test.rs # Integration tests
