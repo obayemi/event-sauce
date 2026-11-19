@@ -1178,6 +1178,14 @@ mod tests {
 
     /// A 300ms lease, truncated to whole seconds, would become 0s and let
     /// another worker acquire it immediately.
+    ///
+    /// The lease window is read back from the row rather than probed by
+    /// acquiring mid-lease: `leased_until` and `heartbeat_at` come from the
+    /// same `NOW()`, so their difference is the stored duration whatever the
+    /// round-trip latency, whereas a mid-lease probe depends on two queries
+    /// landing within 300ms of each other on the server. The expiry check
+    /// needs no such bound: the server cannot see less time pass between the
+    /// two acquisitions than the client slept between them.
     #[tokio::test]
     async fn test_lease_duration_has_millisecond_precision() {
         let db = TestDatabase::new().await.unwrap();
@@ -1193,21 +1201,19 @@ mod tests {
             .await
             .unwrap();
 
-        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-        let still_blocked = store
-            .try_acquire_lease(
-                "sub-precision",
-                "worker-2",
-                std::time::Duration::from_secs(60),
-            )
-            .await
-            .unwrap();
-        assert!(
-            still_blocked.is_none(),
+        let lease_millis: i64 = sqlx::query_scalar(
+            "SELECT (EXTRACT(EPOCH FROM leased_until - heartbeat_at) * 1000)::bigint
+             FROM event_sauce.checkpoints WHERE subscription_name = 'sub-precision'",
+        )
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            lease_millis, 300,
             "a sub-second lease must not truncate to zero"
         );
 
-        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
         let now_takeable = store
             .try_acquire_lease(
                 "sub-precision",
