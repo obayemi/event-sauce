@@ -652,7 +652,7 @@ mod tests {
     use sqlx::PgPool;
     use uuid::Uuid;
 
-    /// Test database helper using testcontainers for isolated `PostgreSQL` testing.
+    /// Test database helper backed by its own database on the shared test server.
     ///
     /// `pub(super)`: also used by the `builder` and `migrate` submodules'
     /// own tests, which need the exact same real-migration setup.
@@ -662,7 +662,7 @@ mod tests {
     }
 
     impl TestDatabase {
-        /// Creates a new test database with testcontainers, migrated with the
+        /// Creates a fresh database on the shared test server, migrated with the
         /// store's real [`PostgresEventStore::migrate`] rather than a
         /// hand-synced copy of its schema, so tests exercise the exact
         /// schema production gets.

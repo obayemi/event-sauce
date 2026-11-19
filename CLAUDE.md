@@ -760,9 +760,11 @@ The CI pipeline (`.github/workflows/ci.yml`) runs on pushes and PRs against
     `event-sauce-axum` and the `event-sauce` facade with each of their
     features alone and none by default
 
-PostgreSQL and Redis tests spin up their own containers via
-testcontainers, so the pipeline needs Docker (present on `ubuntu-latest`)
-rather than a database service.
+The `event-sauce-postgres` tests share one testcontainers PostgreSQL server
+per test binary, each test getting its own database on it; the
+`event-sauce-auth` and `event-sauce-axum` PostgreSQL and Redis tests spin up
+containers of their own. The pipeline needs Docker (present on
+`ubuntu-latest`) rather than a database service.
 
 ### Before Pushing
 

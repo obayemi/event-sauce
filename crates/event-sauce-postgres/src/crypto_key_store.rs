@@ -366,7 +366,7 @@ mod tests {
     use sqlx::PgPool;
     use uuid::Uuid;
 
-    /// Test database helper using testcontainers.
+    /// Test database helper backed by its own database on the shared test server.
     struct TestDatabase {
         pool: PgPool,
         _database: crate::test_support::FreshDatabase,

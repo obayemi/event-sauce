@@ -4,7 +4,8 @@
 //! binary: [`fresh_database`] starts it lazily on first use and hands every
 //! test its own empty database on it, so tests stay isolated without paying
 //! for a container start each. The server is removed when the test process
-//! exits, whether the run passed or failed.
+//! exits normally, whether the run passed or failed; a run killed by a
+//! signal leaves it behind.
 //!
 //! Tests that need a server of their own (server-wide side effects such as
 //! creating databases, or a custom container setup) start a dedicated

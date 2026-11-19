@@ -687,14 +687,14 @@ mod tests {
     use event_sauce_core::{CheckpointStore, Position};
     use sqlx::PgPool;
 
-    /// Test database helper using testcontainers for isolated `PostgreSQL` testing.
+    /// Test database helper backed by its own database on the shared test server.
     struct TestDatabase {
         pool: PgPool,
         _database: crate::test_support::FreshDatabase,
     }
 
     impl TestDatabase {
-        /// Creates a new test database with testcontainers.
+        /// Creates a fresh database on the shared test server.
         async fn new() -> Result<Self> {
             let (database, connection_string) = crate::test_support::fresh_database().await;
 
