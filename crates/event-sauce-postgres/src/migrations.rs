@@ -352,11 +352,11 @@ mod tests {
             let short_id = &uuid::Uuid::new_v4().simple().to_string()[..16];
             let name = format!("event_sauce_pgbouncer_test_pg_{short_id}_{attempt}");
             *pg_name.borrow_mut() = name.clone();
-            testcontainers_modules::postgres::Postgres::default()
-                .with_host_auth()
-                .with_tag("16-alpine")
-                .with_container_name(name)
-                .with_network(&network)
+            crate::test_support::test_postgres(
+                testcontainers_modules::postgres::Postgres::default().with_host_auth(),
+            )
+            .with_container_name(name)
+            .with_network(&network)
         })
         .await
         .expect("start postgres");

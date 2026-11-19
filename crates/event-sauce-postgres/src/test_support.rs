@@ -3,12 +3,33 @@
 use std::time::Duration;
 
 use testcontainers::{
-    runners::AsyncRunner, ContainerRequest, Image, ImageExt, TestcontainersError,
+    core::Mount, runners::AsyncRunner, ContainerRequest, Image, ImageExt, TestcontainersError,
 };
 use testcontainers_modules::{postgres::Postgres, testcontainers::ContainerAsync};
 
 const START_ATTEMPTS: u32 = 5;
 const START_RETRY_DELAY: Duration = Duration::from_millis(250);
+const DATA_DIRECTORY: &str = "/var/lib/postgresql/data";
+const SERVER_FLAGS: [&str; 6] = [
+    "-c",
+    "fsync=off",
+    "-c",
+    "synchronous_commit=off",
+    "-c",
+    "full_page_writes=off",
+];
+
+/// Builds the container request every test server starts from.
+///
+/// The data directory lives on a tmpfs and durability is switched off: a test
+/// server never outlives its run, so crash safety buys nothing and disk
+/// writes only slow the suite down.
+pub(crate) fn test_postgres(image: Postgres) -> ContainerRequest<Postgres> {
+    image
+        .with_tag("16-alpine")
+        .with_mount(Mount::tmpfs_mount(DATA_DIRECTORY))
+        .with_cmd(SERVER_FLAGS)
+}
 
 /// Starts a container built by `build`, retrying transient startup failures.
 ///
@@ -39,7 +60,7 @@ pub(crate) async fn start_with_retry<I: Image>(
 
 /// Starts a throwaway `PostgreSQL` container, retrying transient startup failures.
 pub(crate) async fn start_postgres() -> Result<ContainerAsync<Postgres>, TestcontainersError> {
-    start_with_retry(|_attempt| Postgres::default().with_tag("16-alpine")).await
+    start_with_retry(|_attempt| test_postgres(Postgres::default())).await
 }
 
 /// Starts a throwaway `PostgreSQL` container and returns it alongside a
