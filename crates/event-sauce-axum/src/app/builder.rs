@@ -220,7 +220,6 @@ where
         App {
             store: Store::from(store),
             backend,
-            pending: logins.pending(login_store.clone()),
             logins,
             first_factor: Arc::new(FirstFactor::new(self.method, self.route)),
             login_store,

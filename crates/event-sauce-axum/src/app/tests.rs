@@ -1,4 +1,7 @@
-use std::sync::Arc;
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 use async_trait::async_trait;
 use axum::{body::Body, routing::get, Router};
@@ -30,6 +33,34 @@ impl LoginStore for NoLoginStore {
 
     async fn take(&self, _: &LoginKey) -> Result<Option<Vec<u8>>, LoginStoreError> {
         Ok(None)
+    }
+
+    async fn mark_once(&self, _: &LoginKey, _: LoginTtl) -> Result<bool, LoginStoreError> {
+        Ok(true)
+    }
+}
+
+#[derive(Default)]
+struct MemoryLoginStore(Mutex<HashMap<String, Vec<u8>>>);
+
+impl MemoryLoginStore {
+    fn len(&self) -> usize {
+        self.0.lock().unwrap().len()
+    }
+}
+
+#[async_trait]
+impl LoginStore for MemoryLoginStore {
+    async fn put(&self, key: &LoginKey, value: &[u8], _: LoginTtl) -> Result<(), LoginStoreError> {
+        self.0
+            .lock()
+            .unwrap()
+            .insert(format!("{key:?}"), value.to_vec());
+        Ok(())
+    }
+
+    async fn take(&self, key: &LoginKey) -> Result<Option<Vec<u8>>, LoginStoreError> {
+        Ok(self.0.lock().unwrap().remove(&format!("{key:?}")))
     }
 
     async fn mark_once(&self, _: &LoginKey, _: LoginTtl) -> Result<bool, LoginStoreError> {
@@ -149,6 +180,26 @@ async fn the_app_exposes_the_pieces_a_handler_needs() {
         .await
         .unwrap()
         .is_none());
+}
+
+#[tokio::test]
+async fn the_pending_logins_are_saved_in_the_apps_login_store() {
+    let login_store = Arc::new(MemoryLoginStore::default());
+    let app = builder().assemble(Arc::new(InMemoryEventStore::new()), login_store.clone());
+    let root = registered();
+    let id = root.entity_id();
+    let login = app.logins().sign_up(root).await.unwrap();
+
+    let pending_id = app.pending().save(login).await.unwrap();
+
+    assert_eq!(login_store.len(), 1);
+    let resumed = app
+        .pending()
+        .resume::<event_sauce_auth::Done>(pending_id)
+        .await
+        .unwrap();
+    assert_eq!(resumed.user().entity_id(), id);
+    assert_eq!(login_store.len(), 0);
 }
 
 struct StraightThrough;

@@ -29,7 +29,6 @@ pub struct App<U: UserAggregate, F, S> {
     store: Store<S>,
     backend: EventSauceBackend<U, S>,
     logins: Logins<U>,
-    pending: PendingLogins<U>,
     first_factor: Arc<F>,
     login_store: Arc<dyn LoginStore>,
     correlation: CorrelationLayer,
@@ -68,7 +67,7 @@ impl<U: UserAggregate, F, S> App<U, F, S> {
     /// [`login_store`](Self::login_store).
     #[must_use]
     pub fn pending(&self) -> PendingLogins<U> {
-        self.pending.clone()
+        self.logins.pending(self.login_store())
     }
 
     /// The first factor, to pass to [`Logins::begin`] with the client's
