@@ -14,9 +14,10 @@
 //! - With the `login` feature, `AuthSession` opens an `axum-login` session
 //!   from a finished login and from nothing else: the backend underneath is
 //!   crate-private, so an application can neither name it nor obtain one.
-//!   `AuthLayer` installs it, `PendingLogin` carries a login that waits for
-//!   its next step, and `CurrentUser`, `MaybeUser` and `Registered` hand the
-//!   logged-in user to handlers. `LoginError` answers every refusal of a
+//!   `AuthLayer` installs it, `AuthSession::finish` ends a login and
+//!   `PendingLogin::hold` parks one that waits for its next step, both
+//!   answering a `LoginStep`, and `CurrentUser`, `MaybeUser` and `Registered`
+//!   hand the logged-in user to handlers. `LoginError` answers every refusal of a
 //!   login with the same `401` and every outage with a `500`.
 //! - With the `app` feature, `EventSauceApp::postgres` builds the whole
 //!   stack, stores, cache, first factor and layers, on one pool.
@@ -44,8 +45,8 @@ pub use correlation::{Correlation, CorrelationLayer, ResponseFuture, DEFAULT_HEA
 pub use http::HeaderName;
 #[cfg(feature = "login")]
 pub use login::{
-    AuthLayer, AuthRejection, AuthSession, CurrentUser, LoginError, MaybeUser, PendingLogin,
-    Registered, SessionError,
+    AuthLayer, AuthRejection, AuthSession, CurrentUser, LoginError, LoginStep, MaybeUser,
+    PendingLogin, Registered, SessionError,
 };
 pub use repo::Repo;
 pub use request_id::RequestId;

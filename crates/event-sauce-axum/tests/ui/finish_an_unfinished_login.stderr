@@ -1,0 +1,49 @@
+error[E0277]: the trait bound `S: event_sauce_auth::Complete` is not satisfied
+ --> tests/ui/finish_an_unfinished_login.rs:5:28
+  |
+5 |     let _ = session.finish(login).await;
+  |                     ------ ^^^^^ the trait `event_sauce_auth::Complete` is not implemented for `S`
+  |                     |
+  |                     required by a bound introduced by this call
+  |
+note: required by a bound in `AuthSession::<U>::finish`
+ --> src/login/auth_session.rs
+  |
+  |     pub async fn finish<S: Complete>(
+  |                            ^^^^^^^^ required by this bound in `AuthSession::<U>::finish`
+help: consider further restricting type parameter `S` with trait `Complete`
+  |
+4 | async fn open<U: UserAggregate, S: LoginState + event_sauce_auth::Complete>(mut session: AuthSession<U>, login: Login<U, S>) {
+  |                                               ++++++++++++++++++++++++++++
+
+error[E0277]: the trait bound `S: event_sauce_auth::Complete` is not satisfied
+ --> tests/ui/finish_an_unfinished_login.rs:5:13
+  |
+5 |     let _ = session.finish(login).await;
+  |             ^^^^^^^^^^^^^^^^^^^^^ the trait `event_sauce_auth::Complete` is not implemented for `S`
+  |
+note: required by a bound in `AuthSession::<U>::finish`
+ --> src/login/auth_session.rs
+  |
+  |     pub async fn finish<S: Complete>(
+  |                            ^^^^^^^^ required by this bound in `AuthSession::<U>::finish`
+help: consider further restricting type parameter `S` with trait `Complete`
+  |
+4 | async fn open<U: UserAggregate, S: LoginState + event_sauce_auth::Complete>(mut session: AuthSession<U>, login: Login<U, S>) {
+  |                                               ++++++++++++++++++++++++++++
+
+error[E0277]: the trait bound `S: event_sauce_auth::Complete` is not satisfied
+ --> tests/ui/finish_an_unfinished_login.rs:5:35
+  |
+5 |     let _ = session.finish(login).await;
+  |                                   ^^^^^ the trait `event_sauce_auth::Complete` is not implemented for `S`
+  |
+note: required by a bound in `AuthSession::<U>::finish`
+ --> src/login/auth_session.rs
+  |
+  |     pub async fn finish<S: Complete>(
+  |                            ^^^^^^^^ required by this bound in `AuthSession::<U>::finish`
+help: consider further restricting type parameter `S` with trait `Complete`
+  |
+4 | async fn open<U: UserAggregate, S: LoginState + event_sauce_auth::Complete>(mut session: AuthSession<U>, login: Login<U, S>) {
+  |                                               ++++++++++++++++++++++++++++

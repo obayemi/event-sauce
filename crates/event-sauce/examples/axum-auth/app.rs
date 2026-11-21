@@ -15,7 +15,8 @@ use event_sauce::auth::{
     PasswordAttempt, PasswordHash, PasswordHasher, PasswordLogin,
 };
 use event_sauce::axum::{
-    AuthLayer, AuthSession, CorrelationLayer, CurrentUser, LoginError, SessionError, StoreError,
+    AuthLayer, AuthSession, CorrelationLayer, CurrentUser, LoginError, LoginStep, SessionError,
+    StoreError,
 };
 use event_sauce::memory::InMemoryEventStore;
 use event_sauce::prelude::*;
@@ -75,17 +76,11 @@ async fn login(
     mut auth: AuthSession<Member>,
     State(state): State<AppState>,
     Json(form): Json<LoginForm>,
-) -> Result<StatusCode, LoginError> {
+) -> Result<LoginStep, LoginError> {
     let email = Email::parse(&form.email).map_err(|_| LoginError::refused())?;
     let attempt = PasswordAttempt::new(email, SecretString::from(form.password));
-    let authenticated = state
-        .logins
-        .begin(&state.first, attempt)
-        .await?
-        .finish()
-        .await?;
-    auth.login(authenticated).await?;
-    Ok(StatusCode::NO_CONTENT)
+    let login = state.logins.begin(&state.first, attempt).await?;
+    auth.finish(login).await
 }
 
 async fn logout(mut auth: AuthSession<Member>) -> Result<StatusCode, SessionError> {

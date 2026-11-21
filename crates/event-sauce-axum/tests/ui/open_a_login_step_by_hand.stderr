@@ -1,0 +1,10 @@
+error[E0624]: associated function `opened` is private
+ --> tests/ui/open_a_login_step_by_hand.rs:4:24
+  |
+4 |     let _ = LoginStep::opened();
+  |                        ^^^^^^ private associated function
+  |
+ ::: src/login/login_step.rs
+  |
+  |     pub(crate) fn opened() -> Self {
+  |     ------------------------------ private associated function defined here

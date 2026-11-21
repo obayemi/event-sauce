@@ -1,12 +1,13 @@
 # Proposal: pluggable auth and axum integration
 
-Status: steps 1 to 19 of the build order (section 8) are **implemented**
+Status: steps 1 to 20 of the build order (section 8) are **implemented**
 on `feat/auth`. Steps 15 to 17 replaced the `ClaimAuthenticator`, `TwoFactor`
 and second-factor builder stage that the earlier steps shipped with the
 typestate logins of sections 3.4, 3.6, 4.2 and 4.4. Step 18 sealed the
 session behind `AuthSession<U>`. Step 19 added the error responses of
-helper 1 (section 4.5). Steps 20 to 23, the other four HTTP helpers of
-section 4.5, are **proposed** and not built yet. Where the code
+helper 1 and step 20 the login-step glue of helper 2 (section 4.5). Steps 21
+to 23, the other three HTTP helpers of section 4.5, are **proposed** and not
+built yet. Where the code
 below describe the code. Supersedes the
 "extract `event-sauce-auth` from saxy-p" plan in saxy-p's `PLAN.md`.
 
@@ -771,20 +772,21 @@ either saves the next state or finishes:
 ```rust
 // POST /login
 match logins.begin(&password, attempt).await? {
-    AfterPassword::Done(login) => open_session(login.finish().await?),
-    AfterPassword::Second(login) => wait_for::<NeedSecond>(pending.save(login).await?),
+    AfterPassword::Done(login) => auth.finish(login).await,
+    AfterPassword::Second(login) => PendingLogin::hold(&pending, login).await,
 }
 // POST /login/second
 let login = pending.resume::<NeedSecond>(id).await?;
-wait_for::<NeedEmailCode>(pending.save(login.prove(&second, proof).await?).await?)
+PendingLogin::hold(&pending, login.prove(&second, proof).await?).await
 // POST /login/email
 let login = pending.resume::<NeedEmailCode>(id).await?;
-open_session(login.prove(&(), code).await?.finish().await?)
+auth.finish(login.prove(&(), code).await?).await
 ```
 
-`wait_for::<S>(id)` answers with the pending-login cookie for `S::TTL`
-(section 4.2). `open_session` takes an `Authenticated<Profile>`, so
-calling it with anything but a finished login does not compile. A branch
+`PendingLogin::hold` answers with the pending-login cookie for the login's
+`S::TTL` (section 4.2). `AuthSession::finish` takes a `Login<Profile, S>`
+whose state is `Complete`, so calling it with a login that waits for a step
+does not compile. A branch
 the client chooses (TOTP or recovery code) is one state whose `Proof` is
 an enum, so each endpoint resumes exactly one state.
 
@@ -1154,25 +1156,19 @@ pub enum SessionError {
 the public API, and `BackendError` with them, and so do `EventSauceBackend::new`, `with_cache`,
 `with_shared_cache` and `renew` and `App::backend`.
 
-A login handler opens the session from the end of the process, and saves
-the login when the process needs another request:
+A login handler finishes the login and opens the session at the end of the
+process, and holds the login when the process needs another request
+(helper 2, section 4.5):
 
 ```rust
 async fn login(
     mut auth: AuthSession<Profile>,
     State(app): State<AppState>,
     Json(attempt): Json<PasswordAttempt<Email>>,
-) -> Result<Response, LoginFailed> {
+) -> Result<LoginStep, LoginError> {
     match app.logins.begin(&app.password, attempt).await? {
-        TotpOrDone::Done(login) => {
-            auth.login(login.finish().await?).await?;
-            Ok(StatusCode::NO_CONTENT.into_response())
-        }
-        TotpOrDone::Totp(login) => {
-            let id = app.pending.save(login).await?;
-            Ok(([(SET_COOKIE, PendingLogin::set_cookie::<NeedTotp>(id))], StatusCode::ACCEPTED)
-                .into_response())
-        }
+        TotpOrDone::Done(login) => auth.finish(login).await,
+        TotpOrDone::Totp(login) => PendingLogin::hold(&app.pending, login).await,
     }
 }
 
@@ -1181,10 +1177,9 @@ async fn totp(
     State(app): State<AppState>,
     pending: PendingLogin,
     Json(code): Json<TotpCode>,
-) -> Result<Response, LoginFailed> {
+) -> Result<LoginStep, LoginError> {
     let login = app.pending.resume::<NeedTotp>(pending.id()).await?;
-    auth.login(login.prove(&app.totp, code.0).await?.finish().await?).await?;
-    Ok(([(SET_COOKIE, PendingLogin::clear_cookie())], StatusCode::NO_CONTENT).into_response())
+    auth.finish(login.prove(&app.totp, code.0).await?).await
 }
 
 async fn change_password(
@@ -1201,10 +1196,10 @@ async fn change_password(
 
 `PendingLogin` carries the `PendingLoginId` between requests, in a
 short-lived `HttpOnly`, `Secure`, `SameSite=Lax` cookie:
-- `PendingLogin::set_cookie::<S: LoginState>(id)` is the `Set-Cookie` value
-  the handler answers with after `save`. It lives `S::TTL`, as long as the
-  saved login. `PendingLogin::clear_cookie()` removes it once the login is
-  done. `PendingLogin::DEFAULT_TTL` is gone with `DEFAULT_PENDING_TTL`.
+- `PendingLogin::hold(&pending, login)` saves the login and answers with the
+  `Set-Cookie` of its id, which lives `S::TTL`, as long as the saved login.
+  `PendingLogin::clear_cookie()` removes it when a login is abandoned, and
+  `AuthSession::finish` clears it when the login ends. `PendingLogin::DEFAULT_TTL` is gone with `DEFAULT_PENDING_TTL`.
 - As an extractor, `PendingLogin` rejects with `401` when the cookie is
   missing or malformed. `pending.id()` goes to `resume`.
 - The cookie holds the id only. Which state the login is in, for which
@@ -1372,9 +1367,9 @@ backend is crate-private, so `App` exposes neither it nor its type, and
 its `Debug` prints only the correlation layer. `App` is not `Clone` and has
 no public field, so nothing else of it reaches the backend.
 
-### 4.5 HTTP helpers (helper 1 implemented, steps 20 to 23 proposed)
+### 4.5 HTTP helpers (helpers 1 and 2 implemented, steps 21 to 23 proposed)
 
-Status: helper 1 is **implemented** (step 19), helpers 2 to 5 are **proposed**, not built. The two examples and saxy-p repeat the same
+Status: helpers 1 and 2 are **implemented** (steps 19 and 20), helpers 3 to 5 are **proposed**, not built. The two examples and saxy-p repeat the same
 HTTP glue around the crate: mapping store and login errors to statuses,
 answering a login step, loading the aggregate a path names and checking who
 may see it, redirecting a browser to the login page, and building a command
@@ -1559,7 +1554,7 @@ As built, step 19 differs from the text above in four places:
   `EventStore` whose every operation fails, shared by `tests/login.rs` and
   `tests/extractors.rs`.
 
-#### Helper 2: login-step glue
+#### Helper 2: login-step glue (implemented)
 
 ```rust
 impl<U: UserAggregate> AuthSession<U> {
@@ -1668,6 +1663,20 @@ Tests:
   Complete`); `build_a_login_step.rs`, a `LoginStep { .. }` literal, is E0451;
   `set_the_pending_cookie_by_hand.rs`, `PendingLogin::set_cookie::<Done>`,
   is E0624.
+
+As built, step 20 differs from the text above in three places:
+- `LoginStep` is a tuple struct over a private enum, so the `LoginStep { .. }`
+  literal of the trybuild case is `LoginStep(..)`, refused with E0423 rather
+  than E0451, and a second case, `open_a_login_step_by_hand.rs`, pins that
+  its crate-private constructor `opened` is E0624 from outside. The
+  constructor of a waiting step is `LoginStep::waiting::<S>(id)`, since
+  `pending()` is the accessor.
+- `PendingLogin::set_cookie` is `pub(super)`, visible to the `login` module
+  and to nobody else, rather than private to `pending.rs`, because
+  `LoginStep::waiting` builds the cookie from the state.
+- `IntoResponseParts` of an opened step adds the clearing cookie, so a
+  `(step, Redirect::to(..))` ends the pending login as well.
+
 
 #### Helper 3: `Found<A, S>` and `Authorized<A, P, S>`
 
@@ -1984,7 +1993,7 @@ Tests:
 | `event-sauce-macros` | `user` flag, `#[user(identity)]`/`#[user(active)]` field attributes, `Credentials::claims()` merged into `claims()` |
 | `event-sauce` facade | features `auth` (plus `auth-postgres`, `auth-moka`, `auth-redis`, `auth-reset`, `auth-totp`) and `axum` (plus `axum-login`, `axum-app`), all in `full`, re-exported as `event_sauce::auth` and `event_sauce::axum` |
 | `.github/workflows/ci.yml` | new `feature-matrix-auth-axum` job that lints each feature of `event-sauce-auth`, `event-sauce-axum` and the facade alone |
-| `event-sauce-axum` (step 19 implemented, steps 20 to 23 proposed) | the helpers of section 4.5; the `login` feature also turns on `axum/original-uri` and adds `percent-encoding`, already in the tree through `axum` |
+| `event-sauce-axum` (steps 19 and 20 implemented, steps 21 to 23 proposed) | the helpers of section 4.5; the `login` feature also turns on `axum/original-uri` and adds `percent-encoding`, already in the tree through `axum` |
 
 ## 6. Migrating saxy-p
 
@@ -2222,7 +2231,7 @@ it in the type system (section 4.2) and deletes what it supersedes:
     `axum-login` session record, `renew` during a concurrent credential
     change, and an application's own `AuthnBackend`.
 
-Helper 1 of section 4.5 (step 19) is built, the other four are proposed.
+Helpers 1 and 2 of section 4.5 (steps 19 and 20) are built, the other three are proposed.
 Each step is its
 own commit in `event-sauce-axum`, test first (the unit, HTTP and trybuild
 cases its helper lists, seen failing for the right reason before the code),
@@ -2245,7 +2254,7 @@ with `CurrentUser`.
     status `match`es of `examples/axum-auth/app.rs`, the `Err(_) => 401`
     arms of `tests/user_fixture/mod.rs` and the `map_err(|_| NOT_FOUND)` of
     `tests/extractors.rs`, and adds the failing-store login test.
-20. Login-step glue: `AuthSession::finish`, `PendingLogin::hold`,
+20. Implemented. Login-step glue: `AuthSession::finish`, `PendingLogin::hold`,
     `LoginStep`; `PendingLogin::set_cookie` becomes private. Rewrites both
     examples' `login` and `logout`, the fixture's `open_session`, `hold`
     and `refused`, the `PendingLogin` rustdoc example (`::<Done>`), the

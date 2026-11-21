@@ -284,7 +284,7 @@ explicitly rather than gated behind a major version bump.
   `Arc<dyn UserCache<U>>` with `Logins`). `lib.rs` denies `unnameable_types`.
   `PendingLogin`, the short-lived cookie that carries a login between two
   requests, lives as long as the state it waits in
-  (`PendingLogin::set_cookie::<S>(id)` uses `S::TTL`). The `CurrentUser<U>`, `MaybeUser<U>`
+  (`PendingLogin::hold` uses `S::TTL`). The `CurrentUser<U>`, `MaybeUser<U>`
   and `Registered<U>` extractors, generic over the user aggregate, read the
   user `axum-login` already resolved and reject with `401` or `403`.
 
@@ -321,6 +321,18 @@ explicitly rather than gated behind a major version bump.
   the integration tests use them instead of their own status tables, which
   answered `401` when a store was down. `thiserror` is no longer optional in
   the crate.
+
+- Login-step glue in `event-sauce-axum`. `AuthSession::finish(login)` ends a
+  `Login<U, S>` in a `Complete` state and opens its session in one call, and
+  `PendingLogin::hold(&pending, login)` saves a login that waits for another
+  request, inferring the state so the cookie `Max-Age` is `S::TTL` with no
+  type argument. Both answer a `LoginStep`: `204` with the pending cookie
+  cleared when the session opened, `202` with the cookie when the login waits;
+  a refusal is the `Err(LoginError)` of the handler. A `LoginStep` has private
+  fields and no public constructor, so an opened step comes only from
+  `finish`, and it adds its `Set-Cookie` alone when put in a response tuple.
+  `PendingLogin::set_cookie` is no longer public: `hold` replaces it. The
+  examples and the login tests lose their `open_session` and `hold` helpers.
 
 - Facade features `auth`, `auth-postgres`, `auth-moka`, `auth-redis`,
   `auth-reset` and `auth-totp` re-export `event-sauce-auth` as

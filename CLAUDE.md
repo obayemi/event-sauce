@@ -375,7 +375,9 @@ operation over several aggregates is a `UnitOfWorkCommand` (see
   `#[aggregate(..., snapshots(every = N))]` (also `always`, `never`,
   `with = "path"`); a store `per_type_override` still wins over it
 - HTTP apps use `event-sauce-axum`: `EventSauceApp` for the Postgres
-  defaults, `AuthLayer` and the `AuthSession` extractor for login sessions, the
+  defaults, `AuthLayer` and the `AuthSession` extractor for login sessions
+  (`AuthSession::finish` and `PendingLogin::hold`, answering a `LoginStep`,
+  end and continue a login), the
   `Store`/`Repo`/`UnitOfWork` and `CurrentUser`/`MaybeUser`/`Registered`
   extractors, `StoreError` and `LoginError` for the error responses, and
   `CorrelationLayer`
@@ -388,6 +390,11 @@ operation over several aggregates is a `UnitOfWorkCommand` (see
   to keep the domain error) and `LoginError` for a login step, so a store
   outage is never answered as a bad login and no refusal tells an unknown
   user from a wrong password
+- A login handler returns `Result<LoginStep, LoginError>`: `AuthSession::finish`
+  for a `Complete` state and `PendingLogin::hold` for a state that waits, never
+  a hand-built `204`/`202` or a `Set-Cookie` of the pending cookie. Resume a
+  pending login in the handler body, after every extractor, never in an
+  extractor: a malformed body would burn the single-use login
 - New examples declare every facade feature they need in `required-features`,
   so they build with `--no-default-features`
 

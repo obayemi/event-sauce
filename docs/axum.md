@@ -58,7 +58,7 @@ facade features nest:
 | Feature | Adds |
 |---|---|
 | `axum` | the correlation layer, the `Store`, `Repo` and `UnitOfWork` extractors and `StoreError` |
-| `axum-login` | `AuthLayer`, `AuthSession`, `PendingLogin`, `LoginError` and the user extractors; implies `auth` |
+| `axum-login` | `AuthLayer`, `AuthSession`, `PendingLogin`, `LoginStep`, `LoginError` and the user extractors; implies `auth` |
 | `axum-app` | `EventSauceApp::postgres`; implies `axum-login` and `postgres` |
 
 Your application depends on `axum`, `axum-login` and `tower-sessions`
@@ -200,6 +200,7 @@ session as `AuthSession<U>`:
 | Method | Does |
 |---|---|
 | `user()` | the logged-in `Arc<AggregateRoot<U>>`, if any |
+| `finish(login)` | finishes a `Login<U, S: Complete>` and opens its session, answering a `LoginStep` |
 | `login(authenticated)` | opens a session from an `Authenticated<U>`, which it consumes |
 | `renew()` | reloads the user of this session after the request changed its own credentials |
 | `logout()` | ends the session and answers the user it held |
@@ -235,8 +236,10 @@ for a user who never finished a login. So the crate seals it:
   the backend, so no value or bound of an application can infer it;
 - `AuthSession<U>` keeps the inner session private, with no `Deref`,
   `AsRef`, `From` or `Clone`, and the `App` has no `backend()`;
-- `AuthSession::login` takes an `Authenticated<U>`, which only the end of a
-  typestate login yields. `renew` re-keys only the session the request
+- `AuthSession::login` and `AuthSession::finish` open a session from an
+  `Authenticated<U>` and from a `Login` in a `Complete` state, which only the
+  end of a typestate login yields. `LoginStep` has no public constructor, so
+  an opened step exists only once a session opened. `renew` re-keys only the session the request
   already holds, for the same user, and never changes the user.
 
 The compiler checks each of those: the `tests/ui` cases of the crate fail to
@@ -263,20 +266,20 @@ You choose the session store and the session layer. The crate does not.
 
 ### Logging In and Out
 
-A login handler begins the login, and opens the session once the process
-ended. A flow with no step after the password finishes in the same request:
+A login handler begins the login, and `AuthSession::finish` ends it and opens
+the session. A flow with no step after the password finishes in the same
+request:
 
 ```rust
 async fn login(
     mut auth: AuthSession<Member>,
     State(app): State<AppState>,
     Json(form): Json<LoginForm>,
-) -> Result<StatusCode, LoginError> {
+) -> Result<LoginStep, LoginError> {
     let email = Email::parse(&form.email).map_err(|_| LoginError::refused())?;
     let attempt = PasswordAttempt::new(email, form.password.into());
-    let authenticated = app.logins.begin(&app.first, attempt).await?.finish().await?;
-    auth.login(authenticated).await?;
-    Ok(StatusCode::NO_CONTENT)
+    let login = app.logins.begin(&app.first, attempt).await?;
+    auth.finish(login).await
 }
 
 async fn logout(mut auth: AuthSession<Member>) -> Result<StatusCode, SessionError> {
@@ -284,6 +287,15 @@ async fn logout(mut auth: AuthSession<Member>) -> Result<StatusCode, SessionErro
     Ok(StatusCode::NO_CONTENT)
 }
 ```
+
+`finish` runs `Login::finish`, which rereads the user and checks it is still
+active with the same credentials, then opens the session. It takes only a
+`Login<U, S>` whose state is `Complete`, so a login that waits for a step
+cannot open one. Its answer, a `LoginStep`, is `204` with the pending login
+cookie cleared. A refusal is the `Err` of the handler, a `LoginError`, so `?`
+works on every call of the flow. `logout` returns the `SessionError` instead
+of unwrapping it: a failing session store answers `500` and never panics the
+handler.
 
 A flow that signs a user up and logs them in at once uses
 `Logins::sign_up(root)`, whose `Login<U, Done>` finishes the same way.
@@ -336,27 +348,21 @@ A missing `AuthLayer` is a wiring error, answered with `500`.
 
 ### Logins With Several Steps
 
-When the process needs another request, a handler saves the login in the
+When the process needs another request, a handler returns
+`PendingLogin::hold(&app.pending, login)`, which saves the login in the
 `PendingLogins` and answers with a cookie holding the id. The next request
-resumes it, proves the next step and either saves it again or finishes. Here
-is the password-then-TOTP flow, with `TotpIfEnrolled` as the route:
+resumes it, proves the next step and either holds the next login or finishes.
+Here is the password-then-TOTP flow, with `TotpIfEnrolled` as the route:
 
 ```rust
 async fn login(
     mut auth: AuthSession<Member>,
     State(app): State<AppState>,
     Json(attempt): Json<PasswordAttempt<Email>>,
-) -> Result<Response, LoginError> {
+) -> Result<LoginStep, LoginError> {
     match app.logins.begin(&app.first, attempt).await? {
-        TotpOrDone::Done(login) => {
-            auth.login(login.finish().await?).await?;
-            Ok(StatusCode::NO_CONTENT.into_response())
-        }
-        TotpOrDone::Totp(login) => {
-            let id = app.pending.save(login).await?;
-            Ok(([(SET_COOKIE, PendingLogin::set_cookie::<NeedTotp>(id))], StatusCode::ACCEPTED)
-                .into_response())
-        }
+        TotpOrDone::Done(login) => auth.finish(login).await,
+        TotpOrDone::Totp(login) => PendingLogin::hold(&app.pending, login).await,
     }
 }
 
@@ -365,21 +371,29 @@ async fn totp(
     State(app): State<AppState>,
     pending: PendingLogin,
     Json(code): Json<TotpCode>,
-) -> Result<Response, LoginError> {
+) -> Result<LoginStep, LoginError> {
     let login = app.pending.resume::<NeedTotp>(pending.id()).await?;
-    let user = login.prove(&app.totp, code.0).await?.finish().await?;
-    auth.login(user).await?;
-    Ok(([(SET_COOKIE, PendingLogin::clear_cookie())], StatusCode::NO_CONTENT).into_response())
+    auth.finish(login.prove(&app.totp, code.0).await?).await
 }
 ```
 
 A flow with more steps repeats the pattern: `resume::<Step>`, `prove`, then
-`save` the next login, with `PendingLogin::set_cookie::<Next>(id)` replacing
-the cookie, until `finish`.
+`PendingLogin::hold` the next login, whose cookie replaces the previous one,
+until `AuthSession::finish`.
 
-- `PendingLogin::set_cookie::<S>(id)` lives as long as the saved login, which
-  is `S::TTL`. The cookie is `HttpOnly`, `Secure`, `SameSite=Lax` and
-  `Path=/`. `PendingLogin::clear_cookie()` removes it.
+- `LoginStep` is what both return: `204` with the pending cookie cleared when
+  the session opened, `202` with the cookie when the login waits. Put it in a
+  tuple with another response, `(step, Redirect::to("/"))`, to add its
+  `Set-Cookie` to it.
+- `hold` infers the state from the login, so the cookie lives as long as the
+  saved login, which is `S::TTL`, with no type argument to get wrong. The
+  cookie is `HttpOnly`, `Secure`, `SameSite=Lax` and `Path=/`.
+  `PendingLogin::clear_cookie()` removes it, for a route that abandons the
+  login.
+- Resume in the handler body, never in an extractor: extractors run before
+  `Json` parses the body, so a resume there would take the single-use login
+  and a malformed body would burn it. A request whose body does not parse
+  answers `422` and the same cookie still finishes the login.
 - As an extractor, `PendingLogin` rejects with `401` when the cookie is
   missing or malformed.
 - The cookie holds the id only. The state the login is in and the user it
@@ -496,7 +510,7 @@ Postgres container, so they need Docker.
 | `event-sauce-axum` feature | Facade feature | Adds |
 |---|---|---|
 | `tracing` (default) | `axum` | the `request` tracing span |
-| `login` (default) | `axum-login` | `AuthLayer`, `AuthSession`, `PendingLogin`, `LoginError`, user extractors |
+| `login` (default) | `axum-login` | `AuthLayer`, `AuthSession`, `PendingLogin`, `LoginStep`, `LoginError`, user extractors |
 | `app` (default) | `axum-app` | `EventSauceApp` and the Postgres defaults |
 
 Through the facade, `tracing` comes with `axum`. `app` implies `login`, the

@@ -790,3 +790,55 @@ async fn an_unknown_email_and_a_wrong_password_answer_the_same_response() {
     assert_eq!(unknown.body, wrong.body);
     assert_eq!(unknown.headers, wrong.headers);
 }
+
+fn pending_cookie_of(reply: &support::Reply) -> String {
+    reply
+        .headers
+        .get_all(SET_COOKIE)
+        .iter()
+        .map(|value| value.to_str().unwrap())
+        .find(|cookie| cookie.starts_with(PendingLogin::COOKIE))
+        .unwrap()
+        .to_owned()
+}
+
+#[tokio::test]
+async fn each_pending_cookie_lives_as_long_as_the_state_its_login_waits_in() {
+    let mut world = World::new();
+    world.register(Some(CODE)).await;
+
+    let password = world.client.log_in(ADA, PASSWORD).await;
+    let code = world.client.send_code(CODE).await;
+
+    assert!(pending_cookie_of(&password).contains("Max-Age=300"));
+    assert!(pending_cookie_of(&code).contains("Max-Age=3600"));
+}
+
+#[tokio::test]
+async fn a_malformed_body_does_not_burn_the_pending_login() {
+    let mut world = World::new();
+    world.pending_cookie_after_the_password().await;
+
+    let malformed = world
+        .client
+        .post("/login/code", Some(serde_json::json!({ "wrong": 1 })))
+        .await;
+    let code = world.client.send_code(CODE).await;
+    let mail = world.client.send_mail(MAIL_CODE).await;
+
+    assert_eq!(malformed.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(code.status, StatusCode::ACCEPTED);
+    assert_eq!(mail.status, StatusCode::NO_CONTENT);
+    assert_eq!(world.status("/me").await, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn a_refused_step_clears_the_pending_cookie() {
+    let mut world = World::new();
+    world.pending_cookie_after_the_password().await;
+
+    let wrong = world.client.send_code("000000").await;
+
+    assert_eq!(wrong.status, StatusCode::UNAUTHORIZED);
+    assert!(pending_cookie_of(&wrong).contains("Max-Age=0"));
+}

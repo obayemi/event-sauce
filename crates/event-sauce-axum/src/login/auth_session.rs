@@ -6,13 +6,14 @@ use std::sync::Arc;
 
 use axum::extract::FromRequestParts;
 use axum_login::{tower_sessions::session, AuthUser, AuthnBackend};
-use event_sauce_auth::{Authenticated, UserAggregate};
+use event_sauce_auth::{Authenticated, Complete, Login, UserAggregate};
 use event_sauce_core::AggregateRoot;
 use http::request::Parts;
 
 use crate::login::backend::Backend;
 use crate::login::rejection::AuthRejection;
 use crate::login::SessionUser;
+use crate::login::{LoginError, LoginStep};
 
 /// Why a session could not be opened, renewed or ended.
 #[derive(Debug, thiserror::Error)]
@@ -110,6 +111,28 @@ impl<U: UserAggregate> AuthSession<U> {
         };
         self.inner.login(&renewed).await.map_err(session_error)?;
         Ok(Some(Arc::clone(renewed.user())))
+    }
+
+    /// Finishes `login` and opens the session for its user.
+    ///
+    /// It runs [`Login::finish`], which rereads the user and checks it is
+    /// still active with the same credentials, then [`login`](Self::login).
+    /// Only a login in a [`Complete`] state finishes, so a login that waits
+    /// for a step cannot open a session. The answer is a [`LoginStep`], opened,
+    /// that clears the pending login cookie.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LoginError`]: a refusal when the user is gone, inactive or
+    /// changed its credentials since the login began, an outage when a store
+    /// fails.
+    pub async fn finish<S: Complete>(
+        &mut self,
+        login: Login<U, S>,
+    ) -> Result<LoginStep, LoginError> {
+        let authenticated = login.finish().await?;
+        self.login(authenticated).await?;
+        Ok(LoginStep::opened())
     }
 
     /// Ends the session and answers the user it held.

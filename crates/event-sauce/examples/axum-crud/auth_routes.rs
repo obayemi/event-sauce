@@ -6,7 +6,7 @@ use axum::{extract::State, http::StatusCode, Json};
 use event_sauce::auth::{
     Argon2Hasher, Email, LoginId, Logins, Password, PasswordAttempt, PasswordHash, PasswordHasher,
 };
-use event_sauce::axum::{AuthSession, CurrentUser, LoginError, Repo, SessionError};
+use event_sauce::axum::{AuthSession, CurrentUser, LoginError, LoginStep, Repo, SessionError};
 use event_sauce::postgres::PostgresEventStore;
 use event_sauce::prelude::*;
 use secrecy::SecretString;
@@ -58,12 +58,11 @@ pub async fn login(
     State(logins): State<Logins<Member>>,
     State(first): State<Arc<Factor>>,
     Json(form): Json<LoginForm>,
-) -> Result<StatusCode, LoginError> {
+) -> Result<LoginStep, LoginError> {
     let email = Email::parse(&form.email).map_err(|_| LoginError::refused())?;
     let attempt = PasswordAttempt::new(email, SecretString::from(form.password));
-    let authenticated = logins.begin(&first, attempt).await?.finish().await?;
-    auth.login(authenticated).await?;
-    Ok(StatusCode::NO_CONTENT)
+    let login = logins.begin(&first, attempt).await?;
+    auth.finish(login).await
 }
 
 pub async fn logout(mut auth: AuthSession<Member>) -> Result<StatusCode, SessionError> {

@@ -8,20 +8,14 @@ use std::sync::Arc;
 
 use argon2::Params;
 use async_trait::async_trait;
-use axum::{
-    extract::State,
-    http::{header::SET_COOKIE, StatusCode},
-    response::{IntoResponse, Response},
-    routing::post,
-    Json, Router,
-};
+use axum::{extract::State, routing::post, Json, Router};
 use event_sauce_auth::{
     Advance, Argon2Hasher, Credentials, Done, Email, Entered, Fingerprint, FirstFactor,
-    HasPassword, Identity, Login, LoginId, LoginState, Logins, Password, PasswordAttempt,
+    HasPassword, Identity, Login, LoginId, LoginState, LoginTtl, Logins, Password, PasswordAttempt,
     PasswordHash, PasswordHasher, PasswordLogin, PendingLogins, Rejected, Route, Step,
     UserAggregate,
 };
-use event_sauce_axum::{AuthSession, LoginError, PendingLogin};
+use event_sauce_axum::{AuthSession, LoginError, LoginStep, PendingLogin};
 use event_sauce_core::{
     aggregate_command, define_events, Aggregate, AggregateClaim, AggregateError, Entity, EntityId,
     EventStore, Repository,
@@ -75,6 +69,7 @@ pub struct NeedMail {
 
 impl LoginState for NeedMail {
     const TAG: &'static str = "fixture.mail";
+    const TTL: LoginTtl = LoginTtl::ONE_HOUR;
 }
 
 #[async_trait]
@@ -305,41 +300,16 @@ pub struct Flow {
     pub first: Arc<PasswordFactor>,
 }
 
-async fn open_session(
-    mut auth: AuthSession<User>,
-    login: Login<User, Done>,
-) -> Result<Response, LoginError> {
-    let authenticated = login.finish().await?;
-    auth.login(authenticated).await?;
-    Ok((
-        StatusCode::NO_CONTENT,
-        [(SET_COOKIE, PendingLogin::clear_cookie())],
-    )
-        .into_response())
-}
-
-async fn hold<S: LoginState>(
-    pending: &PendingLogins<User>,
-    login: Login<User, S>,
-) -> Result<Response, LoginError> {
-    let id = pending.save(login).await?;
-    Ok((
-        StatusCode::ACCEPTED,
-        [(SET_COOKIE, PendingLogin::set_cookie::<S>(id))],
-    )
-        .into_response())
-}
-
 pub async fn login(
-    auth: AuthSession<User>,
+    mut auth: AuthSession<User>,
     State(flow): State<Flow>,
     Json(form): Json<LoginForm>,
-) -> Result<Response, LoginError> {
+) -> Result<LoginStep, LoginError> {
     let email = Email::parse(&form.email).map_err(|_| LoginError::refused())?;
     let attempt = PasswordAttempt::new(email, SecretString::from(form.password));
     match flow.logins.begin(&flow.first, attempt).await? {
-        AfterPassword::Done(login) => open_session(auth, login).await,
-        AfterPassword::Code(login) => hold::<NeedCode>(&flow.pending, login).await,
+        AfterPassword::Done(login) => auth.finish(login).await,
+        AfterPassword::Code(login) => PendingLogin::hold(&flow.pending, login).await,
     }
 }
 
@@ -347,21 +317,21 @@ pub async fn code(
     State(flow): State<Flow>,
     pending: PendingLogin,
     Json(form): Json<CodeForm>,
-) -> Result<Response, LoginError> {
+) -> Result<LoginStep, LoginError> {
     let login = flow.pending.resume::<NeedCode>(pending.id()).await?;
     let next = login.prove(&(), form.code).await?;
-    hold::<NeedMail>(&flow.pending, next).await
+    PendingLogin::hold(&flow.pending, next).await
 }
 
 pub async fn mail(
-    auth: AuthSession<User>,
+    mut auth: AuthSession<User>,
     State(flow): State<Flow>,
     pending: PendingLogin,
     Json(form): Json<CodeForm>,
-) -> Result<Response, LoginError> {
+) -> Result<LoginStep, LoginError> {
     let login = flow.pending.resume::<NeedMail>(pending.id()).await?;
     let done = login.prove(&(), form.code).await?;
-    open_session(auth, done).await
+    auth.finish(done).await
 }
 
 pub fn login_routes() -> Router<Flow> {

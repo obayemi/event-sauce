@@ -483,7 +483,7 @@ use event_sauce::crypto::Aes256GcmProvider;
 - `postgres` - PostgreSQL backend (implies `event-sourcing` and `state-store`)
 - `crypto` - Encryption support (AES-256-GCM provider, key stores); implies `event-sourcing`; turns on encryption in whichever backends are enabled
 - `auth` - Credentials, login methods and typestate logins for user aggregates, as `event_sauce::auth` (with `auth-postgres`, `auth-moka`, `auth-redis`, `auth-reset` and `auth-totp` for its optional parts)
-- `axum` - Correlation layer, `Store`/`Repo`/`UnitOfWork` extractors and `StoreError`, as `event_sauce::axum`; `axum-login` adds `AuthLayer`, `AuthSession`, `PendingLogin`, `LoginError` and the user extractors (implies `auth`), `axum-app` adds the Postgres app builder (implies `postgres`)
+- `axum` - Correlation layer, `Store`/`Repo`/`UnitOfWork` extractors and `StoreError`, as `event_sauce::axum`; `axum-login` adds `AuthLayer`, `AuthSession`, `PendingLogin`, `LoginStep`, `LoginError` and the user extractors (implies `auth`), `axum-app` adds the Postgres app builder (implies `postgres`)
 - `full` - All features enabled
 
 The event-driven domain layer (aggregates, events, commands, the `Repository`
