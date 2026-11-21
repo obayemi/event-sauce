@@ -1,7 +1,7 @@
-//! `RedisUserCache` against a real Redis container and the in-memory event
-//! store, whose crypto key store decides what an encrypted user may be cached.
+//! `RedisUserCache` against a logical database of its own on a shared Redis
+//! container and the in-memory event store, whose crypto key store decides
+//! what an encrypted user may be cached.
 
-mod support;
 mod user_fixture;
 
 use std::sync::Arc;
@@ -11,26 +11,21 @@ use event_sauce_auth::{CacheError, LoginTtl, RedisUserCache, UserAggregate, User
 use event_sauce_core::{AggregateRoot, AggregateVersion, EntityId, EventStore, StoredVersion};
 use event_sauce_memory::InMemoryEventStore;
 use redis::aio::ConnectionManager;
-use testcontainers::ImageExt;
-use testcontainers_modules::{redis::Redis, testcontainers::ContainerAsync};
+use testcontainers_shared::redis::{fresh_redis, FreshRedis};
 use user_fixture::{join, load, rename, suspend, Member};
 
 struct World {
-    _container: ContainerAsync<Redis>,
+    _redis: FreshRedis,
     store: Arc<InMemoryEventStore>,
     connection: ConnectionManager,
 }
 
 impl World {
     async fn start() -> Self {
-        let container = support::start_with_retry(|| Redis::default().with_tag("7-alpine"))
-            .await
-            .expect("start redis");
-        let host = container.get_host().await.expect("host");
-        let port = container.get_host_port_ipv4(6379).await.expect("port");
-        let client = redis::Client::open(format!("redis://{host}:{port}")).expect("client");
+        let (redis, url) = fresh_redis();
+        let client = redis::Client::open(url).expect("client");
         Self {
-            _container: container,
+            _redis: redis,
             store: Arc::new(InMemoryEventStore::builder().build()),
             connection: ConnectionManager::new(client).await.expect("connect"),
         }

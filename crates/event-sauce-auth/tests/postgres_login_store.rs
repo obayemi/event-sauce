@@ -1,4 +1,5 @@
-//! `PostgresLoginStore` against a real `PostgreSQL` container.
+//! `PostgresLoginStore` against a database of its own on a shared
+//! `PostgreSQL` container.
 
 mod support;
 
@@ -7,30 +8,23 @@ use std::sync::Arc;
 
 use event_sauce_auth::{LoginKey, LoginStore, LoginTtl, PostgresLoginStore};
 use sqlx::{postgres::PgPoolOptions, PgPool};
-use testcontainers::ImageExt;
-use testcontainers_modules::{postgres::Postgres, testcontainers::ContainerAsync};
+use testcontainers_shared::postgres::{fresh_database, FreshDatabase};
 
-async fn start_database() -> (ContainerAsync<Postgres>, PgPool) {
-    let container = support::start_with_retry(|| Postgres::default().with_tag("16-alpine"))
-        .await
-        .expect("start postgres");
-    let host = container.get_host().await.expect("host");
-    let port = container.get_host_port_ipv4(5432).await.expect("port");
+async fn start_database() -> (FreshDatabase, PgPool) {
+    let (database, url) = fresh_database().await;
     let pool = PgPoolOptions::new()
         .max_connections(20)
-        .connect(&format!(
-            "postgresql://postgres:postgres@{host}:{port}/postgres"
-        ))
+        .connect(&url)
         .await
         .expect("connect");
-    (container, pool)
+    (database, pool)
 }
 
-async fn start_store() -> (ContainerAsync<Postgres>, Arc<dyn LoginStore>) {
-    let (container, pool) = start_database().await;
+async fn start_store() -> (FreshDatabase, Arc<dyn LoginStore>) {
+    let (database, pool) = start_database().await;
     let store = PostgresLoginStore::new(pool);
     store.migrate().await.expect("migrate");
-    (container, Arc::new(store))
+    (database, Arc::new(store))
 }
 
 login_store_contract!(start_store);

@@ -1,36 +1,10 @@
-//! Helpers and the backend-independent contract shared by the login store
-//! integration tests.
-
-use std::time::Duration;
-
-use testcontainers::{runners::AsyncRunner, ContainerRequest, Image, TestcontainersError};
-use testcontainers_modules::testcontainers::ContainerAsync;
-
-const START_ATTEMPTS: u32 = 5;
-const START_RETRY_DELAY: Duration = Duration::from_millis(250);
-
-/// Starts a container built by `build`, retrying transient startup failures
-/// such as a host port that another parallel test grabbed first.
-pub async fn start_with_retry<I: Image>(
-    mut build: impl FnMut() -> ContainerRequest<I>,
-) -> Result<ContainerAsync<I>, TestcontainersError> {
-    let mut attempt = 1;
-    loop {
-        match build().start().await {
-            Ok(container) => return Ok(container),
-            Err(_) if attempt < START_ATTEMPTS => {
-                tokio::time::sleep(START_RETRY_DELAY * attempt).await;
-                attempt += 1;
-            }
-            Err(error) => return Err(error),
-        }
-    }
-}
+//! The backend-independent contract shared by the login store integration
+//! tests.
 
 /// Generates the tests every `LoginStore` backend must pass.
 ///
 /// `$start` is an async function returning `(guard, Arc<dyn LoginStore>)`,
-/// where `guard` keeps the backing container alive for the test.
+/// where `guard` keeps the test's slice of the backing server for the test.
 #[macro_export]
 macro_rules! login_store_contract {
     ($start:ident) => {

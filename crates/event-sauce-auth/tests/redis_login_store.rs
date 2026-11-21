@@ -1,33 +1,24 @@
-//! `RedisLoginStore` against a real Redis container.
+//! `RedisLoginStore` against a logical database of its own on a shared Redis
+//! container.
 
 mod support;
 
 use std::sync::Arc;
 
 use event_sauce_auth::{LoginKey, LoginStore, LoginTtl, RedisLoginStore};
-use testcontainers::ImageExt;
-use testcontainers_modules::{redis::Redis, testcontainers::ContainerAsync};
+use testcontainers_shared::redis::{fresh_redis, FreshRedis};
 
-async fn start_container() -> (ContainerAsync<Redis>, String) {
-    let container = support::start_with_retry(|| Redis::default().with_tag("7-alpine"))
-        .await
-        .expect("start redis");
-    let host = container.get_host().await.expect("host");
-    let port = container.get_host_port_ipv4(6379).await.expect("port");
-    (container, format!("redis://{host}:{port}"))
-}
-
-async fn start_store() -> (ContainerAsync<Redis>, Arc<dyn LoginStore>) {
-    let (container, url) = start_container().await;
+async fn start_store() -> (FreshRedis, Arc<dyn LoginStore>) {
+    let (database, url) = fresh_redis();
     let store = RedisLoginStore::connect(&url).await.expect("connect");
-    (container, Arc::new(store))
+    (database, Arc::new(store))
 }
 
 login_store_contract!(start_store);
 
 #[tokio::test]
 async fn prefixes_isolate_stores_sharing_a_server() {
-    let (_guard, url) = start_container().await;
+    let (_guard, url) = fresh_redis();
     let first = RedisLoginStore::connect(&url)
         .await
         .unwrap()
