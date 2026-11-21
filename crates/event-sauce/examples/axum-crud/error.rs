@@ -7,7 +7,6 @@ use axum::{
 use event_sauce::auth::{AuthError, EmailError};
 use event_sauce::prelude::{Error, ModifyError};
 
-use crate::app::Backend;
 use crate::member::MemberError;
 use crate::note::NoteError;
 
@@ -34,7 +33,7 @@ pub enum ApiError {
     #[error("the login could not be checked")]
     Login,
     #[error("the session failed: {0}")]
-    Session(#[from] axum_login::Error<Backend>),
+    Session(#[from] event_sauce::axum::SessionError),
 }
 
 impl ApiError {

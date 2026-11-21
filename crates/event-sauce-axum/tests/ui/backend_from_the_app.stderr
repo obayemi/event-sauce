@@ -1,0 +1,5 @@
+error[E0599]: no method named `backend` found for reference `&App<U, F, S>` in the current scope
+ --> tests/ui/backend_from_the_app.rs:5:17
+  |
+5 |     let _ = app.backend();
+  |                 ^^^^^^^ method not found in `&App<U, F, S>`

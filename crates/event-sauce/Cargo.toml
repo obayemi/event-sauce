@@ -61,7 +61,7 @@ auth-totp = ["auth", "event-sauce-auth/totp"]
 # The correlation layer and the `Store`, `Repo` and `UnitOfWork`
 # extractors, re-exported as `event_sauce::axum`.
 axum = ["dep:event-sauce-axum", "event-sourcing", "event-sauce-axum/tracing"]
-# `axum-login` backend, session user, pending logins and the current-user
+# `AuthLayer`, `AuthSession`, pending logins and the current-user
 # extractors; implies `auth`.
 axum-login = ["axum", "auth", "event-sauce-axum/login"]
 # `EventSauceApp::postgres`, the whole stack on one pool; implies `postgres`.

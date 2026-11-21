@@ -8,16 +8,17 @@
 //! - [`Store`], [`Repo`] and [`UnitOfWork`] are extractors over the
 //!   application state: there is no registry, a repository is built per
 //!   request from the shared store.
-//! - With the `login` feature, `EventSauceBackend` turns a
-//!   finished login into an `axum-login` session. `SessionUser` ties a
-//!   session to the identity's fingerprint and is built from an
-//!   `Authenticated` user by a login, `PendingLogin` carries a login that waits for its
-//!   next step, and `CurrentUser`, `MaybeUser` and `Registered` hand the
+//! - With the `login` feature, `AuthSession` opens an `axum-login` session
+//!   from a finished login and from nothing else: the backend underneath is
+//!   crate-private, so an application can neither name it nor obtain one.
+//!   `AuthLayer` installs it, `PendingLogin` carries a login that waits for
+//!   its next step, and `CurrentUser`, `MaybeUser` and `Registered` hand the
 //!   logged-in user to handlers.
 //! - With the `app` feature, `EventSauceApp::postgres` builds the whole
 //!   stack, stores, cache, first factor and layers, on one pool.
 
 #![deny(missing_docs)]
+#![deny(unnameable_types)]
 #![deny(clippy::all)]
 #![warn(clippy::pedantic)]
 
@@ -37,8 +38,8 @@ pub use correlation::{Correlation, CorrelationLayer, ResponseFuture, DEFAULT_HEA
 pub use http::HeaderName;
 #[cfg(feature = "login")]
 pub use login::{
-    AuthRejection, BackendError, CurrentUser, EventSauceBackend, MaybeUser, PendingLogin,
-    Registered, SessionUser, UserBackend,
+    AuthLayer, AuthRejection, AuthSession, CurrentUser, MaybeUser, PendingLogin, Registered,
+    SessionError,
 };
 pub use repo::Repo;
 pub use request_id::RequestId;

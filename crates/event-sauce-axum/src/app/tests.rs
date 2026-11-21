@@ -4,11 +4,13 @@ use std::{
 };
 
 use async_trait::async_trait;
-use axum::{body::Body, routing::get, Router};
-use axum_login::{
-    tower_sessions::{MemoryStore, SessionManagerLayer},
-    AuthnBackend,
+use axum::{
+    body::Body,
+    extract::State,
+    routing::{get, post},
+    Router,
 };
+use axum_login::tower_sessions::{MemoryStore, SessionManagerLayer};
 use event_sauce_auth::{
     Advance, AlwaysDone, Argon2Hasher, Done, Entered, FirstFactor, Login, LoginKey, LoginStore,
     LoginStoreError, LoginTtl, PasswordLogin, Route,
@@ -21,7 +23,7 @@ use tower::ServiceExt;
 
 use super::{App, EventSauceApp, UserAppBuilder};
 use crate::login::test_support::{registered, Member};
-use crate::{EventSauceBackend, MaybeUser, DEFAULT_HEADER};
+use crate::{AuthSession, MaybeUser, DEFAULT_HEADER};
 
 struct NoLoginStore;
 
@@ -71,7 +73,6 @@ impl LoginStore for MemoryLoginStore {
 type Method = PasswordLogin<Argon2Hasher>;
 type Factor = FirstFactor<Method, AlwaysDone>;
 type TestApp = App<Member, Factor, InMemoryEventStore>;
-type Backend = EventSauceBackend<Member, InMemoryEventStore>;
 
 pub(super) fn builder() -> UserAppBuilder<Member, Method> {
     let pool = PgPool::connect_lazy("postgres://nobody@localhost/none").unwrap();
@@ -82,7 +83,7 @@ fn assembled(builder: UserAppBuilder<Member, Method>) -> TestApp {
     builder.assemble(Arc::new(InMemoryEventStore::new()), Arc::new(NoLoginStore))
 }
 
-async fn whoami(MaybeUser(user): MaybeUser<Backend>) -> &'static str {
+async fn whoami(MaybeUser(user): MaybeUser<Member>) -> &'static str {
     if user.is_some() {
         "somebody"
     } else {
@@ -121,9 +122,25 @@ async fn the_layer_echoes_the_configured_header() {
     assert!(!response.headers().contains_key(DEFAULT_HEADER));
 }
 
+async fn login_and_whoami(
+    mut session: AuthSession<Member>,
+    State(app): State<Arc<TestApp>>,
+) -> String {
+    let authenticated = app
+        .logins()
+        .sign_up(registered())
+        .await
+        .unwrap()
+        .finish()
+        .await
+        .unwrap();
+    session.login(authenticated).await.unwrap();
+    session.user().unwrap().entity_id().to_string()
+}
+
 #[tokio::test]
-async fn the_backend_resolves_the_users_of_the_apps_store() {
-    let app = assembled(builder());
+async fn a_session_resolves_the_users_of_the_apps_store() {
+    let app = Arc::new(assembled(builder()));
     let mut user = registered();
     let id = user.entity_id();
     app.store()
@@ -132,29 +149,19 @@ async fn the_backend_resolves_the_users_of_the_apps_store() {
         .save(&mut user)
         .await
         .unwrap();
+    let router = app.layer(
+        Router::new()
+            .route("/login", post(login_and_whoami))
+            .with_state(app.clone()),
+        SessionManagerLayer::new(MemoryStore::default()),
+    );
 
-    let found = app.backend().get_user(&id).await.unwrap();
-
-    assert_eq!(found.map(|user| user.entity_id()), Some(id));
-}
-
-#[tokio::test]
-async fn the_logins_run_on_the_apps_store_and_end_in_a_session_user() {
-    let app = assembled(builder());
-    let root = registered();
-    let id = root.entity_id();
-
-    let authenticated = app
-        .logins()
-        .sign_up(root)
-        .await
-        .unwrap()
-        .finish()
+    let response = router
+        .oneshot(Request::post("/login").body(Body::empty()).unwrap())
         .await
         .unwrap();
-    let session = app.backend().authenticate(authenticated).await.unwrap();
 
-    assert_eq!(session.map(|user| user.entity_id()), Some(id));
+    assert_eq!(response.status(), StatusCode::OK);
     assert!(app
         .store()
         .arc()

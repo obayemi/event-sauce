@@ -13,7 +13,7 @@ use axum::{
     Router,
 };
 use event_sauce_auth::{Argon2Hasher, MokaUserCache, PasswordLogin};
-use event_sauce_axum::{App, CurrentUser, EventSauceApp, UserAppBuilder, UserBackend};
+use event_sauce_axum::{App, CurrentUser, EventSauceApp, UserAppBuilder};
 use event_sauce_core::{EventStore, Repository};
 use event_sauce_postgres::PostgresEventStore;
 use sqlx::{postgres::PgPoolOptions, PgPool};
@@ -22,8 +22,8 @@ use testcontainers::{runners::AsyncRunner, ImageExt};
 use testcontainers_modules::{postgres::Postgres, testcontainers::ContainerAsync};
 use tower_sessions::{MemoryStore, SessionManagerLayer};
 use user_fixture::{
-    change_password, cheap_hasher, login_routes, register, Backend, CodeIfEnrolled, Flow,
-    PasswordFactor, User, ADA, CODE, MAIL_CODE, PASSWORD,
+    change_password, cheap_hasher, login_routes, register, CodeIfEnrolled, Flow, PasswordFactor,
+    User, ADA, CODE, MAIL_CODE, PASSWORD,
 };
 
 type Method = PasswordLogin<Argon2Hasher>;
@@ -41,7 +41,7 @@ async fn built(pool: PgPool) -> Built {
     builder(pool).route(CodeIfEnrolled).build().await.unwrap()
 }
 
-async fn me<B: UserBackend<Aggregate = User>>(user: CurrentUser<B>) -> String {
+async fn me(user: CurrentUser<User>) -> String {
     user.entity_id().to_string()
 }
 
@@ -54,9 +54,7 @@ fn flow(app: &Built) -> Flow {
 }
 
 fn router(app: &Built) -> Router {
-    let routes = login_routes::<PostgresEventStore>()
-        .route("/me", get(me::<Backend<PostgresEventStore>>))
-        .with_state(flow(app));
+    let routes = login_routes().route("/me", get(me)).with_state(flow(app));
     app.layer(routes, sessions())
 }
 

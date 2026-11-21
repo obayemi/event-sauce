@@ -1,0 +1,17 @@
+error[E0425]: cannot find type `Backend` in `event_sauce_axum::login`
+ --> tests/ui/name_the_backend_by_path.rs:2:60
+  |
+2 |     let _ = std::any::type_name::<event_sauce_axum::login::Backend<()>>();
+  |                                                            ^^^^^^^ not found in `event_sauce_axum::login`
+
+error[E0603]: module `login` is private
+ --> tests/ui/name_the_backend_by_path.rs:2:53
+  |
+2 |     let _ = std::any::type_name::<event_sauce_axum::login::Backend<()>>();
+  |                                                     ^^^^^ private module
+  |
+note: the module `login` is defined here
+ --> src/lib.rs
+  |
+  | mod login;
+  | ^^^^^^^^^

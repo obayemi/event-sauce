@@ -1,4 +1,4 @@
-//! The state, the backend and the router of the example.
+//! The state and the router of the example.
 
 use std::sync::Arc;
 
@@ -8,7 +8,7 @@ use axum::{
     Router,
 };
 use event_sauce::auth::{AlwaysDone, Argon2Hasher, FirstFactor, Logins, PasswordLogin};
-use event_sauce::axum::{EventSauceApp, EventSauceBackend, Store};
+use event_sauce::axum::{EventSauceApp, Store};
 use event_sauce::postgres::PostgresEventStore;
 use sqlx::PgPool;
 use tower_sessions::{MemoryStore, SessionManagerLayer};
@@ -16,9 +16,6 @@ use tower_sessions::{MemoryStore, SessionManagerLayer};
 use crate::member::Member;
 use crate::projection::Projector;
 use crate::{auth_routes, note_routes};
-
-/// The `axum-login` backend of the members, as the extractors name it.
-pub type Backend = EventSauceBackend<Member, PostgresEventStore>;
 
 /// The first factor of the members: their password, which is all they need.
 pub type Factor = FirstFactor<PasswordLogin<Argon2Hasher>, AlwaysDone>;

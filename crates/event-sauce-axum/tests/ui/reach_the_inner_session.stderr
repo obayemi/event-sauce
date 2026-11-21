@@ -1,0 +1,11 @@
+error[E0616]: field `inner` of struct `AuthSession` is private
+ --> tests/ui/reach_the_inner_session.rs:5:21
+  |
+5 |     let _ = session.inner;
+  |                     ^^^^^ private field
+
+error[E0609]: no field `backend` on type `AuthSession<U>`
+ --> tests/ui/reach_the_inner_session.rs:6:21
+  |
+6 |     let _ = session.backend;
+  |                     ^^^^^^^ unknown field

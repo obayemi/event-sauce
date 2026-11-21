@@ -17,25 +17,20 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use axum_login::{AuthManagerLayerBuilder, AuthSession};
 use event_sauce_auth::{
-    FirstFactor, LoginKey, LoginStore, LoginStoreError, LoginTtl, Logins, MokaUserCache,
-    PasswordLogin, UserCache,
+    CachedUserLoader, FirstFactor, LoginKey, LoginStore, LoginStoreError, LoginTtl, Logins,
+    MokaUserCache, PasswordLogin, UserCache,
 };
-use event_sauce_axum::{
-    CurrentUser, EventSauceBackend, MaybeUser, PendingLogin, Registered, SessionUser,
-};
-use event_sauce_core::{EntityId, EventStore, Repository};
+use event_sauce_axum::{AuthLayer, AuthSession, CurrentUser, MaybeUser, PendingLogin, Registered};
+use event_sauce_core::{AggregateRoot, EntityId, EventStore, Repository};
 use event_sauce_memory::InMemoryEventStore;
 use serde::Deserialize;
 use support::Client;
 use tower_sessions::{MemoryStore, SessionManagerLayer};
 use user_fixture::{
-    change_password, cheap_hasher, hash, login_routes, register, Backend as FixtureBackend,
-    CodeIfEnrolled, Flow, User, UserCommands, ADA, CODE, MAIL_CODE, PASSWORD,
+    change_password, cheap_hasher, hash, login_routes, register, CodeIfEnrolled, Flow, User,
+    UserCommands, ADA, CODE, MAIL_CODE, PASSWORD,
 };
-
-type Backend = FixtureBackend<InMemoryEventStore>;
 
 #[derive(Default)]
 struct MemoryLoginStore {
@@ -77,12 +72,12 @@ struct PasswordForm {
     password: String,
 }
 
-async fn logout(mut auth: AuthSession<Backend>) -> StatusCode {
+async fn logout(mut auth: AuthSession<User>) -> StatusCode {
     auth.logout().await.unwrap();
     StatusCode::NO_CONTENT
 }
 
-async fn become_anonymous(mut auth: AuthSession<Backend>, State(flow): State<Flow>) -> StatusCode {
+async fn become_anonymous(mut auth: AuthSession<User>, State(flow): State<Flow>) -> String {
     let authenticated = flow
         .logins
         .sign_up(User::anonymous().unwrap())
@@ -91,38 +86,60 @@ async fn become_anonymous(mut auth: AuthSession<Backend>, State(flow): State<Flo
         .finish()
         .await
         .unwrap();
-    auth.login(&SessionUser::from(authenticated)).await.unwrap();
-    StatusCode::NO_CONTENT
+    auth.login(authenticated).await.unwrap();
+    auth.user().unwrap().entity_id().to_string()
 }
 
 async fn change_own_password(
-    mut auth: AuthSession<Backend>,
+    mut auth: AuthSession<User>,
     State(events): State<Arc<InMemoryEventStore>>,
     Json(form): Json<PasswordForm>,
 ) -> StatusCode {
-    let session = auth.user.clone().unwrap();
+    let id = auth.user().unwrap().entity_id();
     let hash = hash(&form.password).await;
     events
         .repository::<User>()
-        .modify(session.entity_id(), |user| {
-            user.change_password(hash.clone())
-        })
+        .modify(id, |user| user.change_password(hash.clone()))
         .await
         .unwrap();
-    let renewed = auth.backend.renew(&session).await.unwrap().unwrap();
-    auth.login(&renewed).await.unwrap();
+    auth.renew().await.unwrap().unwrap();
     StatusCode::NO_CONTENT
 }
 
-async fn me(user: CurrentUser<Backend>) -> String {
-    user.entity_id().to_string()
+async fn renew(mut auth: AuthSession<User>) -> String {
+    describe(auth.renew().await.unwrap())
 }
 
-async fn maybe(MaybeUser(user): MaybeUser<Backend>) -> String {
+async fn deactivate_and_renew(
+    mut auth: AuthSession<User>,
+    State(events): State<Arc<InMemoryEventStore>>,
+) -> String {
+    let id = auth.user().unwrap().entity_id();
+    events
+        .repository::<User>()
+        .modify(id, |user| user.deactivate())
+        .await
+        .unwrap();
+    describe(auth.renew().await.unwrap())
+}
+
+async fn session(auth: AuthSession<User>) -> String {
+    describe(auth.user().cloned())
+}
+
+fn describe(user: Option<Arc<AggregateRoot<User>>>) -> String {
     user.map_or_else(|| "nobody".to_owned(), |user| user.entity_id().to_string())
 }
 
-async fn registered(user: Registered<Backend>) -> String {
+async fn me(user: CurrentUser<User>) -> String {
+    user.entity_id().to_string()
+}
+
+async fn maybe(MaybeUser(user): MaybeUser<User>) -> String {
+    user.map_or_else(|| "nobody".to_owned(), |user| user.entity_id().to_string())
+}
+
+async fn registered(user: Registered<User>) -> String {
     user.entity_id().to_string()
 }
 
@@ -142,10 +159,10 @@ impl World {
 
     fn with_cache(cache: Option<Arc<dyn UserCache<User>>>) -> Self {
         let events = Arc::new(InMemoryEventStore::new());
-        let mut backend = EventSauceBackend::new(events.clone());
+        let mut loader = CachedUserLoader::new(events.clone());
         let mut logins = Logins::<User>::new(events.clone());
         if let Some(cache) = cache {
-            backend = backend.with_shared_cache(cache.clone());
+            loader = loader.with_shared_cache(cache.clone());
             logins = logins.with_shared_cache(cache);
         }
         let flow = Flow {
@@ -158,18 +175,21 @@ impl World {
         };
         let sessions = SessionManagerLayer::new(MemoryStore::default());
         let router = Router::<AppState>::new()
-            .merge(login_routes::<InMemoryEventStore>().with_state(flow.clone()))
+            .merge(login_routes().with_state(flow.clone()))
             .route("/logout", post(logout))
             .route("/anonymous", post(become_anonymous))
             .route("/password", post(change_own_password))
+            .route("/renew", post(renew))
+            .route("/deactivate-and-renew", post(deactivate_and_renew))
+            .route("/session", get(session))
             .route("/me", get(me))
             .route("/maybe", get(maybe))
             .route("/registered", get(registered))
             .with_state(AppState {
                 flow,
                 events: events.clone(),
-            })
-            .layer(AuthManagerLayerBuilder::new(backend, sessions).build());
+            });
+        let router = AuthLayer::new(loader).layer(router, sessions);
         Self {
             events,
             client: Client::new(router),
@@ -637,13 +657,94 @@ async fn the_extractors_report_a_missing_auth_layer_as_a_server_error() {
         Router::new()
             .route("/me", get(me))
             .route("/maybe", get(maybe))
-            .route("/registered", get(registered)),
+            .route("/registered", get(registered))
+            .route("/session", get(session)),
     );
 
-    for uri in ["/me", "/maybe", "/registered"] {
+    for uri in ["/me", "/maybe", "/registered", "/session"] {
         assert_eq!(
             client.get(uri).await.status,
             StatusCode::INTERNAL_SERVER_ERROR
         );
     }
+}
+
+#[tokio::test]
+async fn the_session_of_a_visitor_holds_nobody() {
+    let mut world = World::new();
+
+    assert_eq!(world.client.get("/session").await.body, "nobody");
+}
+
+#[tokio::test]
+async fn logging_in_through_the_session_makes_the_user_current_at_once() {
+    let mut world = World::new();
+
+    let reply = world.client.post("/anonymous", None).await;
+
+    assert_eq!(reply.body, world.client.get("/session").await.body);
+    assert_ne!(reply.body, "nobody");
+}
+
+#[tokio::test]
+async fn a_finished_password_login_is_the_session_user() {
+    let mut world = World::new();
+    let id = world.register(None).await;
+
+    world.client.log_in(ADA, PASSWORD).await;
+
+    assert_eq!(world.client.get("/session").await.body, id.to_string());
+}
+
+#[tokio::test]
+async fn renewing_with_nobody_logged_in_answers_nobody() {
+    let mut world = World::new();
+
+    assert_eq!(world.client.post("/renew", None).await.body, "nobody");
+    assert_eq!(world.status("/me").await, StatusCode::UNAUTHORIZED);
+}
+
+async fn renewing_without_a_change_keeps_the_session(mut world: World) {
+    let id = world.register(None).await;
+    world.client.log_in(ADA, PASSWORD).await;
+
+    let renewed = world.client.post("/renew", None).await;
+
+    assert_eq!(renewed.body, id.to_string());
+    assert_eq!(world.client.get("/me").await.body, id.to_string());
+}
+
+#[tokio::test]
+async fn renewing_without_a_change_keeps_the_session_without_a_cache() {
+    renewing_without_a_change_keeps_the_session(World::new()).await;
+}
+
+#[tokio::test]
+async fn renewing_without_a_change_keeps_the_session_with_a_cache() {
+    renewing_without_a_change_keeps_the_session(World::cached()).await;
+}
+
+#[tokio::test]
+async fn renewing_a_user_deactivated_during_the_request_ends_the_session() {
+    let mut world = World::new();
+    world.register(None).await;
+    world.client.log_in(ADA, PASSWORD).await;
+
+    let renewed = world.client.post("/deactivate-and-renew", None).await;
+
+    assert_eq!(renewed.body, "nobody");
+    assert_eq!(world.status("/me").await, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn logging_out_leaves_nobody_in_the_session() {
+    let mut world = World::new();
+    world.register(None).await;
+    world.client.log_in(ADA, PASSWORD).await;
+
+    assert_eq!(
+        world.client.post("/logout", None).await.status,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(world.client.get("/session").await.body, "nobody");
 }

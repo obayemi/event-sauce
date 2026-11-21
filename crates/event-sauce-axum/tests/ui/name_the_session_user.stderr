@@ -1,0 +1,7 @@
+error[E0432]: unresolved import `event_sauce_axum::SessionUser`
+ --> tests/ui/name_the_session_user.rs:1:5
+  |
+1 | use event_sauce_axum::SessionUser;
+  |     ^^^^^^^^^^^^^^^^^^-----------
+  |                       |
+  |                       no `SessionUser` in the root

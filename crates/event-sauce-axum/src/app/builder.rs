@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use event_sauce_auth::{
-    AlwaysDone, FirstFactor, InvalidSchemaName, LoginMethod, LoginStore, LoginStoreError, Logins,
-    MokaUserCache, PostgresLoginStore, Route, UserAggregate, UserCache,
+    AlwaysDone, CachedUserLoader, FirstFactor, InvalidSchemaName, LoginMethod, LoginStore,
+    LoginStoreError, Logins, MokaUserCache, PostgresLoginStore, Route, UserAggregate, UserCache,
 };
 use event_sauce_core::EventStore;
 use event_sauce_postgres::PostgresEventStore;
@@ -13,7 +13,7 @@ use serde::{de::DeserializeOwned, Serialize};
 use sqlx::PgPool;
 
 use super::App;
-use crate::{CorrelationLayer, EventSauceBackend, Store};
+use crate::{AuthLayer, CorrelationLayer, Store};
 
 const DEFAULT_CACHE_CAPACITY: u64 = 10_000;
 
@@ -216,15 +216,15 @@ where
         store: Arc<S>,
         login_store: Arc<dyn LoginStore>,
     ) -> App<U, FirstFactor<M, R>, S> {
-        let mut backend = EventSauceBackend::new(store.clone());
+        let mut loader = CachedUserLoader::new(store.clone());
         let mut logins = Logins::new(store.clone());
         if let Some(cache) = self.cache.into_cache() {
-            backend = backend.with_shared_cache(cache.clone());
+            loader = loader.with_shared_cache(cache.clone());
             logins = logins.with_shared_cache(cache);
         }
         App {
             store: Store::from(store),
-            backend,
+            auth: AuthLayer::new(loader),
             logins,
             first_factor: Arc::new(FirstFactor::new(self.method, self.route)),
             login_store,

@@ -1,4 +1,4 @@
-//! The backend and the routes of the example.
+//! The routes of the example.
 
 use std::sync::Arc;
 
@@ -10,19 +10,17 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use axum_login::{AuthManagerLayerBuilder, AuthSession};
 use event_sauce::auth::{
-    AlwaysDone, Argon2Hasher, AuthError, Email, FirstFactor, LoginId, Logins, Password,
-    PasswordAttempt, PasswordHash, PasswordHasher, PasswordLogin,
+    AlwaysDone, Argon2Hasher, AuthError, CachedUserLoader, Email, FirstFactor, LoginId, Logins,
+    Password, PasswordAttempt, PasswordHash, PasswordHasher, PasswordLogin,
 };
-use event_sauce::axum::{CorrelationLayer, CurrentUser, EventSauceBackend, SessionUser};
+use event_sauce::axum::{AuthLayer, AuthSession, CorrelationLayer, CurrentUser};
 use event_sauce::memory::InMemoryEventStore;
 use event_sauce::prelude::*;
 use secrecy::SecretString;
 use serde::Deserialize;
 use tower_sessions::{MemoryStore, SessionManagerLayer};
 
-type Backend = EventSauceBackend<Member, InMemoryEventStore>;
 type Factor = FirstFactor<PasswordLogin<Argon2Hasher>, AlwaysDone>;
 
 #[derive(Clone)]
@@ -71,7 +69,7 @@ async fn register(State(state): State<AppState>, Json(form): Json<Registration>)
 }
 
 async fn login(
-    mut auth: AuthSession<Backend>,
+    mut auth: AuthSession<Member>,
     State(state): State<AppState>,
     Json(form): Json<LoginForm>,
 ) -> StatusCode {
@@ -89,26 +87,26 @@ async fn login(
     let Ok(authenticated) = login.finish().await else {
         return StatusCode::UNAUTHORIZED;
     };
-    match auth.login(&SessionUser::from(authenticated)).await {
+    match auth.login(authenticated).await {
         Ok(()) => StatusCode::NO_CONTENT,
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
 
-async fn logout(mut auth: AuthSession<Backend>) -> StatusCode {
+async fn logout(mut auth: AuthSession<Member>) -> StatusCode {
     match auth.logout().await {
         Ok(_) => StatusCode::NO_CONTENT,
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
 
-async fn me(member: CurrentUser<Backend>) -> String {
+async fn me(member: CurrentUser<Member>) -> String {
     member.nickname.clone()
 }
 
 async fn change_password(
     State(state): State<AppState>,
-    member: CurrentUser<Backend>,
+    member: CurrentUser<Member>,
     Json(form): Json<NewPassword>,
 ) -> StatusCode {
     let Some(hash) = hash_password(&state.hasher, form.password).await else {
@@ -132,11 +130,11 @@ async fn change_password(
 /// layers.
 pub fn router(hasher: Argon2Hasher) -> Router {
     let store = Arc::new(InMemoryEventStore::builder().build());
-    let backend = Backend::new(store.clone());
     let first = Arc::new(FirstFactor::new(
         PasswordLogin::new(hasher.clone()),
         AlwaysDone,
     ));
+    let auth = AuthLayer::<Member>::new(CachedUserLoader::new(store.clone()));
     let state = AppState {
         logins: Logins::new(store.clone()),
         store,
@@ -144,13 +142,12 @@ pub fn router(hasher: Argon2Hasher) -> Router {
         first,
     };
     let sessions = SessionManagerLayer::new(MemoryStore::default());
-    Router::new()
+    let routes = Router::new()
         .route("/members", post(register))
         .route("/login", post(login))
         .route("/logout", post(logout))
         .route("/me", get(me))
         .route("/password", post(change_password))
-        .with_state(state)
-        .layer(AuthManagerLayerBuilder::new(backend, sessions).build())
-        .layer(CorrelationLayer::new())
+        .with_state(state);
+    auth.layer(routes, sessions).layer(CorrelationLayer::new())
 }

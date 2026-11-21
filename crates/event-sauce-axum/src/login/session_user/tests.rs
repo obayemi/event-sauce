@@ -53,16 +53,6 @@ async fn clones_share_the_same_aggregate() {
 }
 
 #[tokio::test]
-async fn the_authenticated_aggregate_is_wrapped_without_copying_it() {
-    let authenticated = authenticated(registered()).await;
-    let shared = Arc::clone(authenticated.user());
-
-    let user = SessionUser::from(authenticated);
-
-    assert!(Arc::ptr_eq(&shared, &user.into_user()));
-}
-
-#[tokio::test]
 async fn a_loaded_aggregate_keeps_its_fingerprint() {
     let root = Arc::new(registered());
     let fingerprint = root.identity().session_fingerprint();
@@ -74,22 +64,22 @@ async fn a_loaded_aggregate_keeps_its_fingerprint() {
 }
 
 #[tokio::test]
-async fn the_session_user_derefs_to_the_aggregate_root() {
-    let root = registered();
-    let id = root.entity_id();
-
-    let user = SessionUser::from(authenticated(root).await);
-
-    assert_eq!(user.entity_id(), id);
-}
-
-#[tokio::test]
 async fn debug_names_the_user_without_leaking_the_fingerprint() {
     let user = SessionUser::from(authenticated(registered()).await);
     let fingerprint = format!("{:?}", user.session_auth_hash());
 
     let rendered = format!("{user:?}");
 
-    assert!(rendered.contains(&user.entity_id().to_string()));
+    assert!(rendered.contains(&user.id().to_string()));
     assert!(!rendered.contains(&fingerprint));
+}
+
+#[tokio::test]
+async fn the_authenticated_aggregate_is_wrapped_without_copying_it() {
+    let authenticated = authenticated(registered()).await;
+    let shared = Arc::clone(authenticated.user());
+
+    let user = SessionUser::from(authenticated);
+
+    assert!(Arc::ptr_eq(&shared, user.user()));
 }

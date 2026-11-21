@@ -3,11 +3,10 @@
 use std::sync::Arc;
 
 use axum::{extract::State, http::StatusCode, Json};
-use axum_login::AuthSession;
 use event_sauce::auth::{
     Argon2Hasher, Email, LoginId, Logins, Password, PasswordAttempt, PasswordHash, PasswordHasher,
 };
-use event_sauce::axum::{CurrentUser, Repo, SessionUser};
+use event_sauce::axum::{AuthSession, CurrentUser, Repo};
 use event_sauce::postgres::PostgresEventStore;
 use event_sauce::prelude::*;
 use secrecy::SecretString;
@@ -15,7 +14,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::result::Result;
 
-use crate::app::{Backend, Factor};
+use crate::app::Factor;
 use crate::error::ApiError;
 use crate::member::{check_password, Member, MemberCommands};
 
@@ -55,7 +54,7 @@ pub async fn register(
 }
 
 pub async fn login(
-    mut auth: AuthSession<Backend>,
+    mut auth: AuthSession<Member>,
     State(logins): State<Logins<Member>>,
     State(first): State<Arc<Factor>>,
     Json(form): Json<LoginForm>,
@@ -68,11 +67,11 @@ pub async fn login(
         .finish()
         .await
         .map_err(|_| ApiError::Unauthorized)?;
-    auth.login(&SessionUser::from(authenticated)).await?;
+    auth.login(authenticated).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub async fn logout(mut auth: AuthSession<Backend>) -> Result<StatusCode, ApiError> {
+pub async fn logout(mut auth: AuthSession<Member>) -> Result<StatusCode, ApiError> {
     auth.logout().await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -80,7 +79,7 @@ pub async fn logout(mut auth: AuthSession<Backend>) -> Result<StatusCode, ApiErr
 pub async fn change_password(
     Repo(members): Members,
     State(hasher): State<Argon2Hasher>,
-    member: CurrentUser<Backend>,
+    member: CurrentUser<Member>,
     Json(form): Json<NewPassword>,
 ) -> Result<StatusCode, ApiError> {
     let hash = hash_password(&hasher, form.password).await?;
@@ -90,7 +89,7 @@ pub async fn change_password(
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub async fn me(member: CurrentUser<Backend>) -> Json<Value> {
+pub async fn me(member: CurrentUser<Member>) -> Json<Value> {
     Json(json!({
         "id": member.entity_id(),
         "nickname": member.nickname,

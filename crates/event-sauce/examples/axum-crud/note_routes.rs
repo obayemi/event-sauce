@@ -14,8 +14,8 @@ use serde::Deserialize;
 use sqlx::PgPool;
 use std::result::Result;
 
-use crate::app::Backend;
 use crate::error::ApiError;
+use crate::member::Member;
 use crate::note::{Note, NoteCommands, NoteDeleteCommands, NoteId};
 use crate::projection::{self, NoteView};
 
@@ -45,7 +45,7 @@ impl From<&AggregateRoot<Note>> for NoteView {
 
 pub async fn create(
     Repo(notes): Notes,
-    author: Registered<Backend>,
+    author: Registered<Member>,
     Json(form): Json<NoteForm>,
 ) -> Result<impl IntoResponse, ApiError> {
     let mut note = Note::write(&author, form.title, form.body)?;
@@ -57,14 +57,14 @@ pub async fn create(
 
 pub async fn list(
     State(pool): State<PgPool>,
-    member: Registered<Backend>,
+    member: Registered<Member>,
 ) -> Result<Json<Vec<NoteView>>, ApiError> {
     Ok(Json(projection::notes_of(&pool, member.id()).await?))
 }
 
 pub async fn read(
     Repo(notes): Notes,
-    member: Registered<Backend>,
+    member: Registered<Member>,
     Path(id): Path<NoteId>,
 ) -> Result<Json<NoteView>, ApiError> {
     let note = notes.load(id).await?;
@@ -74,7 +74,7 @@ pub async fn read(
 
 pub async fn replace(
     notes: Notes,
-    member: Registered<Backend>,
+    member: Registered<Member>,
     Path(id): Path<NoteId>,
     Json(form): Json<NoteForm>,
 ) -> Result<Json<NoteView>, ApiError> {
@@ -83,7 +83,7 @@ pub async fn replace(
 
 pub async fn amend(
     notes: Notes,
-    member: Registered<Backend>,
+    member: Registered<Member>,
     Path(id): Path<NoteId>,
     Json(patch): Json<NotePatch>,
 ) -> Result<Json<NoteView>, ApiError> {
@@ -92,7 +92,7 @@ pub async fn amend(
 
 pub async fn remove(
     Repo(notes): Notes,
-    member: Registered<Backend>,
+    member: Registered<Member>,
     Path(id): Path<NoteId>,
 ) -> Result<StatusCode, ApiError> {
     let mut deleted = notes.load(id).await?.delete(&member)?;
@@ -102,7 +102,7 @@ pub async fn remove(
 
 async fn edit(
     Repo(notes): Notes,
-    member: &Registered<Backend>,
+    member: &Registered<Member>,
     id: NoteId,
     title: Option<String>,
     body: Option<String>,

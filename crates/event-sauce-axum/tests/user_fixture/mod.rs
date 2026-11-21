@@ -15,14 +15,13 @@ use axum::{
     routing::post,
     Json, Router,
 };
-use axum_login::AuthSession;
 use event_sauce_auth::{
     Advance, Argon2Hasher, Credentials, Done, Email, Entered, Fingerprint, FirstFactor,
     HasPassword, Identity, Login, LoginId, LoginState, Logins, Password, PasswordAttempt,
     PasswordHash, PasswordHasher, PasswordLogin, PendingLogins, Rejected, Route, Step,
     UserAggregate,
 };
-use event_sauce_axum::{EventSauceBackend, PendingLogin};
+use event_sauce_axum::{AuthSession, PendingLogin};
 use event_sauce_core::{
     aggregate_command, define_events, Aggregate, AggregateClaim, AggregateError, Entity, EntityId,
     EventStore, Repository,
@@ -306,18 +305,12 @@ pub struct Flow {
     pub first: Arc<PasswordFactor>,
 }
 
-pub type Backend<S> = EventSauceBackend<User, S>;
-
-async fn open_session<S: EventStore + 'static>(
-    mut auth: AuthSession<Backend<S>>,
-    login: Login<User, Done>,
-) -> Response {
+async fn open_session(mut auth: AuthSession<User>, login: Login<User, Done>) -> Response {
     let cleared = [(SET_COOKIE, PendingLogin::clear_cookie())];
     let Ok(authenticated) = login.finish().await else {
         return (StatusCode::UNAUTHORIZED, cleared).into_response();
     };
-    let user = auth.authenticate(authenticated).await.unwrap().unwrap();
-    auth.login(&user).await.unwrap();
+    auth.login(authenticated).await.unwrap();
     (StatusCode::NO_CONTENT, cleared).into_response()
 }
 
@@ -338,8 +331,8 @@ fn refused() -> Response {
         .into_response()
 }
 
-pub async fn login<S: EventStore + 'static>(
-    auth: AuthSession<Backend<S>>,
+pub async fn login(
+    auth: AuthSession<User>,
     State(flow): State<Flow>,
     Json(form): Json<LoginForm>,
 ) -> Response {
@@ -368,8 +361,8 @@ pub async fn code(
     }
 }
 
-pub async fn mail<S: EventStore + 'static>(
-    auth: AuthSession<Backend<S>>,
+pub async fn mail(
+    auth: AuthSession<User>,
     State(flow): State<Flow>,
     pending: PendingLogin,
     Json(form): Json<CodeForm>,
@@ -383,9 +376,9 @@ pub async fn mail<S: EventStore + 'static>(
     }
 }
 
-pub fn login_routes<S: EventStore + 'static>() -> Router<Flow> {
+pub fn login_routes() -> Router<Flow> {
     Router::new()
-        .route("/login", post(login::<S>))
+        .route("/login", post(login))
         .route("/login/code", post(code))
-        .route("/login/mail", post(mail::<S>))
+        .route("/login/mail", post(mail))
 }

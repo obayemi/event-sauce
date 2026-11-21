@@ -4,19 +4,16 @@
 use std::sync::Arc;
 
 use axum::Router;
-use axum_login::{
-    tower_sessions::{SessionManagerLayer, SessionStore},
-    AuthManagerLayerBuilder, AuthnBackend,
-};
+use axum_login::tower_sessions::{SessionManagerLayer, SessionStore};
 use event_sauce_auth::{LoginStore, Logins, PendingLogins, UserAggregate};
 
-use crate::{CorrelationLayer, EventSauceBackend, Store};
+use crate::{AuthLayer, CorrelationLayer, Store};
 
 mod builder;
 
 pub use builder::{AppBuilder, BuildError, EventSauceApp, UserAppBuilder};
 
-/// A built application: the event store, the `axum-login` backend and the
+/// A built application: the event store, the authentication layer and the
 /// pieces of a login, wired together.
 ///
 /// `F` is the [`FirstFactor`](event_sauce_auth::FirstFactor) the application
@@ -27,7 +24,7 @@ pub use builder::{AppBuilder, BuildError, EventSauceApp, UserAppBuilder};
 /// [`layer`](Self::layer) to the router.
 pub struct App<U: UserAggregate, F, S> {
     store: Store<S>,
-    backend: EventSauceBackend<U, S>,
+    auth: AuthLayer<U>,
     logins: Logins<U>,
     first_factor: Arc<F>,
     login_store: Arc<dyn LoginStore>,
@@ -47,13 +44,6 @@ impl<U: UserAggregate, F, S> App<U, F, S> {
     #[must_use]
     pub fn store(&self) -> Store<S> {
         self.store.clone()
-    }
-
-    /// The `axum-login` backend of the application, which turns a finished
-    /// login into a session and reloads the user of a session.
-    #[must_use]
-    pub fn backend(&self) -> &EventSauceBackend<U, S> {
-        &self.backend
     }
 
     /// Where logins start and end, over the application's store and user
@@ -83,18 +73,13 @@ impl<U: UserAggregate, F, S> App<U, F, S> {
     pub fn login_store(&self) -> Arc<dyn LoginStore> {
         Arc::clone(&self.login_store)
     }
-}
 
-impl<U, F, S> App<U, F, S>
-where
-    U: UserAggregate,
-    EventSauceBackend<U, S>: AuthnBackend + 'static,
-{
     /// Applies to `router`, outermost first:
     ///
     /// 1. the [`CorrelationLayer`] on the configured header;
     /// 2. the `sessions` layer;
-    /// 3. the `axum-login` authentication layer on the backend.
+    /// 3. the `axum-login` authentication layer, through the application's
+    ///    [`AuthLayer`].
     ///
     /// The session store stays the application's choice.
     pub fn layer<St, Sess>(
@@ -106,8 +91,8 @@ where
         St: Clone + Send + Sync + 'static,
         Sess: SessionStore + Clone,
     {
-        router
-            .layer(AuthManagerLayerBuilder::new(self.backend.clone(), sessions).build())
+        self.auth
+            .layer(router, sessions)
             .layer(self.correlation.clone())
     }
 }
