@@ -11,7 +11,7 @@ fn session_failure() -> axum_login::tower_sessions::session::Error {
 
 #[test]
 fn a_session_store_failure_maps_to_the_session_variant() {
-    let mapped = SessionError::from(axum_login::Error::<Backend<Member>>::Session(
+    let mapped = super::session_error(axum_login::Error::<Backend<Member>>::Session(
         session_failure(),
     ));
 
@@ -20,7 +20,7 @@ fn a_session_store_failure_maps_to_the_session_variant() {
 
 #[test]
 fn a_backend_failure_maps_to_the_store_variant() {
-    let mapped = SessionError::from(axum_login::Error::<Backend<Member>>::Backend(
+    let mapped = super::session_error(axum_login::Error::<Backend<Member>>::Backend(
         Error::encryption("no key"),
     ));
 

@@ -366,10 +366,11 @@ operation over several aggregates is a `UnitOfWorkCommand` (see
 - A session opens only through `event-sauce-axum`'s `AuthSession<U>::login`,
   which takes only an `Authenticated<U>`. The `axum-login` backend and its
   `SessionUser` stay `pub(crate)`: never export, alias or return them from a
-  public signature, never add a public path to `axum_login::AuthSession` or a
-  backend value, and keep `#![deny(unnameable_types)]`. The `tests/ui` cases of
-  the crate pin this. What stays outside the types: a session record written
-  by hand through `tower_sessions::Session`, and an app's own `AuthnBackend`
+  public signature or name them in a public trait impl, never add a public
+  path to `axum_login::AuthSession` or a backend value, and keep
+  `#![deny(unnameable_types)]`. The `tests/ui` cases of the crate pin this.
+  What stays outside the types: a session record written by hand through
+  `tower_sessions::Session`, and an app's own `AuthnBackend`
 - A hot aggregate declares its snapshot strategy on the aggregate itself:
   `#[aggregate(..., snapshots(every = N))]` (also `always`, `never`,
   `with = "path"`); a store `per_type_override` still wins over it

@@ -7,7 +7,7 @@ use axum_login::tower_sessions::cookie::{time, Cookie, SameSite};
 use event_sauce_auth::{LoginState, PendingLoginId};
 use http::{header::COOKIE, request::Parts, HeaderMap};
 
-use crate::login::AuthRejection;
+use crate::login::rejection::AuthRejection;
 
 /// The login a client started and has yet to finish.
 ///

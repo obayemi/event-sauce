@@ -7,12 +7,14 @@ mod auth_session;
 mod backend;
 mod current_user;
 mod pending;
+mod rejection;
 mod session_user;
 #[cfg(test)]
 pub(crate) mod test_support;
 
 pub use auth_layer::AuthLayer;
 pub use auth_session::{AuthSession, SessionError};
-pub use current_user::{AuthRejection, CurrentUser, MaybeUser, Registered};
+pub use current_user::{CurrentUser, MaybeUser, Registered};
 pub use pending::PendingLogin;
+pub use rejection::AuthRejection;
 pub(crate) use session_user::SessionUser;

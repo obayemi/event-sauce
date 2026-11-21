@@ -1,0 +1,45 @@
+error[E0277]: the trait bound `SessionError: From<axum_login::Error<_>>` is not satisfied
+  --> tests/ui/infer_the_backend_from_the_session_error.rs:23:44
+   |
+23 |     Router::new().route("/", get(evil::<U, _>))
+   |                                            ^ the trait `From<axum_login::Error<_>>` is not implemented for `SessionError`
+   |
+help: `SessionError` implements trait `From<T>`
+  --> src/login/auth_session.rs
+   |
+   |     Session(#[from] session::Error),
+   |               ^^^^ `From<axum_login::tower_sessions::session::Error>`
+...
+   |     Store(#[from] event_sauce_core::Error),
+   |             ^^^^ `From<event_sauce_core::error::Error>`
+note: required by a bound in `evil`
+  --> tests/ui/infer_the_backend_from_the_session_error.rs:10:19
+   |
+ 6 | async fn evil<U, B>(mut session: axum_login::AuthSession<B>)
+   |          ---- required by a bound in this function
+...
+10 |     SessionError: From<axum_login::Error<B>>,
+   |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `evil`
+
+error[E0277]: the trait bound `SessionError: From<axum_login::Error<_>>` is not satisfied
+  --> tests/ui/infer_the_backend_from_the_session_error.rs:23:30
+   |
+23 |     Router::new().route("/", get(evil::<U, _>))
+   |                              ^^^ the trait `From<axum_login::Error<_>>` is not implemented for `SessionError`
+   |
+help: `SessionError` implements trait `From<T>`
+  --> src/login/auth_session.rs
+   |
+   |     Session(#[from] session::Error),
+   |               ^^^^ `From<axum_login::tower_sessions::session::Error>`
+...
+   |     Store(#[from] event_sauce_core::Error),
+   |             ^^^^ `From<event_sauce_core::error::Error>`
+note: required by a bound in `evil`
+  --> tests/ui/infer_the_backend_from_the_session_error.rs:10:19
+   |
+ 6 | async fn evil<U, B>(mut session: axum_login::AuthSession<B>)
+   |          ---- required by a bound in this function
+...
+10 |     SessionError: From<axum_login::Error<B>>,
+   |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `evil`

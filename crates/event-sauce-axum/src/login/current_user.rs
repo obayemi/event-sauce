@@ -6,58 +6,15 @@ use std::ops::Deref;
 use std::sync::Arc;
 
 use axum::extract::FromRequestParts;
-use axum::response::{IntoResponse, Response};
 use event_sauce_auth::UserAggregate;
 use event_sauce_core::AggregateRoot;
-use http::{request::Parts, StatusCode};
+use http::request::Parts;
 
-use crate::login::auth_session::installed;
-
-/// Why a user extractor refused the request.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub enum AuthRejection {
-    /// Nobody is logged in: answered with `401 Unauthorized`.
-    #[error("not logged in")]
-    Unauthenticated,
-    /// The user is logged in but anonymous, so not registered: answered with
-    /// `403 Forbidden`.
-    #[error("registration required")]
-    Forbidden,
-    /// The [`AuthLayer`](crate::AuthLayer) is not installed: answered with
-    /// `500 Internal Server Error`.
-    #[error("the authentication layer is not installed")]
-    MissingLayer,
-}
-
-impl AuthRejection {
-    /// The status the rejection is answered with.
-    #[must_use]
-    pub fn status(self) -> StatusCode {
-        match self {
-            Self::Unauthenticated => StatusCode::UNAUTHORIZED,
-            Self::Forbidden => StatusCode::FORBIDDEN,
-            Self::MissingLayer => StatusCode::INTERNAL_SERVER_ERROR,
-        }
-    }
-}
-
-impl IntoResponse for AuthRejection {
-    fn into_response(self) -> Response {
-        (self.status(), self.to_string()).into_response()
-    }
-}
-
-fn resolved<U: UserAggregate>(
-    parts: &Parts,
-) -> Result<Option<Arc<AggregateRoot<U>>>, AuthRejection> {
-    Ok(installed::<U>(parts)?
-        .user
-        .as_ref()
-        .map(|user| Arc::clone(user.user())))
-}
+use crate::login::auth_session::session_user;
+use crate::login::rejection::AuthRejection;
 
 fn logged_in<U: UserAggregate>(parts: &Parts) -> Result<Arc<AggregateRoot<U>>, AuthRejection> {
-    resolved::<U>(parts)?.ok_or(AuthRejection::Unauthenticated)
+    session_user::<U>(parts)?.ok_or(AuthRejection::Unauthenticated)
 }
 
 fn registered<U: UserAggregate>(parts: &Parts) -> Result<Arc<AggregateRoot<U>>, AuthRejection> {
@@ -71,9 +28,9 @@ fn registered<U: UserAggregate>(parts: &Parts) -> Result<Arc<AggregateRoot<U>>, 
 /// The logged-in user of the request, as the aggregate the commands take.
 ///
 /// `U` is the user aggregate, which is how the extractor finds the session
-/// [`AuthLayer`](crate::AuthLayer) installed. The user was loaded once for the request, or not at all on a version
-/// checked cache hit, and derefs to its [`AggregateRoot`], so it can be
-/// passed straight to an `@actor` command.
+/// [`AuthLayer`](crate::AuthLayer) installed. The user was loaded once for the
+/// request, or not at all on a version checked cache hit, and derefs to its
+/// [`AggregateRoot`], so it can be passed straight to an `@actor` command.
 ///
 /// A request with no logged-in user is rejected with `401`.
 pub struct CurrentUser<U: UserAggregate>(pub Arc<AggregateRoot<U>>);
@@ -118,7 +75,7 @@ impl<St: Send + Sync, U: UserAggregate> FromRequestParts<St> for MaybeUser<U> {
         parts: &mut Parts,
         _state: &St,
     ) -> impl Future<Output = Result<Self, AuthRejection>> {
-        ready(resolved::<U>(parts).map(Self))
+        ready(session_user::<U>(parts).map(Self))
     }
 }
 
@@ -147,6 +104,3 @@ impl<St: Send + Sync, U: UserAggregate> FromRequestParts<St> for Registered<U> {
         ready(registered::<U>(parts).map(Self))
     }
 }
-
-#[cfg(test)]
-mod tests;

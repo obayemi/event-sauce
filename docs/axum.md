@@ -165,8 +165,9 @@ for a user who never finished a login. So the crate seals it:
   axum_login::AuthSession<B>)` cannot be routed (E0283, type annotations
   needed);
 - `AuthLayer::layer` and `App::layer` return a `Router`, there is no
-  `tower::Layer` impl, and errors are `SessionError`, so no value of an
-  application has a type that mentions the backend;
+  `tower::Layer` impl, and errors are `SessionError`, which maps the inner
+  error through a private function: no public impl, `From` included, mentions
+  the backend, so no value or bound of an application can infer it;
 - `AuthSession<U>` keeps the inner session private, with no `Deref`,
   `AsRef`, `From` or `Clone`, and the `App` has no `backend()`;
 - `AuthSession::login` takes an `Authenticated<U>`, which only the end of a

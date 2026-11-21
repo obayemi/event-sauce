@@ -1144,8 +1144,9 @@ pub enum SessionError {
   `None`, and ends the session, when nobody is logged in or the user is now
   gone or inactive. It never changes the user id.
 - `logout` ends the session and answers the user it held.
-- `SessionError` maps `axum_login::Error<Backend<U>>`, whose type would
-  name the backend.
+- `SessionError` maps `axum_login::Error<Backend<U>>` through a private
+  function, since a public `From` impl would name the backend and let a
+  `SessionError: From<axum_login::Error<B>>` bound infer it.
 
 `EventSauceBackend`, `UserBackend` and `SessionUser` leave
 the public API, and `BackendError` with them, and so do `EventSauceBackend::new`, `with_cache`,
@@ -1236,9 +1237,9 @@ them is closed by the compiler:
 
 | Escape path | Closed by |
 |---|---|
-| `axum_login::AuthSession<EventSauceBackend<..>>` as an extractor, `Extension<..>` or `parts.extensions.get::<..>()` | the backend is `pub(crate)`: no path, alias or re-export names it, from this crate or the facade |
+| `axum_login::AuthSession<Backend<U>>` as an extractor, `Extension<..>` or `parts.extensions.get::<..>()` | the backend is `pub(crate)`: no path, alias or re-export names it, from this crate or the facade |
 | a generic handler `fn h<B: AuthnBackend>(s: axum_login::AuthSession<B>)` | nothing public carries `B`, so routing `h` is E0283, type annotations needed; `http::Extensions` cannot be enumerated |
-| inferring `B` from a value: an `AuthManagerLayer<B, _>`, a `Layer::Service`, an `axum_login::Error<B>` | `AuthLayer::layer` and `App::layer` return a `Router`; no `Layer` impl; errors are `SessionError` |
+| inferring `B` from a value: an `AuthManagerLayer<B, _>`, a `Layer::Service`, an `axum_login::Error<B>`, a `SessionError: From<axum_login::Error<B>>` bound | `AuthLayer::layer` and `App::layer` return a `Router`; no `Layer` impl; errors are `SessionError`, which maps the inner error through a private function, with no public impl over the backend |
 | a bound `B: AuthnBackend<User = SessionUser<U>>`, or `B: UserBackend` | `SessionUser` is `pub(crate)` and `UserBackend` is deleted |
 | a backend instance for `get_user`: `App::backend`, the `backend` field of `axum_login::AuthSession` | `App::backend` is deleted; `AuthSession<U>` keeps the inner session private, with no `Deref`, `AsRef`, `From` or `Clone` |
 | a future signature leaking the type | `private_interfaces` (denied in CI) and E0446; `lib.rs` also denies `unnameable_types`, so a later move to a `pub` type in a private module fails too |
@@ -1520,6 +1521,8 @@ The lowest level that can prove each behaviour, and only there:
       `login_with_the_current_user.rs`: `AuthSession::login` given an
       `AggregateRoot<U>`, an `Arc<AggregateRoot<U>>` or the `CurrentUser`
       aggregate is E0308;
+    - `infer_the_backend_from_the_session_error.rs`: a handler bounded by
+      `SessionError: From<axum_login::Error<B>>`, routed, is E0277;
     - `reach_the_inner_session.rs`: `auth.inner` and `auth.backend` on an
       `AuthSession<U>` are E0616 and E0609;
     - `cast_the_session_to_axum_login.rs`: `AuthSession<U>` has no

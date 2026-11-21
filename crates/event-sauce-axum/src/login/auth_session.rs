@@ -11,7 +11,8 @@ use event_sauce_core::AggregateRoot;
 use http::request::Parts;
 
 use crate::login::backend::Backend;
-use crate::login::{AuthRejection, SessionUser};
+use crate::login::rejection::AuthRejection;
+use crate::login::SessionUser;
 
 /// Why a session could not be opened, renewed or ended.
 #[derive(Debug, thiserror::Error)]
@@ -24,12 +25,10 @@ pub enum SessionError {
     Store(#[from] event_sauce_core::Error),
 }
 
-impl<U: UserAggregate> From<axum_login::Error<Backend<U>>> for SessionError {
-    fn from(error: axum_login::Error<Backend<U>>) -> Self {
-        match error {
-            axum_login::Error::Session(error) => Self::Session(error),
-            axum_login::Error::Backend(error) => Self::Store(error),
-        }
+fn session_error<U: UserAggregate>(error: axum_login::Error<Backend<U>>) -> SessionError {
+    match error {
+        axum_login::Error::Session(error) => SessionError::Session(error),
+        axum_login::Error::Backend(error) => SessionError::Store(error),
     }
 }
 
@@ -67,7 +66,7 @@ impl<U: UserAggregate> AuthSession<U> {
     /// The logged-in user of the session, if there is one.
     #[must_use]
     pub fn user(&self) -> Option<&Arc<AggregateRoot<U>>> {
-        self.inner.user.as_ref().map(SessionUser::user)
+        user_of(&self.inner)
     }
 
     /// Opens a session for the user whose login just finished.
@@ -79,7 +78,10 @@ impl<U: UserAggregate> AuthSession<U> {
     ///
     /// Returns [`SessionError::Session`] when the session store fails.
     pub async fn login(&mut self, user: Authenticated<U>) -> Result<(), SessionError> {
-        Ok(self.inner.login(&SessionUser::from(user)).await?)
+        self.inner
+            .login(&SessionUser::from(user))
+            .await
+            .map_err(session_error)
     }
 
     /// Reloads the user of this session, after the request changed its own
@@ -103,10 +105,10 @@ impl<U: UserAggregate> AuthSession<U> {
             return Ok(None);
         };
         let Some(renewed) = self.inner.backend.load(id).await? else {
-            self.inner.logout().await?;
+            self.inner.logout().await.map_err(session_error)?;
             return Ok(None);
         };
-        self.inner.login(&renewed).await?;
+        self.inner.login(&renewed).await.map_err(session_error)?;
         Ok(Some(Arc::clone(renewed.user())))
     }
 
@@ -116,7 +118,7 @@ impl<U: UserAggregate> AuthSession<U> {
     ///
     /// Returns [`SessionError::Session`] when the session store fails.
     pub async fn logout(&mut self) -> Result<Option<Arc<AggregateRoot<U>>>, SessionError> {
-        let user = self.inner.logout().await?;
+        let user = self.inner.logout().await.map_err(session_error)?;
         Ok(user.map(|user| Arc::clone(user.user())))
     }
 }
@@ -129,10 +131,22 @@ impl<U: UserAggregate> fmt::Debug for AuthSession<U> {
     }
 }
 
-pub(crate) fn installed<U: UserAggregate>(
+fn installed<U: UserAggregate>(
     parts: &Parts,
 ) -> Result<&axum_login::AuthSession<Backend<U>>, AuthRejection> {
     parts.extensions.get().ok_or(AuthRejection::MissingLayer)
+}
+
+fn user_of<U: UserAggregate>(
+    inner: &axum_login::AuthSession<Backend<U>>,
+) -> Option<&Arc<AggregateRoot<U>>> {
+    inner.user.as_ref().map(SessionUser::user)
+}
+
+pub(crate) fn session_user<U: UserAggregate>(
+    parts: &Parts,
+) -> Result<Option<Arc<AggregateRoot<U>>>, AuthRejection> {
+    Ok(user_of(installed::<U>(parts)?).cloned())
 }
 
 impl<St: Send + Sync, U: UserAggregate> FromRequestParts<St> for AuthSession<U> {
