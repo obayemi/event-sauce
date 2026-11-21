@@ -11,14 +11,17 @@ use axum::{
     Json, Router,
 };
 use event_sauce::auth::{
-    AlwaysDone, Argon2Hasher, AuthError, CachedUserLoader, Email, FirstFactor, LoginId, Logins,
-    Password, PasswordAttempt, PasswordHash, PasswordHasher, PasswordLogin,
+    AlwaysDone, Argon2Hasher, CachedUserLoader, Email, FirstFactor, LoginId, Logins, Password,
+    PasswordAttempt, PasswordHash, PasswordHasher, PasswordLogin,
 };
-use event_sauce::axum::{AuthLayer, AuthSession, CorrelationLayer, CurrentUser};
+use event_sauce::axum::{
+    AuthLayer, AuthSession, CorrelationLayer, CurrentUser, LoginError, SessionError, StoreError,
+};
 use event_sauce::memory::InMemoryEventStore;
 use event_sauce::prelude::*;
 use secrecy::SecretString;
 use serde::Deserialize;
+use std::result::Result;
 use tower_sessions::{MemoryStore, SessionManagerLayer};
 
 type Factor = FirstFactor<PasswordLogin<Argon2Hasher>, AlwaysDone>;
@@ -53,51 +56,41 @@ async fn hash_password(hasher: &Argon2Hasher, password: String) -> Option<Passwo
     hasher.hash(&SecretString::from(password)).await.ok()
 }
 
-async fn register(State(state): State<AppState>, Json(form): Json<Registration>) -> Response {
+async fn register(
+    State(state): State<AppState>,
+    Json(form): Json<Registration>,
+) -> Result<Response, StoreError> {
     let (Ok(email), Some(hash)) = (
         Email::parse(&form.email),
         hash_password(&state.hasher, form.password).await,
     ) else {
-        return StatusCode::BAD_REQUEST.into_response();
+        return Ok(StatusCode::BAD_REQUEST.into_response());
     };
     let Ok(mut member) = Member::join(form.nickname, Password::new(email, hash));
-    match state.store.repository::<Member>().save(&mut member).await {
-        Ok(()) => (StatusCode::CREATED, member.entity_id().to_string()).into_response(),
-        Err(error) if error.as_claim_conflict().is_some() => StatusCode::CONFLICT.into_response(),
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    }
+    state.store.repository::<Member>().save(&mut member).await?;
+    Ok((StatusCode::CREATED, member.entity_id().to_string()).into_response())
 }
 
 async fn login(
     mut auth: AuthSession<Member>,
     State(state): State<AppState>,
     Json(form): Json<LoginForm>,
-) -> StatusCode {
-    let Ok(email) = Email::parse(&form.email) else {
-        return StatusCode::UNAUTHORIZED;
-    };
+) -> Result<StatusCode, LoginError> {
+    let email = Email::parse(&form.email).map_err(|_| LoginError::refused())?;
     let attempt = PasswordAttempt::new(email, SecretString::from(form.password));
-    let login = match state.logins.begin(&state.first, attempt).await {
-        Ok(login) => login,
-        Err(AuthError::InvalidCredentials | AuthError::Inactive | AuthError::Unknown { .. }) => {
-            return StatusCode::UNAUTHORIZED;
-        }
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR,
-    };
-    let Ok(authenticated) = login.finish().await else {
-        return StatusCode::UNAUTHORIZED;
-    };
-    match auth.login(authenticated).await {
-        Ok(()) => StatusCode::NO_CONTENT,
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
-    }
+    let authenticated = state
+        .logins
+        .begin(&state.first, attempt)
+        .await?
+        .finish()
+        .await?;
+    auth.login(authenticated).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
-async fn logout(mut auth: AuthSession<Member>) -> StatusCode {
-    match auth.logout().await {
-        Ok(_) => StatusCode::NO_CONTENT,
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
-    }
+async fn logout(mut auth: AuthSession<Member>) -> Result<StatusCode, SessionError> {
+    auth.logout().await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn me(member: CurrentUser<Member>) -> String {
@@ -108,21 +101,19 @@ async fn change_password(
     State(state): State<AppState>,
     member: CurrentUser<Member>,
     Json(form): Json<NewPassword>,
-) -> StatusCode {
+) -> Result<StatusCode, StoreError> {
     let Some(hash) = hash_password(&state.hasher, form.password).await else {
-        return StatusCode::BAD_REQUEST;
+        return Ok(StatusCode::BAD_REQUEST);
     };
-    let changed = state
+    state
         .store
         .repository::<Member>()
         .modify(member.entity_id(), |member| {
             member.change_password(hash.clone())
         })
-        .await;
-    match changed {
-        Ok(_) => StatusCode::NO_CONTENT,
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
-    }
+        .await
+        .map_err(Error::from)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Builds the application: an in-memory event store, in-memory sessions and

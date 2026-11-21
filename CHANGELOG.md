@@ -303,6 +303,25 @@ explicitly rather than gated behind a major version bump.
   correlation, session and authentication layers, through its own `AuthLayer`.
   Call `user::<U, _>(method)`: Rust cannot infer only the method type.
 
+- Error responses in `event-sauce-axum`. `StoreError` wraps an
+  `event_sauce_core::Error` and answers `404` for a missing aggregate, `409`
+  for a concurrency or claim conflict, `500` for anything else, and `404` for
+  a deleted aggregate unless the response opts in with
+  `deleted_as(DeletedStatus::Gone)`. The body is a fixed text per status, and
+  with the `tracing` feature a `500` logs its cause. `SplitDomain::split`
+  separates the domain error from the store failures of a `ModifyError<E>`,
+  an `ExecuteError<E>` and a `UnitOfWorkError` (a lifecycle mismatch answers
+  by what it found: an aggregate that already exists is a `409`), handing the
+  domain error back to the application as `Split::Domain`. Behind the `login`
+  feature `LoginError` converts from `AuthError`, `Rejected`, `FinishError`,
+  `ResumeError`, `PendingLoginError` and `SessionError`: every refusal
+  answers the same `401` body and clears the pending login cookie, and a
+  store, hasher or session failure answers `500` with no detail. `SessionError`
+  also answers `500` on its own. The `axum-auth` and `axum-crud` examples and
+  the integration tests use them instead of their own status tables, which
+  answered `401` when a store was down. `thiserror` is no longer optional in
+  the crate.
+
 - Facade features `auth`, `auth-postgres`, `auth-moka`, `auth-redis`,
   `auth-reset` and `auth-totp` re-export `event-sauce-auth` as
   `event_sauce::auth`, and `axum`, `axum-login` and `axum-app` re-export

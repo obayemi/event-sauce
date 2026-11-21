@@ -153,6 +153,7 @@ async fn an_email_registers_only_once() {
     let again = client.register(EMAIL).await;
 
     assert_eq!(again.status, StatusCode::CONFLICT);
+    assert_eq!(again.body, "conflict");
 }
 
 #[tokio::test]

@@ -2,6 +2,7 @@
 //! axum router, with tower-sessions' memory store and the in-memory event
 //! store.
 
+mod broken_store;
 mod support;
 mod user_fixture;
 
@@ -17,6 +18,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use broken_store::BrokenStore;
 use event_sauce_auth::{
     CachedUserLoader, FirstFactor, LoginKey, LoginStore, LoginStoreError, LoginTtl, Logins,
     MokaUserCache, PasswordLogin, UserCache,
@@ -742,4 +744,49 @@ async fn logging_out_leaves_nobody_in_the_session() {
         StatusCode::NO_CONTENT
     );
     assert_eq!(world.client.get("/session").await.body, "nobody");
+}
+
+fn broken_world() -> Client {
+    let events = Arc::new(BrokenStore);
+    let logins = Logins::<User>::new(events.clone());
+    let flow = Flow {
+        pending: logins.pending(Arc::new(MemoryLoginStore::default())),
+        logins,
+        first: Arc::new(FirstFactor::new(
+            PasswordLogin::new(cheap_hasher()),
+            CodeIfEnrolled,
+        )),
+    };
+    let router = Router::new()
+        .merge(login_routes())
+        .route("/me", get(me))
+        .with_state(flow);
+    let sessions = SessionManagerLayer::new(MemoryStore::default());
+    Client::new(AuthLayer::<User>::new(CachedUserLoader::new(events)).layer(router, sessions))
+}
+
+#[tokio::test]
+async fn a_login_against_a_failing_user_store_answers_a_server_error_and_opens_no_session() {
+    let mut client = broken_world();
+
+    let login = client.log_in(ADA, PASSWORD).await;
+    let me = client.get("/me").await;
+
+    assert_eq!(login.status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(login.body, "internal error");
+    assert_eq!(me.status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn an_unknown_email_and_a_wrong_password_answer_the_same_response() {
+    let mut world = World::new();
+    world.register(None).await;
+
+    let unknown = world.client.log_in("nobody@example.com", PASSWORD).await;
+    let wrong = world.client.log_in(ADA, "wrong-horse").await;
+
+    assert_eq!(unknown.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(unknown.status, wrong.status);
+    assert_eq!(unknown.body, wrong.body);
+    assert_eq!(unknown.headers, wrong.headers);
 }

@@ -122,8 +122,9 @@ pub mod auth {
 }
 
 /// axum and tower integration: the correlation layer, the `Store`, `Repo` and
-/// `UnitOfWork` extractors, and, behind `axum-login` and `axum-app`, the
-/// login session and the application builder.
+/// `UnitOfWork` extractors, the `StoreError` response, and, behind
+/// `axum-login` and `axum-app`, the login session, the `LoginError` response
+/// and the application builder.
 #[cfg(feature = "axum")]
 pub mod axum {
     pub use event_sauce_axum::*;

@@ -19,7 +19,7 @@ app = [
     "event-sauce-auth/postgres",
     "event-sauce-auth/moka",
 ]
-login = ["dep:async-trait", "dep:axum-login", "dep:event-sauce-auth", "dep:thiserror"]
+login = ["dep:async-trait", "dep:axum-login", "dep:event-sauce-auth"]
 tracing = ["dep:tracing"]
 
 [dependencies]
@@ -32,7 +32,7 @@ event-sauce-postgres = { path = "../event-sauce-postgres", version = "0.1.0", fe
 http.workspace = true
 serde.workspace = true
 sqlx = { workspace = true, optional = true }
-thiserror = { workspace = true, optional = true }
+thiserror.workspace = true
 tower = { workspace = true }
 tracing = { workspace = true, optional = true }
 uuid.workspace = true
@@ -51,7 +51,6 @@ serde_json.workspace = true
 sqlx.workspace = true
 testcontainers.workspace = true
 testcontainers-modules = { workspace = true, features = ["postgres"] }
-thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time"] }
 tower = { workspace = true, features = ["util"] }
 tower-sessions = { workspace = true, features = ["memory-store"] }

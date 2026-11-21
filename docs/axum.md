@@ -12,9 +12,11 @@ methods, typestate logins) is in the [auth guide](auth.md).
 - [Installation](#installation)
 - [The Correlation Layer](#the-correlation-layer)
 - [State: Store, Repo and UnitOfWork](#state-store-repo-and-unitofwork)
+- [Answering Errors](#answering-errors)
 - [Login with axum-login](#login-with-axum-login)
   - [The Session](#the-session)
   - [Logging In and Out](#logging-in-and-out)
+  - [Refusing a Login](#refusing-a-login)
   - [Guarding Routes](#guarding-routes)
   - [Logins With Several Steps](#logins-with-several-steps)
   - [Sessions End When Credentials Change](#sessions-end-when-credentials-change)
@@ -36,6 +38,8 @@ methods, typestate logins) is in the [auth guide](auth.md).
 - **`AuthSession`** opens an `axum-login` session from a finished login and
   from nothing else, **`AuthLayer`** installs it, and **`CurrentUser`**,
   **`MaybeUser`** and **`Registered`** hand the logged-in user to handlers.
+- **`StoreError`** and **`LoginError`** answer the failures of a store and of a
+  login with the right status and no detail.
 - **`EventSauceApp::postgres`** builds all of the above on one `PgPool`.
 
 ## Installation
@@ -53,8 +57,8 @@ facade features nest:
 
 | Feature | Adds |
 |---|---|
-| `axum` | the correlation layer and the `Store`, `Repo` and `UnitOfWork` extractors |
-| `axum-login` | `AuthLayer`, `AuthSession`, `PendingLogin` and the user extractors; implies `auth` |
+| `axum` | the correlation layer, the `Store`, `Repo` and `UnitOfWork` extractors and `StoreError` |
+| `axum-login` | `AuthLayer`, `AuthSession`, `PendingLogin`, `LoginError` and the user extractors; implies `auth` |
 | `axum-app` | `EventSauceApp::postgres`; implies `axum-login` and `postgres` |
 
 Your application depends on `axum`, `axum-login` and `tower-sessions`
@@ -110,6 +114,67 @@ async fn rename(Repo(orders): Repo<Order, PostgresEventStore>, /* ... */) { /* .
   state's `Store<S>`. It never rejects.
 - `UnitOfWork<T>` does the same for `Arc<UnitOfWorkStore<T>>`, see the
   [unit of work guide](unit-of-work.md).
+
+## Answering Errors
+
+The orphan rule forbids answering `event_sauce_core::Error` directly, so the
+crate wraps it. **`StoreError`** is the error a handler returns when a store
+operation fails, usually through `?`:
+
+| Failure | Status | Body |
+|---|---|---|
+| not found | `404` | `not found` |
+| deleted | `404`, or `410` after `deleted_as(DeletedStatus::Gone)` | `not found`, or `gone` |
+| concurrency or claim conflict, an aggregate that already exists | `409` | `conflict` |
+| anything else | `500` | `internal error` |
+
+The body is a fixed text per status, never the error's own message, which
+names aggregate types, ids and claim keys. With the `tracing` feature a `500`
+is logged with its cause at `error` level and a `409` at `debug`. A deleted
+aggregate is hidden as a missing one unless the response opts in, because
+the same deletion can be hidden on one route and reported on another:
+
+```rust
+type Notes = Repo<Note, PostgresEventStore>;
+
+async fn read(Repo(notes): Notes, Path(id): Path<NoteId>) -> Result<String, StoreError> {
+    Ok(notes.load(id).await?.title.clone())
+}
+
+async fn read_or_gone(Repo(notes): Notes, Path(id): Path<NoteId>) -> Result<String, StoreError> {
+    let note = notes
+        .load(id)
+        .await
+        .map_err(|error| StoreError::from(error).deleted_as(DeletedStatus::Gone))?;
+    Ok(note.title.clone())
+}
+```
+
+`ModifyError<E>`, `ExecuteError<E>` and `UnitOfWorkError` hold a domain error
+next to the store failures. Only the application knows the status of its own
+error (a `NotOwner` is `404`, an `EmptyTitle` is `422`), so `split()` hands
+the domain error back and turns the rest into a `StoreError`:
+
+```rust
+impl<E> From<ModifyError<E>> for ApiError
+where
+    Self: From<E>,
+{
+    fn from(error: ModifyError<E>) -> Self {
+        match error.split() {
+            Split::Domain(domain) => domain.into(),
+            Split::Store(store) => Self::Store(store),
+        }
+    }
+}
+```
+
+`ExecuteError::Lifecycle` and `UnitOfWorkError::Lifecycle` answer by what
+they found: an aggregate that already exists is a `409`, a missing one a
+`404` and a deleted one a deletion. `UnitOfWorkError::Unregistered`,
+`AlreadyCheckedOut`, `LeakedHandle` and `DeleteFailed` are `500`.
+
+`LoginError`, for the login handlers, is in [Refusing a Login](#refusing-a-login).
 
 ## Login with axum-login
 
@@ -206,24 +271,45 @@ async fn login(
     mut auth: AuthSession<Member>,
     State(app): State<AppState>,
     Json(form): Json<LoginForm>,
-) -> Result<StatusCode, LoginFailed> {
-    let attempt = PasswordAttempt::new(Email::parse(&form.email)?, form.password.into());
+) -> Result<StatusCode, LoginError> {
+    let email = Email::parse(&form.email).map_err(|_| LoginError::refused())?;
+    let attempt = PasswordAttempt::new(email, form.password.into());
     let authenticated = app.logins.begin(&app.first, attempt).await?.finish().await?;
     auth.login(authenticated).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn logout(mut auth: AuthSession<Member>) -> StatusCode {
-    auth.logout().await.unwrap();
-    StatusCode::NO_CONTENT
+async fn logout(mut auth: AuthSession<Member>) -> Result<StatusCode, SessionError> {
+    auth.logout().await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 ```
 
-`begin` answers `AuthError::InvalidCredentials`, `Inactive` or `Unknown`
-for the attempts to refuse with `401`, and the other variants are the
-failures of a store or a verifier. A flow that signs a user up and logs them
-in at once uses `Logins::sign_up(root)`, whose `Login<U, Done>` finishes the
-same way.
+A flow that signs a user up and logs them in at once uses
+`Logins::sign_up(root)`, whose `Login<U, Done>` finishes the same way.
+
+### Refusing a Login
+
+**`LoginError`** is the error of every login step. It converts with `?` from
+`AuthError`, `Rejected`, `FinishError`, `ResumeError`, `PendingLoginError` and
+`SessionError`, and answers one of two things:
+
+| Failure | Status | Body | Pending cookie |
+|---|---|---|---|
+| a refusal: invalid credentials, an inactive or unknown user, a mismatch, a login not in progress, credentials changed during the login, or `LoginError::refused()` | `401` | `login refused` | cleared |
+| an outage: a user store, login store, hasher, verifier or session failure | `500` | `internal error` | untouched |
+
+Every refusal answers the same bytes, so a client cannot tell an unknown
+email from a wrong password or an inactive account. A `500` leaves the
+pending cookie alone: when the store failed before the pending login was
+taken, it is still there to retry, and when it failed after, the next
+attempt is refused and clears it. `LoginError::refused()` is for a refusal
+the application decides itself, such as a malformed email. `SessionError`
+answers a `500` on its own, for `logout` and `renew`.
+
+An application that signs unknown users up, as in the federated flow of the
+[auth guide](auth.md), matches `AuthError::Unknown { attempt }` before the
+`?`.
 
 ### Guarding Routes
 
@@ -260,7 +346,7 @@ async fn login(
     mut auth: AuthSession<Member>,
     State(app): State<AppState>,
     Json(attempt): Json<PasswordAttempt<Email>>,
-) -> Result<Response, LoginFailed> {
+) -> Result<Response, LoginError> {
     match app.logins.begin(&app.first, attempt).await? {
         TotpOrDone::Done(login) => {
             auth.login(login.finish().await?).await?;
@@ -279,7 +365,7 @@ async fn totp(
     State(app): State<AppState>,
     pending: PendingLogin,
     Json(code): Json<TotpCode>,
-) -> Result<Response, LoginFailed> {
+) -> Result<Response, LoginError> {
     let login = app.pending.resume::<NeedTotp>(pending.id()).await?;
     let user = login.prove(&app.totp, code.0).await?.finish().await?;
     auth.login(user).await?;
@@ -410,7 +496,7 @@ Postgres container, so they need Docker.
 | `event-sauce-axum` feature | Facade feature | Adds |
 |---|---|---|
 | `tracing` (default) | `axum` | the `request` tracing span |
-| `login` (default) | `axum-login` | `AuthLayer`, `AuthSession`, `PendingLogin`, user extractors |
+| `login` (default) | `axum-login` | `AuthLayer`, `AuthSession`, `PendingLogin`, `LoginError`, user extractors |
 | `app` (default) | `axum-app` | `EventSauceApp` and the Postgres defaults |
 
 Through the facade, `tracing` comes with `axum`. `app` implies `login`, the

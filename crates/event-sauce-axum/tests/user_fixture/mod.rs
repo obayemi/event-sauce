@@ -21,7 +21,7 @@ use event_sauce_auth::{
     PasswordHash, PasswordHasher, PasswordLogin, PendingLogins, Rejected, Route, Step,
     UserAggregate,
 };
-use event_sauce_axum::{AuthSession, PendingLogin};
+use event_sauce_axum::{AuthSession, LoginError, PendingLogin};
 use event_sauce_core::{
     aggregate_command, define_events, Aggregate, AggregateClaim, AggregateError, Entity, EntityId,
     EventStore, Repository,
@@ -305,45 +305,41 @@ pub struct Flow {
     pub first: Arc<PasswordFactor>,
 }
 
-async fn open_session(mut auth: AuthSession<User>, login: Login<User, Done>) -> Response {
-    let cleared = [(SET_COOKIE, PendingLogin::clear_cookie())];
-    let Ok(authenticated) = login.finish().await else {
-        return (StatusCode::UNAUTHORIZED, cleared).into_response();
-    };
-    auth.login(authenticated).await.unwrap();
-    (StatusCode::NO_CONTENT, cleared).into_response()
+async fn open_session(
+    mut auth: AuthSession<User>,
+    login: Login<User, Done>,
+) -> Result<Response, LoginError> {
+    let authenticated = login.finish().await?;
+    auth.login(authenticated).await?;
+    Ok((
+        StatusCode::NO_CONTENT,
+        [(SET_COOKIE, PendingLogin::clear_cookie())],
+    )
+        .into_response())
 }
 
-async fn hold<S: LoginState>(pending: &PendingLogins<User>, login: Login<User, S>) -> Response {
-    let id = pending.save(login).await.unwrap();
-    (
+async fn hold<S: LoginState>(
+    pending: &PendingLogins<User>,
+    login: Login<User, S>,
+) -> Result<Response, LoginError> {
+    let id = pending.save(login).await?;
+    Ok((
         StatusCode::ACCEPTED,
         [(SET_COOKIE, PendingLogin::set_cookie::<S>(id))],
     )
-        .into_response()
-}
-
-fn refused() -> Response {
-    (
-        StatusCode::UNAUTHORIZED,
-        [(SET_COOKIE, PendingLogin::clear_cookie())],
-    )
-        .into_response()
+        .into_response())
 }
 
 pub async fn login(
     auth: AuthSession<User>,
     State(flow): State<Flow>,
     Json(form): Json<LoginForm>,
-) -> Response {
-    let attempt = PasswordAttempt::new(
-        Email::parse(&form.email).unwrap(),
-        SecretString::from(form.password),
-    );
-    match flow.logins.begin(&flow.first, attempt).await {
-        Ok(AfterPassword::Done(login)) => open_session(auth, login).await,
-        Ok(AfterPassword::Code(login)) => hold::<NeedCode>(&flow.pending, login).await,
-        Err(_) => StatusCode::UNAUTHORIZED.into_response(),
+) -> Result<Response, LoginError> {
+    let email = Email::parse(&form.email).map_err(|_| LoginError::refused())?;
+    let attempt = PasswordAttempt::new(email, SecretString::from(form.password));
+    match flow.logins.begin(&flow.first, attempt).await? {
+        AfterPassword::Done(login) => open_session(auth, login).await,
+        AfterPassword::Code(login) => hold::<NeedCode>(&flow.pending, login).await,
     }
 }
 
@@ -351,14 +347,10 @@ pub async fn code(
     State(flow): State<Flow>,
     pending: PendingLogin,
     Json(form): Json<CodeForm>,
-) -> Response {
-    let Ok(login) = flow.pending.resume::<NeedCode>(pending.id()).await else {
-        return refused();
-    };
-    match login.prove(&(), form.code).await {
-        Ok(next) => hold::<NeedMail>(&flow.pending, next).await,
-        Err(_) => refused(),
-    }
+) -> Result<Response, LoginError> {
+    let login = flow.pending.resume::<NeedCode>(pending.id()).await?;
+    let next = login.prove(&(), form.code).await?;
+    hold::<NeedMail>(&flow.pending, next).await
 }
 
 pub async fn mail(
@@ -366,14 +358,10 @@ pub async fn mail(
     State(flow): State<Flow>,
     pending: PendingLogin,
     Json(form): Json<CodeForm>,
-) -> Response {
-    let Ok(login) = flow.pending.resume::<NeedMail>(pending.id()).await else {
-        return refused();
-    };
-    match login.prove(&(), form.code).await {
-        Ok(done) => open_session(auth, done).await,
-        Err(_) => refused(),
-    }
+) -> Result<Response, LoginError> {
+    let login = flow.pending.resume::<NeedMail>(pending.id()).await?;
+    let done = login.prove(&(), form.code).await?;
+    open_session(auth, done).await
 }
 
 pub fn login_routes() -> Router<Flow> {

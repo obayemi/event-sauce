@@ -247,6 +247,12 @@ let login: Login<Member, Done> = logins.begin(&password, attempt).await?;
 `Hash`, `LoginStore` and `Unavailable`, the last one for a verifier that could
 not check the attempt at all (`Rejected::unavailable(error)`).
 
+The first three are refusals and the others are outages. In an axum handler
+`event-sauce-axum`'s `LoginError` converts both with `?`: every refusal
+answers the same `401`, so a client cannot tell an unknown email from a wrong
+password, and an outage answers `500` with no detail (see the [axum
+guide](axum.md#refusing-a-login)).
+
 What `begin` returns is a `Login`, not a session. Only `Login::finish` yields
 the `Authenticated<U>` a session is opened from, and `finish` exists only for
 a `Complete` state such as `Done`. `Logins::sign_up(user)` commits a brand-new

@@ -377,9 +377,17 @@ operation over several aggregates is a `UnitOfWorkCommand` (see
 - HTTP apps use `event-sauce-axum`: `EventSauceApp` for the Postgres
   defaults, `AuthLayer` and the `AuthSession` extractor for login sessions, the
   `Store`/`Repo`/`UnitOfWork` and `CurrentUser`/`MaybeUser`/`Registered`
-  extractors, and `CorrelationLayer`
+  extractors, `StoreError` and `LoginError` for the error responses, and
+  `CorrelationLayer`
   so events carry the request id (see `docs/axum.md` and the `axum-auth`
   and `axum-crud` examples)
+- An HTTP handler never writes its own status table for a failure: it returns
+  `event-sauce-axum`'s `StoreError` for a store failure (`404`, `409`, `500`,
+  and `410` only through `deleted_as(DeletedStatus::Gone)`; split a
+  `ModifyError`, `ExecuteError` or `UnitOfWorkError` with `SplitDomain::split`
+  to keep the domain error) and `LoginError` for a login step, so a store
+  outage is never answered as a bad login and no refusal tells an unknown
+  user from a wrong password
 - New examples declare every facade feature they need in `required-features`,
   so they build with `--no-default-features`
 

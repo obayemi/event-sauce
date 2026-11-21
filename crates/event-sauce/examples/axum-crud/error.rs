@@ -4,7 +4,8 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use event_sauce::auth::{AuthError, EmailError};
+use event_sauce::auth::{EmailError, HashError};
+use event_sauce::axum::{Split, SplitDomain, StoreError};
 use event_sauce::prelude::{Error, ModifyError};
 
 use crate::member::MemberError;
@@ -13,11 +14,10 @@ use crate::note::NoteError;
 /// Everything a handler can fail with.
 ///
 /// A note of somebody else answers `404`, exactly like a note that does not
-/// exist, so a caller cannot probe which ids are taken.
+/// exist, so a caller cannot probe which ids are taken. The statuses of the
+/// store failures come from [`StoreError`].
 #[derive(Debug, thiserror::Error)]
 pub enum ApiError {
-    #[error("wrong email or password")]
-    Unauthorized,
     #[error(transparent)]
     Member(#[from] MemberError),
     #[error(transparent)]
@@ -25,50 +25,16 @@ pub enum ApiError {
     #[error(transparent)]
     Email(#[from] EmailError),
     #[error("the password hasher failed")]
-    Hashing(#[from] event_sauce::auth::HashError),
+    Hashing(#[from] HashError),
     #[error(transparent)]
-    Store(#[from] Error),
+    Store(#[from] StoreError),
     #[error(transparent)]
     Database(#[from] sqlx::Error),
-    #[error("the login could not be checked")]
-    Login,
-    #[error("the session failed: {0}")]
-    Session(#[from] event_sauce::axum::SessionError),
 }
 
-impl ApiError {
-    fn status(&self) -> StatusCode {
-        match self {
-            Self::Unauthorized => StatusCode::UNAUTHORIZED,
-            Self::Note(NoteError::NotOwner) => StatusCode::NOT_FOUND,
-            Self::Member(_) | Self::Email(_) | Self::Note(_) => StatusCode::UNPROCESSABLE_ENTITY,
-            Self::Store(error)
-                if error.as_claim_conflict().is_some() || error.is_concurrency_conflict() =>
-            {
-                StatusCode::CONFLICT
-            }
-            Self::Store(error) if error.is_not_found() || error.is_aggregate_deleted() => {
-                StatusCode::NOT_FOUND
-            }
-            Self::Hashing(_)
-            | Self::Store(_)
-            | Self::Database(_)
-            | Self::Login
-            | Self::Session(_) => StatusCode::INTERNAL_SERVER_ERROR,
-        }
-    }
-}
-
-impl<A> From<AuthError<A>> for ApiError {
-    fn from(error: AuthError<A>) -> Self {
-        match error {
-            AuthError::InvalidCredentials | AuthError::Inactive | AuthError::Unknown { .. } => {
-                Self::Unauthorized
-            }
-            AuthError::Store(error) => Self::Store(error),
-            AuthError::Hash(error) => Self::Hashing(error),
-            AuthError::LoginStore(_) | AuthError::Unavailable(_) => Self::Login,
-        }
+impl From<Error> for ApiError {
+    fn from(error: Error) -> Self {
+        Self::Store(error.into())
     }
 }
 
@@ -77,21 +43,24 @@ where
     Self: From<E>,
 {
     fn from(error: ModifyError<E>) -> Self {
-        match error {
-            ModifyError::Domain(domain) => domain.into(),
-            ModifyError::Load(error) | ModifyError::Save(error) => Self::Store(error),
+        match error.split() {
+            Split::Domain(domain) => domain.into(),
+            Split::Store(store) => store.into(),
         }
     }
 }
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let status = self.status();
-        let message = match status {
-            StatusCode::NOT_FOUND => "not found".to_owned(),
-            StatusCode::INTERNAL_SERVER_ERROR => "internal error".to_owned(),
-            _ => self.to_string(),
-        };
-        (status, message).into_response()
+        match self {
+            Self::Note(NoteError::NotOwner) => (StatusCode::NOT_FOUND, "not found").into_response(),
+            Self::Member(_) | Self::Email(_) | Self::Note(_) => {
+                (StatusCode::UNPROCESSABLE_ENTITY, self.to_string()).into_response()
+            }
+            Self::Store(store) => store.into_response(),
+            Self::Hashing(_) | Self::Database(_) => {
+                (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+            }
+        }
     }
 }

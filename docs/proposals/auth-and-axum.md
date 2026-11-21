@@ -1,12 +1,12 @@
 # Proposal: pluggable auth and axum integration
 
-Status: steps 1 to 18 of the build order (section 8) are **implemented**
+Status: steps 1 to 19 of the build order (section 8) are **implemented**
 on `feat/auth`. Steps 15 to 17 replaced the `ClaimAuthenticator`, `TwoFactor`
 and second-factor builder stage that the earlier steps shipped with the
 typestate logins of sections 3.4, 3.6, 4.2 and 4.4. Step 18 sealed the
-session behind `AuthSession<U>`. Steps 19 to 23, the HTTP helpers of
+session behind `AuthSession<U>`. Step 19 added the error responses of
+helper 1 (section 4.5). Steps 20 to 23, the other four HTTP helpers of
 section 4.5, are **proposed** and not built yet. Where the code
-deliberately differs from the first draft of this proposal, the sections
 below describe the code. Supersedes the
 "extract `event-sauce-auth` from saxy-p" plan in saxy-p's `PLAN.md`.
 
@@ -1372,9 +1372,9 @@ backend is crate-private, so `App` exposes neither it nor its type, and
 its `Debug` prints only the correlation layer. `App` is not `Clone` and has
 no public field, so nothing else of it reaches the backend.
 
-### 4.5 HTTP helpers (proposed, steps 19 to 23)
+### 4.5 HTTP helpers (helper 1 implemented, steps 20 to 23 proposed)
 
-Status: **proposed**, not built. The two examples and saxy-p repeat the same
+Status: helper 1 is **implemented** (step 19), helpers 2 to 5 are **proposed**, not built. The two examples and saxy-p repeat the same
 HTTP glue around the crate: mapping store and login errors to statuses,
 answering a login step, loading the aggregate a path names and checking who
 may see it, redirecting a browser to the login page, and building a command
@@ -1404,7 +1404,7 @@ has to be audited, and that is not clearly simpler.
 | 4 | `LoginRedirect`, `AuthRejection::Redirect`, `ReturnTo` | `login`; `ReturnTo` needs none | saxy-p's `require_user`, `login_redirect`, `original_uri`, `SafeRedirect` |
 | 5 | `Acting<Ctx>`, `FromUser` | `login` | saxy-p's `Acting` and its second actor load |
 
-#### Helper 1: error responses
+#### Helper 1: error responses (implemented)
 
 The orphan rule forbids `impl IntoResponse for event_sauce_core::Error`, so
 the crate wraps the errors in its own types.
@@ -1520,10 +1520,10 @@ Code this deletes:
   (`finish().map_err(|_| ApiError::Unauthorized)`), `examples/axum-auth/app.rs:87`
   (`let Ok(authenticated) = login.finish().await else { 401 }`), and the
   `Err(_) => 401` arms of `tests/user_fixture/mod.rs`;
-- in `examples/axum-crud/error.rs`, the variants `Unauthorized`, `Store`,
-  `Login`, `Session` and `Hashing`, `impl From<AuthError<A>>`, the store arms
+- in `examples/axum-crud/error.rs`, the variants `Unauthorized`, the old `Store`,
+  `Login` and `Session`, `impl From<AuthError<A>>`, the store arms
   of `status()` and the body masking of `into_response`; `ApiError` keeps
-  the domain variants, `Email`, `Database` and `Store(StoreError)`;
+  the domain variants, `Email`, `Hashing`, `Database` and `Store(StoreError)`;
 - in `examples/axum-auth/app.rs`, the status `match`es of `register`,
   `login`, `logout` and `change_password`;
 - `tests/extractors.rs:123`, which maps every load failure to 404, now
@@ -1544,6 +1544,20 @@ Tests:
   500 and opens no session, and an unknown email and a wrong password answer
   the same 401; `tests/extractors.rs`: a missing ticket 404, a failing store
   500.
+
+As built, step 19 differs from the text above in four places:
+- `LoginError` is a tuple struct over a private enum, so it gets its
+  `Display` and `source` from `thiserror` and exposes only `refused` and
+  `is_refused`; `thiserror` is therefore a plain dependency of the crate.
+- `ApiError` in `examples/axum-crud/error.rs` keeps its `Hashing` variant:
+  hashing a new password at registration is not a login step, so it has no
+  `LoginError` to go through, and it answers `500` with no detail.
+- `Lifecycle` mismatches keep their own source error, a private
+  `LifecycleMismatch`, because an `ExecuteError<E>` cannot be boxed without
+  bounds on `E`.
+- The failing store of the HTTP tests is `tests/broken_store/mod.rs`, an
+  `EventStore` whose every operation fails, shared by `tests/login.rs` and
+  `tests/extractors.rs`.
 
 #### Helper 2: login-step glue
 
@@ -1970,7 +1984,7 @@ Tests:
 | `event-sauce-macros` | `user` flag, `#[user(identity)]`/`#[user(active)]` field attributes, `Credentials::claims()` merged into `claims()` |
 | `event-sauce` facade | features `auth` (plus `auth-postgres`, `auth-moka`, `auth-redis`, `auth-reset`, `auth-totp`) and `axum` (plus `axum-login`, `axum-app`), all in `full`, re-exported as `event_sauce::auth` and `event_sauce::axum` |
 | `.github/workflows/ci.yml` | new `feature-matrix-auth-axum` job that lints each feature of `event-sauce-auth`, `event-sauce-axum` and the facade alone |
-| `event-sauce-axum` (steps 19 to 23, proposed) | the helpers of section 4.5; the `login` feature also turns on `axum/original-uri` and adds `percent-encoding`, already in the tree through `axum` |
+| `event-sauce-axum` (step 19 implemented, steps 20 to 23 proposed) | the helpers of section 4.5; the `login` feature also turns on `axum/original-uri` and adds `percent-encoding`, already in the tree through `axum` |
 
 ## 6. Migrating saxy-p
 
@@ -2208,7 +2222,8 @@ it in the type system (section 4.2) and deletes what it supersedes:
     `axum-login` session record, `renew` during a concurrent credential
     change, and an application's own `AuthnBackend`.
 
-The HTTP helpers of section 4.5 are proposed, not built. Each step is its
+Helper 1 of section 4.5 (step 19) is built, the other four are proposed.
+Each step is its
 own commit in `event-sauce-axum`, test first (the unit, HTTP and trybuild
 cases its helper lists, seen failing for the right reason before the code),
 deletes in the same commit the example and test code it supersedes, and
@@ -2223,7 +2238,7 @@ refusals with 19's `LoginError`, 21 and 22 reuse 19's `DeletedStatus` and
 `StoreError`, and 22 and 23 build on the rejection 21's `Authorized` shares
 with `CurrentUser`.
 
-19. Error responses: `StoreError`, `StoreFailure`, `DeletedStatus`,
+19. Implemented. Error responses: `StoreError`, `StoreFailure`, `DeletedStatus`,
     `Split`, `SplitDomain` (no feature); `LoginError` and
     `impl IntoResponse for SessionError` (`login`). Rewrites
     `examples/axum-crud/error.rs` around `StoreError` and `LoginError`, the

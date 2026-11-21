@@ -44,7 +44,7 @@ read models kept up to date from the very events your aggregates emit.
 - ⚙️ **Typed Commands**: lifecycle-aware `Command` handlers over a `Root`, run with `Repository::execute` and a `RetryPolicy` that retries concurrency conflicts (`commands` feature)
 - 🔗 **Units of Work**: atomic commits across event-sourced and state-stored aggregates with `UnitOfWorkStore`, backed by the in-memory and Postgres `TransactionalStore` (`unit-of-work` feature)
 - 🔑 **Pluggable Auth**: credentials live inside the user aggregate (`#[aggregate(user)]`, `Identity<C>`), logins resolve through claims and run as typestate processes (password, federated, TOTP or any steps you name) that cannot open a session before the last one (`auth` feature)
-- 🌐 **axum Integration**: request-id correlation, `Store`/`Repo` extractors, login sessions that open only from a finished login and end on credential change, and a one-builder Postgres app (`axum`, `axum-login` and `axum-app` features)
+- 🌐 **axum Integration**: request-id correlation, `Store`/`Repo` extractors, `StoreError` and `LoginError` responses with the right status and no detail, login sessions that open only from a finished login and end on credential change, and a one-builder Postgres app (`axum`, `axum-login` and `axum-app` features)
 - 🗄️ **Multiple Backends**: PostgreSQL, in-memory
 - 🧪 **Testing First-Class**: In-memory backend for fast tests; 🚀 latest stable dependencies (Tokio 1.48, SQLx 0.8); strict TDD with property-based testing
 
@@ -483,7 +483,7 @@ use event_sauce::crypto::Aes256GcmProvider;
 - `postgres` - PostgreSQL backend (implies `event-sourcing` and `state-store`)
 - `crypto` - Encryption support (AES-256-GCM provider, key stores); implies `event-sourcing`; turns on encryption in whichever backends are enabled
 - `auth` - Credentials, login methods and typestate logins for user aggregates, as `event_sauce::auth` (with `auth-postgres`, `auth-moka`, `auth-redis`, `auth-reset` and `auth-totp` for its optional parts)
-- `axum` - Correlation layer and `Store`/`Repo`/`UnitOfWork` extractors, as `event_sauce::axum`; `axum-login` adds `AuthLayer`, `AuthSession`, `PendingLogin` and the user extractors (implies `auth`), `axum-app` adds the Postgres app builder (implies `postgres`)
+- `axum` - Correlation layer, `Store`/`Repo`/`UnitOfWork` extractors and `StoreError`, as `event_sauce::axum`; `axum-login` adds `AuthLayer`, `AuthSession`, `PendingLogin`, `LoginError` and the user extractors (implies `auth`), `axum-app` adds the Postgres app builder (implies `postgres`)
 - `full` - All features enabled
 
 The event-driven domain layer (aggregates, events, commands, the `Repository`
@@ -744,7 +744,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 - **[Policies Guide](docs/policies.md)** - Cross-aggregate event orchestration, causation tracking, and error handling
 - **[Claims Guide](docs/claims.md)** - Cross-aggregate uniqueness constraints
 - **[Auth Guide](docs/auth.md)** - Credentials in the user aggregate, login methods, multi-step logins, user cache and reset tokens
-- **[axum Guide](docs/axum.md)** - Correlation layer, extractors, `axum-login` sessions and the Postgres app builder
+- **[axum Guide](docs/axum.md)** - Correlation layer, extractors, error responses, `axum-login` sessions and the Postgres app builder
 - **[Audit Log Guide](docs/audit-log.md)** - Event log queries, actor tracking, and causation tracing
 - **[Architecture Overview](docs/architecture.md)** - System design and patterns
 - **[TDD Workflow](docs/tdd-workflow.md)** - Test-driven development for event sourcing

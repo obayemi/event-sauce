@@ -3,13 +3,16 @@
 
 use std::sync::Arc;
 
+mod broken_store;
+
 use async_trait::async_trait;
 use axum::body::Body;
 use axum::extract::{FromRef, Path};
 use axum::http::{Method, Request, StatusCode};
 use axum::routing::{get, post};
 use axum::Router;
-use event_sauce_axum::{Repo, Store, UnitOfWork};
+use broken_store::BrokenStore;
+use event_sauce_axum::{Repo, Store, StoreError, UnitOfWork};
 use event_sauce_core::{
     aggregate_command, define_events, Aggregate, AggregateError, Entity, EntityId, EventStore,
     Repository, RetryPolicy, UnitOfWork as Work, UnitOfWorkCommand, UnitOfWorkError,
@@ -112,15 +115,11 @@ async fn open_ticket(
     ticket.entity_id().to_string()
 }
 
-async fn ticket_title(
-    Repo(tickets): Repo<Ticket, InMemoryEventStore>,
+async fn ticket_title<S: EventStore + 'static>(
+    Repo(tickets): Repo<Ticket, S>,
     Path(id): Path<EntityId>,
-) -> Result<String, StatusCode> {
-    tickets
-        .load(id)
-        .await
-        .map(|ticket| ticket.title.clone())
-        .map_err(|_| StatusCode::NOT_FOUND)
+) -> Result<String, StoreError> {
+    Ok(tickets.load(id).await?.title.clone())
 }
 
 async fn ticket_exists(store: Store<InMemoryEventStore>, Path(id): Path<EntityId>) -> String {
@@ -144,7 +143,10 @@ async fn open_pair(UnitOfWork(uow): UnitOfWork<InMemoryTransactionalStore>) -> S
 fn router(state: AppState) -> Router {
     Router::new()
         .route("/tickets/{title}", post(open_ticket))
-        .route("/tickets/{id}/title", get(ticket_title))
+        .route(
+            "/tickets/{id}/title",
+            get(ticket_title::<InMemoryEventStore>),
+        )
         .route("/tickets/{id}/exists", get(ticket_exists))
         .route("/pairs", post(open_pair))
         .with_state(state)
@@ -176,13 +178,16 @@ async fn a_repo_extractor_saves_in_one_request_what_another_loads() {
 }
 
 #[tokio::test]
-async fn a_repo_extractor_reports_an_unknown_aggregate_to_the_handler() {
+async fn a_missing_aggregate_answers_not_found_without_naming_it() {
     let app = router(AppState::new());
     let missing = EntityId::new();
 
-    let (status, _) = call(&app, Method::GET, &format!("/tickets/{missing}/title")).await;
+    let (status, body) = call(&app, Method::GET, &format!("/tickets/{missing}/title")).await;
 
-    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        (status, body.as_str()),
+        (StatusCode::NOT_FOUND, "not found")
+    );
 }
 
 #[tokio::test]
@@ -215,4 +220,28 @@ async fn a_unit_of_work_extractor_commits_several_aggregates_atomically() {
         (first_title.as_str(), second_title.as_str()),
         ("first", "second")
     );
+}
+
+#[derive(Clone, FromRef)]
+struct BrokenState {
+    store: Store<BrokenStore>,
+}
+
+#[tokio::test]
+async fn a_failing_store_is_a_server_error_not_an_unknown_aggregate() {
+    let app = Router::new()
+        .route("/tickets/{id}/title", get(ticket_title::<BrokenStore>))
+        .with_state(BrokenState {
+            store: Store::new(BrokenStore),
+        });
+
+    let (status, body) = call(
+        &app,
+        Method::GET,
+        &format!("/tickets/{}/title", EntityId::new()),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(body, "internal error");
 }

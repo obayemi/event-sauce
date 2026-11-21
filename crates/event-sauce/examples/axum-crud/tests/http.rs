@@ -79,6 +79,7 @@ async fn an_email_registers_only_once() {
     let again = harness.client.register(EMAIL, PASSWORD).await;
 
     assert_eq!(again.status, StatusCode::CONFLICT);
+    assert_eq!(again.body, "conflict");
 }
 
 #[tokio::test]
@@ -313,4 +314,17 @@ async fn every_response_carries_a_request_id() {
     assert!(reply
         .header("x-request-id")
         .is_some_and(|id| !id.is_empty()));
+}
+
+#[tokio::test]
+async fn an_unknown_email_and_a_wrong_password_are_refused_alike() {
+    let mut harness = Harness::start().await;
+    harness.client.register(EMAIL, PASSWORD).await;
+
+    let wrong = harness.client.log_in(EMAIL, "wrong-horse").await;
+    let unknown = harness.client.log_in("nobody@example.com", PASSWORD).await;
+
+    assert_eq!(wrong.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(unknown.status, wrong.status);
+    assert_eq!(unknown.body, wrong.body);
 }
