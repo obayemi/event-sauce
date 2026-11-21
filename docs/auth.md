@@ -279,7 +279,7 @@ to finish a login that reached a `Complete` state:
 
 | Link of the chain | Held by |
 |---|---|
-| A session built from a login needs an `Authenticated<U>` | type: private fields, no `Default`, no `Deserialize`; the step to `AuthSession::login` is a convention (see the limits below) |
+| A session opens only from an `Authenticated<U>` | type: private fields, no `Default`, no `Deserialize`; `event-sauce-axum`'s `AuthSession::login` takes only an `Authenticated<U>`, and the `axum-login` backend and its user type are crate-private, so `axum_login::AuthSession::login` cannot be reached (see the limits below) |
 | An `Authenticated<U>` needs a finished login in a `Complete` state | type: `finish` is bounded by `S: Complete` |
 | A `Login` exists only after a proof | type: built only by `begin`, `sign_up`, `PendingLogins::resume` and `Advance::to` |
 | A login leaves a state only through that state's step | type: `Advance<U, S>` is built only by `prove` for `S: Step<U>`, and for `Entered` by `begin` |
@@ -347,9 +347,14 @@ The types guarantee the order of the process, not the quality of each check:
 the app decides which states are `Complete`, a step's `verify` is ordinary
 code, `SingleFactor` is an assertion by the credentials type, and tags must
 be unique. Anyone who can write the login store directly can forge a pending
-login. The chain holds up to `Authenticated`; `event-sauce-axum` hands a
-`SessionUser` to `axum-login` for any active user it rehydrates, so passing
-`AuthSession::login` only a finished login is a convention, not a type.
+login. The chain holds up to the session: `event-sauce-axum` seals the `axum-login`
+backend, which answers any stored user, behind `AuthSession<U>`, whose `login`
+takes only an `Authenticated<U>`, so no library call opens a session without a
+finished login (the [axum guide](axum.md#what-is-sealed) lists what is sealed).
+Two things stay outside the types: an application that writes `axum-login`'s
+session record by hand through `tower_sessions::Session`, since the record's
+hash is the public `Identity::session_fingerprint()`, and an application
+that implements its own `AuthnBackend`.
 
 ### The Login Store
 

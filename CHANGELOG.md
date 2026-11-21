@@ -266,24 +266,27 @@ explicitly rather than gated behind a major version bump.
   and never reject. `Store` has no repository method of its own: get a
   repository from `Repo` or `store.arc().repository()`.
 
-  Behind the default `login` feature it adds `EventSauceBackend<U, S>`, an
-  `axum-login` backend whose credentials are the `Authenticated<U>` a
-  finished login yields, so `authenticate` cannot open a session before the
-  whole login process ended. Its `get_user` goes through `CachedUserLoader`
-  (optional `with_cache`, or `with_shared_cache` to share one
-  `Arc<dyn UserCache<U>>` with `Logins`), and `renew(&session_user)` reloads
-  the user of a session after the request changed its own credentials.
-  `BackendError` has one variant, `Store`. `SessionUser`, whose session auth
-  hash is the identity session fingerprint, is converted from an
-  `Authenticated<U>`, and there is no conversion from a raw aggregate. The
-  backend's `get_user` and `renew` return `SessionUser`s too, so passing
-  `AuthSession::login` only a finished login is a convention.
+  Behind the default `login` feature it adds `AuthLayer<U>` and
+  `AuthSession<U>`, which close the hole of opening a session without a
+  finished login. `AuthLayer::new(CachedUserLoader)` installs, through
+  `layer(router, session_layer)`, an `axum-login` backend that nothing can
+  name: the backend and its `SessionUser` are `pub(crate)`, `layer` and
+  `App::layer` return a `Router`, and errors are `SessionError`. A handler
+  holds the `AuthSession<U>` extractor, whose `login` takes only the
+  `Authenticated<U>` a finished login yields (and consumes it), `renew`
+  reloads the user of the request's own session after it changed its own
+  credentials, `logout` ends the session and `user` reads it. No library
+  call opens a session without a finished login; what stays outside the
+  types is an application writing `axum-login`'s session record by hand
+  through `tower_sessions::Session` and an application's own `AuthnBackend`.
+  The cache of the user resolved on every request is set on the
+  `CachedUserLoader` (`with_cache`, or `with_shared_cache` to share one
+  `Arc<dyn UserCache<U>>` with `Logins`). `lib.rs` denies `unnameable_types`.
   `PendingLogin`, the short-lived cookie that carries a login between two
   requests, lives as long as the state it waits in
-  (`PendingLogin::set_cookie::<S>(id)` uses `S::TTL`). The `CurrentUser<B>`, `MaybeUser<B>`
-  and `Registered<B>` extractors, which read the user `axum-login` already
-  resolved and reject with `401` or `403`. The extractors are generic over
-  the `UserBackend` trait, which names the user aggregate of a backend.
+  (`PendingLogin::set_cookie::<S>(id)` uses `S::TTL`). The `CurrentUser<U>`, `MaybeUser<U>`
+  and `Registered<U>` extractors, generic over the user aggregate, read the
+  user `axum-login` already resolved and reject with `401` or `403`.
 
   Behind the default `app` feature it adds `EventSauceApp::postgres(pool)`,
   a builder that wires the Postgres event store, a `PostgresLoginStore` in
@@ -295,10 +298,10 @@ explicitly rather than gated behind a major version bump.
   `no_user_cache`, `correlation_header` and `route`, which swaps the
   default `AlwaysDone` for the `Route` that sends logins to the next step:
   credentials that can hold a second factor do not compile with the default.
-  `App` exposes `store`, `backend`, `logins`, `pending`, `first_factor` and
+  `App` exposes `store`, `logins`, `pending`, `first_factor` and
   `login_store`, and `App::layer(router, session_layer)` applies the
-  correlation, session and authentication layers. Call `user::<U, _>(method)`: Rust cannot infer
-  only the method type.
+  correlation, session and authentication layers, through its own `AuthLayer`.
+  Call `user::<U, _>(method)`: Rust cannot infer only the method type.
 
 - Facade features `auth`, `auth-postgres`, `auth-moka`, `auth-redis`,
   `auth-reset` and `auth-totp` re-export `event-sauce-auth` as

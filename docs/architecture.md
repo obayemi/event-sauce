@@ -230,7 +230,7 @@ axum and tower integration, behind the facade's `axum`, `axum-login` and
 
 - **CorrelationLayer** - Runs each request in an event context carrying its request id
 - **Store / Repo / UnitOfWork** - Extractors over the application state
-- **EventSauceBackend** - An `axum-login` backend whose sessions end when credentials change
+- **AuthLayer / AuthSession** - Login sessions over a sealed `axum-login` backend: a session opens only from a finished login, and ends when credentials change
 - **EventSauceApp** - The Postgres stack wired in one builder
 
 ### event-sauce (facade)

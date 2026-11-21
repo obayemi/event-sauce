@@ -1,14 +1,11 @@
 # Proposal: pluggable auth and axum integration
 
-Status: **implemented up to step 17**. Steps 1 to 17 of the build order
-(section 8) are on `feat/auth`; step 18, which seals the session behind
-`AuthSession<U>`, is designed in sections 4.2 and 4.4 and not built yet.
-Steps 15 to 17 replaced the `ClaimAuthenticator`, `TwoFactor`
+Status: **implemented**. Every step of the build order (section 8) is
+on `feat/auth`. Steps 15 to 17 replaced the `ClaimAuthenticator`, `TwoFactor`
 and second-factor builder stage that the earlier steps shipped with the
-typestate logins of sections 3.4, 3.6, 4.2 and 4.4. Where the code
+typestate logins of sections 3.4, 3.6, 4.2 and 4.4. Step 18 sealed the session behind `AuthSession<U>`. Where the code
 deliberately differs from the first draft of this proposal, the sections
-below describe the code, except sections 4.2 and 4.4, which describe
-step 18. Supersedes the
+below describe the code. Supersedes the
 "extract `event-sauce-auth` from saxy-p" plan in saxy-p's `PLAN.md`.
 
 Two new optional crates:
@@ -676,7 +673,7 @@ check the library performs:
 
 | Link | Held by |
 |---|---|
-| A session built from a login needs an `Authenticated<U>` | type, from step 18: `AuthSession::login` takes only an `Authenticated<U>`, and the `axum-login` backend and its `SessionUser` are crate-private, so no handler reaches `get_user` or the raw `login` (section 4.2). Up to step 17 this link is a convention |
+| A session built from a login needs an `Authenticated<U>` | type: `AuthSession::login` takes only an `Authenticated<U>`, and the `axum-login` backend and its `SessionUser` are crate-private, so no handler reaches `get_user` or the raw `login` (section 4.2) |
 | An `Authenticated<U>` needs a finished login in a `Complete` state | type: private fields, `finish` bounded by `S: Complete` |
 | A `Login` exists only after a proof | type: built only by `begin` (after `locate` and `verify`), `sign_up` (after committing a new user), `resume` (what `save` stored) and `Advance::to` |
 | A login leaves a state only through that state's step | type: `Advance<U, S>` is built only by `prove` for `S: Step<U>`, and for `Entered` by `begin` |
@@ -840,11 +837,9 @@ of each check:
   too early is a logic bug no type catches.
 - A step's `verify` is code. The types make sure it ran; whether it checks
   the proof well is its own business. The library's steps are tested.
-- The session record itself. From step 18 no library call opens a session
-  without an `Authenticated<U>`, but an app that writes `axum-login`'s
-  record by hand through `tower_sessions::Session` can (section 4.2,
-  limits). Up to step 17, `get_user` and `renew` hand any handler holding
-  the backend a `SessionUser` it can log in.
+- The session record itself. No library call opens a session without an
+  `Authenticated<U>`, but an app that writes `axum-login`'s record by hand
+  through `tower_sessions::Session` can (section 4.2, limits).
 - `SingleFactor` is an assertion by the credentials type. An app type that
   holds a second factor and implements it anyway gets `AlwaysDone` back.
 - Across requests the binding is the server-side store plus a runtime tag
@@ -1049,11 +1044,11 @@ let router = auth.layer(Router::new().route(…), session_layer);
 ```
 
 A session opens only from an `Authenticated<U>`, and that is a type
-guarantee, not a convention: step 18 (section 8) seals the `axum-login`
-backend inside the crate. Until it lands, the code ships the step 16
-backend, `EventSauceBackend<U, S>`, which an application names, and whose
-`get_user` and `renew` hand out the `SessionUser` that
-`axum_login::AuthSession::login` takes; that is the hole step 18 closes.
+guarantee, not a convention: the `axum-login` backend is sealed inside the
+crate (step 18, section 8). The step 16 backend, `EventSauceBackend<U, S>`,
+was named by applications, and its `get_user` and `renew` handed out the
+`SessionUser` that `axum_login::AuthSession::login` takes; that was the hole
+step 18 closed.
 
 #### The sealed backend
 
@@ -1079,13 +1074,15 @@ name it nor obtain one.
   identity's session fingerprint computed once, so a credential change ends
   every session opened before it.
 - `Credentials = Authenticated<U>`: `authenticate` answers
-  `Ok(Some(SessionUser::from(authenticated)))`, and `AuthSession::login`
-  below is its only caller.
+  `Ok(Some(SessionUser::from(authenticated)))`. `AuthSession::login` below
+  builds that same `SessionUser` directly, since the `None` of `authenticate`
+  cannot happen, so the trait method serves `axum-login`'s contract only.
 - `get_user(id)` goes through the `CachedUserLoader` and answers `None` for
   a missing, deleted or inactive user. A hit is version-checked, a miss or a
   mismatch is a full load that fills the cache, and without a cache every
   request is a full load.
-- `Error = BackendError`, `pub(crate)`, one variant, `Store`.
+- `Error` is `event_sauce_core::Error`: the backend has no failure of its own,
+  so it has no error type of its own either.
 
 #### `AuthLayer<U>`: the only way to install it
 
@@ -1137,8 +1134,8 @@ pub enum SessionError {
 ```
 
 - `login` consumes the `Authenticated<U>`, so one finished login opens one
-  session. It runs `authenticate` then `login` on the inner session, which
-  cycles the session id when the session held no user yet.
+  session. It builds the session user from it and runs `login` on the inner
+  session, which cycles the session id when the session held no user yet.
 - `renew` takes no argument: it reloads the user of the request's own
   session, which `axum-login` already checked against its fingerprint when
   the request began, and logs it in again with its current fingerprint.
@@ -1150,8 +1147,8 @@ pub enum SessionError {
 - `SessionError` maps `axum_login::Error<Backend<U>>`, whose type would
   name the backend.
 
-`EventSauceBackend`, `UserBackend`, `SessionUser` and `BackendError` leave
-the public API, and so do `EventSauceBackend::new`, `with_cache`,
+`EventSauceBackend`, `UserBackend` and `SessionUser` leave
+the public API, and `BackendError` with them, and so do `EventSauceBackend::new`, `with_cache`,
 `with_shared_cache` and `renew` and `App::backend`.
 
 A login handler opens the session from the end of the process, and saves
@@ -1493,11 +1490,13 @@ The lowest level that can prove each behaviour, and only there:
   `AlwaysDone` and no login store.
 - **Step 18, the sealed session** (section 4.2), each at the lowest level
   that proves it:
-  - Unit, in `login/session/tests.rs`: `SessionError` from each
-    `axum_login::Error` variant; in `login/backend/tests.rs`, kept against
-    the crate-private backend: `get_user` through the erased loader answers
-    `None` for a missing, deleted or inactive user and a version-checked
-    cache hit otherwise; `authenticate` keeps the `Authenticated` fingerprint.
+  - Unit, in `login/auth_session/tests.rs`: `SessionError` from each
+    `axum_login::Error` variant; in `login/backend/tests.rs`, against the
+    crate-private backend: `get_user` through the erased loader answers
+    `None` for a missing user, a stored user and a cache hit;
+    `authenticate` keeps the `Authenticated` fingerprint. A deleted or
+    inactive user is the loader's own case, tested in `event-sauce-auth`, and
+    the integration cases below cover the deactivation end to end.
   - Integration, `tests/login.rs` through `oneshot`, every handler on
     `AuthSession<User>` and `CurrentUser<User>`: `login(authenticated)`
     opens a session the next request resolves; `logout` ends it; `renew`
@@ -1509,19 +1508,23 @@ The lowest level that can prove each behaviour, and only there:
     backend's unit tests or go through `App::layer`.
   - trybuild, `tests/ui/`, one case per escape path, each failing for the
     reason in its `.stderr`:
-    - `backend_unnameable.rs`: `use event_sauce_axum::EventSauceBackend`
-      is E0432, and `event_sauce_axum::login::Backend` is E0603;
+    - `name_the_backend.rs` and `name_the_backend_by_path.rs`: `use
+      event_sauce_axum::EventSauceBackend` is E0432, and
+      `event_sauce_axum::login::Backend` is E0603;
     - `generic_backend_handler.rs`: `async fn h<B: AuthnBackend>(s:
-      axum_login::AuthSession<B>)` that calls `s.backend.get_user` and
-      `s.login`, routed on a router given to `AuthLayer::layer`, is E0283;
-    - `session_user_unnameable.rs`: `event_sauce_axum::SessionUser` is
+      axum_login::AuthSession<B>)`, routed, is E0283;
+    - `name_the_session_user.rs`: `event_sauce_axum::SessionUser` is
       E0432; it replaces `session_user_from_aggregate.rs` and
       `session_user_from_shared_aggregate.rs`, which it supersedes;
-    - `login_without_authenticated.rs`: `AuthSession::login` given an
-      `Arc<AggregateRoot<U>>` from `CurrentUser` is E0308;
-    - `inner_session.rs`: `auth.inner` and `auth.backend` on an
+    - `login_with_an_aggregate.rs`, `login_with_a_shared_aggregate.rs` and
+      `login_with_the_current_user.rs`: `AuthSession::login` given an
+      `AggregateRoot<U>`, an `Arc<AggregateRoot<U>>` or the `CurrentUser`
+      aggregate is E0308;
+    - `reach_the_inner_session.rs`: `auth.inner` and `auth.backend` on an
       `AuthSession<U>` are E0616 and E0609;
-    - `app_backend.rs`: `app.backend()` is E0599.
+    - `cast_the_session_to_axum_login.rs`: `AuthSession<U>` has no
+      `AsRef` and no `Clone`, both E0599;
+    - `backend_from_the_app.rs`: `app.backend()` is E0599.
   - The `axum-auth` and `axum-crud` examples run on `AuthLayer`,
     `AuthSession<Member>` and `CurrentUser<Member>`/`Registered<Member>`,
     with their system tests unchanged.
@@ -1584,8 +1587,8 @@ it in the type system (section 4.2) and deletes what it supersedes:
 
 18. `event-sauce-axum`, test first, the trybuild cases of section 7
     before the code: the backend becomes the crate-private `Backend<U>`
-    over an erased `dyn LoadUser<U>`; `SessionUser` and `BackendError`
-    become `pub(crate)`; `lib.rs` denies `unnameable_types`; new
+    over an erased `dyn LoadUser<U>`; `SessionUser` becomes
+    `pub(crate)` and `BackendError` is deleted for `event_sauce_core::Error`; `lib.rs` denies `unnameable_types`; new
     `AuthLayer<U>` (`new(CachedUserLoader<U, S>)`, `layer(router,
     sessions)`), `AuthSession<U>` (`user`, `login(Authenticated<U>)`,
     `renew`, `logout`, extractor) and `SessionError`; `CurrentUser`,

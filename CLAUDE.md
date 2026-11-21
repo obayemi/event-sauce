@@ -363,12 +363,20 @@ operation over several aggregates is a `UnitOfWorkCommand` (see
   state yields the `Authenticated<U>` a session is opened from. Model a new
   factor as a new state with its own `Step`, never as a flag checked by the
   handler; save a login between requests with `PendingLogins`
+- A session opens only through `event-sauce-axum`'s `AuthSession<U>::login`,
+  which takes only an `Authenticated<U>`. The `axum-login` backend and its
+  `SessionUser` stay `pub(crate)`: never export, alias or return them from a
+  public signature, never add a public path to `axum_login::AuthSession` or a
+  backend value, and keep `#![deny(unnameable_types)]`. The `tests/ui` cases of
+  the crate pin this. What stays outside the types: a session record written
+  by hand through `tower_sessions::Session`, and an app's own `AuthnBackend`
 - A hot aggregate declares its snapshot strategy on the aggregate itself:
   `#[aggregate(..., snapshots(every = N))]` (also `always`, `never`,
   `with = "path"`); a store `per_type_override` still wins over it
 - HTTP apps use `event-sauce-axum`: `EventSauceApp` for the Postgres
-  defaults, the `Store`/`Repo`/`UnitOfWork` and
-  `CurrentUser`/`MaybeUser`/`Registered` extractors, and `CorrelationLayer`
+  defaults, `AuthLayer` and the `AuthSession` extractor for login sessions, the
+  `Store`/`Repo`/`UnitOfWork` and `CurrentUser`/`MaybeUser`/`Registered`
+  extractors, and `CorrelationLayer`
   so events carry the request id (see `docs/axum.md` and the `axum-auth`
   and `axum-crud` examples)
 - New examples declare every facade feature they need in `required-features`,
@@ -444,7 +452,7 @@ crates/
 ├── event-sauce-postgres/            # PostgreSQL backend
 ├── event-sauce-macros/              # Proc macros (#[aggregate], #[derive(AggregateId)], ...)
 ├── event-sauce-auth/                # User aggregates, credentials, login, login stores, user cache
-├── event-sauce-axum/                # axum integration: correlation, extractors, axum-login backend, app builder
+├── event-sauce-axum/                # axum integration: correlation, extractors, sealed axum-login backend, app builder
 ├── event-sauce-macro-surface-test/  # Checks the macros expand through the facade alone
 └── event-sauce/                     # Facade crate, re-exports everything behind features
 ```

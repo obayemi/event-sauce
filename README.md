@@ -44,7 +44,7 @@ read models kept up to date from the very events your aggregates emit.
 - ⚙️ **Typed Commands**: lifecycle-aware `Command` handlers over a `Root`, run with `Repository::execute` and a `RetryPolicy` that retries concurrency conflicts (`commands` feature)
 - 🔗 **Units of Work**: atomic commits across event-sourced and state-stored aggregates with `UnitOfWorkStore`, backed by the in-memory and Postgres `TransactionalStore` (`unit-of-work` feature)
 - 🔑 **Pluggable Auth**: credentials live inside the user aggregate (`#[aggregate(user)]`, `Identity<C>`), logins resolve through claims and run as typestate processes (password, federated, TOTP or any steps you name) that cannot open a session before the last one (`auth` feature)
-- 🌐 **axum Integration**: request-id correlation, `Store`/`Repo` extractors, an `axum-login` backend with session invalidation on credential change, and a one-builder Postgres app (`axum`, `axum-login` and `axum-app` features)
+- 🌐 **axum Integration**: request-id correlation, `Store`/`Repo` extractors, login sessions that open only from a finished login and end on credential change, and a one-builder Postgres app (`axum`, `axum-login` and `axum-app` features)
 - 🗄️ **Multiple Backends**: PostgreSQL, in-memory
 - 🧪 **Testing First-Class**: In-memory backend for fast tests; 🚀 latest stable dependencies (Tokio 1.48, SQLx 0.8); strict TDD with property-based testing
 
