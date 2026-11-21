@@ -647,12 +647,12 @@ mod tests {
 
     struct TestDb {
         pool: PgPool,
-        _database: crate::test_support::FreshDatabase,
+        _database: testcontainers_shared::postgres::FreshDatabase,
     }
 
     impl TestDb {
         async fn new() -> Self {
-            let (database, url) = crate::test_support::fresh_database().await;
+            let (database, url) = testcontainers_shared::postgres::fresh_database().await;
             let pool = PgPool::connect(&url).await.expect("connect");
             Self {
                 pool,

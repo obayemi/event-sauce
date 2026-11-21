@@ -511,6 +511,8 @@ crates/
 ├── event-sauce-axum/                # axum integration: correlation, extractors, sealed axum-login backend, app builder
 ├── event-sauce-macro-surface-test/  # Checks the macros expand through the facade alone
 └── event-sauce/                     # Facade crate, re-exports everything behind features
+vendor/
+└── testcontainers-shared/           # Test-only: one testcontainers server per test binary, a slice per test
 ```
 
 ### Dependency Rules
@@ -526,6 +528,10 @@ crates/
   `event-sauce-auth` behind `login`, `event-sauce-postgres` behind `app`. It
   is the only non-facade crate allowed to depend on a backend
 - `event-sauce` depends on: All crates (re-exports, each behind a feature)
+- `vendor/` holds standalone, unpublished (`publish = false`) libraries that
+  are not about event sourcing. They are workspace members, and crates may
+  only take them as dev-dependencies (`testcontainers-shared` provides the
+  test servers shared across a test binary)
 - Use `workspace = true` for all dependencies
 
 ### Trait Design

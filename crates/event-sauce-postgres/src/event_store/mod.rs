@@ -659,7 +659,7 @@ mod tests {
     /// own tests, which need the exact same real-migration setup.
     pub(super) struct TestDatabase {
         pool: PgPool,
-        _database: crate::test_support::FreshDatabase,
+        _database: testcontainers_shared::postgres::FreshDatabase,
     }
 
     impl TestDatabase {
@@ -668,7 +668,8 @@ mod tests {
         /// hand-synced copy of its schema, so tests exercise the exact
         /// schema production gets.
         pub(super) async fn new() -> Result<Self> {
-            let (database, connection_string) = crate::test_support::fresh_database().await;
+            let (database, connection_string) =
+                testcontainers_shared::postgres::fresh_database().await;
 
             // Connect to database
             let pool = PgPool::connect(&connection_string)
@@ -736,7 +737,7 @@ mod tests {
     /// the same database concurrently.
     #[tokio::test]
     async fn test_concurrent_migrate_calls_do_not_crash() {
-        let (_database, url) = crate::test_support::fresh_database().await;
+        let (_database, url) = testcontainers_shared::postgres::fresh_database().await;
         let pool = PgPool::connect(&url).await.unwrap();
 
         let handles: Vec<_> = (0..8)
@@ -2429,7 +2430,7 @@ mod tests {
     /// forever for a connection the stream never releases.
     #[tokio::test]
     async fn test_process_pending_does_not_hold_a_connection_while_handlers_run() {
-        let (_database, url) = crate::test_support::fresh_database().await;
+        let (_database, url) = testcontainers_shared::postgres::fresh_database().await;
         let pool = sqlx::postgres::PgPoolOptions::new()
             .max_connections(1)
             .acquire_timeout(std::time::Duration::from_secs(5))

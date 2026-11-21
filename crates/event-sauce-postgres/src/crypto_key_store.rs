@@ -369,12 +369,13 @@ mod tests {
     /// Test database helper backed by its own database on the shared test server.
     struct TestDatabase {
         pool: PgPool,
-        _database: crate::test_support::FreshDatabase,
+        _database: testcontainers_shared::postgres::FreshDatabase,
     }
 
     impl TestDatabase {
         async fn new() -> Result<Self> {
-            let (database, connection_string) = crate::test_support::fresh_database().await;
+            let (database, connection_string) =
+                testcontainers_shared::postgres::fresh_database().await;
 
             let pool = PgPool::connect(&connection_string)
                 .await

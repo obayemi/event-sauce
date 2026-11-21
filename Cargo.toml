@@ -9,6 +9,7 @@ members = [
     "crates/event-sauce-macros",
     "crates/event-sauce-postgres",
     "crates/event-sauce-memory",
+    "vendor/testcontainers-shared",
 ]
 resolver = "2"
 
@@ -57,6 +58,7 @@ proptest = "1.9.0"
 trybuild = "1.0"
 testcontainers = "0.27"
 testcontainers-modules = "0.15"
+testcontainers-shared = { path = "vendor/testcontainers-shared" }
 
 # Macros (latest stable: syn 2.0.104)
 syn = { version = "2.0.104", features = ["full", "extra-traits"] }

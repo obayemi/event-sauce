@@ -197,7 +197,7 @@ mod tests {
     /// table raced across replicas.
     #[tokio::test]
     async fn test_concurrent_replica_setup_does_not_race() {
-        let (_database, url) = crate::test_support::fresh_database().await;
+        let (_database, url) = testcontainers_shared::postgres::fresh_database().await;
 
         let handles: Vec<_> = (0..6)
             .map(|_| {
@@ -237,7 +237,7 @@ mod tests {
     /// EXISTS` and the shared `aggregate_claims` table.
     #[tokio::test]
     async fn test_concurrent_migrate_across_store_kinds_on_shared_schema() {
-        let (_database, url) = crate::test_support::fresh_database().await;
+        let (_database, url) = testcontainers_shared::postgres::fresh_database().await;
         let pool = PgPool::connect(&url).await.expect("connect");
 
         let event_store = PostgresEventStore::builder()
@@ -282,7 +282,7 @@ mod tests {
     /// waiting to acquire one.
     #[tokio::test]
     async fn test_migrate_succeeds_on_single_connection_pool() {
-        let (_database, url) = crate::test_support::fresh_database().await;
+        let (_database, url) = testcontainers_shared::postgres::fresh_database().await;
         let pool = PgPoolOptions::new()
             .max_connections(1)
             .acquire_timeout(std::time::Duration::from_secs(5))
@@ -348,11 +348,11 @@ mod tests {
         );
         let pg_name = std::cell::RefCell::new(String::new());
 
-        let pg_container = crate::test_support::start_with_retry(|attempt| {
+        let pg_container = testcontainers_shared::start_with_retry(|attempt| {
             let short_id = &uuid::Uuid::new_v4().simple().to_string()[..16];
             let name = format!("event_sauce_pgbouncer_test_pg_{short_id}_{attempt}");
             *pg_name.borrow_mut() = name.clone();
-            crate::test_support::test_postgres(
+            testcontainers_shared::postgres::test_postgres(
                 testcontainers_modules::postgres::Postgres::default().with_host_auth(),
             )
             .with_container_name(name)
@@ -368,7 +368,7 @@ mod tests {
             .expect("get postgres port");
         let direct_url = format!("postgresql://postgres@{pg_host}:{pg_port}/postgres");
 
-        let pgbouncer_container = crate::test_support::start_with_retry(|_attempt| {
+        let pgbouncer_container = testcontainers_shared::start_with_retry(|_attempt| {
             GenericImage::new("edoburu/pgbouncer", "latest")
                 .with_exposed_port(5432.tcp())
                 .with_wait_for(WaitFor::message_on_either_std("process up"))

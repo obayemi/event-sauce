@@ -389,8 +389,9 @@ mod tests {
         use uuid::Uuid;
 
         /// Creates a fresh test database and returns its connection URL.
-        pub(crate) async fn start_test_db() -> (String, crate::test_support::FreshDatabase) {
-            let (database, url) = crate::test_support::fresh_database().await;
+        pub(crate) async fn start_test_db(
+        ) -> (String, testcontainers_shared::postgres::FreshDatabase) {
+            let (database, url) = testcontainers_shared::postgres::fresh_database().await;
             (url, database)
         }
 

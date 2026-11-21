@@ -1,0 +1,21 @@
+[package]
+name = "testcontainers-shared"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "One testcontainers server per test binary, with an isolated slice of it per test"
+publish = false
+
+[dependencies]
+dtor.workspace = true
+sqlx = { workspace = true, features = ["postgres"] }
+testcontainers.workspace = true
+testcontainers-modules = { workspace = true, features = ["postgres"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
+uuid.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
