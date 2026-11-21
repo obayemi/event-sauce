@@ -10,8 +10,9 @@
 //! on the shared [`postgres`] server. Slices are released as soon as their
 //! guard drops, and the servers are removed when the test process exits
 //! normally, whether the run passed or failed; a run killed by a signal
-//! leaves them behind, under a name carrying the process id
-//! (`testcontainers_shared_<kind>_<pid>_<attempt>`).
+//! leaves them behind, under a name carrying the process id and a token
+//! drawn once per process
+//! (`testcontainers_shared_<kind>_<pid>_<token>_<attempt>`).
 //!
 //! Tests whose side effects reach beyond their slice start a dedicated
 //! container instead, with [`postgres::start_postgres_url`] or with

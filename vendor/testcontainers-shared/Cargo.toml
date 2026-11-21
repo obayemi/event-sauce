@@ -10,6 +10,7 @@ description = "One testcontainers server per test binary, with an isolated slice
 publish = false
 
 [dependencies]
+bollard.workspace = true
 dtor.workspace = true
 sqlx = { workspace = true, features = ["postgres"] }
 testcontainers.workspace = true
