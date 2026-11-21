@@ -261,6 +261,13 @@ impl MockEventStore {
 #[cfg(feature = "event-sourcing")]
 #[async_trait]
 impl EventStore for MockEventStore {
+    async fn resolve_claim(
+        &self,
+        _claim: &crate::AggregateClaim,
+    ) -> Result<Option<crate::EntityId>> {
+        Ok(None)
+    }
+
     async fn append(
         &self,
         stream_id: StreamId,
@@ -602,6 +609,13 @@ impl FailNTimesEventStore {
 #[cfg(all(feature = "commands", feature = "event-sourcing"))]
 #[async_trait]
 impl EventStore for FailNTimesEventStore {
+    async fn resolve_claim(
+        &self,
+        claim: &crate::AggregateClaim,
+    ) -> Result<Option<crate::EntityId>> {
+        self.inner.resolve_claim(claim).await
+    }
+
     async fn append(
         &self,
         stream_id: StreamId,
@@ -737,6 +751,13 @@ pub(crate) struct ClaimConflictEventStore {
 #[cfg(feature = "event-sourcing")]
 #[async_trait]
 impl EventStore for ClaimConflictEventStore {
+    async fn resolve_claim(
+        &self,
+        claim: &crate::AggregateClaim,
+    ) -> Result<Option<crate::EntityId>> {
+        self.inner.resolve_claim(claim).await
+    }
+
     async fn append(
         &self,
         _stream_id: StreamId,

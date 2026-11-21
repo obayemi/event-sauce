@@ -1,0 +1,6 @@
+error: only one field may be marked `#[user(active)]`
+  --> tests/ui/aggregate_user_two_active.rs:15:5
+   |
+15 | /     #[user(active)]
+16 | |     suspended: bool,
+   | |___________________^

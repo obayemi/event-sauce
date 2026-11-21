@@ -1,0 +1,108 @@
+//! [`PendingLogin`]: the login waiting for its next step.
+
+use std::future::{ready, Future};
+
+use axum::extract::FromRequestParts;
+use axum_login::tower_sessions::cookie::{time, Cookie, SameSite};
+use event_sauce_auth::{LoginState, PendingLoginId};
+use http::{header::COOKIE, request::Parts, HeaderMap};
+
+use crate::login::rejection::AuthRejection;
+
+/// The login a client started and has yet to finish.
+///
+/// A handler whose login needs another request saves it in the
+/// [`PendingLogins`](event_sauce_auth::PendingLogins) and answers with
+/// [`PendingLogin::set_cookie`] for the saved id. The next request, which
+/// carries the proof of the next step, extracts the pending login from that
+/// cookie and resumes the login with its id. No session exists in between,
+/// and the cookie is cleared with [`PendingLogin::clear_cookie`] once the
+/// login ends.
+///
+/// The cookie holds the id only. The state the login is in and the user it
+/// belongs to stay on the server, so a client cannot skip a step by editing
+/// it.
+///
+/// Extraction is rejected with [`AuthRejection::Unauthenticated`] when the
+/// cookie is missing or malformed.
+///
+/// ```
+/// use axum::http::header::SET_COOKIE;
+/// use axum::response::IntoResponse;
+/// use event_sauce_auth::{Done, PendingLoginId};
+/// use event_sauce_axum::PendingLogin;
+///
+/// fn ask_for_the_next_step(id: PendingLoginId) -> impl IntoResponse {
+///     ([(SET_COOKIE, PendingLogin::set_cookie::<Done>(id))], "one more step")
+/// }
+/// # let _ = ask_for_the_next_step;
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PendingLogin(PendingLoginId);
+
+impl PendingLogin {
+    /// The name of the cookie that carries the pending login id.
+    pub const COOKIE: &'static str = "event_sauce_pending_login";
+
+    /// The id of the waiting login.
+    #[must_use]
+    pub fn id(self) -> PendingLoginId {
+        self.0
+    }
+
+    /// The pending login the `Cookie` headers carry, if any.
+    #[must_use]
+    pub fn from_headers(headers: &HeaderMap) -> Option<Self> {
+        headers
+            .get_all(COOKIE)
+            .iter()
+            .filter_map(|value| value.to_str().ok())
+            .flat_map(Cookie::split_parse)
+            .filter_map(Result::ok)
+            .find(|cookie| cookie.name() == Self::COOKIE)
+            .and_then(|cookie| cookie.value().parse().ok())
+            .map(Self)
+    }
+
+    /// The `Set-Cookie` value that hands `id` to the client for as long as a
+    /// login saved in the state `S` lives, which is `S::TTL`.
+    ///
+    /// The cookie is `HttpOnly`, `Secure` and `SameSite=Lax`.
+    #[must_use]
+    pub fn set_cookie<S: LoginState>(id: PendingLoginId) -> String {
+        let max_age = time::Duration::try_from(S::TTL.as_duration()).unwrap_or(time::Duration::MAX);
+        Self::cookie(id.to_string(), max_age)
+    }
+
+    /// The `Set-Cookie` value that removes the cookie once the login is
+    /// complete or abandoned.
+    #[must_use]
+    pub fn clear_cookie() -> String {
+        Self::cookie(String::new(), time::Duration::ZERO)
+    }
+
+    fn cookie(value: String, max_age: time::Duration) -> String {
+        Cookie::build((Self::COOKIE, value))
+            .path("/")
+            .http_only(true)
+            .secure(true)
+            .same_site(SameSite::Lax)
+            .max_age(max_age)
+            .build()
+            .to_string()
+    }
+}
+
+impl<St: Send + Sync> FromRequestParts<St> for PendingLogin {
+    type Rejection = AuthRejection;
+
+    fn from_request_parts(
+        parts: &mut Parts,
+        _state: &St,
+    ) -> impl Future<Output = Result<Self, AuthRejection>> {
+        ready(Self::from_headers(&parts.headers).ok_or(AuthRejection::Unauthenticated))
+    }
+}
+
+#[cfg(test)]
+mod tests;

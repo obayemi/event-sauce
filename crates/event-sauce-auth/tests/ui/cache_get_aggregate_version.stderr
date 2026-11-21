@@ -1,0 +1,13 @@
+error[E0308]: mismatched types
+  --> tests/ui/cache_get_aggregate_version.rs:12:19
+   |
+12 |     cache.get(id, held.version()).await
+   |           ---     ^^^^^^^^^^^^^^ expected `StoredVersion`, found `AggregateVersion`
+   |           |
+   |           arguments to this method are incorrect
+   |
+note: method defined here
+  --> src/user_cache.rs
+   |
+   |     async fn get(
+   |              ^^^

@@ -340,6 +340,7 @@ impl PostgresEventStore {
     ///
     /// Returns `Error::ConcurrencyConflict` if `stream_id`'s committed
     /// version does not match `expected_version`.
+    #[cfg(feature = "unit-of-work")]
     pub(crate) async fn check_stream_expectation_on(
         &self,
         conn: &mut PgConnection,

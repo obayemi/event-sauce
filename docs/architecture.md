@@ -212,11 +212,33 @@ consumer based on what it needs:
 The log is the source of truth in all three; the outbox is *derived* from
 it, so a new consumer can be added later by replaying history.
 
+### event-sauce-auth
+
+Pluggable authentication for user aggregates, behind the facade's `auth`
+feature (see [auth.md](auth.md)):
+
+- **Identity / Credentials** - The credentials of a user live inside its aggregate
+- **LoginMethod / Logins** - Start a login from a submitted attempt, locating the user through `EventStore::resolve_claim`
+- **Login / Step / Authenticated** - Typestate multi-step logins: only a login that reached a `Complete` state yields the `Authenticated` user a session needs
+- **LoginStore** - Saves logins between two requests, with Postgres and Redis login stores
+- **UserCache** - Version-checked cache of loaded users (Moka, Redis)
+
+### event-sauce-axum
+
+axum and tower integration, behind the facade's `axum`, `axum-login` and
+`axum-app` features (see [axum.md](axum.md)):
+
+- **CorrelationLayer** - Runs each request in an event context carrying its request id
+- **Store / Repo / UnitOfWork** - Extractors over the application state
+- **AuthLayer / AuthSession** - Login sessions over a sealed `axum-login` backend: a session opens only from a finished login, and ends when credentials change
+- **EventSauceApp** - The Postgres stack wired in one builder
+
 ### event-sauce (facade)
 
 The single **event-sauce** dependency downstream crates take (none of the
 sibling crates appear in a caller's `Cargo.toml`). It re-exports the core
-surface at its root, the backends as `event_sauce::{memory, postgres}`, and
+surface at its root, the backends as `event_sauce::{memory, postgres}`, the
+login and web crates as `event_sauce::{auth, axum}`, and
 the AES-256-GCM provider alongside the traits it implements in
 `event_sauce::crypto`. The derive macros resolve their generated paths to
 whichever of `event-sauce` or `event-sauce-core` a crate depends on:
@@ -349,6 +371,11 @@ pub trait EventStore: Send + Sync {
     async fn fetch_batch(&self, from_position: Position, limit: usize) -> Result<Vec<EventLogEntry>>;
 
     async fn stream_exists(&self, stream_id: StreamId) -> Result<bool>;
+
+    // The aggregate currently holding `claim`, if any. Required: it cannot be
+    // derived from the primitives, so every backend answers it from its claim
+    // index and decorators delegate it.
+    async fn resolve_claim(&self, claim: &AggregateClaim) -> Result<Option<EntityId>>;
 
     // Snapshot cache hooks — no-ops by default, wired by backends that
     // support snapshotting.

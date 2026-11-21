@@ -1,0 +1,5 @@
+error: a `#[user(identity)]` field must have the type `Identity<C>`
+  --> tests/ui/aggregate_user_identity_not_generic.rs:12:15
+   |
+12 |     identity: String,
+   |               ^^^^^^

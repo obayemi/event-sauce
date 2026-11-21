@@ -1,0 +1,6 @@
+error: a field takes exactly one `#[user(...)]` marker
+  --> tests/ui/aggregate_user_both_markers_on_one_field.rs:11:5
+   |
+11 | /     #[user(identity, active)]
+12 | |     identity: event_sauce_auth::Identity<event_sauce_auth::Password<event_sauce_auth::Email>>,
+   | |_____________________________________________________________________________________________^

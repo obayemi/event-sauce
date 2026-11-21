@@ -273,3 +273,50 @@ jobs:
 
       - name: Clippy event-sauce facade with postgres and unit-of-work
         run: cargo clippy -p event-sauce --no-default-features --features postgres,unit-of-work --lib -- -D warnings
+
+  feature-matrix-auth-axum:
+    name: Auth and axum Feature Combinations
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { package: event-sauce-auth, features: '' }
+          - { package: event-sauce-auth, features: argon2 }
+          - { package: event-sauce-auth, features: postgres }
+          - { package: event-sauce-auth, features: moka }
+          - { package: event-sauce-auth, features: redis }
+          - { package: event-sauce-auth, features: reset }
+          - { package: event-sauce-auth, features: totp }
+          - { package: event-sauce-axum, features: '' }
+          - { package: event-sauce-axum, features: tracing }
+          - { package: event-sauce-axum, features: login }
+          - { package: event-sauce-axum, features: app }
+          - { package: event-sauce, features: auth }
+          - { package: event-sauce, features: auth-postgres }
+          - { package: event-sauce, features: auth-moka }
+          - { package: event-sauce, features: auth-redis }
+          - { package: event-sauce, features: auth-reset }
+          - { package: event-sauce, features: auth-totp }
+          - { package: event-sauce, features: axum }
+          - { package: event-sauce, features: axum-login }
+          - { package: event-sauce, features: axum-app }
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Clippy ${{ matrix.package }} with features "${{ matrix.features }}"
+        run: |
+          cargo clippy -p ${{ matrix.package }} --no-default-features --lib \
+            ${{ matrix.features && format('--features {0}', matrix.features) || '' }} \
+            -- -D warnings

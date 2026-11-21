@@ -644,15 +644,17 @@ async fn test_counter_replay() {
 ### Custom Event Store Implementations
 
 Implement `EventStore` for a custom backend by providing its primitives —
-`append`, `load_stream`, `stream_all`, and `get_version`. Everything else
-(`commit`, `repository()`, `append_batch`, snapshots, ...) has a default
-built on those four, so a minimal backend needs only them:
+`append`, `load_stream`, `stream_all`, `get_version`, and `resolve_claim`.
+Everything else (`commit`, `repository()`, `append_batch`, snapshots, ...)
+has a default built on those, so a minimal backend needs only them.
+`resolve_claim` is required because a claim lookup cannot be derived from the
+other primitives; a backend that keeps no claim index returns `Ok(None)`.
 
 ```rust
 use async_trait::async_trait;
 use event_sauce::{
-    AggregateClaim, AggregateVersion, EventEnvelope, EventLogEntry, EventStore, Position,
-    Result, StreamId,
+    AggregateClaim, AggregateVersion, EntityId, EventEnvelope, EventLogEntry, EventStore,
+    Position, Result, StreamId,
 };
 use futures::Stream;
 
@@ -691,6 +693,10 @@ impl EventStore for CustomEventStore {
     async fn get_version(&self, stream_id: StreamId) -> Result<AggregateVersion> {
         // Your implementation
     }
+
+    async fn resolve_claim(&self, claim: &AggregateClaim) -> Result<Option<EntityId>> {
+        // Your implementation
+    }
 }
 ```
 
@@ -719,7 +725,7 @@ impl<S: EventStore> EventStore for LoggingEventStore<S> {
             .await
     }
 
-    // ... load_stream, stream_all, get_version delegate the same way
+    // ... load_stream, stream_all, get_version, resolve_claim delegate the same way
 }
 ```
 
@@ -743,6 +749,11 @@ stream) whenever its `aggregate_type` or `snapshot_schema_version` doesn't
 match. See [repo.load() - Reconstruct Aggregate](#repoload---reconstruct-aggregate)
 above and
 [architecture.md](architecture.md#snapshots-are-a-cache-never-the-source-of-truth).
+
+An aggregate can declare its own strategy with
+`#[aggregate(..., snapshots(every = 50))]`; see
+[aggregates.md](aggregates.md#snapshot-strategy-per-aggregate) for how it
+combines with the store's configuration.
 
 ### Event Store Metrics
 

@@ -1,0 +1,5 @@
+error: `#[user(...)]` takes exactly one of `identity` or `active`
+  --> tests/ui/aggregate_user_unknown_marker.rs:11:5
+   |
+11 |     #[user(admin)]
+   |     ^^^^^^^^^^^^^^

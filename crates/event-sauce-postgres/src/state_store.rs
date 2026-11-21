@@ -388,6 +388,7 @@ impl PostgresStateStore {
     ///
     /// Returns `Error::ConcurrencyConflict` if the row's version does not
     /// match `expected_version`.
+    #[cfg(feature = "unit-of-work")]
     pub(crate) async fn check_state_expectation_on(
         &self,
         conn: &mut PgConnection,

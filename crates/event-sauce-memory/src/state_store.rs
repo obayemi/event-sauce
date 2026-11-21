@@ -104,7 +104,7 @@ struct InMemoryStateStoreInner {
 /// In-memory state store for testing and development.
 ///
 /// Persists each aggregate as one versioned [`StoredState`] row with
-/// optimistic concurrency control, enforces [`AggregateClaim`] uniqueness
+/// optimistic concurrency control, enforces [`AggregateClaim`](event_sauce_core::AggregateClaim) uniqueness
 /// across aggregates, and runs registered [`StateProjection`] handlers
 /// against an [`InMemoryProjectionContext`] as part of each save.
 ///

@@ -1,6 +1,8 @@
 [workspace]
 members = [
     "crates/event-sauce",
+    "crates/event-sauce-auth",
+    "crates/event-sauce-axum",
     "crates/event-sauce-core",
     "crates/event-sauce-crypto",
     "crates/event-sauce-macro-surface-test",
@@ -30,9 +32,16 @@ async-stream = "0.3"
 # Serialization (latest stable)
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
+hex = "0.4.3"
 
 # Database (latest stable: 0.8.6)
 sqlx = { version = "0.8.6", features = ["runtime-tokio-rustls", "postgres", "chrono", "uuid", "json"] }
+
+# In-process user cache (latest stable: 0.12.16)
+moka = { version = "0.12.16", features = ["sync"] }
+
+# Cache and login-state server (latest stable: 1.8.2)
+redis = { version = "1.8.2", default-features = false, features = ["tokio-comp", "connection-manager"] }
 
 # Error handling (latest stable)
 thiserror = "2.0.16"
@@ -45,6 +54,9 @@ tracing = "0.1.41"
 
 # Testing (latest stable)
 proptest = "1.9.0"
+trybuild = "1.0"
+testcontainers = "0.27"
+testcontainers-modules = "0.15"
 
 # Macros (latest stable: syn 2.0.104)
 syn = { version = "2.0.104", features = ["full", "extra-traits"] }
@@ -54,13 +66,33 @@ darling = "0.20"
 proc-macro-crate = "3"
 pastey = "0.2"
 
+# HTTP
+axum = { version = "0.8.9", default-features = false }
+http = "1.5"
+tower = { version = "0.5.3", default-features = false }
+axum-login = { version = "0.18.0", default-features = false }
+tower-sessions = { version = "0.14.0", default-features = false }
+
 # Encoding
 base64 = "0.22"
 
 # Cryptography
 aes-gcm = "0.10"
 zeroize = "1"
-sha2 = "0.10"
+sha2 = "0.11"
+argon2 = "0.6.0"
+secrecy = "0.10.3"
+phc = { version = "0.6.1", default-features = false, features = ["alloc"] }
+totp-rs = { version = "6.0.0", default-features = false, features = ["std", "gen_secret", "serde", "zeroize"] }
+
+# Randomness (latest stable: 0.10.4)
+rand = "0.10.4"
+
+# Constant-time comparison (latest stable: 2.6.1)
+subtle = "2.6.1"
+
+# Identifiers
+email_address = { version = "0.2.10", default-features = false, features = ["std"] }
 
 # Additional utilities
 parking_lot = "0.12"

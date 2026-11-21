@@ -1,0 +1,15 @@
+error[E0308]: mismatched types
+ --> tests/ui/login_with_a_shared_aggregate.rs:8:27
+  |
+8 |     let _ = session.login(root).await;
+  |                     ----- ^^^^ expected `Authenticated<U>`, found `Arc<AggregateRoot<U>>`
+  |                     |
+  |                     arguments to this method are incorrect
+  |
+  = note: expected struct `Authenticated<U>`
+             found struct `Arc<AggregateRoot<U>>`
+note: method defined here
+ --> src/login/auth_session.rs
+  |
+  |     pub async fn login(&mut self, user: Authenticated<U>) -> Result<(), SessionError> {
+  |                  ^^^^^

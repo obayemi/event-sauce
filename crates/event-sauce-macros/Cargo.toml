@@ -28,3 +28,6 @@ uuid.workspace = true
 thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+event-sauce-auth = { path = "../event-sauce-auth", default-features = false }
+event-sauce-memory = { path = "../event-sauce-memory" }
+tokio = { workspace = true, features = ["macros", "rt"] }

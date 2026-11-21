@@ -143,6 +143,9 @@ account.apply(some_event)?;
 - **`claims`**: Enables uniqueness claims; delegates `claims()` to `aggregate_claims()` (see [Claims](claims.md))
 - **`deleted_state = "Type"`**: Custom type for the deleted aggregate state (see delete events)
 - **`type_name = "..."`**: Custom aggregate type name (default: struct name)
+- **`snapshot_version = N`**: Snapshot schema version; bump it when the serialized shape changes incompatibly
+- **`snapshots(...)`**: Snapshot strategy for this aggregate (see below)
+- **`user`**: Makes the aggregate a login user. Needs one `#[user(identity)]` field of type `Identity<C>` and may mark one `#[user(active)]` `bool` field (users are always active without it). Generates `UserAggregate` and adds the credentials' claims to `claims()` while the user is registered, next to the aggregate's own claims when `claims` is also set. Requires the `event-sauce-auth` crate (or `event-sauce` with its `auth` feature)
 - **`#[id]`**: Field attribute marking the `EntityId` field (or name it `id`)
 
 ### Key Features
@@ -151,6 +154,32 @@ account.apply(some_event)?;
 - **`EntityId` for all entities**: Concrete UUID-backed newtype, no custom ID types
 - **`AggregateRoot<A>` wrapper**: Handles version, pending events, and event application
 - **Read-only Deref**: Access entity fields directly through `AggregateRoot`
+
+### Snapshot Strategy per Aggregate
+
+An aggregate can decide how often it is snapshotted instead of inheriting the
+store's default. Declare exactly one of these inside `#[aggregate(...)]`:
+
+```rust
+#[aggregate(event = "OrderEvent", error = "OrderError", snapshots(every = 50))]
+struct Order { /* ... */ }
+```
+
+- **`snapshots(every = N)`**: snapshot every `N` events (`N` must be greater than 0, otherwise compilation fails)
+- **`snapshots(always)`**: snapshot on every commit
+- **`snapshots(never)`**: never snapshot
+- **`snapshots(with = "path::TO_STATIC")`**: use your own `static` implementing `SnapshotStrategy`
+
+The attribute generates `Aggregate::snapshot_strategy()`, which returns `None`
+for aggregates that declare nothing. At commit time the strategy is resolved by
+`SnapshotConfig::resolve_strategy`, highest precedence first:
+
+1. a `per_type_override` for the aggregate type configured on the store;
+2. the strategy the aggregate declares;
+3. the store's default strategy.
+
+So a store can always force a type's behaviour (for example `never` in tests),
+while aggregates carry a sensible default of their own.
 
 ## Aggregate Initialization
 

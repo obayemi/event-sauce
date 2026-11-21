@@ -348,6 +348,41 @@ operation over several aggregates is a `UnitOfWorkCommand` (see
 
 **Alternative**: For commands requiring complex logic, conditional validation, or custom error handling, implement methods manually (see `docs/getting-started.md`).
 
+### User Aggregates and HTTP Standards
+
+- A user that logs in is an aggregate marked `#[aggregate(..., user)]`,
+  with one `#[user(identity)] identity: Identity<C>` field and an optional
+  `#[user(active)]` field. `C` is a `Credentials` type: `Password<L>`,
+  `Federated`, `PasswordOrFederated<L>`, or the app's own (see
+  `docs/auth.md`)
+- Logins resolve users through claims (`EventStore::resolve_claim`), never
+  through a projection
+- A login is a typestate: `Logins::begin` runs a `FirstFactor` (a
+  `LoginMethod` and a `Route`) and yields a `Login<U, S>`; each state's
+  `Step` is the only way out of it, and only `Login::finish` on a `Complete`
+  state yields the `Authenticated<U>` a session is opened from. Model a new
+  factor as a new state with its own `Step`, never as a flag checked by the
+  handler; save a login between requests with `PendingLogins`
+- A session opens only through `event-sauce-axum`'s `AuthSession<U>::login`,
+  which takes only an `Authenticated<U>`. The `axum-login` backend and its
+  `SessionUser` stay `pub(crate)`: never export, alias or return them from a
+  public signature or name them in a public trait impl, never add a public
+  path to `axum_login::AuthSession` or a backend value, and keep
+  `#![deny(unnameable_types)]`. The `tests/ui` cases of the crate pin this.
+  What stays outside the types: a session record written by hand through
+  `tower_sessions::Session`, and an app's own `AuthnBackend`
+- A hot aggregate declares its snapshot strategy on the aggregate itself:
+  `#[aggregate(..., snapshots(every = N))]` (also `always`, `never`,
+  `with = "path"`); a store `per_type_override` still wins over it
+- HTTP apps use `event-sauce-axum`: `EventSauceApp` for the Postgres
+  defaults, `AuthLayer` and the `AuthSession` extractor for login sessions, the
+  `Store`/`Repo`/`UnitOfWork` and `CurrentUser`/`MaybeUser`/`Registered`
+  extractors, and `CorrelationLayer`
+  so events carry the request id (see `docs/axum.md` and the `axum-auth`
+  and `axum-crud` examples)
+- New examples declare every facade feature they need in `required-features`,
+  so they build with `--no-default-features`
+
 ### Code Quality Checklist
 
 Before committing, ensure:
@@ -411,19 +446,31 @@ pub fn increment(&mut self, amount: i32) -> Result<(), CounterError> { ... }
 ### Crate Organization
 
 ```
-event-sauce/
-├── event-sauce-core/          # Core traits (no implementations) + Subscription system
-├── event-sauce-memory/        # In-memory implementation
-├── event-sauce-postgres/      # PostgreSQL implementation
-├── event-sauce-macros/        # Derive macros
-└── event-sauce/               # Facade crate
+crates/
+├── event-sauce-core/                # Core traits and their generic default implementations
+├── event-sauce-crypto/              # AES-256-GCM provider for crypto-shredding
+├── event-sauce-memory/              # In-memory backend
+├── event-sauce-postgres/            # PostgreSQL backend
+├── event-sauce-macros/              # Proc macros (#[aggregate], #[derive(AggregateId)], ...)
+├── event-sauce-auth/                # User aggregates, credentials, login, login stores, user cache
+├── event-sauce-axum/                # axum integration: correlation, extractors, sealed axum-login backend, app builder
+├── event-sauce-macro-surface-test/  # Checks the macros expand through the facade alone
+└── event-sauce/                     # Facade crate, re-exports everything behind features
 ```
 
 ### Dependency Rules
 
 - `event-sauce-core` depends on: **Nothing** (only common utilities)
-- Backend crates depend on: `event-sauce-core` only
-- `event-sauce` depends on: All crates (re-exports)
+- `event-sauce-crypto` depends on: `event-sauce-core` only
+- Backend crates (`event-sauce-memory`, `event-sauce-postgres`) depend on:
+  `event-sauce-core` and `event-sauce-crypto` only
+- `event-sauce-auth` depends on: `event-sauce-core` only. Its Postgres and
+  Redis stores talk to `sqlx` and `redis` directly, never through a backend
+  crate
+- `event-sauce-axum` is the integration crate: `event-sauce-core` always,
+  `event-sauce-auth` behind `login`, `event-sauce-postgres` behind `app`. It
+  is the only non-facade crate allowed to depend on a backend
+- `event-sauce` depends on: All crates (re-exports, each behind a feature)
 - Use `workspace = true` for all dependencies
 
 ### Trait Design
@@ -654,10 +701,13 @@ The CI pipeline (`.github/workflows/ci.yml`) runs on pushes and PRs against
 9. **Core Feature Combinations** — `event-sauce-core` with each combination of
    `event-sourcing` / `state-store`, plus `commands`, `commands,state-store`,
    `commands,event-sourcing` and `unit-of-work`
+10. **Auth and axum Feature Combinations** — `event-sauce-auth`,
+    `event-sauce-axum` and the `event-sauce` facade with each of their
+    features alone and none by default
 
-PostgreSQL tests spin up their own containers via testcontainers, so the
-pipeline needs Docker (present on `ubuntu-latest`) rather than a database
-service.
+PostgreSQL and Redis tests spin up their own containers via
+testcontainers, so the pipeline needs Docker (present on `ubuntu-latest`)
+rather than a database service.
 
 ### Before Pushing
 

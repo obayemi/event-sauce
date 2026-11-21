@@ -4,8 +4,8 @@
 
 use async_trait::async_trait;
 use event_sauce_core::{
-    AggregateVersion, Error, EventEnvelope, EventStore, Position, Result, Snapshot, SnapshotConfig,
-    StreamId,
+    AggregateClaim, AggregateVersion, EntityId, Error, EventEnvelope, EventStore, Position, Result,
+    Snapshot, SnapshotConfig, StreamId,
 };
 use futures::stream::Stream;
 use futures::TryStreamExt;
@@ -15,6 +15,8 @@ mod append;
 pub(crate) use append::PlannedBatch;
 mod builder;
 mod migrate;
+#[cfg(test)]
+mod resolve_claim_tests;
 mod row;
 pub(crate) use row::{EventRow, EVENT_COLUMNS};
 
@@ -475,6 +477,12 @@ impl EventStore for PostgresEventStore {
             .map_err(|e| Error::backend("Failed to fetch max position", e))?;
 
         Ok(Position::new(max))
+    }
+
+    async fn resolve_claim(&self, claim: &AggregateClaim) -> Result<Option<EntityId>> {
+        let claims_table = self.qualify_table("aggregate_claims");
+        let holder = crate::claims::holder(&self.pool, &claims_table, claim).await?;
+        Ok(holder.map(EntityId::from))
     }
 
     async fn get_version(&self, stream_id: StreamId) -> Result<AggregateVersion> {

@@ -1573,6 +1573,13 @@ mod tests {
 
     #[async_trait::async_trait]
     impl EventStore for BatchRecordingStore {
+        async fn resolve_claim(
+            &self,
+            claim: &crate::AggregateClaim,
+        ) -> Result<Option<crate::EntityId>> {
+            self.inner.resolve_claim(claim).await
+        }
+
         async fn append(
             &self,
             stream_id: crate::StreamId,
@@ -1668,6 +1675,13 @@ mod tests {
 
     #[async_trait::async_trait]
     impl EventStore for FlakyEventStore {
+        async fn resolve_claim(
+            &self,
+            claim: &crate::AggregateClaim,
+        ) -> Result<Option<crate::EntityId>> {
+            self.inner.resolve_claim(claim).await
+        }
+
         async fn append(
             &self,
             stream_id: crate::StreamId,
@@ -1925,6 +1939,13 @@ mod tests {
 
     #[async_trait::async_trait]
     impl EventStore for SlowFetchStore {
+        async fn resolve_claim(
+            &self,
+            claim: &crate::AggregateClaim,
+        ) -> Result<Option<crate::EntityId>> {
+            self.inner.resolve_claim(claim).await
+        }
+
         async fn append(
             &self,
             stream_id: crate::StreamId,

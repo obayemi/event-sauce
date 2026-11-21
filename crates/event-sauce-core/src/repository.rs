@@ -1347,6 +1347,13 @@ mod tests {
 
     #[async_trait]
     impl EventStore for FailingBatchStore {
+        async fn resolve_claim(
+            &self,
+            _claim: &crate::AggregateClaim,
+        ) -> Result<Option<crate::EntityId>> {
+            Ok(None)
+        }
+
         async fn append(
             &self,
             _stream_id: StreamId,

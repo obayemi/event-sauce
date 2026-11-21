@@ -1,0 +1,16 @@
+error[E0599]: the method `finish` exists for struct `Login<U, Second>`, but its trait bounds were not satisfied
+  --> tests/ui/skip_a_step.rs:32:12
+   |
+ 9 | struct Second;
+   | ------------- doesn't satisfy `Second: event_sauce_auth::Complete`
+...
+32 |     second.finish().await
+   |            ^^^^^^ method cannot be called on `Login<U, Second>` due to unsatisfied trait bounds
+   |
+   = note: the following trait bounds were not satisfied:
+           `Second: event_sauce_auth::Complete`
+note: the trait `event_sauce_auth::Complete` must be implemented
+  --> src/login/state.rs
+   |
+   | pub trait Complete: LoginState {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

@@ -1,0 +1,67 @@
+error[E0277]: the trait bound `Entered: LoginState` is not satisfied
+ --> tests/ui/save_an_entered_login.rs:4:26
+  |
+4 |     let _ = pending.save(login).await;
+  |                     ---- ^^^^^ the trait `LoginState` is not implemented for `Entered`
+  |                     |
+  |                     required by a bound introduced by this call
+  |
+help: the following other types implement trait `LoginState`
+ --> src/login/state.rs
+  |
+  | impl LoginState for Done {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^ `event_sauce_auth::Done`
+  |
+ ::: src/totp/steps.rs
+  |
+  | impl LoginState for NeedTotp {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `NeedTotp`
+note: required by a bound in `PendingLogins::<U>::save`
+ --> src/login/pending.rs
+  |
+  |     pub async fn save<S: LoginState>(
+  |                          ^^^^^^^^^^ required by this bound in `PendingLogins::<U>::save`
+
+error[E0277]: the trait bound `Entered: LoginState` is not satisfied
+ --> tests/ui/save_an_entered_login.rs:4:13
+  |
+4 |     let _ = pending.save(login).await;
+  |             ^^^^^^^^^^^^^^^^^^^ the trait `LoginState` is not implemented for `Entered`
+  |
+help: the following other types implement trait `LoginState`
+ --> src/login/state.rs
+  |
+  | impl LoginState for Done {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^ `event_sauce_auth::Done`
+  |
+ ::: src/totp/steps.rs
+  |
+  | impl LoginState for NeedTotp {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `NeedTotp`
+note: required by a bound in `PendingLogins::<U>::save`
+ --> src/login/pending.rs
+  |
+  |     pub async fn save<S: LoginState>(
+  |                          ^^^^^^^^^^ required by this bound in `PendingLogins::<U>::save`
+
+error[E0277]: the trait bound `Entered: LoginState` is not satisfied
+ --> tests/ui/save_an_entered_login.rs:4:33
+  |
+4 |     let _ = pending.save(login).await;
+  |                                 ^^^^^ the trait `LoginState` is not implemented for `Entered`
+  |
+help: the following other types implement trait `LoginState`
+ --> src/login/state.rs
+  |
+  | impl LoginState for Done {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^ `event_sauce_auth::Done`
+  |
+ ::: src/totp/steps.rs
+  |
+  | impl LoginState for NeedTotp {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `NeedTotp`
+note: required by a bound in `PendingLogins::<U>::save`
+ --> src/login/pending.rs
+  |
+  |     pub async fn save<S: LoginState>(
+  |                          ^^^^^^^^^^ required by this bound in `PendingLogins::<U>::save`

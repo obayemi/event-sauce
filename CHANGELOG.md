@@ -207,6 +207,134 @@ explicitly rather than gated behind a major version bump.
 
 ### Added
 
+- `Identity<C>` implements `Default` as `Anonymous`, so `#[aggregate(user)]`
+  works on an aggregate without an init event.
+
+- `EventStore::resolve_claim` returns the aggregate currently holding an
+  `AggregateClaim`, in one indexed lookup. The in-memory and PostgreSQL
+  stores implement it, and a claim released by its aggregate no longer
+  resolves. It is a required method with no default, so a
+  custom store implements it and a decorator delegates it.
+
+- `#[aggregate(user)]` with the `#[user(identity)]` and `#[user(active)]`
+  field markers. It generates `UserAggregate` and merges the `auth.login`
+  and `auth.federated` claims into `claims()` while the user is registered.
+  It requires the `event-sauce-auth` crate.
+
+- `event-sauce-auth` crate: pluggable credentials and login for user
+  aggregates. Its main types are `Identity`, `Credentials` (`Password`,
+  `Federated`, `PasswordOrFederated`), `LoginId` (`Email`, `Username`),
+  `LoginMethod` (`PasswordLogin`, `FederatedLogin`,
+  `PasswordOrFederatedLogin`), `Logins`, `PasswordHasher`, `LoginStore` and
+  `CachedUserLoader`. Logins are typestate: `Logins::begin` runs a
+  `FirstFactor` (a `LoginMethod` and a `Route`), and the `Login<U, S>` it
+  yields moves through states the app names, each state's `Step` being the
+  only way out of it. `Login::finish`, which exists only for a `Complete`
+  state such as `Done`, yields the only value a session is opened from, an
+  `Authenticated<U>` with no public constructor, so no session can open
+  before the whole process ended. `PendingLogins` saves a login between two
+  requests (single use, checked against the state tag, the user's active flag
+  and its session fingerprint), `Logins::sign_up` commits a new user at its
+  initial version and logs it in, and behind `totp`, `Totp`, `NeedTotp` and
+  `TotpIfEnrolled` are the ready-made TOTP step. `UserAggregate` requires
+  `'static`. `Rejected::Unavailable` and `AuthError::Unavailable` report a
+  verifier that could not check at all. `LoginTtl` is the validated time to
+  live of every login store and user cache entry: never zero, at most 366
+  days, with infallible constants such as `LoginTtl::FIVE_MINUTES`.
+  `Federated` and `PasswordOrFederated` unlink one identity with
+  `unlink(&FederatedId)` or every identity of a provider with
+  `unlink_provider(&Provider)`. `Credentials::fingerprint` feeds a
+  `Fingerprint` whose `field` and `str_field` length-prefix every field, so
+  two different credential states never share a byte stream. `LoginId`
+  requires `AsRef<str>`, the canonical normalised string that keys the login
+  claim and feeds the fingerprint.
+  `UserCache::get` takes the `StoredVersion` the event store holds, so a
+  version no stored user has cannot be asked for. `PasswordHasher::hash` and
+  `verify` are async, and `Argon2Hasher` runs the Argon2 work, the dummy
+  verification of unknown logins included, on `tokio::task::spawn_blocking`,
+  mapping a failed task to `HashError`. The `argon2` and `postgres` features
+  are on by default; `moka`, `redis`, `reset` and `totp` are optional.
+
+- `event-sauce-axum` crate. `CorrelationLayer` reads `x-request-id` (or the
+  `HeaderName` given to `header(name)`), keeps it when it is a valid
+  `RequestId` (1 to 128 characters of `[A-Za-z0-9._-]`) and mints a UUID v4
+  otherwise, runs the request in a root `EventContext` carrying that
+  correlation id, echoes the id on the response, and opens a `request`
+  tracing span behind the default `tracing` feature. Tasks spawned by a
+  handler do not inherit the context. `CorrelationLayer::header` and `correlation_header` take a `http::HeaderName` (re-exported as `HeaderName`), and `DEFAULT_HEADER` is a `HeaderName`, so no header name can panic. The `Store<S>`, `Repo<A, S>` and
+  `UnitOfWork<T>` extractors reach the application state through `FromRef`
+  and never reject. `Store` has no repository method of its own: get a
+  repository from `Repo` or `store.arc().repository()`.
+
+  Behind the default `login` feature it adds `AuthLayer<U>` and
+  `AuthSession<U>`: a session opens only from a finished login.
+  `AuthLayer::new(CachedUserLoader)` installs, through
+  `layer(router, session_layer)`, an `axum-login` backend that nothing can
+  name: the backend and its `SessionUser` are `pub(crate)`, `layer` and
+  `App::layer` return a `Router`, and errors are `SessionError`. A handler
+  holds the `AuthSession<U>` extractor, whose `login` takes only the
+  `Authenticated<U>` a finished login yields (and consumes it), `renew`
+  reloads the user of the request's own session after it changed its own
+  credentials, `logout` ends the session and `user` reads it. No library
+  call opens a session without a finished login; what stays outside the
+  types is an application writing `axum-login`'s session record by hand
+  through `tower_sessions::Session` and an application's own `AuthnBackend`.
+  The cache of the user resolved on every request is set on the
+  `CachedUserLoader` (`with_cache`, or `with_shared_cache` to share one
+  `Arc<dyn UserCache<U>>` with `Logins`). `lib.rs` denies `unnameable_types`.
+  `PendingLogin`, the short-lived cookie that carries a login between two
+  requests, lives as long as the state it waits in
+  (`PendingLogin::set_cookie::<S>(id)` uses `S::TTL`). The `CurrentUser<U>`, `MaybeUser<U>`
+  and `Registered<U>` extractors, generic over the user aggregate, read the
+  user `axum-login` already resolved and reject with `401` or `403`.
+
+  Behind the default `app` feature it adds `EventSauceApp::postgres(pool)`,
+  a builder that wires the Postgres event store, a `PostgresLoginStore` in
+  its own `event_sauce_login` schema, a `MokaUserCache` of 10 000 entries,
+  a `FirstFactor` and the `CorrelationLayer`. `build` runs every
+  migration and is idempotent, and reports a login method that does not
+  fit the user's credentials. The overrides are `event_store`,
+  `login_store_schema`, `user_cache`, `user_cache_capacity`,
+  `no_user_cache`, `correlation_header` and `route`, which swaps the
+  default `AlwaysDone` for the `Route` that sends logins to the next step:
+  credentials that can hold a second factor do not compile with the default.
+  `App` exposes `store`, `logins`, `pending`, `first_factor` and
+  `login_store`, and `App::layer(router, session_layer)` applies the
+  correlation, session and authentication layers, through its own `AuthLayer`.
+  Call `user::<U, _>(method)`: Rust cannot infer only the method type.
+
+- Facade features `auth`, `auth-postgres`, `auth-moka`, `auth-redis`,
+  `auth-reset` and `auth-totp` re-export `event-sauce-auth` as
+  `event_sauce::auth`, and `axum`, `axum-login` and `axum-app` re-export
+  `event-sauce-axum` as `event_sauce::axum`. `axum-login` implies `auth`,
+  `axum-app` implies `axum-login` and `postgres`, and `full` turns them all
+  on. `#[aggregate(user)]` resolves its paths through `event_sauce::auth`, so
+  a crate that depends on the facade alone can use it. The `axum-auth`
+  example (an in-memory axum app with a user aggregate, a password login and
+  guarded routes, tested with `cargo test --examples`), the `docs/auth.md`
+  and `docs/axum.md` guides, and a CI job that lints each feature of the
+  new crates alone come with them.
+
+- The `axum-crud` example: a full CRUD HTTP API with authentication on
+  Postgres, behind `EventSauceApp::postgres`. Members register and log in
+  with a password, and create, list, read, update and delete their own
+  `Note`s. The note events carry the member as actor, so ownership is the
+  actor validation (another member gets `404`), `GET /notes` is served from
+  a transactional Postgres projection kept up to date by a leased worker,
+  and every event records the request id. Its tests run against a Postgres
+  container (`cargo test -p event-sauce --all-features --example
+  axum-crud`).
+
+- Per-aggregate snapshot strategy. `#[aggregate(snapshots(every = N))]`
+  (also `always`, `never` and `with = "path::TO_STATIC"`) generates
+  `Aggregate::snapshot_strategy()`, and `SnapshotConfig::resolve_strategy`
+  applies it at commit between the store's per-type override and the store's
+  default strategy. `SnapshotStrategy`, `AlwaysSnapshot`, `EveryNEvents` and
+  `NeverSnapshot` are now exported without the `event-sourcing` feature,
+  because `Aggregate::snapshot_strategy` names them. This change to the
+  public API comes from removing the `#[cfg(feature = "event-sourcing")]`
+  gates in event-sauce-core/src/lib.rs.
+
 - Ambient event context. `EventContext` (a `Root` context starts a new flow
   and may carry a tenant, a nested one cannot), the `event_context!` macro,
   the `#[with_event_context]` attribute, `WithEventContextExt::with_event_context`
@@ -408,7 +536,6 @@ explicitly rather than gated behind a major version bump.
   is replaced by its maintained fork, `pastey`. Callers of
   `define_events!`/`command_handler!` are unaffected either way, since
   neither was ever a direct dependency.
-
 ### Migration Steps
 
 - `add_crypto_keys_shredded_at` — relaxes `crypto_keys.key_data` to nullable,

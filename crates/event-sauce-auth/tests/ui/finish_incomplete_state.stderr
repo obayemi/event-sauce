@@ -1,0 +1,16 @@
+error[E0599]: the method `finish` exists for struct `Login<U, Pending>`, but its trait bounds were not satisfied
+  --> tests/ui/finish_incomplete_state.rs:12:19
+   |
+ 5 | struct Pending;
+   | -------------- doesn't satisfy `Pending: event_sauce_auth::Complete`
+...
+12 |     let _ = login.finish().await;
+   |                   ^^^^^^ method cannot be called on `Login<U, Pending>` due to unsatisfied trait bounds
+   |
+   = note: the following trait bounds were not satisfied:
+           `Pending: event_sauce_auth::Complete`
+note: the trait `event_sauce_auth::Complete` must be implemented
+  --> src/login/state.rs
+   |
+   | pub trait Complete: LoginState {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

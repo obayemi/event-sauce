@@ -40,6 +40,13 @@ impl MockEventStoreWithStreams {
 
 #[async_trait]
 impl EventStore for MockEventStoreWithStreams {
+    async fn resolve_claim(
+        &self,
+        _claim: &crate::AggregateClaim,
+    ) -> Result<Option<crate::EntityId>> {
+        Ok(None)
+    }
+
     async fn append(
         &self,
         _stream_id: StreamId,
@@ -163,6 +170,13 @@ impl CommitTestStore {
 
 #[async_trait]
 impl EventStore for CommitTestStore {
+    async fn resolve_claim(
+        &self,
+        _claim: &crate::AggregateClaim,
+    ) -> Result<Option<crate::EntityId>> {
+        Ok(None)
+    }
+
     async fn append(
         &self,
         stream_id: StreamId,
