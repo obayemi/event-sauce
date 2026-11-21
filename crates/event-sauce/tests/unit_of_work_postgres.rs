@@ -12,12 +12,10 @@ use event_sauce::{
 };
 use sqlx::postgres::PgPoolOptions;
 use support::{register, Order, PlaceOrder, Product, QuoteOrder, RivalRepricing, TransferStock};
-use testcontainers_modules::postgres::Postgres;
-use testcontainers_modules::testcontainers::runners::AsyncRunner;
-use testcontainers_modules::testcontainers::{ContainerAsync, ImageExt};
+use testcontainers_shared::postgres::{fresh_database, FreshDatabase};
 
 struct World {
-    _container: ContainerAsync<Postgres>,
+    _database: FreshDatabase,
     uow: Arc<UnitOfWorkStore<PostgresTransactionalStore>>,
     events: Arc<PostgresEventStore>,
     states: Arc<PostgresStateStore>,
@@ -25,19 +23,8 @@ struct World {
 
 impl World {
     async fn start() -> Self {
-        let container = Postgres::default()
-            .with_tag("16-alpine")
-            .start()
-            .await
-            .unwrap();
-        let host = container.get_host().await.unwrap();
-        let port = container.get_host_port_ipv4(5432).await.unwrap();
-        let pool = PgPoolOptions::new()
-            .connect(&format!(
-                "postgresql://postgres:postgres@{host}:{port}/postgres"
-            ))
-            .await
-            .unwrap();
+        let (database, url) = fresh_database().await;
+        let pool = PgPoolOptions::new().connect(&url).await.unwrap();
         let events = Arc::new(PostgresEventStore::new(pool.clone()));
         let states = Arc::new(PostgresStateStore::new(pool));
         events.migrate().await.unwrap();
@@ -45,7 +32,7 @@ impl World {
         let stores =
             PostgresTransactionalStore::new(Arc::clone(&events), Arc::clone(&states)).unwrap();
         Self {
-            _container: container,
+            _database: database,
             uow: Arc::new(register(stores)),
             events,
             states,

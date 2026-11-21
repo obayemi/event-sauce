@@ -129,6 +129,7 @@ argon2.workspace = true
 secrecy.workspace = true
 testcontainers = "0.27"
 testcontainers-modules = { version = "0.15", features = ["postgres"] }
+testcontainers-shared.workspace = true
 trybuild = "1.0"
 
 [[example]]

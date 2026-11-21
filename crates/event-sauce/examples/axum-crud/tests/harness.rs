@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::time::Duration;
 
 use axum::{
     body::Body,
@@ -14,8 +13,7 @@ use event_sauce::prelude::*;
 use futures::StreamExt;
 use serde_json::{json, Value};
 use sqlx::postgres::PgPoolOptions;
-use testcontainers_modules::postgres::Postgres;
-use testcontainers_modules::testcontainers::{runners::AsyncRunner, ContainerAsync, ImageExt};
+use testcontainers_shared::postgres::{fresh_database, FreshDatabase};
 use tower::ServiceExt;
 
 use super::{cheap_hasher, EMAIL, PASSWORD};
@@ -174,7 +172,7 @@ impl Client {
 pub(super) struct Harness {
     pub(super) service: Service,
     pub(super) client: Client,
-    pub(super) _database: ContainerAsync<Postgres>,
+    pub(super) _database: FreshDatabase,
 }
 
 impl Harness {
@@ -212,28 +210,14 @@ impl Harness {
     }
 }
 
-pub(super) async fn start_database() -> (ContainerAsync<Postgres>, sqlx::PgPool) {
-    let mut attempt = 1;
-    let container = loop {
-        match Postgres::default().with_tag("16-alpine").start().await {
-            Ok(container) => break container,
-            Err(_) if attempt < 5 => {
-                tokio::time::sleep(Duration::from_millis(250) * attempt).await;
-                attempt += 1;
-            }
-            Err(error) => panic!("start postgres: {error}"),
-        }
-    };
-    let host = container.get_host().await.unwrap();
-    let port = container.get_host_port_ipv4(5432).await.unwrap();
+pub(super) async fn start_database() -> (FreshDatabase, sqlx::PgPool) {
+    let (database, url) = fresh_database().await;
     let pool = PgPoolOptions::new()
         .max_connections(10)
-        .connect(&format!(
-            "postgresql://postgres:postgres@{host}:{port}/postgres"
-        ))
+        .connect(&url)
         .await
         .unwrap();
-    (container, pool)
+    (database, pool)
 }
 
 pub(super) async fn first_event_of(
