@@ -668,37 +668,42 @@ pub enum EventStoreError {
 
 ### Testing Database Code
 
+Tests take their PostgreSQL and Redis from `testcontainers-shared`
+(`vendor/testcontainers-shared`, a dev-dependency): one server per test
+binary, started by the first test that asks for it and removed when the
+process exits, and a slice of it per test. Tests run in parallel; never
+start a container per test.
+
 ```rust
-// Common test setup
-pub struct TestDatabase {
-    pool: PgPool,
-    db_name: String,
-}
+use testcontainers_shared::{postgres::fresh_database, redis::fresh_redis};
 
-impl TestDatabase {
-    pub async fn new() -> Result<Self> {
-        let db_name = format!("test_event_sauce_{}", Uuid::new_v4());
-        // Create isolated database
-        // Run migrations
-        Ok(Self { pool, db_name })
-    }
-}
-
-impl Drop for TestDatabase {
-    fn drop(&mut self) {
-        // Cleanup database
-    }
-}
-
-// Usage in tests
 #[tokio::test]
-#[serial]  // Run database tests serially
 async fn test_postgres_store() {
-    let db = TestDatabase::new().await.unwrap();
-    let store = PostgresEventStore::new(db.pool());
+    // An empty database of its own, dropped with the guard.
+    let (_database, url) = fresh_database().await;
+    let pool = PgPool::connect(&url).await.unwrap();
+    let store = PostgresEventStore::new(pool);
+    // ... test ...
+}
+
+#[tokio::test]
+async fn test_redis_store() {
+    // A logical database of its own, flushed and released with the guard.
+    let (_redis, url) = fresh_redis();
+    let store = RedisLoginStore::connect(&url).await.unwrap();
     // ... test ...
 }
 ```
+
+A Redis logical database isolates keys and per-database commands only:
+pub/sub channels, `FLUSHALL`, `CONFIG SET` (keyspace notifications
+included), `SCRIPT`/`FUNCTION`, `SWAPDB` and `CLIENT KILL` are server-wide.
+
+A test whose side effects reach beyond its slice (creating databases or
+roles, any of those server-wide Redis commands, a custom container setup)
+starts a dedicated container with `postgres::start_postgres_url` or
+`redis::start_redis_url`, or with `start_with_retry` on a request built by
+`postgres::test_postgres` or `redis::test_redis`.
 
 ### Testing Async Code
 
@@ -766,11 +771,10 @@ The CI pipeline (`.github/workflows/ci.yml`) runs on pushes and PRs against
     `event-sauce-axum` and the `event-sauce` facade with each of their
     features alone and none by default
 
-The `event-sauce-postgres` tests share one testcontainers PostgreSQL server
-per test binary, each test getting its own database on it; the
-`event-sauce-auth` and `event-sauce-axum` PostgreSQL and Redis tests spin up
-containers of their own. The pipeline needs Docker (present on
-`ubuntu-latest`) rather than a database service.
+PostgreSQL and Redis tests share one testcontainers server of each per test
+binary (`testcontainers-shared`), each test getting its own database on it,
+so the pipeline needs Docker (present on `ubuntu-latest`) rather than a
+database service.
 
 ### Before Pushing
 
