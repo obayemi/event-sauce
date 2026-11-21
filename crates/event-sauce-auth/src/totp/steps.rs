@@ -5,8 +5,17 @@ use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Advance, Done, Entered, HasTotp, Login, LoginState, Rejected, Route, Step, Totp, UserAggregate,
+    Advance, Done, Entered, HasTotp, Login, LoginState, Rejected, Route, Step, Totp, TotpSecret,
+    UserAggregate,
 };
+
+fn enrolled_secret<U, S>(login: &Login<U, S>) -> Option<&TotpSecret>
+where
+    U: UserAggregate,
+    U::Credentials: HasTotp,
+{
+    login.user().identity().credentials()?.totp_secret()
+}
 
 /// The state of a login that awaits a TOTP code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -31,13 +40,7 @@ where
         verifier: &Totp,
         code: SecretString,
     ) -> Result<Login<U, Done>, Rejected> {
-        let secret = advance
-            .login()
-            .user()
-            .identity()
-            .credentials()
-            .and_then(HasTotp::totp_secret)
-            .ok_or(Rejected::Mismatch)?;
+        let secret = enrolled_secret(advance.login()).ok_or(Rejected::Mismatch)?;
         verifier.check(secret, &code).await?;
         Ok(advance.to(Done))
     }
@@ -67,13 +70,7 @@ where
     type Next = TotpOrDone<U>;
 
     fn route(&self, entered: Advance<U, Entered>) -> TotpOrDone<U> {
-        let enrolled = entered
-            .login()
-            .user()
-            .identity()
-            .credentials()
-            .is_some_and(|credentials| credentials.totp_secret().is_some());
-        if enrolled {
+        if enrolled_secret(entered.login()).is_some() {
             TotpOrDone::Totp(entered.to(NeedTotp))
         } else {
             TotpOrDone::Done(entered.to(Done))
