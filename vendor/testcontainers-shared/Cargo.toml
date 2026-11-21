@@ -12,9 +12,10 @@ publish = false
 [dependencies]
 bollard.workspace = true
 dtor.workspace = true
+redis.workspace = true
 sqlx = { workspace = true, features = ["postgres"] }
 testcontainers.workspace = true
-testcontainers-modules = { workspace = true, features = ["postgres"] }
+testcontainers-modules = { workspace = true, features = ["postgres", "redis"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
 uuid.workspace = true
 
