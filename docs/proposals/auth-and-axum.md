@@ -1,9 +1,11 @@
 # Proposal: pluggable auth and axum integration
 
-Status: **implemented**. Every step of the build order (section 8) is
+Status: steps 1 to 18 of the build order (section 8) are **implemented**
 on `feat/auth`. Steps 15 to 17 replaced the `ClaimAuthenticator`, `TwoFactor`
 and second-factor builder stage that the earlier steps shipped with the
-typestate logins of sections 3.4, 3.6, 4.2 and 4.4. Step 18 sealed the session behind `AuthSession<U>`. Where the code
+typestate logins of sections 3.4, 3.6, 4.2 and 4.4. Step 18 sealed the
+session behind `AuthSession<U>`. Steps 19 to 23, the HTTP helpers of
+section 4.5, are **proposed** and not built yet. Where the code
 deliberately differs from the first draft of this proposal, the sections
 below describe the code. Supersedes the
 "extract `event-sauce-auth` from saxy-p" plan in saxy-p's `PLAN.md`.
@@ -1370,6 +1372,595 @@ backend is crate-private, so `App` exposes neither it nor its type, and
 its `Debug` prints only the correlation layer. `App` is not `Clone` and has
 no public field, so nothing else of it reaches the backend.
 
+### 4.5 HTTP helpers (proposed, steps 19 to 23)
+
+Status: **proposed**, not built. The two examples and saxy-p repeat the same
+HTTP glue around the crate: mapping store and login errors to statuses,
+answering a login step, loading the aggregate a path names and checking who
+may see it, redirecting a browser to the login page, and building a command
+context from the current user. Each of the five helpers below removes one of
+these, in build order: helper 2 answers refusals with helper 1's
+`LoginError`, and helper 3 reuses helper 1's `DeletedStatus`.
+
+None of them touches the seal of section 4.2. No helper opens a session
+except `AuthSession::finish`, which goes through `Login::finish`, the only
+source of an `Authenticated<U>`, and then through `AuthSession::login`. No
+helper names or returns the backend, `SessionUser` or
+`axum_login::AuthSession`. The helpers that read the current user call the
+same crate-private `session_user` as `CurrentUser`.
+
+Rejected, not built: a typed command extractor `Cmd<C>`, an event-log query
+extractor, OAuth flow state, ETag/If-Match, CSRF, rate limiting,
+idempotency keys, SSE and health checks. The examples keep their hand-written
+cookie clients (`examples/axum-auth/tests.rs`, `examples/axum-crud/tests/harness.rs`):
+`axum-test` would replace their cookie jar with a dev-dependency tree that
+has to be audited, and that is not clearly simpler.
+
+| # | Helper | Feature | Replaces |
+|---|---|---|---|
+| 1 | `StoreError`, `Split`, `SplitDomain`, `DeletedStatus`; `LoginError`, `SessionError: IntoResponse` | none; `login` for the login part | every app's own error-to-status table, and the 401s that hide outages |
+| 2 | `AuthSession::finish`, `PendingLogin::hold`, `LoginStep` | `login` | the open/hold/refused glue of every login handler |
+| 3 | `Found<A, S>`, `PathAggregate`; `Authorized<A, P, S>`, `Access<A>` | none; `login` for `Authorized` | `Path` + `load` + owner check in each handler, saxy-p's load guards |
+| 4 | `LoginRedirect`, `AuthRejection::Redirect`, `ReturnTo` | `login`; `ReturnTo` needs none | saxy-p's `require_user`, `login_redirect`, `original_uri`, `SafeRedirect` |
+| 5 | `Acting<Ctx>`, `FromUser` | `login` | saxy-p's `Acting` and its second actor load |
+
+#### Helper 1: error responses
+
+The orphan rule forbids `impl IntoResponse for event_sauce_core::Error`, so
+the crate wraps the errors in its own types.
+
+**`StoreError`** (no feature; `src/store_error.rs`):
+
+```rust
+/// A store failure, answered with the status of its kind and no detail.
+pub struct StoreError { failure: StoreFailure, deleted: DeletedStatus, source: Box<dyn Error + Send + Sync> }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StoreFailure { NotFound, Deleted, Conflict, Internal }
+
+/// How a deleted aggregate is answered: hidden like a missing one, or gone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DeletedStatus { #[default] NotFound, Gone }
+
+impl StoreError {
+    pub fn failure(&self) -> StoreFailure;
+    pub fn status(&self) -> StatusCode;
+    #[must_use] pub fn deleted_as(self, status: DeletedStatus) -> Self;
+}
+impl From<event_sauce_core::Error> for StoreError;
+impl IntoResponse for StoreError;
+impl std::error::Error for StoreError; // source() is the wrapped error
+
+/// A failed operation split into the domain error, which goes back to the
+/// application, and the store failure, which answers on its own.
+pub enum Split<D> { Domain(D), Store(StoreError) }
+
+pub trait SplitDomain {
+    type Domain;
+    fn split(self) -> Split<Self::Domain>;
+}
+impl<E> SplitDomain for ModifyError<E> { type Domain = E; }
+impl<E> SplitDomain for ExecuteError<E> { type Domain = E; }
+impl SplitDomain for UnitOfWorkError { type Domain = Box<dyn Error + Send + Sync>; }
+```
+
+| Source | `StoreFailure` | Status |
+|---|---|---|
+| `Error::NotFound` | `NotFound` | 404 |
+| `Error::AggregateDeleted` | `Deleted` | 404, or 410 after `deleted_as(DeletedStatus::Gone)` |
+| `Error::ConcurrencyConflict`, `Error::ClaimConflict` | `Conflict` | 409 |
+| `ExecuteError::Lifecycle`/`UnitOfWorkError::Lifecycle` with `found: Active` (a create on an existing stream, a restore of an active aggregate) | `Conflict` | 409 |
+| the same with `found: Missing` | `NotFound` | 404 |
+| the same with `found: Deleted` | `Deleted` | 404 or 410 |
+| `ExecuteError::Save` with a conflict left after the `RetryPolicy` gave up | `Conflict` | 409 |
+| `ModifyError`/`ExecuteError` `Load` and `Save`, `UnitOfWorkError::Store` | as their inner `Error` | as above |
+| any other `Error`, `UnitOfWorkError::{Unregistered, AlreadyCheckedOut, LeakedHandle, DeleteFailed}` | `Internal` | 500 |
+| `Domain(e)` of the three | not a `StoreError`: `Split::Domain(e)` | the app's |
+
+The body is a fixed text per status (`not found`, `gone`, `conflict`,
+`internal error`) and never the error's `Display`, which names aggregate
+types, ids and claim keys. With the `tracing` feature a 500 is logged with
+its source at `error` level, a 409 at `debug`.
+
+The deleted status is an option of the response, not of the error, because
+the same `Error::AggregateDeleted` can be hidden on one route and gone on
+another. `From` picks `NotFound` so that `?` never reveals a deletion
+unasked; `deleted_as` opts in. Helper 3 reads the same `DeletedStatus` from
+`PathAggregate::DELETED`.
+
+The domain error goes back to the app because only the app knows its status
+(a `NoteError::NotOwner` is 404, a `NoteError::EmptyTitle` 422):
+
+```rust
+impl<E> From<ModifyError<E>> for ApiError where Self: From<E> {
+    fn from(error: ModifyError<E>) -> Self {
+        match error.split() {
+            Split::Domain(domain) => domain.into(),
+            Split::Store(store) => Self::Store(store),
+        }
+    }
+}
+```
+
+**`LoginError`** (`login`; `src/login/login_error.rs`):
+
+```rust
+/// Why a login did not go on: refused, or unavailable.
+pub struct LoginError { failure: LoginFailure } // Refused | Unavailable(Box<dyn Error + Send + Sync>)
+
+impl LoginError {
+    /// A refusal the application decides itself, such as a malformed login id.
+    pub fn refused() -> Self;
+    pub fn is_refused(&self) -> bool;
+}
+impl<A> From<AuthError<A>> for LoginError;
+impl From<FinishError> for LoginError;
+impl From<ResumeError> for LoginError;
+impl From<Rejected> for LoginError;
+impl From<PendingLoginError> for LoginError;
+impl From<SessionError> for LoginError;
+impl IntoResponse for LoginError;
+impl IntoResponse for SessionError; // 500, no detail
+```
+
+| Source | Answer |
+|---|---|
+| `AuthError::{InvalidCredentials, Inactive, Unknown}`, `Rejected::Mismatch`, `FinishError::{Inactive, CredentialsChanged}`, `ResumeError::{NotInProgress, Inactive, CredentialsChanged}`, `LoginError::refused()` | 401, body `login refused`, `Set-Cookie` clearing the pending login |
+| `AuthError::{Store, Hash, LoginStore, Unavailable}`, `Rejected::{Hash, LoginStore, Unavailable}`, `FinishError::Store`, `ResumeError::{Store, Pending}`, `PendingLoginError`, `SessionError` | 500, body `internal error`, cookie untouched, logged with `tracing` |
+
+Every refusal answers the same bytes, so a client cannot tell an unknown
+email from a wrong password or an inactive account. A 500 leaves the pending
+cookie alone: if the store failed before `take`, the login is still there to
+retry, and if it failed after, the next attempt is `NotInProgress` and
+clears it. An app that handles `AuthError::Unknown { attempt }` itself (the
+federated sign-up of section 6, step 4) matches it before `?`.
+
+Code this deletes:
+- the 401 answered for outages: `examples/axum-crud/auth_routes.rs:69`
+  (`finish().map_err(|_| ApiError::Unauthorized)`), `examples/axum-auth/app.rs:87`
+  (`let Ok(authenticated) = login.finish().await else { 401 }`), and the
+  `Err(_) => 401` arms of `tests/user_fixture/mod.rs`;
+- in `examples/axum-crud/error.rs`, the variants `Unauthorized`, `Store`,
+  `Login`, `Session` and `Hashing`, `impl From<AuthError<A>>`, the store arms
+  of `status()` and the body masking of `into_response`; `ApiError` keeps
+  the domain variants, `Email`, `Database` and `Store(StoreError)`;
+- in `examples/axum-auth/app.rs`, the status `match`es of `register`,
+  `login`, `logout` and `change_password`;
+- `tests/extractors.rs:123`, which maps every load failure to 404, now
+  returns `StoreError` (404 missing, 500 failing);
+- in saxy-p, `ServiceError::from_execute`, `settle_conflict` and
+  `unit_of_work_store_failure` (`saxy-p-application/src/command/error.rs`),
+  whose lifecycle and conflict arms are the table above.
+
+Tests:
+- Unit, `src/store_error/tests.rs`: every row of the first table, with
+  `deleted_as` both ways; `split` of each `ModifyError`, `ExecuteError` and
+  `UnitOfWorkError` variant, the domain error returned unchanged; the body of
+  a 500 does not contain the source's `Display`.
+- Unit, `src/login/login_error/tests.rs`: every row of the second table; all
+  refusals produce byte-identical responses with the clearing cookie; a 500
+  sets no cookie.
+- HTTP, `tests/login.rs`: a login against a user store that fails answers
+  500 and opens no session, and an unknown email and a wrong password answer
+  the same 401; `tests/extractors.rs`: a missing ticket 404, a failing store
+  500.
+
+#### Helper 2: login-step glue
+
+```rust
+impl<U: UserAggregate> AuthSession<U> {
+    /// Finishes `login` and opens the session for its user.
+    pub async fn finish<S: Complete>(&mut self, login: Login<U, S>) -> Result<LoginStep, LoginError>;
+}
+
+impl PendingLogin {
+    /// Saves `login` and answers with the cookie that carries it, alive for `S::TTL`.
+    pub async fn hold<U: UserAggregate, S: LoginState>(
+        pending: &PendingLogins<U>,
+        login: Login<U, S>,
+    ) -> Result<LoginStep, LoginError>;
+}
+
+/// Where a login request left the login: opened, or waiting for its next step.
+#[must_use]
+pub struct LoginStep { /* private: Opened | Pending { id, cookie } */ }
+
+impl LoginStep {
+    pub fn is_opened(&self) -> bool;
+    pub fn pending(&self) -> Option<PendingLoginId>;
+}
+impl IntoResponse for LoginStep;      // Opened: 204 + clearing cookie; Pending: 202 + Set-Cookie
+impl IntoResponseParts for LoginStep; // the Set-Cookie alone, for (step, Redirect::to(..))
+```
+
+| Outcome | Answer |
+|---|---|
+| `finish` succeeded | 204, pending cookie cleared |
+| `hold` saved the login | 202, `Set-Cookie` with `Max-Age = S::TTL` |
+| `Err(LoginError)` refused | 401, pending cookie cleared |
+| `Err(LoginError)` unavailable | 500 |
+
+Decisions:
+- `LoginStep` has no `Refused` variant. A refusal is the `Err` of the
+  handler's `Result<LoginStep, LoginError>`, which is already
+  `IntoResponse`, so `?` works on every call of the flow.
+- An opened step can only come from `AuthSession::finish`: `LoginStep` has
+  private fields and no public constructor, and `finish` builds it only after
+  `Login::finish` returned the `Authenticated<U>` and `login` consumed it.
+  The seal is unchanged.
+- `hold` lives on the cookie type, the one that knows the cookie, because a
+  crate cannot add a method to `event_sauce_auth::PendingLogins`. `S` is
+  inferred from the login, so the cookie's lifetime cannot disagree with the
+  stored login's. That removes the turbofish of `set_cookie::<S>`, which the
+  `PendingLogin` rustdoc example gets wrong (`::<Done>` for a login waiting
+  for another step). `set_cookie` becomes private. `clear_cookie` stays
+  public for an "abandon login" route.
+- No extractor resumes a pending login. Extractors run before the handler
+  and `Json` runs last, so a resume in an extractor would take the
+  single-use login before the body is parsed, and a malformed body would
+  burn it. `resume` stays in the handler body, after every extractor.
+- `IntoResponseParts` lets an HTML login answer
+  `(step, return_to.redirect())` (helper 4) and keep the cookie.
+
+The flow of section 4.2 becomes:
+
+```rust
+async fn login(
+    mut auth: AuthSession<Profile>,
+    State(app): State<AppState>,
+    Json(attempt): Json<PasswordAttempt<Email>>,
+) -> Result<LoginStep, LoginError> {
+    match app.logins.begin(&app.first, attempt).await? {
+        TotpOrDone::Done(login) => auth.finish(login).await,
+        TotpOrDone::Totp(login) => PendingLogin::hold(&app.pending, login).await,
+    }
+}
+
+async fn totp(
+    mut auth: AuthSession<Profile>,
+    State(app): State<AppState>,
+    pending: PendingLogin,
+    Json(code): Json<TotpCode>,
+) -> Result<LoginStep, LoginError> {
+    let login = app.pending.resume::<NeedTotp>(pending.id()).await?;
+    auth.finish(login.prove(&app.totp, code.0).await?).await
+}
+
+async fn logout(mut auth: AuthSession<Profile>) -> Result<StatusCode, SessionError> {
+    auth.logout().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+```
+
+Code this deletes: `open_session`, `hold` and `refused` in
+`tests/user_fixture/mod.rs`; the `begin`/`finish`/`login` chains of both
+examples' `login`; the `Response` building and `set_cookie::<S>` calls in
+`docs/axum.md`, section 4.2 above and the `PendingLogin` rustdoc; and
+`auth.logout().await.unwrap()` in `docs/axum.md` ("Logging In and Out"),
+which panics on a session store failure.
+
+Tests:
+- Unit, `src/login/login_step/tests.rs`: the opened response is 204 with
+  the clearing cookie; a pending step for a test state with
+  `TTL = LoginTtl::ONE_HOUR` sets `Max-Age=3600`, which proves `S` comes
+  from the login; `IntoResponseParts` sets only the cookie.
+- HTTP, `tests/login.rs`, on the rewritten fixture: the existing three-step
+  flow answers 202, 202, 204 and opens one session, unchanged; a step-two
+  request with a malformed body answers 422 and the same cookie then still
+  finishes the login; a wrong code answers 401 with the clearing cookie and
+  a replay of the cookie answers 401.
+- trybuild, `tests/ui/`: `finish_an_unfinished_login.rs`,
+  `auth.finish(login)` with a `Login<User, NeedCode>`, is E0277 (`NeedCode:
+  Complete`); `build_a_login_step.rs`, a `LoginStep { .. }` literal, is E0451;
+  `set_the_pending_cookie_by_hand.rs`, `PendingLogin::set_cookie::<Done>`,
+  is E0624.
+
+#### Helper 3: `Found<A, S>` and `Authorized<A, P, S>`
+
+```rust
+/// An aggregate that a path parameter names.
+pub trait PathAggregate: Aggregate {
+    /// The path parameter that holds its id.
+    const PARAM: &'static str = "id";
+    /// How a deleted one is answered.
+    const DELETED: DeletedStatus = DeletedStatus::NotFound;
+}
+
+/// The aggregate the request's path names, loaded once for the request.
+pub struct Found<A: Aggregate, S> { /* Arc<AggregateRoot<A>>, PhantomData<fn() -> S> */ }
+impl<A, S> Deref for Found<A, S> { type Target = AggregateRoot<A>; }
+impl<A, S> Found<A, S> { pub fn arc(&self) -> &Arc<AggregateRoot<A>>; pub fn into_arc(self) -> Arc<AggregateRoot<A>>; }
+impl<St, A, S> FromRequestParts<St> for Found<A, S>
+where St: Send + Sync, Store<S>: FromRef<St>, S: EventStore + 'static, A: PathAggregate + (the bounds of `Repo`)
+{ type Rejection = FoundRejection; }
+
+pub enum FoundRejection {
+    MissingParam(&'static str), // 500: the route has no such parameter, a wiring mistake
+    BadId,                      // 400
+    Store(StoreError),          // 404, 404/410 per A::DELETED, 500
+}
+
+/// Who may reach an aggregate of type `A`.
+pub trait Access<A: Aggregate>: Send + Sync + 'static {
+    type User: UserAggregate;
+    /// Answer for a user who may not: 404 hides that the aggregate exists.
+    const DENIED: DeniedStatus = DeniedStatus::NotFound;
+    /// Whether an anonymous identity is refused before `allows` runs.
+    const REGISTERED: bool = false;
+    fn allows(aggregate: &AggregateRoot<A>, user: &AggregateRoot<Self::User>) -> bool;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DeniedStatus { #[default] NotFound, Forbidden }
+
+/// The aggregate the path names, which the current user may reach under `P`.
+pub struct Authorized<A: Aggregate, P: Access<A>, S> { /* Found<A, S>, Arc<AggregateRoot<P::User>> */ }
+impl Deref for Authorized<A, P, S> { type Target = AggregateRoot<A>; }
+impl Authorized<A, P, S> { pub fn user(&self) -> &Arc<AggregateRoot<P::User>>; pub fn found(&self) -> &Found<A, S>; }
+impl FromRequestParts<St> for Authorized<A, P, S> { type Rejection = AccessRejection; }
+
+pub enum AccessRejection { Auth(AuthRejection), Found(FoundRejection), Denied(DeniedStatus) }
+```
+
+`Found` and `PathAggregate` need no feature; `Access`, `Authorized` and
+`AccessRejection` are behind `login`.
+
+`Authorized` checks, in this order, and answers the first failure:
+
+| Check | Failure | Answer |
+|---|---|---|
+| 1. a user is logged in | nobody | 401, or the login redirect of helper 4 |
+| 2. `P::REGISTERED` and the identity is anonymous | anonymous | 403, or the registration redirect of helper 4 |
+| 3. the path parameter `A::PARAM` | missing / not a UUID | 500 / 400 |
+| 4. `load_any` through the cache | missing | 404 |
+| | deleted | 404 when `P::DENIED` is `NotFound`, otherwise `A::DELETED` |
+| | store failure | 500 |
+| 5. `P::allows(&aggregate, &user)` | `false` | `P::DENIED`: 404 (default) or 403 |
+
+Decisions on the open points:
+- **The path parameter name** is the associated const `PathAggregate::PARAM`,
+  default `"id"`, so a flat `/notes/{id}` route needs only
+  `impl PathAggregate for Note {}`, and a nested
+  `/groups/{group_id}/activities/{activity_id}` sets `PARAM` on each. It
+  sits on the aggregate, not on `AggregateId`: an aggregate with raw
+  `EntityId`s needs no id type, and `#[derive(AggregateId)]` lives in
+  `event-sauce-macros`, which must not know axum. The value is read through
+  `RawPathParams` and parsed as a UUID into an `EntityId`.
+- **Read-only.** `Found` derefs to `&AggregateRoot<A>` and has no `DerefMut`,
+  no public field and no save; writes keep using `Repo::modify` or
+  `execute`, which reload and retry on conflicts. A handler that checks
+  access with `Authorized` and writes with `modify` loads twice; that is the
+  price of not caching a root that a concurrent writer may have moved on.
+- **One load per request.** The loaded root is cached in the request
+  extensions under a private `Cached<A, S>` key holding the id and the
+  `Arc`, so an `Authorized` and a `Found` of the same aggregate in one
+  handler, or a `Found` in an app's own extractor, load once. The key
+  includes `S`, so two stores of the same aggregate never share an entry.
+- **No user.** `Authorized` refuses before it loads anything, so an
+  anonymous request cannot probe which ids exist. An anonymous identity
+  (`Identity::Anonymous`) reaches `allows` unless `P::REGISTERED` is set.
+- **Deleted and denied together.** A deleted aggregate cannot be shown to
+  the policy (its `DeletedState` may not carry an owner), so a policy that
+  hides existence also hides deletions: 404 whatever `A::DELETED` says.
+- **The store type stays a parameter**, as in `Repo<A, S>`: a store found by
+  aggregate type alone is the registry section 4.3 rejected. Apps alias it,
+  `type Owned<A> = Authorized<A, Owner, PostgresEventStore>;`.
+- **Ordering is a type requirement.** A handler that takes
+  `Authorized<Note, Owner, S>` cannot run unless the user, the load and the
+  check passed, and nothing else has to be layered or ordered. saxy-p's
+  `load_group_guard`/`load_activity_guard` (`saxy-p-web/src/web/guards/load.rs`)
+  stash a scope that `GetUser`, `GetGroup` and `GetActivity`
+  (`extractors.rs:313-410`) read back, and a route that forgets the guard
+  fails at runtime with "route not behind a load guard".
+- **Limits.** `allows` is synchronous and sees one aggregate and the user.
+  A check that needs a projection query (saxy-p's `AccessScope`) or a second
+  aggregate (an activity's group) is the app's own extractor, composed from
+  `Found` and `CurrentUser`, which share the cache.
+
+```rust
+impl PathAggregate for Note {}
+
+struct Owner;
+impl Access<Note> for Owner {
+    type User = Member;
+    fn allows(note: &AggregateRoot<Note>, member: &AggregateRoot<Member>) -> bool {
+        note.ensure_owned_by(member).is_ok()
+    }
+}
+
+type Owned = Authorized<Note, Owner, PostgresEventStore>;
+
+pub async fn read(note: Owned) -> Json<NoteView> {
+    Json(NoteView::from(&*note))
+}
+```
+
+Code this deletes: in `examples/axum-crud/note_routes.rs`, the
+`Path(id)`, `load`, `ensure_owned_by` and error of `read`, which becomes
+infallible. `remove`, `replace` and `amend` keep `Repo`: they write, and the
+events' own validation checks the owner, so `NoteError::NotOwner` keeps its
+404 arm in `error.rs`. The
+`ticket_title` handler of `tests/extractors.rs` becomes
+`Found<Ticket, InMemoryEventStore>`. In saxy-p it replaces the load guards,
+`GroupScope`/`ActivityScope` and the `Get*` extractors for every route whose
+check is a function of the aggregate and the user.
+
+Tests:
+- Unit, `src/found/tests.rs`: parameter lookup (present, missing, not a
+  UUID) on a `RawPathParams`-like list; the cache helper with a counting
+  loader closure loads once for two extractions of the same id, twice for
+  two ids, and keeps two stores apart; the deleted status table.
+- Unit, `src/login/authorized/tests.rs`: the order and the answer of each
+  row of the table above with a fake user and aggregate, including deleted
+  plus `DENIED = NotFound` giving 404 under `DELETED = Gone`.
+- HTTP, `tests/found.rs` on the in-memory store: 200, 400, 404, deleted 404
+  and 410 (an aggregate with `DELETED = Gone`), a nested route reading the
+  right parameter, a route without the parameter 500;
+  `tests/login.rs`: owner 200, another member 404, a `Forbidden` policy 403,
+  nobody 401, an anonymous identity under `REGISTERED` 403.
+- trybuild: `write_through_found.rs`, assigning a field through `Found`, is
+  E0594; `authorize_without_access.rs`, `Authorized<Note, Owner, S>` where
+  `Owner` implements `Access<Member>` only, is E0277.
+
+#### Helper 4: login redirect for HTML apps
+
+```rust
+/// Sends a browser that is not logged in to the login page, keeping where it was going.
+#[derive(Debug, Clone)]
+pub struct LoginRedirect { /* login: ReturnTo, param: &'static str, register: Option<ReturnTo> */ }
+
+impl LoginRedirect {
+    pub fn to(login: ReturnTo) -> Self;                 // param "return_to"
+    #[must_use] pub fn param(self, name: &'static str) -> Self;
+    #[must_use] pub fn register_at(self, page: ReturnTo) -> Self;
+}
+impl<S> tower::Layer<S> for LoginRedirect { type Service = axum::middleware::AddExtension<S, Self>; }
+
+pub enum AuthRejection {
+    Unauthenticated, Forbidden, MissingLayer,
+    /// 303 See Other to the login or registration page.
+    Redirect { location: HeaderValue },
+}
+
+/// A same-origin path, safe to redirect to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReturnTo(/* String */);
+impl ReturnTo {
+    pub const fn from_static(path: &'static str) -> Self; // panics on a target that is not local
+    pub fn parse(raw: &str) -> Option<Self>;
+    pub fn root() -> Self;                               // "/"
+    pub fn as_str(&self) -> &str;
+    pub fn redirect(&self) -> Redirect;                  // 303
+}
+impl Default for ReturnTo;          // root
+impl<'de> Deserialize<'de> for ReturnTo; // any string; a target that is not local becomes root
+impl IntoResponse for ReturnTo;     // 303 to it
+```
+
+`LoginRedirect` and the new `AuthRejection` variant are behind `login`;
+`ReturnTo` needs no feature.
+
+| Extractor (with `LoginRedirect` installed) | Situation | Answer |
+|---|---|---|
+| `CurrentUser`, `Registered`, `Authorized`, `Acting` | nobody logged in | 303 to `{login}?{param}={original path and query, percent-encoded}` |
+| `Registered`, `Authorized` with `REGISTERED` | anonymous identity | 303 to `register_at` with the same parameter, or 403 when unset |
+| any | `MissingLayer` | 500, never a redirect |
+| `MaybeUser` | any | never rejects for a missing user |
+| without `LoginRedirect` | | 401 / 403, as today |
+
+`ReturnTo::parse` accepts only a path that starts with `/`, not `//`, and
+contains no `\` and no control character, the rules of saxy-p's
+`safe_local_path` (`saxy-p-web/src/web/redirect.rs`): browsers read `\` as
+`/` and drop tabs and newlines, so `/\host` and `/<TAB>/host` leave the
+site. A scheme or host cannot start with `/`.
+
+Decisions on the open points:
+- **Configuration lives on the router, not on `AuthLayer` or the `App`
+  builder.** `LoginRedirect` is a layer that puts itself in the request
+  extensions, and the extractors read it there. An app applies it to the
+  HTML sub-router and keeps 401 on its JSON API, on one `AuthLayer`. It
+  carries no backend and adds nothing to `AuthLayer` or `App`, so the seal
+  is untouched. Without it every extractor behaves exactly as today.
+- **The original URI** is axum's `OriginalUri`, because `nest()` strips the
+  mount prefix from `Parts::uri`; the extractors fall back to `Parts::uri`
+  when it is absent (a request built in a test). Only the path and query are
+  kept, never a scheme or host. The `login` feature turns on
+  `axum/original-uri`, off under the crate's `default-features = false`.
+- **Percent-encoding** uses `percent-encoding 2.3`, already in the
+  dependency tree through `axum`, so the build adds no crate.
+- **303 See Other**, so a POST to a guarded route becomes a GET of the
+  login page. An htmx app that needs `HX-Redirect` maps
+  `AuthRejection::Redirect { location }` in its own error type.
+- **`ReturnTo` deserializes leniently**: an absent or rejected value is
+  root, so a forged `return_to` never fails the login form and never leaves
+  the site. A strict caller uses `ReturnTo::parse`.
+
+After the login, an HTML handler answers
+`Ok((auth.finish(login).await?, form.return_to.redirect()))`, which keeps
+the cookie of helper 2.
+
+Code this deletes: nothing in the examples, which are JSON APIs. In saxy-p:
+`original_uri`, `login_redirect`, `require_user`, `require_registered_user`
+(`extractors.rs:160-205`) and `SafeRedirect`/`safe_local_path`
+(`redirect.rs`), which `ReturnTo` replaces with its tests.
+
+Tests:
+- Unit, `src/return_to/tests.rs`: saxy-p's tables (local paths accepted;
+  `//host`, `http://`, `evil.com`, `\\host` rejected; `/\host`, `/\t/host`,
+  `/\n/host` rejected; control characters rejected; `%5C` and `%2F` kept);
+  lenient deserialization from a query string; `from_static` panics on
+  `//host`.
+- Unit, `src/login/redirect/tests.rs`: the location for a path with a query
+  and non-ASCII bytes; a custom `param`; registration with and without
+  `register_at`.
+- HTTP, `tests/login.rs`: a router nested under `/app` with `LoginRedirect`
+  sends an anonymous GET of `/app/notes?x=1` to
+  `/login?return_to=%2Fapp%2Fnotes%3Fx%3D1`; a sibling API router without it
+  answers 401; `Registered` with an anonymous identity redirects to
+  `register_at`; `MaybeUser` is not redirected; without `AuthLayer` the
+  answer is 500.
+
+#### Helper 5: `Acting<Ctx>`
+
+```rust
+/// A command context built from the user who acts.
+pub trait FromUser: Sized + Send + 'static {
+    type User: UserAggregate;
+    fn from_user(user: Arc<AggregateRoot<Self::User>>) -> Self;
+}
+
+/// The command context of the current user, for `Repository::execute` and units of work.
+pub struct Acting<Ctx>(pub Ctx);
+impl<Ctx> Deref for Acting<Ctx> { type Target = Ctx; }
+impl<St: Send + Sync, Ctx: FromUser> FromRequestParts<St> for Acting<Ctx> { type Rejection = AuthRejection; }
+```
+
+Behind `login`. Rejected with 401, or the login redirect of helper 4, when
+nobody is logged in.
+
+```rust
+impl FromUser for AppCtx {
+    type User = Profile;
+    fn from_user(actor: Arc<AggregateRoot<Profile>>) -> Self {
+        AppCtx::new(actor, Utc::now())
+    }
+}
+
+async fn rename(Repo(groups): Repo<Group, Pg>, Acting(ctx): Acting<AppCtx>, ..) -> Result<StatusCode, ApiError> {
+    groups.execute(id, &Rename { name }, &ctx, RetryPolicy::default()).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+```
+
+Decisions:
+- **The user is an associated type**, not the trait parameter `FromUser<U>`
+  of the first sketch: an extractor `Acting<Ctx>` must find `U` from `Ctx`
+  alone, and a parameter would leave it unconstrained (E0207) or force
+  `Acting<Ctx, U>`. A context acts for one user aggregate.
+- **Synchronous and infallible.** saxy-p's `Acting`
+  (`saxy-p-web/src/web/command/mod.rs:241`, 50 uses) is async and fallible
+  only because it loads the actor a second time through
+  `resolve_actor`, which fails for a missing or deactivated profile. Here
+  the user comes from the session the backend already resolved, and
+  `get_user` answers `None`, so 401, for a missing or inactive user. What
+  remains is building a value.
+- **`Arc` by value**, not `&AggregateRoot<U>`: a context that keeps the actor
+  (saxy-p's `AppCtx` holds an `AggregateRoot<Profile>`) keeps the `Arc` and
+  clones nothing; one that needs the root derefs it.
+- A context that needs request data beyond the user (saxy-p's
+  `delegating_to(organizers)`, taken from the loaded group) is built in the
+  handler from `Acting` and `Authorized`/`Found`.
+
+Code this deletes: nothing in the examples, whose commands are
+`@actor(Member)` methods that take `CurrentUser` directly. In saxy-p, the
+`Acting` extractor, its `loaded_actor` fallback and its second profile load.
+
+Tests:
+- HTTP, `tests/login.rs`: a handler taking `Acting<Ctx>` for a test context
+  receives the logged-in user; nobody logged in is 401, and a redirect
+  under `LoginRedirect`; a user deactivated since login is 401; a `Command`
+  run by `execute` with the context sees that user.
+
 ## 5. Changes to existing crates
 
 | Crate | Change |
@@ -1379,6 +1970,7 @@ no public field, so nothing else of it reaches the backend.
 | `event-sauce-macros` | `user` flag, `#[user(identity)]`/`#[user(active)]` field attributes, `Credentials::claims()` merged into `claims()` |
 | `event-sauce` facade | features `auth` (plus `auth-postgres`, `auth-moka`, `auth-redis`, `auth-reset`, `auth-totp`) and `axum` (plus `axum-login`, `axum-app`), all in `full`, re-exported as `event_sauce::auth` and `event_sauce::axum` |
 | `.github/workflows/ci.yml` | new `feature-matrix-auth-axum` job that lints each feature of `event-sauce-auth`, `event-sauce-axum` and the facade alone |
+| `event-sauce-axum` (steps 19 to 23, proposed) | the helpers of section 4.5; the `login` feature also turns on `axum/original-uri` and adds `percent-encoding`, already in the tree through `axum` |
 
 ## 6. Migrating saxy-p
 
@@ -1423,10 +2015,18 @@ no public field, so nothing else of it reaches the backend.
 9. Replace `request_id.rs` with `CorrelationLayer`.
 10. Drop the `password_hash` column from `projections.profile_auth`.
     Delete the projection if nothing besides login reads it.
+11. Once steps 19 to 23 land: map `ServiceError` through `StoreError` and
+    `LoginError`; replace the load guards whose check is a function of the
+    aggregate and the user with `Authorized`, `require_user` and
+    `SafeRedirect` with `LoginRedirect` and `ReturnTo`, and `Acting` with
+    `Acting<AppCtx>` (section 4.5).
 
 ## 7. Tests
 
 The lowest level that can prove each behaviour, and only there:
+The tests of the HTTP helpers, steps 19 to 23, are listed with each helper
+in section 4.5.
+
 
 - **Unit:**
   - `Identity`, `Password`, `Federated` and `PasswordOrFederated`
@@ -1607,6 +2207,47 @@ it in the type system (section 4.2) and deletes what it supersedes:
     limits of section 4.2: the hand-written
     `axum-login` session record, `renew` during a concurrent credential
     change, and an application's own `AuthnBackend`.
+
+The HTTP helpers of section 4.5 are proposed, not built. Each step is its
+own commit in `event-sauce-axum`, test first (the unit, HTTP and trybuild
+cases its helper lists, seen failing for the right reason before the code),
+deletes in the same commit the example and test code it supersedes, and
+updates the rustdoc of what it touches, `docs/axum.md`, `docs/auth.md` where
+logins are shown, the README, the `CHANGELOG.md` Unreleased entries, the
+"User Aggregates and HTTP Standards" bullets of `CLAUDE.md` and section 4.5,
+whose status line moves to "implemented" with the last one. Each passes the
+feature matrix of the crate (none, `login`, `app`, `tracing` alone) and the
+clippy of both axum examples with `--no-default-features` and their
+`required-features`. The order follows the dependencies: 20 answers
+refusals with 19's `LoginError`, 21 and 22 reuse 19's `DeletedStatus` and
+`StoreError`, and 22 and 23 build on the rejection 21's `Authorized` shares
+with `CurrentUser`.
+
+19. Error responses: `StoreError`, `StoreFailure`, `DeletedStatus`,
+    `Split`, `SplitDomain` (no feature); `LoginError` and
+    `impl IntoResponse for SessionError` (`login`). Rewrites
+    `examples/axum-crud/error.rs` around `StoreError` and `LoginError`, the
+    status `match`es of `examples/axum-auth/app.rs`, the `Err(_) => 401`
+    arms of `tests/user_fixture/mod.rs` and the `map_err(|_| NOT_FOUND)` of
+    `tests/extractors.rs`, and adds the failing-store login test.
+20. Login-step glue: `AuthSession::finish`, `PendingLogin::hold`,
+    `LoginStep`; `PendingLogin::set_cookie` becomes private. Rewrites both
+    examples' `login` and `logout`, the fixture's `open_session`, `hold`
+    and `refused`, the `PendingLogin` rustdoc example (`::<Done>`), the
+    multi-step flow and the `logout().await.unwrap()` of `docs/axum.md`,
+    and the handlers of section 4.2. Adds the malformed-body test and the
+    three trybuild cases.
+21. `Found<A, S>`, `PathAggregate`, `FoundRejection` (no feature), then
+    `Access<A>`, `DeniedStatus`, `Authorized<A, P, S>`, `AccessRejection`
+    (`login`). Moves `read` of `axum-crud` onto `Authorized` with an `Owner`
+    policy and `tests/extractors.rs`'s `ticket_title` onto `Found`; adds a
+    "Loading What the Path Names" section to `docs/axum.md`.
+22. `ReturnTo` (no feature), then `LoginRedirect` and
+    `AuthRejection::Redirect` (`login`, which turns on `axum/original-uri`
+    and adds `percent-encoding`). `AuthRejection` loses `Copy` and
+    `status` takes `&self`. Adds an "HTML Apps" section to `docs/axum.md`.
+23. `FromUser` and `Acting<Ctx>` (`login`), with a "Command Contexts"
+    section in `docs/axum.md` next to `Repo::execute`.
 
 ## 9. Open questions
 
