@@ -106,6 +106,16 @@ enum CacheChoice<U: UserAggregate> {
     Disabled,
 }
 
+impl<U: UserAggregate> CacheChoice<U> {
+    fn into_cache(self) -> Option<Arc<dyn UserCache<U>>> {
+        match self {
+            Self::Moka(capacity) => Some(Arc::new(MokaUserCache::new(capacity))),
+            Self::Shared(cache) => Some(cache),
+            Self::Disabled => None,
+        }
+    }
+}
+
 /// The builder of an application with its user aggregate chosen.
 ///
 /// The defaults are the ones of [`EventSauceApp`]. Every override is
@@ -206,14 +216,9 @@ where
         store: Arc<S>,
         login_store: Arc<dyn LoginStore>,
     ) -> App<U, FirstFactor<M, R>, S> {
-        let cache: Option<Arc<dyn UserCache<U>>> = match self.cache {
-            CacheChoice::Moka(capacity) => Some(Arc::new(MokaUserCache::new(capacity))),
-            CacheChoice::Shared(cache) => Some(cache),
-            CacheChoice::Disabled => None,
-        };
         let mut backend = EventSauceBackend::new(store.clone());
         let mut logins = Logins::new(store.clone());
-        if let Some(cache) = cache {
+        if let Some(cache) = self.cache.into_cache() {
             backend = backend.with_shared_cache(cache.clone());
             logins = logins.with_shared_cache(cache);
         }
@@ -238,11 +243,11 @@ where
     /// Returns [`BuildError`] when the login schema is invalid or a store
     /// cannot be built or migrated.
     pub async fn build(self) -> Result<App<U, FirstFactor<M, R>, PostgresEventStore>, BuildError> {
-        let logins = match &self.login_schema {
+        let login_store = match &self.login_schema {
             Some(schema) => PostgresLoginStore::new(self.pool.clone()).with_schema(schema)?,
             None => PostgresLoginStore::new(self.pool.clone()),
         };
-        let events = match &self.event_store {
+        let event_store = match &self.event_store {
             Some(store) => store.clone(),
             None => Arc::new(
                 PostgresEventStore::builder()
@@ -250,9 +255,9 @@ where
                     .build()?,
             ),
         };
-        events.migrate().await?;
-        logins.migrate().await?;
-        Ok(self.assemble(events, Arc::new(logins)))
+        event_store.migrate().await?;
+        login_store.migrate().await?;
+        Ok(self.assemble(event_store, Arc::new(login_store)))
     }
 }
 
