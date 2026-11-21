@@ -28,7 +28,7 @@ use serde::Deserialize;
 use support::Client;
 use tower_sessions::{MemoryStore, SessionManagerLayer};
 use user_fixture::{
-    change_password, cheap_hasher, hash, login_routes, register, CodeIfEnrolled, Flow, User,
+    change_password, cheap_hasher, login_routes, register, CodeIfEnrolled, Flow, User,
     UserCommands, ADA, CODE, MAIL_CODE, PASSWORD,
 };
 
@@ -96,12 +96,7 @@ async fn change_own_password(
     Json(form): Json<PasswordForm>,
 ) -> StatusCode {
     let id = auth.user().unwrap().entity_id();
-    let hash = hash(&form.password).await;
-    events
-        .repository::<User>()
-        .modify(id, |user| user.change_password(hash.clone()))
-        .await
-        .unwrap();
+    change_password(&events, id, &form.password).await;
     auth.renew().await.unwrap().unwrap();
     StatusCode::NO_CONTENT
 }
@@ -136,7 +131,7 @@ async fn me(user: CurrentUser<User>) -> String {
 }
 
 async fn maybe(MaybeUser(user): MaybeUser<User>) -> String {
-    user.map_or_else(|| "nobody".to_owned(), |user| user.entity_id().to_string())
+    describe(user)
 }
 
 async fn registered(user: Registered<User>) -> String {

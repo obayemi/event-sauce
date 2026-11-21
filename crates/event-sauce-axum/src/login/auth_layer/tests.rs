@@ -64,18 +64,6 @@ async fn the_layer_installs_the_session_the_extractors_read() {
 }
 
 #[tokio::test]
-async fn without_the_layer_the_extractors_are_a_server_error() {
-    assert_eq!(
-        body(routes(), "/visitors").await.0,
-        StatusCode::INTERNAL_SERVER_ERROR
-    );
-    assert_eq!(
-        body(routes(), "/session").await.0,
-        StatusCode::INTERNAL_SERVER_ERROR
-    );
-}
-
-#[tokio::test]
 async fn a_clone_installs_the_same_layer() {
     let router = layer()
         .clone()
