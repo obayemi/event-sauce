@@ -1,9 +1,10 @@
-use chrono::DateTime;
 use event_sauce_core::AggregateRoot;
 
 use super::*;
 use crate::{
-    test_support::{credentials, restored_user, stored_user, FakeLoginStore, FakeUsers, TestUser},
+    test_support::{
+        ada, credentials, login_in, restored_user, FakeLoginStore, FakeUsers, TestUser,
+    },
     Done, LoginTtl, Logins,
 };
 
@@ -33,7 +34,7 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
-        let user = stored_user(credentials("ada@example.com", "pw"), true);
+        let user = ada();
         Self::with_store(user, FakeLoginStore::default())
     }
 
@@ -50,12 +51,7 @@ impl Fixture {
     }
 
     fn login<S>(&self, state: S) -> Login<TestUser, S> {
-        Login::new(
-            self.user.clone(),
-            DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
-            Arc::new(self.users.clone()),
-            state,
-        )
+        login_in(&self.user, &self.users, state)
     }
 
     fn waiting(&self) -> Login<TestUser, Waiting> {
@@ -206,7 +202,7 @@ async fn credentials_changed_since_cannot_resume() {
 
 #[tokio::test]
 async fn a_failing_login_store_fails_both_directions() {
-    let user = stored_user(credentials("ada@example.com", "pw"), true);
+    let user = ada();
     let fixture = Fixture::with_store(user, FakeLoginStore::broken());
 
     let saved = fixture.pending.save(fixture.waiting()).await;

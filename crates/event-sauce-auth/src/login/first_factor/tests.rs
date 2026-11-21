@@ -1,8 +1,5 @@
 use super::*;
-use crate::{
-    test_support::{credentials, stored_user, FakeUsers},
-    Login,
-};
+use crate::test_support::{ada, login_in, FakeUsers};
 
 #[test]
 fn a_first_factor_hands_out_its_method_and_route() {
@@ -13,14 +10,8 @@ fn a_first_factor_hands_out_its_method_and_route() {
 
 #[test]
 fn always_done_routes_a_single_factor_login_to_done() {
-    let user = stored_user(credentials("ada@example.com", "pw"), true);
-    let users = FakeUsers::holding(&user);
-    let entered = Login::new(
-        user.clone(),
-        chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
-        std::sync::Arc::new(users),
-        Entered,
-    );
+    let user = ada();
+    let entered = login_in(&user, &FakeUsers::holding(&user), Entered);
 
     let login = AlwaysDone.route(Advance(entered));
 

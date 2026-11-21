@@ -1,10 +1,9 @@
 use async_trait::async_trait;
-use chrono::DateTime;
 use serde::{Deserialize, Serialize};
 
 use super::*;
 use crate::{
-    test_support::{credentials, restored_user, stored_user, FakeUsers, TestUser},
+    test_support::{ada, credentials, login_in, restored_user, started_at, FakeUsers, TestUser},
     Done, Entered,
 };
 
@@ -36,18 +35,6 @@ impl Step<TestUser> for Ask {
     }
 }
 
-fn started() -> DateTime<Utc> {
-    DateTime::from_timestamp(1_700_000_000, 0).unwrap()
-}
-
-fn login_in<S>(
-    user: &Arc<AggregateRoot<TestUser>>,
-    users: &FakeUsers,
-    state: S,
-) -> Login<TestUser, S> {
-    Login::new(user.clone(), started(), Arc::new(users.clone()), state)
-}
-
 fn asking(user: &Arc<AggregateRoot<TestUser>>, users: &FakeUsers) -> Login<TestUser, Ask> {
     login_in(
         user,
@@ -58,10 +45,6 @@ fn asking(user: &Arc<AggregateRoot<TestUser>>, users: &FakeUsers) -> Login<TestU
     )
 }
 
-fn ada() -> Arc<AggregateRoot<TestUser>> {
-    stored_user(credentials("ada@example.com", "pw"), true)
-}
-
 #[test]
 fn a_login_exposes_its_user_state_and_start_time() {
     let user = ada();
@@ -69,7 +52,7 @@ fn a_login_exposes_its_user_state_and_start_time() {
 
     assert_eq!(login.user().entity_id(), user.entity_id());
     assert_eq!(login.state().expected, "open");
-    assert_eq!(login.started_at(), started());
+    assert_eq!(login.started_at(), started_at());
 }
 
 #[test]
@@ -91,7 +74,7 @@ async fn the_right_proof_moves_the_login_to_the_next_state() {
         .unwrap();
 
     assert_eq!(next.user().entity_id(), user.entity_id());
-    assert_eq!(next.started_at(), started());
+    assert_eq!(next.started_at(), started_at());
     assert_eq!(next.fingerprint(), user.identity().session_fingerprint());
 }
 

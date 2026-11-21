@@ -1,18 +1,13 @@
-use chrono::DateTime;
-use event_sauce_core::AggregateRoot;
 use serde::{Deserialize, Serialize};
 
 use super::*;
 use crate::{
     test_support::{
-        credentials, email, secret, stored_user, FakeHasher, FakeLoginStore, FakeUsers, TestUser,
+        ada, credentials, email, secret, started_at, stored_user, FakeHasher, FakeLoginStore,
+        FakeUsers, TestUser,
     },
     AlwaysDone, FixedClock, LoginState, PasswordAttempt, PasswordLogin,
 };
-
-fn instant() -> chrono::DateTime<chrono::Utc> {
-    DateTime::from_timestamp(1_700_000_000, 0).unwrap()
-}
 
 fn attempt(login: &str, password: &str) -> PasswordAttempt<crate::Email> {
     PasswordAttempt::new(email(login), secret(password))
@@ -22,12 +17,8 @@ fn password_factor(hasher: &FakeHasher) -> FirstFactor<PasswordLogin<FakeHasher>
     FirstFactor::new(PasswordLogin::new(hasher.clone()), AlwaysDone)
 }
 
-fn ada() -> Arc<AggregateRoot<TestUser>> {
-    stored_user(credentials("ada@example.com", "pw"), true)
-}
-
 fn logins(users: &FakeUsers) -> Logins<TestUser> {
-    Logins::over(Arc::new(users.clone())).with_clock(Arc::new(FixedClock(instant())))
+    Logins::over(Arc::new(users.clone())).with_clock(Arc::new(FixedClock(started_at())))
 }
 
 #[tokio::test]
@@ -41,7 +32,7 @@ async fn the_right_password_begins_a_login_for_the_user() {
         .unwrap();
 
     assert_eq!(login.user().entity_id(), user.entity_id());
-    assert_eq!(login.started_at(), instant());
+    assert_eq!(login.started_at(), started_at());
     assert_eq!(hasher.verified(), 1);
 }
 
@@ -164,7 +155,7 @@ async fn a_new_user_signs_up_straight_into_done() {
     let login = logins(&users).sign_up(user).await.unwrap();
 
     assert_eq!(login.user().entity_id(), id);
-    assert_eq!(login.started_at(), instant());
+    assert_eq!(login.started_at(), started_at());
 }
 
 #[tokio::test]

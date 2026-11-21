@@ -9,6 +9,7 @@ use std::{
 };
 
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use event_sauce_core::{
     aggregate_command, define_events, Aggregate, AggregateClaim, AggregateError, AggregateRoot,
     Entity, EntityId, StoredVersion,
@@ -20,7 +21,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     login::users::{Found, Users},
-    ClaimLocator, Email, FederatedId, HashError, Identity, LocateError, LoginId, LoginKey,
+    ClaimLocator, Email, FederatedId, HashError, Identity, LocateError, Login, LoginId, LoginKey,
     LoginStore, LoginStoreError, LoginTtl, Password, PasswordHash, PasswordHasher, Provider,
     SignUpError, UserAggregate, UserCache,
 };
@@ -319,6 +320,25 @@ pub(crate) fn restored_user(
         active,
     };
     Arc::new(AggregateRoot::restore(StoredVersion::FIRST, user).unwrap())
+}
+
+/// The user of most login tests, active and stored at its first version.
+pub(crate) fn ada() -> Arc<AggregateRoot<TestUser>> {
+    stored_user(credentials("ada@example.com", "pw"), true)
+}
+
+/// The instant every login of the tests starts at.
+pub(crate) fn started_at() -> DateTime<Utc> {
+    DateTime::from_timestamp(1_700_000_000, 0).unwrap()
+}
+
+/// A login of `user` in `state`, started at [`started_at`], over `users`.
+pub(crate) fn login_in<S>(
+    user: &Arc<AggregateRoot<TestUser>>,
+    users: &FakeUsers,
+    state: S,
+) -> Login<TestUser, S> {
+    Login::new(user.clone(), started_at(), Arc::new(users.clone()), state)
 }
 
 /// The users of a [`FakeUsers`], shared between its copies.
