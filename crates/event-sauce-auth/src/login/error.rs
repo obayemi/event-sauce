@@ -2,7 +2,7 @@
 
 use event_sauce_core::Error;
 
-use crate::{HashError, LoginStoreError, PendingLoginError, Rejected};
+use crate::{login::users::Stale, HashError, LoginStoreError, PendingLoginError, Rejected};
 
 /// Why an attempt did not start a login.
 #[derive(Debug, thiserror::Error)]
@@ -62,6 +62,15 @@ pub enum FinishError {
     Store(#[from] Error),
 }
 
+impl From<Stale> for FinishError {
+    fn from(stale: Stale) -> Self {
+        match stale {
+            Stale::Inactive => Self::Inactive,
+            Stale::CredentialsChanged => Self::CredentialsChanged,
+        }
+    }
+}
+
 /// Why a pending login did not resume.
 #[derive(Debug, thiserror::Error)]
 pub enum ResumeError {
@@ -81,6 +90,15 @@ pub enum ResumeError {
     /// The login store failed or held something that is not a pending login.
     #[error(transparent)]
     Pending(#[from] PendingLoginError),
+}
+
+impl From<Stale> for ResumeError {
+    fn from(stale: Stale) -> Self {
+        match stale {
+            Stale::Inactive => Self::Inactive,
+            Stale::CredentialsChanged => Self::CredentialsChanged,
+        }
+    }
 }
 
 /// Why a new user could not be signed up.

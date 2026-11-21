@@ -70,14 +70,23 @@ where
         &self,
         id: EntityId,
     ) -> Result<Option<Arc<AggregateRoot<U>>>, event_sauce_core::Error> {
+        Ok(self.find(id).await?.filter(|user| user.is_active()))
+    }
+
+    /// Loads the user `id` names, active or not.
+    ///
+    /// Returns `None` when there is no such user or when it was deleted.
+    pub(crate) async fn find(
+        &self,
+        id: EntityId,
+    ) -> Result<Option<Arc<AggregateRoot<U>>>, event_sauce_core::Error> {
         let Ok(version) = StoredVersion::try_from(self.repository.version_by_id(id).await?) else {
             return Ok(None);
         };
-        let user = match self.cached(id, version).await {
-            Some(user) => Some(user),
-            None => self.load_in_full(id).await?,
-        };
-        Ok(user.filter(|user| user.is_active()))
+        match self.cached(id, version).await {
+            Some(user) => Ok(Some(user)),
+            None => self.load_in_full(id).await,
+        }
     }
 
     async fn cached(&self, id: EntityId, version: StoredVersion) -> Option<Arc<AggregateRoot<U>>> {

@@ -179,7 +179,7 @@ fn an_advance_moves_a_login_out_of_the_entered_state() {
     let user = ada();
     let entered = login_in(&user, &FakeUsers::holding(&user), Entered);
 
-    let login = Advance::new(entered).to(Done);
+    let login = Advance(entered).to(Done);
 
     assert_eq!(login.user().entity_id(), user.entity_id());
 }

@@ -19,6 +19,35 @@ pub(crate) enum Found<U: UserAggregate> {
     Missing,
 }
 
+/// Why a user found again no longer matches the login that holds it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Stale {
+    Inactive,
+    CredentialsChanged,
+}
+
+impl<U: UserAggregate> Found<U> {
+    /// The user, if it is still active with the session fingerprint a login
+    /// pinned.
+    pub(crate) fn confirm(self, fingerprint: [u8; 32]) -> Result<Arc<AggregateRoot<U>>, Stale> {
+        match self {
+            Self::Active(user) if user.identity().session_fingerprint() == fingerprint => Ok(user),
+            Self::Active(_) => Err(Stale::CredentialsChanged),
+            Self::Inactive | Self::Missing => Err(Stale::Inactive),
+        }
+    }
+}
+
+impl<U: UserAggregate> From<Option<Arc<AggregateRoot<U>>>> for Found<U> {
+    fn from(user: Option<Arc<AggregateRoot<U>>>) -> Self {
+        match user {
+            Some(user) if user.is_active() => Self::Active(user),
+            Some(_) => Self::Inactive,
+            None => Self::Missing,
+        }
+    }
+}
+
 #[async_trait]
 pub(crate) trait Users<U: UserAggregate>: Send + Sync {
     fn locator(&self) -> &dyn ClaimLocator;
@@ -53,13 +82,13 @@ where
     }
 }
 
-/// Whether `user` was built in memory: all of its events are still pending.
+/// Whether `user` was built in memory: nothing was stored before its pending
+/// events.
 fn is_new<U: UserAggregate>(user: &AggregateRoot<U>) -> bool {
-    let pending = user.pending_events().len();
-    pending > 0
-        && i64::try_from(pending).is_ok_and(|count| {
-            user.version().as_i64() == AggregateVersion::initial().as_i64() + count
-        })
+    let Ok(pending) = i64::try_from(user.pending_events().len()) else {
+        return false;
+    };
+    pending > 0 && user.version().as_i64() - pending == AggregateVersion::initial().as_i64()
 }
 
 #[async_trait]
@@ -82,16 +111,7 @@ where
     }
 
     async fn find(&self, id: EntityId) -> Result<Found<U>, Error> {
-        if let Some(user) = self.loader.load(id).await? {
-            return Ok(Found::Active(user));
-        }
-        match self.repository.load_by_id(id).await {
-            Ok(_) => Ok(Found::Inactive),
-            Err(error) if error.is_not_found() || error.is_aggregate_deleted() => {
-                Ok(Found::Missing)
-            }
-            Err(error) => Err(error),
-        }
+        Ok(self.loader.find(id).await?.into())
     }
 
     async fn current(&self, held: &Arc<AggregateRoot<U>>) -> Result<Found<U>, Error> {
@@ -116,3 +136,6 @@ where
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

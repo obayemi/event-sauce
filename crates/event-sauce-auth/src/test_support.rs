@@ -362,11 +362,7 @@ impl FakeUsers {
     }
 
     fn lookup(&self, id: EntityId) -> Found<TestUser> {
-        match self.state.users.lock().unwrap().get(&id) {
-            Some(user) if user.is_active() => Found::Active(user.clone()),
-            Some(_) => Found::Inactive,
-            None => Found::Missing,
-        }
+        self.state.users.lock().unwrap().get(&id).cloned().into()
     }
 }
 

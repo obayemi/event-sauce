@@ -22,7 +22,7 @@ fn always_done_routes_a_single_factor_login_to_done() {
         Entered,
     );
 
-    let login = AlwaysDone.route(Advance::new(entered));
+    let login = AlwaysDone.route(Advance(entered));
 
     assert_eq!(login.user().entity_id(), user.entity_id());
 }

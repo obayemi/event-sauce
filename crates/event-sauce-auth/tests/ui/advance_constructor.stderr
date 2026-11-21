@@ -7,9 +7,5 @@ error[E0423]: cannot initialize a tuple struct which contains private fields
 note: constructor is not visible here due to private fields
  --> src/login/flow.rs
   |
-  | pub struct Advance<U: UserAggregate, S>(Login<U, S>);
-  |                                         ^^^^^^^^^^^ private field
-help: you might have meant to use the `new` associated function
-  |
-4 |     Advance::new(login).to(Done)
-  |            +++++
+  | pub struct Advance<U: UserAggregate, S>(pub(crate) Login<U, S>);
+  |                                         ^^^^^^^^^^^^^^^^^^^^^^ private field

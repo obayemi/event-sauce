@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    login::users::{Found, Users},
-    Login, LoginKey, LoginState, LoginStore, LoginStoreError, ResumeError, UserAggregate,
+    login::users::Users, Login, LoginKey, LoginState, LoginStore, LoginStoreError, ResumeError,
+    UserAggregate,
 };
 
 const NAMESPACE: &str = "pending";
@@ -58,22 +58,14 @@ pub enum PendingLoginError {
     Encoding(#[from] serde_json::Error),
 }
 
-#[derive(Serialize)]
-struct Record<'a, S> {
-    tag: &'static str,
+/// The wire format of a pending login, borrowed to write and owned to read.
+#[derive(Serialize, Deserialize)]
+struct Record<Tag, State> {
+    tag: Tag,
     user: EntityId,
     fingerprint: [u8; 32],
     started_at: DateTime<Utc>,
-    state: &'a S,
-}
-
-#[derive(Deserialize)]
-struct Stored {
-    tag: String,
-    user: EntityId,
-    fingerprint: [u8; 32],
-    started_at: DateTime<Utc>,
-    state: serde_json::Value,
+    state: State,
 }
 
 /// Logins kept in a [`LoginStore`] while the client is away.
@@ -156,17 +148,17 @@ impl<U: UserAggregate> PendingLogins<U> {
             .await
             .map_err(PendingLoginError::from)?
             .ok_or(ResumeError::NotInProgress)?;
-        let stored: Stored = serde_json::from_slice(&bytes).map_err(PendingLoginError::from)?;
+        let stored: Record<String, serde_json::Value> =
+            serde_json::from_slice(&bytes).map_err(PendingLoginError::from)?;
         if stored.tag != S::TAG {
             return Err(ResumeError::NotInProgress);
         }
         let state = serde_json::from_value(stored.state).map_err(PendingLoginError::from)?;
-        let Found::Active(user) = self.users.find(stored.user).await? else {
-            return Err(ResumeError::Inactive);
-        };
-        if user.identity().session_fingerprint() != stored.fingerprint {
-            return Err(ResumeError::CredentialsChanged);
-        }
+        let user = self
+            .users
+            .find(stored.user)
+            .await?
+            .confirm(stored.fingerprint)?;
         Ok(Login::resumed(
             user,
             stored.fingerprint,

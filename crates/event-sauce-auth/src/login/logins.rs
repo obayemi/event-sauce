@@ -151,7 +151,7 @@ impl<U: UserAggregate> Logins<U> {
         };
         method.verify(user.identity(), &attempt).await?;
         let login = Login::new(user, self.clock.now(), self.users.clone(), Entered);
-        Ok(first.route().route(Advance::new(login)))
+        Ok(first.route().route(Advance(login)))
     }
 
     /// Commits a brand-new user and starts its login in [`Done`].

@@ -6,8 +6,8 @@ use chrono::{DateTime, Utc};
 use event_sauce_core::AggregateRoot;
 
 use crate::{
-    login::users::{Found, Users},
-    Authenticated, Complete, FinishError, LoginState, Rejected, Step, UserAggregate,
+    login::users::Users, Authenticated, Complete, FinishError, LoginState, Rejected, Step,
+    UserAggregate,
 };
 
 /// A login in progress for one user, in the state `S`.
@@ -31,13 +31,8 @@ impl<U: UserAggregate, S> Login<U, S> {
         users: Arc<dyn Users<U>>,
         state: S,
     ) -> Self {
-        Self {
-            fingerprint: user.identity().session_fingerprint(),
-            user,
-            started_at,
-            users,
-            state,
-        }
+        let fingerprint = user.identity().session_fingerprint();
+        Self::resumed(user, fingerprint, started_at, users, state)
     }
 
     pub(crate) fn resumed(
@@ -106,12 +101,11 @@ impl<U: UserAggregate, S: Complete> Login<U, S> {
     /// [`FinishError::CredentialsChanged`] when its credentials changed, and
     /// [`FinishError::Store`] when the store fails.
     pub async fn finish(self) -> Result<Authenticated<U>, FinishError> {
-        let Found::Active(user) = self.users.current(&self.user).await? else {
-            return Err(FinishError::Inactive);
-        };
-        if user.identity().session_fingerprint() != self.fingerprint {
-            return Err(FinishError::CredentialsChanged);
-        }
+        let user = self
+            .users
+            .current(&self.user)
+            .await?
+            .confirm(self.fingerprint)?;
         Ok(Authenticated::new(user, self.fingerprint))
     }
 }
@@ -132,13 +126,9 @@ impl<U: UserAggregate, S: fmt::Debug> fmt::Debug for Login<U, S> {
 /// `S`, and [`Logins::begin`](crate::Logins::begin) to the route after the
 /// first factor. A login therefore leaves a state only through that state's
 /// step.
-pub struct Advance<U: UserAggregate, S>(Login<U, S>);
+pub struct Advance<U: UserAggregate, S>(pub(crate) Login<U, S>);
 
 impl<U: UserAggregate, S> Advance<U, S> {
-    pub(crate) fn new(login: Login<U, S>) -> Self {
-        Self(login)
-    }
-
     /// The login about to move.
     #[must_use]
     pub fn login(&self) -> &Login<U, S> {

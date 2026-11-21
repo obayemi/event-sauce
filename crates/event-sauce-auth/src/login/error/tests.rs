@@ -1,4 +1,5 @@
 use super::*;
+use crate::login::users::Stale;
 
 fn store_failure() -> LoginStoreError {
     LoginStoreError::backend("fake", std::io::Error::other("broken"))
@@ -56,4 +57,28 @@ fn every_failure_says_what_went_wrong() {
         "no login is in progress"
     );
     assert_eq!(SignUpError::NotNew.to_string(), "the user is not new");
+}
+
+#[test]
+fn a_stale_login_converts_into_the_matching_finish_error() {
+    assert!(matches!(
+        FinishError::from(Stale::Inactive),
+        FinishError::Inactive
+    ));
+    assert!(matches!(
+        FinishError::from(Stale::CredentialsChanged),
+        FinishError::CredentialsChanged
+    ));
+}
+
+#[test]
+fn a_stale_login_converts_into_the_matching_resume_error() {
+    assert!(matches!(
+        ResumeError::from(Stale::Inactive),
+        ResumeError::Inactive
+    ));
+    assert!(matches!(
+        ResumeError::from(Stale::CredentialsChanged),
+        ResumeError::CredentialsChanged
+    ));
 }
