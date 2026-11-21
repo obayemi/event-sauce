@@ -350,11 +350,8 @@ be unique. Anyone who can write the login store directly can forge a pending
 login. The chain holds up to the session: `event-sauce-axum` seals the `axum-login`
 backend, which answers any stored user, behind `AuthSession<U>`, whose `login`
 takes only an `Authenticated<U>`, so no library call opens a session without a
-finished login (the [axum guide](axum.md#what-is-sealed) lists what is sealed).
-Two things stay outside the types: an application that writes `axum-login`'s
-session record by hand through `tower_sessions::Session`, since the record's
-hash is the public `Identity::session_fingerprint()`, and an application
-that implements its own `AuthnBackend`.
+finished login (the [axum guide](axum.md#what-is-sealed) lists what is sealed
+and what stays outside the types).
 
 ### The Login Store
 

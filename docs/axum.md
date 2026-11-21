@@ -246,7 +246,7 @@ All three read the user axum-login already resolved for the request, so a
 request does exactly one user load, or none on a cache hit. The yielded user
 is an `AggregateRoot<U>`, so it passes straight to `@actor(U)` commands.
 
-A missing `axum-login` layer is a wiring error, answered with `500`.
+A missing `AuthLayer` is a wiring error, answered with `500`.
 
 ### Logins With Several Steps
 

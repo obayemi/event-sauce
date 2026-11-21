@@ -267,8 +267,8 @@ explicitly rather than gated behind a major version bump.
   repository from `Repo` or `store.arc().repository()`.
 
   Behind the default `login` feature it adds `AuthLayer<U>` and
-  `AuthSession<U>`, which close the hole of opening a session without a
-  finished login. `AuthLayer::new(CachedUserLoader)` installs, through
+  `AuthSession<U>`: a session opens only from a finished login.
+  `AuthLayer::new(CachedUserLoader)` installs, through
   `layer(router, session_layer)`, an `axum-login` backend that nothing can
   name: the backend and its `SessionUser` are `pub(crate)`, `layer` and
   `App::layer` return a `Router`, and errors are `SessionError`. A handler
