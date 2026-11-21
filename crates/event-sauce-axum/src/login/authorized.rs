@@ -19,6 +19,7 @@ use crate::store_error::NOT_FOUND;
 use crate::{AuthRejection, DeletedStatus, Found, FoundRejection, PathAggregate, Store};
 
 #[cfg(test)]
+#[path = "tests/authorized_tests.rs"]
 mod tests;
 
 /// How a user who may not reach an aggregate is answered.

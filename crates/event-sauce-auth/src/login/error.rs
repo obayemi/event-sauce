@@ -115,4 +115,5 @@ pub enum SignUpError {
 }
 
 #[cfg(test)]
+#[path = "tests/error_tests.rs"]
 mod tests;

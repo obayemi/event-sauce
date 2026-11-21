@@ -125,4 +125,5 @@ impl<St: Send + Sync> FromRequestParts<St> for PendingLogin {
 }
 
 #[cfg(test)]
+#[path = "tests/pending_tests.rs"]
 mod tests;

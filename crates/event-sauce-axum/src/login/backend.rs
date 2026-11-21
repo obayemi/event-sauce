@@ -104,4 +104,5 @@ impl<U: UserAggregate> AuthnBackend for Backend<U> {
 }
 
 #[cfg(test)]
+#[path = "tests/backend_tests.rs"]
 mod tests;

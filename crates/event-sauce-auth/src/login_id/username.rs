@@ -106,4 +106,5 @@ impl fmt::Display for Username {
 }
 
 #[cfg(test)]
+#[path = "tests/username_tests.rs"]
 mod tests;

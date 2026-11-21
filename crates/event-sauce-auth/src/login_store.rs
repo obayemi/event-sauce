@@ -124,4 +124,5 @@ pub trait LoginStore: Send + Sync {
 }
 
 #[cfg(test)]
+#[path = "tests/login_store_tests.rs"]
 mod tests;

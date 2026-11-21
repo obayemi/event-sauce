@@ -203,4 +203,5 @@ impl HasFederated for Federated {
 }
 
 #[cfg(test)]
+#[path = "tests/federated_tests.rs"]
 mod tests;

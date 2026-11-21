@@ -52,4 +52,5 @@ impl fmt::Display for RequestId {
 }
 
 #[cfg(test)]
+#[path = "tests/request_id_tests.rs"]
 mod tests;

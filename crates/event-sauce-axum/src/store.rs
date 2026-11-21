@@ -9,6 +9,7 @@ use axum::extract::{FromRef, FromRequestParts};
 use http::request::Parts;
 
 #[cfg(test)]
+#[path = "tests/store_tests.rs"]
 mod tests;
 
 /// A cheaply cloneable handle on an event store, held in the application

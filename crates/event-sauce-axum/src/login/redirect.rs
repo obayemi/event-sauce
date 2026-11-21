@@ -10,6 +10,7 @@ use tower::Layer;
 use crate::{AuthRejection, ReturnTo};
 
 #[cfg(test)]
+#[path = "tests/redirect_tests.rs"]
 mod tests;
 
 const UNRESERVED: &AsciiSet = &NON_ALPHANUMERIC

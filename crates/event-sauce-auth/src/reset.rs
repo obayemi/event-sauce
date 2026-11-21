@@ -161,4 +161,5 @@ fn decode(encoded: &str) -> Result<[u8; TOKEN_BYTES], ResetTokenError> {
 }
 
 #[cfg(test)]
+#[path = "tests/reset_tests.rs"]
 mod tests;

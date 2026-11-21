@@ -107,4 +107,5 @@ pub trait LoginMethod<C: Credentials>: Send + Sync {
 }
 
 #[cfg(test)]
+#[path = "tests/login_method_tests.rs"]
 mod tests;

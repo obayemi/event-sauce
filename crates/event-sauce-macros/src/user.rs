@@ -263,4 +263,5 @@ fn auth_path_from(lookup: impl Fn(&str) -> Option<String>) -> Option<TokenStream
 }
 
 #[cfg(test)]
+#[path = "tests/user_tests.rs"]
 mod tests;

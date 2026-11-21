@@ -138,4 +138,5 @@ where
 }
 
 #[cfg(test)]
+#[path = "tests/users_tests.rs"]
 mod tests;

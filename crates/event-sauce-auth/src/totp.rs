@@ -147,4 +147,5 @@ impl Totp {
 }
 
 #[cfg(test)]
+#[path = "tests/totp_tests.rs"]
 mod tests;

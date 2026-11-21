@@ -69,4 +69,5 @@ impl From<PasswordHash> for String {
 }
 
 #[cfg(test)]
+#[path = "tests/password_hash_tests.rs"]
 mod tests;

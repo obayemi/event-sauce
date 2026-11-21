@@ -422,4 +422,5 @@ impl Users<TestUser> for FakeUsers {
 }
 
 #[cfg(test)]
+#[path = "tests/test_support_tests.rs"]
 mod tests;

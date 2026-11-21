@@ -76,4 +76,5 @@ impl fmt::Display for Email {
 }
 
 #[cfg(test)]
+#[path = "tests/email_tests.rs"]
 mod tests;

@@ -1529,11 +1529,11 @@ Code this deletes:
   whose lifecycle and conflict arms are the table above.
 
 Tests:
-- Unit, `src/store_error/tests.rs`: every row of the first table, with
+- Unit, `src/tests/store_error_tests.rs`: every row of the first table, with
   `deleted_as` both ways; `split` of each `ModifyError`, `ExecuteError` and
   `UnitOfWorkError` variant, the domain error returned unchanged; the body of
   a 500 does not contain the source's `Display`.
-- Unit, `src/login/login_error/tests.rs`: every row of the second table; all
+- Unit, `src/login/tests/login_error_tests.rs`: every row of the second table; all
   refusals produce byte-identical responses with the clearing cookie; a 500
   sets no cookie.
 - HTTP, `tests/login.rs`: a login against a user store that fails answers
@@ -1650,7 +1650,7 @@ examples' `login`; the `Response` building and `set_cookie::<S>` calls in
 which panics on a session store failure.
 
 Tests:
-- Unit, `src/login/login_step/tests.rs`: the opened response is 204 with
+- Unit, `src/login/tests/login_step_tests.rs`: the opened response is 204 with
   the clearing cookie; a pending step for a test state with
   `TTL = LoginTtl::ONE_HOUR` sets `Max-Age=3600`, which proves `S` comes
   from the login; `IntoResponseParts` sets only the cookie.
@@ -1818,11 +1818,11 @@ events' own validation checks the owner, so `NoteError::NotOwner` keeps its
 check is a function of the aggregate and the user.
 
 Tests:
-- Unit, `src/found/tests.rs`: parameter lookup (present, missing, not a
+- Unit, `src/tests/found_tests.rs`: parameter lookup (present, missing, not a
   UUID) on a `RawPathParams`-like list; the cache helper with a counting
   loader closure loads once for two extractions of the same id, twice for
   two ids, and keeps two stores apart; the deleted status table.
-- Unit, `src/login/authorized/tests.rs`: the order and the answer of each
+- Unit, `src/login/tests/authorized_tests.rs`: the order and the answer of each
   row of the table above with a fake user and aggregate, including deleted
   plus `DENIED = NotFound` giving 404 under `DELETED = Gone`.
 - HTTP, `tests/found.rs` on the in-memory store: 200, 400, 404, deleted 404
@@ -1928,12 +1928,12 @@ Code this deletes: nothing in the examples, which are JSON APIs. In saxy-p:
 (`redirect.rs`), which `ReturnTo` replaces with its tests.
 
 Tests:
-- Unit, `src/return_to/tests.rs`: saxy-p's tables (local paths accepted;
+- Unit, `src/tests/return_to_tests.rs`: saxy-p's tables (local paths accepted;
   `//host`, `http://`, `evil.com`, `\\host` rejected; `/\host`, `/\t/host`,
   `/\n/host` rejected; control characters rejected; `%5C` and `%2F` kept);
   lenient deserialization from a query string; `from_static` panics on
   `//host`.
-- Unit, `src/login/redirect/tests.rs`: the location for a path with a query
+- Unit, `src/login/tests/redirect_tests.rs`: the location for a path with a query
   and non-ASCII bytes; a custom `param`; registration with and without
   `register_at`.
 - HTTP, `tests/login.rs`: a router nested under `/app` with `LoginRedirect`
@@ -2155,7 +2155,7 @@ in section 4.5.
     the others; `renew` with nobody logged in answers `None`; `renew` for a
     user deactivated meanwhile answers `None` and ends the session;
     `AuthSession<U>` without `AuthLayer` is rejected with `500`. The
-    `src/app/tests.rs` cases that called `app.backend()` move to the
+    `src/tests/app_tests.rs` cases that called `app.backend()` move to the
     backend's unit tests or go through `App::layer`.
   - trybuild, `tests/ui/`, one case per escape path, each failing for the
     reason in its `.stderr`:

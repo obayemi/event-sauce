@@ -98,4 +98,5 @@ impl<U: UserAggregate, F, S> App<U, F, S> {
 }
 
 #[cfg(test)]
+#[path = "tests/app_tests.rs"]
 mod tests;

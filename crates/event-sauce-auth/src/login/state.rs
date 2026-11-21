@@ -72,4 +72,5 @@ impl Complete for Done {}
 pub struct Entered;
 
 #[cfg(test)]
+#[path = "tests/state_tests.rs"]
 mod tests;

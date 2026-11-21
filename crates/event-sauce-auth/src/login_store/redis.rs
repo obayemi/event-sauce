@@ -107,4 +107,5 @@ impl LoginStore for RedisLoginStore {
 }
 
 #[cfg(test)]
+#[path = "tests/redis_tests.rs"]
 mod tests;

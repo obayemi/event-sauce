@@ -1680,4 +1680,5 @@ pub fn with_event_context(args: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 #[cfg(test)]
+#[path = "tests/lib_tests.rs"]
 mod tests;

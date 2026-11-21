@@ -59,4 +59,5 @@ impl IntoResponse for AuthRejection {
 }
 
 #[cfg(test)]
+#[path = "tests/rejection_tests.rs"]
 mod tests;

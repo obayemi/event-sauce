@@ -170,4 +170,5 @@ impl Sealer {
 }
 
 #[cfg(test)]
+#[path = "tests/sealed_tests.rs"]
 mod tests;

@@ -52,4 +52,5 @@ impl fmt::Debug for Fingerprint {
 }
 
 #[cfg(test)]
+#[path = "tests/fingerprint_tests.rs"]
 mod tests;

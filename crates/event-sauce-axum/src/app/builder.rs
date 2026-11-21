@@ -262,4 +262,5 @@ where
 }
 
 #[cfg(test)]
+#[path = "tests/builder_tests.rs"]
 mod tests;

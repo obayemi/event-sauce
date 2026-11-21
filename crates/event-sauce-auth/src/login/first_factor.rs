@@ -72,4 +72,5 @@ where
 }
 
 #[cfg(test)]
+#[path = "tests/first_factor_tests.rs"]
 mod tests;

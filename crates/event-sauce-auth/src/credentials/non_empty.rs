@@ -99,4 +99,5 @@ impl<'a, T: PartialEq + Clone> IntoIterator for &'a NonEmpty<T> {
 }
 
 #[cfg(test)]
+#[path = "tests/non_empty_tests.rs"]
 mod tests;

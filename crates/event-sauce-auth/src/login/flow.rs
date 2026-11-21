@@ -156,4 +156,5 @@ impl<U: UserAggregate, S: fmt::Debug> fmt::Debug for Advance<U, S> {
 }
 
 #[cfg(test)]
+#[path = "tests/flow_tests.rs"]
 mod tests;

@@ -99,4 +99,5 @@ impl<U: UserAggregate> fmt::Debug for AuthLayer<U> {
 }
 
 #[cfg(test)]
+#[path = "tests/auth_layer_tests.rs"]
 mod tests;

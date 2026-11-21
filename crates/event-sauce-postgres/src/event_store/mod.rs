@@ -16,6 +16,7 @@ pub(crate) use append::PlannedBatch;
 mod builder;
 mod migrate;
 #[cfg(test)]
+#[path = "tests/resolve_claim_tests.rs"]
 mod resolve_claim_tests;
 mod row;
 pub(crate) use row::{EventRow, EVENT_COLUMNS};

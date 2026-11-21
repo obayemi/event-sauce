@@ -15,6 +15,7 @@ use crate::login::redirect::refuse;
 use crate::login::rejection::AuthRejection;
 
 #[cfg(test)]
+#[path = "tests/current_user_tests.rs"]
 mod tests;
 
 pub(super) fn admit<U: UserAggregate>(

@@ -51,4 +51,5 @@ impl<U: UserAggregate> fmt::Debug for Authenticated<U> {
 }
 
 #[cfg(test)]
+#[path = "tests/authenticated_tests.rs"]
 mod tests;

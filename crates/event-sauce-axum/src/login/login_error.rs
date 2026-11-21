@@ -154,4 +154,5 @@ impl IntoResponse for LoginError {
 }
 
 #[cfg(test)]
+#[path = "tests/login_error_tests.rs"]
 mod tests;

@@ -73,4 +73,5 @@ impl<U: UserAggregate> AuthUser for SessionUser<U> {
 }
 
 #[cfg(test)]
+#[path = "tests/session_user_tests.rs"]
 mod tests;

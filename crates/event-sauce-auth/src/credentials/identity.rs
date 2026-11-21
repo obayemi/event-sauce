@@ -104,4 +104,5 @@ impl<C: Credentials> Identity<C> {
 }
 
 #[cfg(test)]
+#[path = "tests/identity_tests.rs"]
 mod tests;

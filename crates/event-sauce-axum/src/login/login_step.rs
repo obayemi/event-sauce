@@ -104,4 +104,5 @@ impl IntoResponse for LoginStep {
 }
 
 #[cfg(test)]
+#[path = "tests/login_step_tests.rs"]
 mod tests;

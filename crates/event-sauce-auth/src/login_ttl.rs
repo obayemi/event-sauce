@@ -122,4 +122,5 @@ impl From<LoginTtl> for Duration {
 }
 
 #[cfg(test)]
+#[path = "tests/login_ttl_tests.rs"]
 mod tests;

@@ -16,6 +16,7 @@ use uuid::Uuid;
 use crate::{diagnostics, DeletedStatus, Store, StoreError};
 
 #[cfg(test)]
+#[path = "tests/found_tests.rs"]
 mod tests;
 
 /// An aggregate that a path parameter names.

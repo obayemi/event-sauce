@@ -192,4 +192,5 @@ impl<St: Send + Sync, U: UserAggregate> FromRequestParts<St> for AuthSession<U> 
 }
 
 #[cfg(test)]
+#[path = "tests/auth_session_tests.rs"]
 mod tests;

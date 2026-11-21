@@ -157,4 +157,5 @@ where
 }
 
 #[cfg(test)]
+#[path = "tests/correlation_tests.rs"]
 mod tests;

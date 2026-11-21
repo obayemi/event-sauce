@@ -165,4 +165,5 @@ impl<L: LoginId> HasFederated for PasswordOrFederated<L> {
 }
 
 #[cfg(test)]
+#[path = "tests/password_or_federated_tests.rs"]
 mod tests;

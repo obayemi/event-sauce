@@ -182,4 +182,5 @@ impl LoginStore for PostgresLoginStore {
 }
 
 #[cfg(test)]
+#[path = "tests/postgres_tests.rs"]
 mod tests;

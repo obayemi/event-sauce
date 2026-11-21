@@ -177,4 +177,5 @@ impl<U: UserAggregate> Logins<U> {
 }
 
 #[cfg(test)]
+#[path = "tests/logins_tests.rs"]
 mod tests;

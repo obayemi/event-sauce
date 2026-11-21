@@ -103,4 +103,5 @@ fn stored_version<U: UserAggregate>(user: &AggregateRoot<U>) -> Option<StoredVer
 }
 
 #[cfg(all(test, any(feature = "moka", feature = "redis")))]
+#[path = "tests/user_cache_tests.rs"]
 mod tests;

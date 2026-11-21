@@ -25,4 +25,5 @@ pub trait UserAggregate: Aggregate + 'static {
 }
 
 #[cfg(test)]
+#[path = "tests/user_tests.rs"]
 mod tests;

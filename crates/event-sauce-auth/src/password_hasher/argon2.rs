@@ -92,4 +92,5 @@ fn failure(error: impl Display) -> HashError {
 }
 
 #[cfg(test)]
+#[path = "tests/argon2_tests.rs"]
 mod tests;

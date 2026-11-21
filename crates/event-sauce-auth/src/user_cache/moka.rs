@@ -77,4 +77,5 @@ where
 }
 
 #[cfg(test)]
+#[path = "tests/moka_tests.rs"]
 mod tests;

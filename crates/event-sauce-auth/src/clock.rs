@@ -42,4 +42,5 @@ impl Clock for FixedClock {
 }
 
 #[cfg(test)]
+#[path = "tests/clock_tests.rs"]
 mod tests;

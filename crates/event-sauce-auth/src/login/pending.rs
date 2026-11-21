@@ -170,4 +170,5 @@ impl<U: UserAggregate> PendingLogins<U> {
 }
 
 #[cfg(test)]
+#[path = "tests/pending_tests.rs"]
 mod tests;

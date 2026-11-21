@@ -82,4 +82,5 @@ impl<C: HasFederated> LoginMethod<C> for FederatedLogin {
 }
 
 #[cfg(test)]
+#[path = "tests/federated_tests.rs"]
 mod tests;

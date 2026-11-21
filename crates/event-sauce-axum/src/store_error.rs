@@ -255,4 +255,5 @@ impl SplitDomain for UnitOfWorkError {
 }
 
 #[cfg(test)]
+#[path = "tests/store_error_tests.rs"]
 mod tests;

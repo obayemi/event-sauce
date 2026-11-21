@@ -7,6 +7,7 @@ use axum::response::{IntoResponse, Redirect, Response};
 use serde::{Deserialize, Deserializer};
 
 #[cfg(test)]
+#[path = "tests/return_to_tests.rs"]
 mod tests;
 
 const fn is_control(bytes: &[u8], at: usize) -> bool {
