@@ -39,7 +39,7 @@ async fn an_unknown_id_resolves_to_no_user() {
 }
 
 #[tokio::test]
-async fn a_stored_user_resolves_from_its_id() {
+async fn a_stored_user_resolves_though_no_login_ran() {
     let (backend, store) = backend();
     let mut root = registered();
     let id = root.entity_id();

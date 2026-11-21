@@ -1,11 +1,11 @@
 # Proposal: pluggable auth and axum integration
 
-Status: **implemented, except typestate logins**. Steps 1 to 14 of the
-build order (section 8) are on `feat/auth`. Typestate logins (sections 3.4,
-3.6, 4.2 and 4.4) are designed here and replace the `ClaimAuthenticator`,
-`TwoFactor` and second-factor builder stage those steps shipped; steps 15
-to 17 build them. Where the code deliberately differs from the first draft
-of this proposal, the sections below describe the code. Supersedes the
+Status: **implemented**. Every step of the build order (section 8) is on
+`feat/auth`. Steps 15 to 17 replaced the `ClaimAuthenticator`, `TwoFactor`
+and second-factor builder stage that the earlier steps shipped with the
+typestate logins of sections 3.4, 3.6, 4.2 and 4.4. Where the code
+deliberately differs from the first draft of this proposal, the sections
+below describe the code. Supersedes the
 "extract `event-sauce-auth` from saxy-p" plan in saxy-p's `PLAN.md`.
 
 Two new optional crates:
@@ -672,7 +672,7 @@ check the library performs:
 
 | Link | Held by |
 |---|---|
-| A session needs an `Authenticated<U>` | type: `SessionUser::from(Authenticated<U>)` is its only public constructor (section 4.2) |
+| A session built from a login needs an `Authenticated<U>` | type: `SessionUser::from(Authenticated<U>)` is its only public constructor; `get_user` and `renew` also return `SessionUser`s, so the step to `AuthSession::login` is a convention (section 4.2) |
 | An `Authenticated<U>` needs a finished login in a `Complete` state | type: private fields, `finish` bounded by `S: Complete` |
 | A `Login` exists only after a proof | type: built only by `begin` (after `locate` and `verify`), `sign_up` (after committing a new user), `resume` (what `save` stored) and `Advance::to` |
 | A login leaves a state only through that state's step | type: `Advance<U, S>` is built only by `prove` for `S: Step<U>`, and for `Entered` by `begin` |
@@ -836,6 +836,11 @@ of each check:
   too early is a logic bug no type catches.
 - A step's `verify` is code. The types make sure it ran; whether it checks
   the proof well is its own business. The library's steps are tested.
+- The step from `Authenticated` to the session is a convention. `get_user`
+  and `renew` return `SessionUser`s so that `axum-login` can rehydrate a
+  session, and `AuthSession::backend` is public, so a handler can log in a
+  user nobody authenticated. `AuthnBackend` needs both methods, so no type
+  closes this.
 - `SingleFactor` is an assertion by the credentials type. An app type that
   holds a second factor and implements it anyway gets `AlwaysDone` back.
 - Across requests the binding is the server-side store plus a runtime tag
@@ -1054,8 +1059,11 @@ turns their end result into a session.
     a password left other sessions logged in.
   - Its only public constructor is `From<Authenticated<U>>`. The
     `From<AggregateRoot<U>>` and `From<Arc<AggregateRoot<U>>>` impls are
-    gone, so `auth_session.login(&user)` cannot be handed a user nobody
-    authenticated. The crate builds the others itself, in `get_user`.
+    gone, so a raw aggregate cannot become a session user. The backend also
+    builds `SessionUser`s in `get_user` and `renew`, because `axum-login`
+    needs them to rehydrate a session: `auth_session.login` must be given
+    only `SessionUser::from(login.finish()?)` or a `renew` of the request's
+    own session user, and that is a convention.
 - `get_user(id)` goes through a `CachedUserLoader` (section 3.7) and
   returns `None` for a missing, deleted or inactive user.
 - `renew(&session_user) -> Result<Option<SessionUser<U>>, BackendError>`
@@ -1357,8 +1365,7 @@ The lowest level that can prove each behaviour, and only there:
 
 ## 8. Build order
 
-Each step is its own commit, test first. Steps 1 to 14 are on
-`feat/auth`:
+Each step is its own commit, test first. All steps are on `feat/auth`:
 
 1. `resolve_claim` in core and both backends.
 2. `event-sauce-auth`: `Credentials`, `Identity`, `LoginId`/`Email`.
@@ -1401,10 +1408,10 @@ authenticator. Each step deletes what it supersedes in the same commit:
     `A` parameter, `BackendError::{SecondFactorRequired, Hash, Pending}`,
     `PendingLogin::DEFAULT_TTL`, `UserAppBuilder::second_factor`,
     `SecondFactorStage` and `WithSecondFactor`.
-17. The `axum-auth` example on `Logins` and `sign_up`, the facade
-    re-exports, `docs/auth.md`, `docs/axum.md`, `docs/architecture.md`,
-    the crate READMEs and rustdoc, and the `CHANGELOG.md` Unreleased
-    entries, rewritten to describe typestate logins only.
+17. The `axum-auth` example on `Logins`, the facade re-exports,
+    `docs/auth.md`, `docs/axum.md`, `docs/architecture.md`, the rustdoc,
+    and the `CHANGELOG.md` Unreleased entries, rewritten to describe
+    typestate logins only.
 
 ## 9. Open questions
 

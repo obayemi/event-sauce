@@ -136,8 +136,9 @@ event store the users live in. The backend authenticates nothing itself:
 - `User` is `SessionUser<U>`, a shared `Arc<AggregateRoot<U>>`, whose
   `id()` is the `EntityId` and whose `session_auth_hash()` is the identity's
   session fingerprint. Its only public constructor is
-  `From<Authenticated<U>>`, so `auth.login(&user)` cannot be handed a user
-  nobody authenticated;
+  `From<Authenticated<U>>`, but `get_user` and `renew` return `SessionUser`s
+  too, so that `axum-login` can rehydrate a session, and a handler can reach
+  them through `auth.backend`;
 - `get_user` goes through the `CachedUserLoader` of the [auth
   guide](auth.md#the-user-cache): a hit is version-checked, so a stale or
   deactivated user is never served. `with_shared_cache(Arc<dyn UserCache<U>>)`
@@ -261,8 +262,11 @@ the cookie, until `finish`.
   the handler resumes, and a second attempt all end in `401`, and a login
   that was resumed and failed is over. It also refuses a user that was
   deactivated, or whose credentials changed, since the login was saved.
-- Call `auth.login` only with what `finish` returned. It is the only thing
-  that builds a `SessionUser`.
+- Call `auth.login` only with `SessionUser::from(login.finish()?)`, or with
+  the `renew` of the request's own session user. The type chain holds up to
+  `Authenticated`, and the step from there to the session is a convention:
+  `auth.backend.get_user(&id)` also returns a `SessionUser`, and nothing
+  stops a handler from logging it in.
 
 
 ### Sessions End When Credentials Change

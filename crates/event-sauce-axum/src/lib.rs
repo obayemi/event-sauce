@@ -10,8 +10,8 @@
 //!   request from the shared store.
 //! - With the `login` feature, `EventSauceBackend` turns a
 //!   finished login into an `axum-login` session. `SessionUser` ties a
-//!   session to the identity's fingerprint and can be built only from an
-//!   `Authenticated` user, `PendingLogin` carries a login that waits for its
+//!   session to the identity's fingerprint and is built from an
+//!   `Authenticated` user by a login, `PendingLogin` carries a login that waits for its
 //!   next step, and `CurrentUser`, `MaybeUser` and `Registered` hand the
 //!   logged-in user to handlers.
 //! - With the `app` feature, `EventSauceApp::postgres` builds the whole

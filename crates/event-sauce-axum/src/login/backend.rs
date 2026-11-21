@@ -27,8 +27,14 @@ pub enum BackendError {
 ///
 /// It authenticates nothing itself: a login runs through
 /// [`Logins`](event_sauce_auth::Logins), and `authenticate` accepts only what
-/// the end of that process yields, an [`Authenticated`] user. That is what
-/// keeps a session from opening before the whole process ended.
+/// the end of that process yields, an [`Authenticated`] user.
+///
+/// `get_user` and `renew` also return a [`SessionUser`], so that `axum-login`
+/// can rehydrate an existing session, and a handler can reach them through
+/// `AuthSession::backend`. Pass `AuthSession::login` only
+/// `SessionUser::from(login.finish()?)` or the `renew` of the request's own
+/// session user: the type chain holds up to [`Authenticated`], and the step
+/// from there to the session is a convention.
 ///
 /// It resolves the user of every request through a [`CachedUserLoader`]: a
 /// version check, then a cached user when the cache holds exactly that

@@ -247,7 +247,7 @@ explicitly rather than gated behind a major version bump.
   `Fingerprint` whose `field` and `str_field` length-prefix every field, so
   two different credential states never share a byte stream. `LoginId`
   requires `AsRef<str>`, the canonical normalised string that keys the login
-  claim and feeds the fingerprint; `Password::claim_for` no longer panics.
+  claim and feeds the fingerprint.
   `UserCache::get` takes the `StoredVersion` the event store holds, so a
   version no stored user has cannot be asked for. `PasswordHasher::hash` and
   `verify` are async, and `Argon2Hasher` runs the Argon2 work, the dummy
@@ -274,8 +274,10 @@ explicitly rather than gated behind a major version bump.
   `Arc<dyn UserCache<U>>` with `Logins`), and `renew(&session_user)` reloads
   the user of a session after the request changed its own credentials.
   `BackendError` has one variant, `Store`. `SessionUser`, whose session auth
-  hash is the identity session fingerprint, is built only from an
-  `Authenticated<U>`: there is no conversion from a raw aggregate.
+  hash is the identity session fingerprint, is converted from an
+  `Authenticated<U>`, and there is no conversion from a raw aggregate. The
+  backend's `get_user` and `renew` return `SessionUser`s too, so passing
+  `AuthSession::login` only a finished login is a convention.
   `PendingLogin`, the short-lived cookie that carries a login between two
   requests, lives as long as the state it waits in
   (`PendingLogin::set_cookie::<S>(id)` uses `S::TTL`). The `CurrentUser<B>`, `MaybeUser<B>`
@@ -287,7 +289,8 @@ explicitly rather than gated behind a major version bump.
   a builder that wires the Postgres event store, a `PostgresLoginStore` in
   its own `event_sauce_login` schema, a `MokaUserCache` of 10 000 entries,
   a `FirstFactor` and the `CorrelationLayer`. `build` runs every
-  migration and is idempotent. The overrides are `event_store`,
+  migration and is idempotent, and reports a login method that does not
+  fit the user's credentials. The overrides are `event_store`,
   `login_store_schema`, `user_cache`, `user_cache_capacity`,
   `no_user_cache`, `correlation_header` and `route`, which swaps the
   default `AlwaysDone` for the `Route` that sends logins to the next step:
@@ -530,14 +533,6 @@ explicitly rather than gated behind a major version bump.
   is replaced by its maintained fork, `pastey`. Callers of
   `define_events!`/`command_handler!` are unaffected either way, since
   neither was ever a direct dependency.
-- `Logins`, `CachedUserLoader`, `EventSauceBackend` and the app
-  builder ask for fewer bounds: `U::Event`, `U` itself and, on
-  construction, the login method no longer need `Serialize +
-  DeserializeOwned` or `LoginMethod` spelled out, since the aggregate
-  traits already imply them. `AppBuilder::user` no longer checks the login
-  method, so a method that does not fit the user's credentials is reported
-  at `build`.
-
 ### Migration Steps
 
 - `add_crypto_keys_shredded_at` — relaxes `crypto_keys.key_data` to nullable,

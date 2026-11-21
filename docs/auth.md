@@ -184,10 +184,11 @@ surfaces like any other claim conflict (`Error::as_claim_conflict`).
 - The credential claim types are not prefixed with the aggregate type, so a
   store holds a single `user` aggregate.
 
-You write the events: a registration `@init` event carrying the
-credentials, plus whatever changes them (`PasswordChanged`, a second factor
-enrolment, a deactivation). See `crates/event-sauce/examples/axum-auth` for a
-complete aggregate, and `crates/event-sauce/examples/axum-crud` for one that
+You write the events: a registration event carrying the credentials (an
+`@init` event, or a regular one calling `Identity::register` on an
+aggregate without `init`), plus whatever changes them (`PasswordChanged`, a
+second factor enrolment, a deactivation). See
+`crates/event-sauce/examples/axum-auth` for a complete aggregate, and `crates/event-sauce/examples/axum-crud` for one that
 declares snapshots and acts as the actor of another aggregate.
 
 ## Logging In
@@ -278,10 +279,10 @@ to finish a login that reached a `Complete` state:
 
 | Link of the chain | Held by |
 |---|---|
-| A session needs an `Authenticated<U>` | type: private fields, no `Default`, no `Deserialize` |
+| A session built from a login needs an `Authenticated<U>` | type: private fields, no `Default`, no `Deserialize`; the step to `AuthSession::login` is a convention (see the limits below) |
 | An `Authenticated<U>` needs a finished login in a `Complete` state | type: `finish` is bounded by `S: Complete` |
 | A `Login` exists only after a proof | type: built only by `begin`, `sign_up`, `PendingLogins::resume` and `Advance::to` |
-| A login leaves a state only through that state's step | type: `Advance<U, S>` is built only by `prove` for `S: Step<U>` |
+| A login leaves a state only through that state's step | type: `Advance<U, S>` is built only by `prove` for `S: Step<U>`, and for `Entered` by `begin` |
 | A login is used once | type: `prove`, `finish` and `save` consume it, it is not `Clone` |
 | A saved login resumes in the state it was saved in | runtime: tag check in `resume` |
 | Nothing changed underneath | runtime: active and fingerprint checks in `resume` and `finish` |
@@ -346,7 +347,9 @@ The types guarantee the order of the process, not the quality of each check:
 the app decides which states are `Complete`, a step's `verify` is ordinary
 code, `SingleFactor` is an assertion by the credentials type, and tags must
 be unique. Anyone who can write the login store directly can forge a pending
-login.
+login. The chain holds up to `Authenticated`; `event-sauce-axum` hands a
+`SessionUser` to `axum-login` for any active user it rehydrates, so passing
+`AuthSession::login` only a finished login is a convention, not a type.
 
 ### The Login Store
 

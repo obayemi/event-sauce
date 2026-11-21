@@ -15,9 +15,14 @@ use event_sauce_core::{AggregateRoot, EntityId};
 /// its session auth hash. Any credential change alters the fingerprint, so
 /// every session opened before the change stops resolving to a user.
 ///
-/// The only public way to build one is from an [`Authenticated`], which a
-/// login yields only once its whole process ended, so `AuthSession::login`
-/// cannot be handed a user nobody authenticated:
+/// The only public constructor is `From<`[`Authenticated`]`>`, which a login
+/// yields only once its whole process ended. The backend also returns
+/// `SessionUser`s from `get_user` and `renew`, so that `axum-login` can
+/// rehydrate an existing session, and those are not proof of a login.
+/// `AuthSession::login` must be given only `SessionUser::from(login.finish()?)`
+/// or the `renew` of the request's own session user: the types hold up to
+/// [`Authenticated`], and the step from there to the session is a
+/// convention:
 ///
 /// ```
 /// use event_sauce_auth::{Authenticated, UserAggregate};
