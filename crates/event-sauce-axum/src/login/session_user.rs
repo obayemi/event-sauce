@@ -14,11 +14,10 @@ use event_sauce_core::{AggregateRoot, EntityId};
 /// its session auth hash. Any credential change alters the fingerprint, so
 /// every session opened before the change stops resolving to a user.
 ///
-/// It is `pub(crate)`: the sealed [`Backend`](crate::login::backend) hands
-/// one out for any stored user, so an application that could name it, or
-/// build one, could open a session without a finished login. It is built
-/// from an [`Authenticated`] user by a login, or loaded by the backend to
-/// rehydrate a session.
+/// It is `pub(crate)` for the reason given on
+/// [`Backend`](crate::login::backend::Backend). It is built from an
+/// [`Authenticated`] user by a login, or loaded by the backend to rehydrate a
+/// session.
 pub(crate) struct SessionUser<U: UserAggregate> {
     user: Arc<AggregateRoot<U>>,
     fingerprint: [u8; 32],

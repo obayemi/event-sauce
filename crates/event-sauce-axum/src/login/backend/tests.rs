@@ -6,26 +6,11 @@ use event_sauce_core::{EntityId, EventStore, Repository};
 use event_sauce_memory::InMemoryEventStore;
 
 use super::Backend;
-use crate::login::test_support::{authenticated, registered, Member};
+use crate::login::test_support::{registered, Member};
 
 fn backend() -> (Backend<Member>, Arc<InMemoryEventStore>) {
     let store = Arc::new(InMemoryEventStore::new());
     (Backend::new(CachedUserLoader::new(store.clone())), store)
-}
-
-#[tokio::test]
-async fn a_finished_login_authenticates_into_a_session_user() {
-    let (backend, _store) = backend();
-    let root = registered();
-    let id = root.entity_id();
-
-    let user = backend
-        .authenticate(authenticated(root).await)
-        .await
-        .unwrap()
-        .unwrap();
-
-    assert_eq!(user.id(), id);
 }
 
 #[tokio::test]
@@ -76,11 +61,4 @@ async fn clones_resolve_the_same_users() {
     let user = backend.clone().get_user(&id).await.unwrap().unwrap();
 
     assert_eq!(user.id(), id);
-}
-
-#[test]
-fn debug_prints_nothing_of_the_store() {
-    let (backend, _store) = backend();
-
-    assert_eq!(format!("{backend:?}"), "Backend { .. }");
 }

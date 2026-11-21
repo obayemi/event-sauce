@@ -19,10 +19,11 @@ app = [
     "event-sauce-auth/postgres",
     "event-sauce-auth/moka",
 ]
-login = ["dep:axum-login", "dep:event-sauce-auth", "dep:thiserror"]
+login = ["dep:async-trait", "dep:axum-login", "dep:event-sauce-auth", "dep:thiserror"]
 tracing = ["dep:tracing"]
 
 [dependencies]
+async-trait = { workspace = true, optional = true }
 axum.workspace = true
 axum-login = { workspace = true, optional = true }
 event-sauce-auth = { path = "../event-sauce-auth", version = "0.1.0", default-features = false, optional = true }

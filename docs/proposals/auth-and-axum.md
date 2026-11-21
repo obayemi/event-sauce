@@ -1073,10 +1073,10 @@ name it nor obtain one.
   `AuthUser` impl: `id()` is the `EntityId`, `session_auth_hash()` the
   identity's session fingerprint computed once, so a credential change ends
   every session opened before it.
-- `Credentials = Authenticated<U>`: `authenticate` answers
-  `Ok(Some(SessionUser::from(authenticated)))`. `AuthSession::login` below
-  builds that same `SessionUser` directly, since the `None` of `authenticate`
-  cannot happen, so the trait method serves `axum-login`'s contract only.
+- `Credentials = Infallible`: the backend authenticates nothing, and
+  `authenticate` can never be called and serves `axum-login`'s contract
+  only. A session opens only through `AuthSession::login` below, which builds
+  the `SessionUser` from an `Authenticated<U>` directly.
 - `get_user(id)` goes through the `CachedUserLoader` and answers `None` for
   a missing, deleted or inactive user. A hit is version-checked, a miss or a
   mismatch is a full load that fills the cache, and without a cache every
@@ -1494,8 +1494,7 @@ The lowest level that can prove each behaviour, and only there:
   - Unit, in `login/auth_session/tests.rs`: `SessionError` from each
     `axum_login::Error` variant; in `login/backend/tests.rs`, against the
     crate-private backend: `get_user` through the erased loader answers
-    `None` for a missing user, a stored user and a cache hit;
-    `authenticate` keeps the `Authenticated` fingerprint. A deleted or
+    `None` for a missing user, a stored user and a cache hit. A deleted or
     inactive user is the loader's own case, tested in `event-sauce-auth`, and
     the integration cases below cover the deactivation end to end.
   - Integration, `tests/login.rs` through `oneshot`, every handler on

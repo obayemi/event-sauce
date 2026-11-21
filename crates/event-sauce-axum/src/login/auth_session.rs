@@ -5,7 +5,7 @@ use std::future::{ready, Future};
 use std::sync::Arc;
 
 use axum::extract::FromRequestParts;
-use axum_login::{tower_sessions::session, AuthUser};
+use axum_login::{tower_sessions::session, AuthUser, AuthnBackend};
 use event_sauce_auth::{Authenticated, UserAggregate};
 use event_sauce_core::AggregateRoot;
 use http::request::Parts;
@@ -104,7 +104,7 @@ impl<U: UserAggregate> AuthSession<U> {
         let Some(id) = self.inner.user.as_ref().map(AuthUser::id) else {
             return Ok(None);
         };
-        let Some(renewed) = self.inner.backend.load(id).await? else {
+        let Some(renewed) = self.inner.backend.get_user(&id).await? else {
             self.inner.logout().await.map_err(session_error)?;
             return Ok(None);
         };
