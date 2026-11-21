@@ -1,11 +1,11 @@
-//! `EventSauceApp::postgres` against a real `PostgreSQL` container: the
-//! schemas it creates and the application it wires, driven through an axum
-//! router.
+//! `EventSauceApp::postgres` against a database of its own on a shared
+//! `PostgreSQL` container: the schemas it creates and the application it
+//! wires, driven through an axum router.
 
 mod support;
 mod user_fixture;
 
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
 use axum::{
     http::{HeaderName, StatusCode},
@@ -18,8 +18,7 @@ use event_sauce_core::{EventStore, Repository};
 use event_sauce_postgres::PostgresEventStore;
 use sqlx::{postgres::PgPoolOptions, PgPool};
 use support::Client;
-use testcontainers::{runners::AsyncRunner, ImageExt};
-use testcontainers_modules::{postgres::Postgres, testcontainers::ContainerAsync};
+use testcontainers_shared::postgres::{fresh_database, FreshDatabase};
 use tower_sessions::{MemoryStore, SessionManagerLayer};
 use user_fixture::{
     change_password, cheap_hasher, login_routes, register, CodeIfEnrolled, Flow, PasswordFactor,
@@ -58,28 +57,14 @@ fn router(app: &Built) -> Router {
     app.layer(routes, sessions())
 }
 
-async fn start_database() -> (ContainerAsync<Postgres>, PgPool) {
-    let mut attempt = 1;
-    let container = loop {
-        match Postgres::default().with_tag("16-alpine").start().await {
-            Ok(container) => break container,
-            Err(_) if attempt < 5 => {
-                tokio::time::sleep(Duration::from_millis(250) * attempt).await;
-                attempt += 1;
-            }
-            Err(error) => panic!("start postgres: {error}"),
-        }
-    };
-    let host = container.get_host().await.unwrap();
-    let port = container.get_host_port_ipv4(5432).await.unwrap();
+async fn start_database() -> (FreshDatabase, PgPool) {
+    let (database, url) = fresh_database().await;
     let pool = PgPoolOptions::new()
         .max_connections(10)
-        .connect(&format!(
-            "postgresql://postgres:postgres@{host}:{port}/postgres"
-        ))
+        .connect(&url)
         .await
         .unwrap();
-    (container, pool)
+    (database, pool)
 }
 
 async fn schema_exists(pool: &PgPool, schema: &str) -> bool {

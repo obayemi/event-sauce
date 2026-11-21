@@ -58,8 +58,7 @@ secrecy.workspace = true
 serde_json.workspace = true
 serde_urlencoded.workspace = true
 sqlx.workspace = true
-testcontainers.workspace = true
-testcontainers-modules = { workspace = true, features = ["postgres"] }
+testcontainers-shared.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time"] }
 tower = { workspace = true, features = ["util"] }
 tower-sessions = { workspace = true, features = ["memory-store"] }
