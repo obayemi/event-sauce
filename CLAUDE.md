@@ -378,7 +378,7 @@ operation over several aggregates is a `UnitOfWorkCommand` (see
   defaults, `AuthLayer` and the `AuthSession` extractor for login sessions
   (`AuthSession::finish` and `PendingLogin::hold`, answering a `LoginStep`,
   end and continue a login), the
-  `Store`/`Repo`/`UnitOfWork`/`Found`/`Authorized` and `CurrentUser`/`MaybeUser`/`Registered`
+  `Store`/`Repo`/`UnitOfWork`/`Found`/`Authorized` and `CurrentUser`/`MaybeUser`/`Registered`/`Acting`
   extractors, `StoreError` and `LoginError` for the error responses, and
   `CorrelationLayer`
   so events carry the request id (see `docs/axum.md` and the `axum-auth`
@@ -396,6 +396,9 @@ operation over several aggregates is a `UnitOfWorkCommand` (see
   one) or, behind a user, `Authorized<A, P, S>` with `P: Access<A>`, whose
   denial is `404` unless the policy sets `DENIED = Forbidden`. Writes keep
   `Repo::modify` or `execute`; there is no write path through either extractor
+- A command context that holds the acting user implements `FromUser` and
+  reaches the handler as `Acting<Ctx>`, never rebuilt from `CurrentUser` and
+  never a second load of the user
 - A login handler returns `Result<LoginStep, LoginError>`: `AuthSession::finish`
   for a `Complete` state and `PendingLogin::hold` for a state that waits, never
   a hand-built `204`/`202` or a `Set-Cookie` of the pending cookie. Resume a

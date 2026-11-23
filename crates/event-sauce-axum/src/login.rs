@@ -2,6 +2,7 @@
 //! a handler opens from a finished login, the pending login cookie and the
 //! extractors of the current user.
 
+mod acting;
 mod auth_layer;
 mod auth_session;
 mod authorized;
@@ -16,6 +17,7 @@ mod session_user;
 #[cfg(test)]
 pub(crate) mod test_support;
 
+pub use acting::{Acting, FromUser};
 pub use auth_layer::AuthLayer;
 pub use auth_session::{AuthSession, SessionError};
 pub use authorized::{Access, AccessRejection, Authorized, DeniedStatus};

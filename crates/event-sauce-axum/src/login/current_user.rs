@@ -14,7 +14,9 @@ use crate::login::auth_session::session_user;
 use crate::login::redirect::refuse;
 use crate::login::rejection::AuthRejection;
 
-fn logged_in<U: UserAggregate>(parts: &Parts) -> Result<Arc<AggregateRoot<U>>, AuthRejection> {
+pub(super) fn logged_in<U: UserAggregate>(
+    parts: &Parts,
+) -> Result<Arc<AggregateRoot<U>>, AuthRejection> {
     session_user::<U>(parts)?.ok_or_else(|| refuse(parts, AuthRejection::Unauthenticated))
 }
 

@@ -1,14 +1,13 @@
 # Proposal: pluggable auth and axum integration
 
-Status: steps 1 to 21 of the build order (section 8) are **implemented**
+Status: steps 1 to 23 of the build order (section 8) are **implemented**
 on `feat/auth`. Steps 15 to 17 replaced the `ClaimAuthenticator`, `TwoFactor`
 and second-factor builder stage that the earlier steps shipped with the
 typestate logins of sections 3.4, 3.6, 4.2 and 4.4. Step 18 sealed the
-session behind `AuthSession<U>`. Step 19 added the error responses of
-helper 1 and step 20 the login-step glue of helper 2 and step 21 the path loading of
-helper 3 and step 22 the login redirect of helper 4 (section 4.5). Step 23, the last HTTP helper of
-section 4.5, is **proposed** and not built yet. Where the code
-below describe the code. Supersedes the
+session behind `AuthSession<U>`. Steps 19 to 23 added the five HTTP helpers
+of section 4.5: error responses, login steps, path loading, the login
+redirect and `Acting`. Where the code differs from the text, the text
+describes the code. Supersedes the
 "extract `event-sauce-auth` from saxy-p" plan in saxy-p's `PLAN.md`.
 
 Two new optional crates:
@@ -2003,6 +2002,13 @@ Tests:
   under `LoginRedirect`; a user deactivated since login is 401; a `Command`
   run by `execute` with the context sees that user.
 
+Implemented as written. `FromUser` and `Acting` are in `src/login/acting.rs`,
+and `Acting` reads the user through the same `logged_in` function as
+`CurrentUser`, so the `303` of `LoginRedirect` applies unchanged. The tests
+are in `tests/login.rs`; the example commands are `@actor(Member)` methods,
+so neither example uses it. The "Command Contexts" section of `docs/axum.md`
+sits after "Guarding Routes", where the other extractors of the user are.
+
 ## 5. Changes to existing crates
 
 | Crate | Change |
@@ -2289,8 +2295,8 @@ with `CurrentUser`.
     `AuthRejection::Redirect` (`login`, which turns on `axum/original-uri`
     and adds `percent-encoding`). `AuthRejection` loses `Copy` and
     `status` takes `&self`. Adds an "HTML Apps" section to `docs/axum.md`.
-23. `FromUser` and `Acting<Ctx>` (`login`), with a "Command Contexts"
-    section in `docs/axum.md` next to `Repo::execute`.
+23. Implemented. `FromUser` and `Acting<Ctx>` (`login`), with a "Command Contexts"
+    section in `docs/axum.md` after "Guarding Routes".
 
 ## 9. Open questions
 

@@ -28,12 +28,16 @@ use event_sauce_auth::{
     MokaUserCache, PasswordLogin, UserCache,
 };
 use event_sauce_axum::{
-    AuthLayer, AuthSession, Authorized, CurrentUser, LoginError, LoginRedirect, LoginStep,
-    MaybeUser, PendingLogin, Registered, ReturnTo, Store,
+    Acting, AuthLayer, AuthSession, Authorized, CurrentUser, FromUser, LoginError, LoginRedirect,
+    LoginStep, MaybeUser, PendingLogin, Registered, Repo, ReturnTo, Store,
 };
-use event_sauce_core::{AggregateRoot, EntityId, EventStore, Repository};
+use event_sauce_core::{
+    AggregateRoot, Command, CommandError, EntityId, EventStore, Repository, RetryPolicy, Root,
+};
 use event_sauce_memory::InMemoryEventStore;
-use note_fixture::{Note, NoteDeleteCommands, OpenOwner, Owner, RegisteredOwner};
+use note_fixture::{
+    Note, NoteDeleteCommands, NoteError, NoteInitCommands, OpenOwner, Owner, RegisteredOwner,
+};
 use serde::Deserialize;
 use support::Client;
 use tower_sessions::{MemoryStore, SessionManagerLayer};
@@ -149,6 +153,46 @@ async fn registered(user: Registered<User>) -> String {
     user.entity_id().to_string()
 }
 
+struct Author {
+    user: Arc<AggregateRoot<User>>,
+}
+
+impl FromUser for Author {
+    type User = User;
+
+    fn from_user(user: Arc<AggregateRoot<User>>) -> Self {
+        Self { user }
+    }
+}
+
+struct WriteNote;
+
+impl Command<Note, Author> for WriteNote {
+    fn handle(
+        &self,
+        root: Root<Note>,
+        author: &Author,
+    ) -> Result<Root<Note>, CommandError<NoteError>> {
+        Ok(root.missing()?.write(author.user.entity_id())?.into())
+    }
+}
+
+async fn acting(Acting(author): Acting<Author>) -> String {
+    author.user.entity_id().to_string()
+}
+
+async fn write_note_as(
+    Acting(author): Acting<Author>,
+    Repo(notes): Repo<Note, InMemoryEventStore>,
+) -> String {
+    let id = EntityId::new();
+    notes
+        .execute(id, &WriteNote, &author, RetryPolicy::none())
+        .await
+        .unwrap();
+    id.to_string()
+}
+
 type Owned<P> = Authorized<Note, P, InMemoryEventStore>;
 
 async fn note(note: Owned<Owner>) -> String {
@@ -203,6 +247,8 @@ impl World {
             .route("/deactivate-and-renew", post(deactivate_and_renew))
             .route("/session", get(session))
             .route("/me", get(me))
+            .route("/acting", get(acting))
+            .route("/acting/notes", post(write_note_as))
             .route("/maybe", get(maybe))
             .route("/registered", get(registered))
             .route("/notes/{id}", get(note))
@@ -1017,6 +1063,7 @@ fn pages() -> Router<AppState> {
     Router::new()
         .route("/login", post(page_login))
         .route("/me", get(me))
+        .route("/acting", get(acting))
         .route("/maybe", get(maybe))
         .route("/registered", get(registered))
         .route("/notes/{id}", get(note))
@@ -1185,4 +1232,56 @@ async fn a_refused_login_from_a_page_is_unauthorized_not_a_redirect() {
 
     assert_eq!(reply.status, StatusCode::UNAUTHORIZED);
     assert_eq!(redirected(&reply), None);
+}
+
+#[tokio::test]
+async fn a_context_is_built_from_the_logged_in_user() {
+    let mut world = World::new();
+    let id = world.register(None).await;
+    world.client.log_in(ADA, PASSWORD).await;
+
+    let reply = world.client.get("/acting").await;
+
+    assert_eq!((reply.status, reply.body), (StatusCode::OK, id.to_string()));
+}
+
+#[tokio::test]
+async fn nobody_logged_in_has_no_context() {
+    let mut world = World::new();
+
+    assert_eq!(world.status("/acting").await, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn a_user_deactivated_since_login_has_no_context() {
+    let mut world = World::new();
+    let id = world.register(None).await;
+    world.client.log_in(ADA, PASSWORD).await;
+
+    world.deactivate(id).await;
+
+    assert_eq!(world.status("/acting").await, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn nobody_logged_in_on_a_page_is_sent_to_the_login_page_instead_of_acting() {
+    let mut world = World::new();
+
+    let reply = world.client.get("/app/acting").await;
+
+    assert_eq!(reply.status, StatusCode::SEE_OTHER);
+    assert_eq!(redirected(&reply), Some("/login?return_to=%2Fapp%2Facting"));
+}
+
+#[tokio::test]
+async fn a_command_run_with_the_context_sees_the_acting_user() {
+    let mut world = World::new();
+    let id = world.register(None).await;
+    world.client.log_in(ADA, PASSWORD).await;
+
+    let reply = world.client.post("/acting/notes", None).await;
+
+    let note = EntityId::from(uuid::Uuid::parse_str(&reply.body).unwrap());
+    let note = world.events.repository::<Note>().load(note).await.unwrap();
+    assert_eq!(note.owner, id);
 }

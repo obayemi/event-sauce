@@ -366,6 +366,13 @@ explicitly rather than gated behind a major version bump.
   takes `&self`; the `login` feature turns on `axum/original-uri` and adds
   `percent-encoding`, already in the tree.
 
+- Command contexts in `event-sauce-axum`. `FromUser` builds an application's
+  command context from the logged-in user (`type User`, a synchronous
+  `from_user(Arc<AggregateRoot<Self::User>>)`), and the `Acting<Ctx>` extractor
+  yields it for `Repository::execute` and units of work: `401` when nobody is
+  logged in, a `303` under `LoginRedirect`, and the same `Arc` as
+  `CurrentUser`, so a user is loaded once per request.
+
 - Facade features `auth`, `auth-postgres`, `auth-moka`, `auth-redis`,
   `auth-reset` and `auth-totp` re-export `event-sauce-auth` as
   `event_sauce::auth`, and `axum`, `axum-login` and `axum-app` re-export

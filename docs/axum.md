@@ -19,6 +19,7 @@ methods, typestate logins) is in the [auth guide](auth.md).
   - [Logging In and Out](#logging-in-and-out)
   - [Refusing a Login](#refusing-a-login)
   - [Guarding Routes](#guarding-routes)
+  - [Command Contexts](#command-contexts)
   - [HTML Apps: Redirecting to the Login Page](#html-apps-redirecting-to-the-login-page)
   - [Logins With Several Steps](#logins-with-several-steps)
   - [Sessions End When Credentials Change](#sessions-end-when-credentials-change)
@@ -421,6 +422,53 @@ request does exactly one user load, or none on a cache hit. The yielded user
 is an `AggregateRoot<U>`, so it passes straight to `@actor(U)` commands.
 
 A missing `AuthLayer` is a wiring error, answered with `500`.
+
+### Command Contexts
+
+A command that needs to know who acts takes a context:
+`Repo::execute(id, &command, &ctx, retry)` hands it to the `Command`. A
+context that is built from the logged-in user implements `FromUser`, and the
+`Acting` extractor builds it:
+
+```rust
+struct AppCtx {
+    actor: Arc<AggregateRoot<Member>>,
+    now: DateTime<Utc>,
+}
+
+impl FromUser for AppCtx {
+    type User = Member;
+
+    fn from_user(actor: Arc<AggregateRoot<Member>>) -> Self {
+        Self { actor, now: Utc::now() }
+    }
+}
+
+async fn rename(
+    Repo(groups): Repo<Group, PostgresEventStore>,
+    Path(id): Path<GroupId>,
+    Acting(ctx): Acting<AppCtx>,
+    Json(form): Json<RenameForm>,
+) -> Result<StatusCode, ApiError> {
+    groups
+        .execute(id, &Rename { name: form.name }, &ctx, RetryPolicy::default())
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+```
+
+- The user is an associated type, not a parameter of the trait: `Acting<Ctx>`
+  finds the session from `Ctx` alone, so a context acts for one user
+  aggregate.
+- `from_user` is synchronous and cannot fail. The session has already refused
+  a missing or deactivated user, so the extractor only builds a value: nobody
+  logged in is `401`, or a `303` under `LoginRedirect`, exactly as for
+  `CurrentUser`.
+- The user is the `Arc` the session holds, the one `CurrentUser` yields, so a
+  handler that takes both loads nothing twice.
+- A context that needs more than the user, such as the group a request
+  names, is built in the handler from `Acting` and `Found` or `Authorized`.
+- `Acting` derefs to the context, so `&ctx` and `&*ctx` both work.
 
 ### HTML Apps: Redirecting to the Login Page
 

@@ -20,7 +20,8 @@
 //!   `AuthLayer` installs it, `AuthSession::finish` ends a login and
 //!   `PendingLogin::hold` parks one that waits for its next step, both
 //!   answering a `LoginStep`, and `CurrentUser`, `MaybeUser` and `Registered`
-//!   hand the logged-in user to handlers. `LoginError` answers every refusal of a
+//!   hand the logged-in user to handlers, and `Acting` builds the command
+//!   context of that user from the application's `FromUser`. `LoginError` answers every refusal of a
 //!   login with the same `401` and every outage with a `500`.
 //! - `LoginRedirect` sends a browser that is not logged in to the login page
 //!   with the page it asked for, on the routes it is applied to, and
@@ -56,9 +57,9 @@ pub use found::{Found, FoundRejection, PathAggregate};
 pub use http::HeaderName;
 #[cfg(feature = "login")]
 pub use login::{
-    Access, AccessRejection, AuthLayer, AuthRejection, AuthSession, Authorized, CurrentUser,
-    DeniedStatus, LoginError, LoginRedirect, LoginStep, MaybeUser, PendingLogin, Registered,
-    SessionError,
+    Access, AccessRejection, Acting, AuthLayer, AuthRejection, AuthSession, Authorized,
+    CurrentUser, DeniedStatus, FromUser, LoginError, LoginRedirect, LoginStep, MaybeUser,
+    PendingLogin, Registered, SessionError,
 };
 pub use repo::Repo;
 pub use request_id::RequestId;
