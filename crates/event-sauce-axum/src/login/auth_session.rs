@@ -44,27 +44,25 @@ impl IntoResponse for SessionError {
 /// The login session of the request, for the users of the aggregate `U`.
 ///
 /// A session opens only from an [`Authenticated`] user, which only the end
-/// of a login yields, and [`login`](Self::login) consumes it. Nothing hands
-/// out the `axum-login` session or backend underneath, whose `login` would
-/// open a session for any stored user, and the backend type cannot be named,
-/// so there is no other way to open one through this crate.
+/// of a login yields, and [`login`](Self::login) consumes it;
+/// [`finish`](Self::finish) runs the end of a login and opens the session in
+/// one call, answering the [`LoginStep`] a handler returns. Nothing hands out
+/// the `axum-login` session or backend underneath, whose `login` would open a
+/// session for any stored user, and the backend type cannot be named, so there
+/// is no other way to open one through this crate.
 ///
 /// Extraction is rejected with [`AuthRejection::MissingLayer`] when
 /// [`AuthLayer`](crate::AuthLayer) is not installed.
 ///
 /// ```no_run
-/// use axum::http::StatusCode;
-/// use event_sauce_auth::{Authenticated, UserAggregate};
-/// use event_sauce_axum::AuthSession;
+/// use event_sauce_auth::{Complete, Login, UserAggregate};
+/// use event_sauce_axum::{AuthSession, LoginError, LoginStep};
 ///
-/// async fn open<U: UserAggregate>(
+/// async fn open<U: UserAggregate, S: Complete>(
 ///     mut session: AuthSession<U>,
-///     finished: Authenticated<U>,
-/// ) -> StatusCode {
-///     match session.login(finished).await {
-///         Ok(()) => StatusCode::NO_CONTENT,
-///         Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
-///     }
+///     login: Login<U, S>,
+/// ) -> Result<LoginStep, LoginError> {
+///     session.finish(login).await
 /// }
 /// ```
 pub struct AuthSession<U: UserAggregate> {
