@@ -60,7 +60,9 @@ mod tests;
 /// assert_eq!(Group::PARAM, "group_id");
 /// assert_eq!(Group::DELETED, DeletedStatus::Gone);
 /// ```
-pub trait PathAggregate: Aggregate + 'static {
+pub trait PathAggregate:
+    Aggregate<DeletedState: serde::Serialize + serde::de::DeserializeOwned> + 'static
+{
     /// The path parameter that holds the id, `"id"` by default.
     const PARAM: &'static str = "id";
     /// How a deleted aggregate is answered, `404` by default.
@@ -137,9 +139,7 @@ impl IntoResponse for FoundRejection {
 ///
 /// async fn show<A>(aggregate: Found<A, InMemoryEventStore>) -> String
 /// where
-///     A: PathAggregate + serde::Serialize + serde::de::DeserializeOwned,
-///     A::DeletedState: serde::Serialize + serde::de::DeserializeOwned,
-///     A::Event: serde::Serialize + serde::de::DeserializeOwned,
+///     A: PathAggregate,
 /// {
 ///     aggregate.entity_id().to_string()
 /// }
@@ -242,9 +242,7 @@ where
     St: Send + Sync,
     Store<S>: FromRef<St>,
     S: EventStore + 'static,
-    A: PathAggregate + serde::Serialize + serde::de::DeserializeOwned,
-    A::DeletedState: serde::Serialize + serde::de::DeserializeOwned,
-    A::Event: serde::Serialize + serde::de::DeserializeOwned,
+    A: PathAggregate,
 {
     let params = RawPathParams::from_request_parts(parts, state)
         .await
@@ -264,9 +262,7 @@ where
     St: Send + Sync,
     Store<S>: FromRef<St>,
     S: EventStore + 'static,
-    A: PathAggregate + serde::Serialize + serde::de::DeserializeOwned,
-    A::DeletedState: serde::Serialize + serde::de::DeserializeOwned,
-    A::Event: serde::Serialize + serde::de::DeserializeOwned,
+    A: PathAggregate,
 {
     type Rejection = FoundRejection;
 

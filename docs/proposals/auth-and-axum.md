@@ -1681,7 +1681,7 @@ As built, step 20 differs from the text above in three places:
 
 ```rust
 /// An aggregate that a path parameter names.
-pub trait PathAggregate: Aggregate + 'static {
+pub trait PathAggregate: Aggregate<DeletedState: Serialize + DeserializeOwned> + 'static {
     /// The path parameter that holds its id.
     const PARAM: &'static str = "id";
     /// How a deleted one is answered.
@@ -1693,7 +1693,7 @@ pub struct Found<A: Aggregate, S> { /* Arc<AggregateRoot<A>>, PhantomData<fn() -
 impl<A, S> Deref for Found<A, S> { type Target = AggregateRoot<A>; }
 impl<A, S> Found<A, S> { pub fn arc(&self) -> &Arc<AggregateRoot<A>>; pub fn into_arc(self) -> Arc<AggregateRoot<A>>; }
 impl<St, A, S> FromRequestParts<St> for Found<A, S>
-where St: Send + Sync, Store<S>: FromRef<St>, S: EventStore + 'static, A: PathAggregate + (the bounds of `Repo`)
+where St: Send + Sync, Store<S>: FromRef<St>, S: EventStore + 'static, A: PathAggregate
 { type Rejection = FoundRejection; }
 
 pub enum FoundRejection {

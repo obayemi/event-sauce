@@ -8,6 +8,8 @@ use http::StatusCode;
 
 use crate::diagnostics;
 
+pub(crate) const NOT_FOUND: (StatusCode, &str) = (StatusCode::NOT_FOUND, "not found");
+
 type Source = Box<dyn StdError + Send + Sync>;
 
 /// What kind of failure a [`StoreError`] is, which decides its status.
@@ -132,7 +134,7 @@ impl StoreError {
     fn answer(&self) -> (StatusCode, &'static str) {
         match (self.failure, self.deleted) {
             (StoreFailure::NotFound, _) | (StoreFailure::Deleted, DeletedStatus::NotFound) => {
-                (StatusCode::NOT_FOUND, "not found")
+                NOT_FOUND
             }
             (StoreFailure::Deleted, DeletedStatus::Gone) => (StatusCode::GONE, "gone"),
             (StoreFailure::Conflict, _) => (StatusCode::CONFLICT, "conflict"),

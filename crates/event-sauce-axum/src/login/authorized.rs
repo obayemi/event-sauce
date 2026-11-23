@@ -14,7 +14,8 @@ use http::StatusCode;
 
 use crate::found::load_path;
 use crate::login::auth_session::session_user;
-use crate::login::redirect::refuse;
+use crate::login::current_user::admit;
+use crate::store_error::NOT_FOUND;
 use crate::{AuthRejection, DeletedStatus, Found, FoundRejection, PathAggregate, Store};
 
 #[cfg(test)]
@@ -29,6 +30,15 @@ pub enum DeniedStatus {
     NotFound,
     /// `403 Forbidden`.
     Forbidden,
+}
+
+impl DeniedStatus {
+    pub(crate) fn deleted_status(self, of_type: DeletedStatus) -> DeletedStatus {
+        match self {
+            Self::NotFound => DeletedStatus::NotFound,
+            Self::Forbidden => of_type,
+        }
+    }
 }
 
 /// Who may reach an aggregate of type `A`.
@@ -86,35 +96,9 @@ impl IntoResponse for AccessRejection {
         match self {
             Self::Auth(auth) => auth.into_response(),
             Self::Found(found) => found.into_response(),
-            Self::Denied(DeniedStatus::NotFound) => (self.status(), "not found").into_response(),
+            Self::Denied(DeniedStatus::NotFound) => NOT_FOUND.into_response(),
             Self::Denied(DeniedStatus::Forbidden) => (self.status(), "forbidden").into_response(),
         }
-    }
-}
-
-fn admit<A, P>(
-    parts: &Parts,
-    user: Option<Arc<AggregateRoot<P::User>>>,
-) -> Result<Arc<AggregateRoot<P::User>>, AccessRejection>
-where
-    A: Aggregate,
-    P: Access<A>,
-{
-    let user = user.ok_or_else(|| refuse(parts, AuthRejection::Unauthenticated))?;
-    if P::REGISTERED && user.identity().credentials().is_none() {
-        return Err(refuse(parts, AuthRejection::Forbidden).into());
-    }
-    Ok(user)
-}
-
-fn deleted_status<A, P>(of_type: DeletedStatus) -> DeletedStatus
-where
-    A: Aggregate,
-    P: Access<A>,
-{
-    match P::DENIED {
-        DeniedStatus::NotFound => DeletedStatus::NotFound,
-        DeniedStatus::Forbidden => of_type,
     }
 }
 
@@ -168,9 +152,7 @@ where
 ///
 /// async fn show<A, P>(aggregate: Authorized<A, P, InMemoryEventStore>) -> String
 /// where
-///     A: PathAggregate + serde::Serialize + serde::de::DeserializeOwned,
-///     A::DeletedState: serde::Serialize + serde::de::DeserializeOwned,
-///     A::Event: serde::Serialize + serde::de::DeserializeOwned,
+///     A: PathAggregate,
 ///     P: Access<A>,
 /// {
 ///     aggregate.entity_id().to_string()
@@ -209,16 +191,15 @@ where
     St: Send + Sync,
     Store<S>: FromRef<St>,
     S: EventStore + 'static,
-    A: PathAggregate + serde::Serialize + serde::de::DeserializeOwned,
-    A::DeletedState: serde::Serialize + serde::de::DeserializeOwned,
-    A::Event: serde::Serialize + serde::de::DeserializeOwned,
+    A: PathAggregate,
     P: Access<A>,
 {
     type Rejection = AccessRejection;
 
     async fn from_request_parts(parts: &mut Parts, state: &St) -> Result<Self, AccessRejection> {
-        let user = admit::<A, P>(parts, session_user::<P::User>(parts)?)?;
-        let root = load_path::<St, A, S>(parts, state, deleted_status::<A, P>(A::DELETED)).await?;
+        let user = admit(parts, session_user::<P::User>(parts)?, P::REGISTERED)?;
+        let root =
+            load_path::<St, A, S>(parts, state, P::DENIED.deleted_status(A::DELETED)).await?;
         permit::<A, P>(&root, &user)?;
         Ok(Self {
             found: Found::new(root),
