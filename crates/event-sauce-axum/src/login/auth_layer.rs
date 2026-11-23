@@ -4,7 +4,7 @@ use std::fmt;
 
 use axum::Router;
 use axum_login::{
-    tower_sessions::{SessionManagerLayer, SessionStore},
+    tower_sessions::{service::CookieController, SessionManagerLayer, SessionStore},
     AuthManagerLayerBuilder,
 };
 use event_sauce_auth::{CachedUserLoader, UserAggregate};
@@ -70,15 +70,19 @@ impl<U: UserAggregate> AuthLayer<U> {
     /// Applies the `sessions` layer and the authentication layer to
     /// `router`, with the sessions outermost.
     ///
-    /// The session store stays the application's choice.
-    pub fn layer<St, Sess>(
+    /// The session store and the session cookie stay the application's
+    /// choice: the cookie is plaintext from `SessionManagerLayer::new`,
+    /// signed after `with_signed(key)` and encrypted after
+    /// `with_private(key)`.
+    pub fn layer<St, Sess, C>(
         &self,
         router: Router<St>,
-        sessions: SessionManagerLayer<Sess>,
+        sessions: SessionManagerLayer<Sess, C>,
     ) -> Router<St>
     where
         St: Clone + Send + Sync + 'static,
         Sess: SessionStore + Clone,
+        C: CookieController + Sync,
     {
         router.layer(AuthManagerLayerBuilder::new(self.backend.clone(), sessions).build())
     }

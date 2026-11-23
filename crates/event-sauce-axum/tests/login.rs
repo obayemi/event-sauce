@@ -40,7 +40,11 @@ use note_fixture::{
 };
 use serde::Deserialize;
 use support::Client;
-use tower_sessions::{MemoryStore, SessionManagerLayer};
+use tower_sessions::{
+    cookie::{Cookie, CookieJar, Key},
+    service::CookieController,
+    MemoryStore, SessionManagerLayer,
+};
 use user_fixture::{
     change_password, cheap_hasher, login_routes, register, CodeIfEnrolled, Flow, LoginForm, User,
     UserCommands, ADA, CODE, MAIL_CODE, PASSWORD,
@@ -222,6 +226,13 @@ impl World {
     }
 
     fn with_cache(cache: Option<Arc<dyn UserCache<User>>>) -> Self {
+        Self::with_sessions(cache, SessionManagerLayer::new(MemoryStore::default()))
+    }
+
+    fn with_sessions<C: CookieController + Sync>(
+        cache: Option<Arc<dyn UserCache<User>>>,
+        sessions: SessionManagerLayer<MemoryStore, C>,
+    ) -> Self {
         let events = Arc::new(InMemoryEventStore::new());
         let mut loader = CachedUserLoader::new(events.clone());
         let mut logins = Logins::<User>::new(events.clone());
@@ -237,7 +248,6 @@ impl World {
                 CodeIfEnrolled,
             )),
         };
-        let sessions = SessionManagerLayer::new(MemoryStore::default());
         let router = Router::<AppState>::new()
             .merge(login_routes().with_state(flow.clone()))
             .route("/logout", post(logout))
@@ -1284,4 +1294,81 @@ async fn a_command_run_with_the_context_sees_the_acting_user() {
     let note = EntityId::from(uuid::Uuid::parse_str(&reply.body).unwrap());
     let note = world.events.repository::<Note>().load(note).await.unwrap();
     assert_eq!(note.owner, id);
+}
+
+const SESSION_COOKIE: &str = "id";
+
+fn key(byte: u8) -> Key {
+    Key::from(&[byte; 64])
+}
+
+#[derive(Clone, Copy)]
+enum Protection {
+    Signed,
+    Private,
+}
+
+impl Protection {
+    fn sessions(self, key: Key) -> World {
+        let sessions = SessionManagerLayer::new(MemoryStore::default());
+        match self {
+            Self::Signed => World::with_sessions(None, sessions.with_signed(key)),
+            Self::Private => World::with_sessions(None, sessions.with_private(key)),
+        }
+    }
+
+    fn reveal(self, key: &Key, value: &str) -> Option<String> {
+        let mut jar = CookieJar::new();
+        jar.add_original(Cookie::new(SESSION_COOKIE, value.to_owned()));
+        let cookie = match self {
+            Self::Signed => jar.signed(key).get(SESSION_COOKIE),
+            Self::Private => jar.private(key).get(SESSION_COOKIE),
+        };
+        cookie.map(|cookie| cookie.value().to_owned())
+    }
+
+    fn seal(self, key: &Key, id: &str) -> String {
+        let mut jar = CookieJar::new();
+        let cookie = Cookie::new(SESSION_COOKIE, id.to_owned());
+        match self {
+            Self::Signed => jar.signed_mut(key).add(cookie),
+            Self::Private => jar.private_mut(key).add(cookie),
+        }
+        jar.get(SESSION_COOKIE).unwrap().value().to_owned()
+    }
+}
+
+async fn check_a_protected_cookie_cannot_be_forged(protection: Protection) {
+    let mut world = protection.sessions(key(1));
+    world.register(None).await;
+    world.client.log_in(ADA, PASSWORD).await;
+    let issued = world.client.cookies[SESSION_COOKIE].clone();
+    let id = protection.reveal(&key(1), &issued).unwrap();
+
+    assert_eq!(world.client.get("/me").await.status, StatusCode::OK);
+    for forged in [id.clone(), protection.seal(&key(2), &id)] {
+        world
+            .client
+            .cookies
+            .insert(SESSION_COOKIE.to_owned(), forged);
+        assert_eq!(
+            world.client.get("/me").await.status,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    world
+        .client
+        .cookies
+        .insert(SESSION_COOKIE.to_owned(), protection.seal(&key(1), &id));
+    assert_eq!(world.client.get("/me").await.status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn a_signed_session_refuses_an_unsigned_or_foreign_signed_cookie() {
+    check_a_protected_cookie_cannot_be_forged(Protection::Signed).await;
+}
+
+#[tokio::test]
+async fn an_encrypted_session_refuses_a_plain_or_foreign_encrypted_cookie() {
+    check_a_protected_cookie_cannot_be_forged(Protection::Private).await;
 }

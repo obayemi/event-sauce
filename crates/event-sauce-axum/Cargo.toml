@@ -62,7 +62,7 @@ testcontainers.workspace = true
 testcontainers-modules = { workspace = true, features = ["postgres"] }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time"] }
 tower = { workspace = true, features = ["util"] }
-tower-sessions = { workspace = true, features = ["memory-store"] }
+tower-sessions = { workspace = true, features = ["memory-store", "private", "signed"] }
 trybuild.workspace = true
 
 [[test]]

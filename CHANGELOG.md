@@ -207,6 +207,12 @@ explicitly rather than gated behind a major version bump.
 
 ### Added
 
+- `AuthLayer::layer` and `App::layer` take a session layer with any cookie
+  controller, so a session cookie signed with
+  `SessionManagerLayer::with_signed(key)` or encrypted with
+  `with_private(key)` keeps working with the whole login layer. A plaintext
+  session layer still fits unchanged.
+
 - `Identity<C>` implements `Default` as `Anonymous`, so `#[aggregate(user)]`
   works on an aggregate without an init event.
 
