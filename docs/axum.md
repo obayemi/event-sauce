@@ -40,7 +40,8 @@ methods, typestate logins) is in the [auth guide](auth.md).
   shared store.
 - **`AuthSession`** opens an `axum-login` session from a finished login and
   from nothing else, **`AuthLayer`** installs it, and **`CurrentUser`**,
-  **`MaybeUser`** and **`Registered`** hand the logged-in user to handlers.
+  **`MaybeUser`** and **`Registered`** hand the logged-in user to handlers,
+  while **`Acting`** builds the `FromUser` command context of that user.
 - **`Found`** loads the aggregate a path names, once per request and read
   only, and **`Authorized`** also checks that the current user may reach it.
 - **`StoreError`** and **`LoginError`** answer the failures of a store and of a
@@ -65,8 +66,8 @@ facade features nest:
 
 | Feature | Adds |
 |---|---|
-| `axum` | the correlation layer, the `Store`, `Repo`, `UnitOfWork` and `Found` extractors and `StoreError` |
-| `axum-login` | `AuthLayer`, `AuthSession`, `PendingLogin`, `LoginStep`, `LoginError`, `Authorized` and the user extractors; implies `auth` |
+| `axum` | the correlation layer, the `Store`, `Repo`, `UnitOfWork` and `Found` extractors, `StoreError` and `ReturnTo` |
+| `axum-login` | `AuthLayer`, `AuthSession`, `PendingLogin`, `LoginStep`, `LoginError`, `LoginRedirect`, `Authorized`, `Acting`, `FromUser` and the user extractors; implies `auth` |
 | `axum-app` | `EventSauceApp::postgres`; implies `axum-login` and `postgres` |
 
 Your application depends on `axum`, `axum-login` and `tower-sessions`
@@ -145,18 +146,31 @@ the same deletion can be hidden on one route and reported on another:
 ```rust
 type Notes = Repo<Note, PostgresEventStore>;
 
-async fn read(Repo(notes): Notes, Path(id): Path<NoteId>) -> Result<String, StoreError> {
-    Ok(notes.load(id).await?.title.clone())
+async fn create(Repo(notes): Notes, Json(form): Json<NoteForm>) -> Result<StatusCode, StoreError> {
+    let mut note = Note::write(form.title, form.body);
+    notes.save(&mut note).await?;
+    Ok(StatusCode::CREATED)
 }
 
-async fn read_or_gone(Repo(notes): Notes, Path(id): Path<NoteId>) -> Result<String, StoreError> {
-    let note = notes
+async fn rename(
+    Repo(notes): Notes,
+    Path(id): Path<NoteId>,
+    Json(form): Json<RenameForm>,
+) -> Result<StatusCode, StoreError> {
+    let mut note = notes
         .load(id)
         .await
         .map_err(|error| StoreError::from(error).deleted_as(DeletedStatus::Gone))?;
-    Ok(note.title.clone())
+    note.rename(form.title);
+    notes.save(&mut note).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 ```
+
+`create` answers `409` (`conflict`) when the save conflicts, and `rename`
+answers `410` for a deleted note. A route that only reads the aggregate it
+names uses `Found`, with `PathAggregate::DELETED` for the `410`, see [Loading
+What the Path Names](#loading-what-the-path-names).
 
 `ModifyError<E>`, `ExecuteError<E>` and `UnitOfWorkError` hold a domain error
 next to the store failures. Only the application knows the status of its own
@@ -282,8 +296,8 @@ session as `AuthSession<U>`:
 | `renew()` | reloads the user of this session after the request changed its own credentials |
 | `logout()` | ends the session and answers the user it held |
 
-They fail with `SessionError`: `Session` for the session store, `Store` for
-the user store. `AuthSession<U>` rejects with `500` when the layer is missing.
+`login`, `renew` and `logout` fail with `SessionError`: `Session` for the
+session store, `Store` for the user store. `finish` fails with `LoginError`. `AuthSession<U>` rejects with `500` when the layer is missing.
 
 - Users resolve through the `CachedUserLoader` of the [auth
   guide](auth.md#the-user-cache): a hit is version-checked, so a stale or
@@ -321,7 +335,10 @@ for a user who never finished a login. So the crate seals it:
 
 The compiler checks each of those: the `tests/ui` cases of the crate fail to
 compile an import of the backend, a generic handler, a `login` with an
-aggregate, and a peek into the session or the app.
+aggregate, a peek into the session or the app, a hand-built or hand-opened
+`LoginStep`, a `finish` of a login whose state is not `Complete`, a hand-set
+pending cookie, a hold of a finished login, a write through `Found` and an
+`Authorized` whose policy is for another aggregate.
 
 What stays outside the types:
 
@@ -578,8 +595,9 @@ until `AuthSession::finish`.
   login.
 - Resume in the handler body, never in an extractor: extractors run before
   `Json` parses the body, so a resume there would take the single-use login
-  and a malformed body would burn it. A request whose body does not parse
-  answers `422` and the same cookie still finishes the login.
+  and a malformed body would burn it. A request whose body does not fit the form
+  answers `422` (`400` when it is not JSON at all) and the same cookie still
+  finishes the login.
 - As an extractor, `PendingLogin` rejects with `401` when the cookie is
   missing or malformed.
 - The cookie holds the id only. The state the login is in and the user it
@@ -697,7 +715,7 @@ Postgres container, so they need Docker.
 | `event-sauce-axum` feature | Facade feature | Adds |
 |---|---|---|
 | `tracing` (default) | `axum` | the `request` tracing span |
-| `login` (default) | `axum-login` | `AuthLayer`, `AuthSession`, `PendingLogin`, `LoginStep`, `LoginError`, `LoginRedirect`, `Authorized`, user extractors |
+| `login` (default) | `axum-login` | `AuthLayer`, `AuthSession`, `PendingLogin`, `LoginStep`, `LoginError`, `LoginRedirect`, `Authorized`, `Acting`, `FromUser`, user extractors |
 | `app` (default) | `axum-app` | `EventSauceApp` and the Postgres defaults |
 
 Through the facade, `tracing` comes with `axum`. `app` implies `login`, the
