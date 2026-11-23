@@ -1563,7 +1563,7 @@ impl<U: UserAggregate> AuthSession<U> {
 
 impl PendingLogin {
     /// Saves `login` and answers with the cookie that carries it, alive for `S::TTL`.
-    pub async fn hold<U: UserAggregate, S: LoginState>(
+    pub async fn hold<U: UserAggregate, S: Step<U>>(
         pending: &PendingLogins<U>,
         login: Login<U, S>,
     ) -> Result<LoginStep, LoginError>;

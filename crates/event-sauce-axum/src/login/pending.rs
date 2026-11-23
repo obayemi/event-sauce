@@ -4,7 +4,7 @@ use std::future::{ready, Future};
 
 use axum::extract::FromRequestParts;
 use axum_login::tower_sessions::cookie::{time, Cookie, SameSite};
-use event_sauce_auth::{Login, LoginState, PendingLoginId, PendingLogins, UserAggregate};
+use event_sauce_auth::{Login, LoginState, PendingLoginId, PendingLogins, Step, UserAggregate};
 use http::{header::COOKIE, request::Parts, HeaderMap};
 
 use crate::login::rejection::AuthRejection;
@@ -30,10 +30,10 @@ use crate::login::{LoginError, LoginStep};
 ///
 /// ```
 /// use axum::http::{header::SET_COOKIE, StatusCode};
-/// use event_sauce_auth::{Login, LoginState, PendingLogins, UserAggregate};
+/// use event_sauce_auth::{Login, PendingLogins, Step, UserAggregate};
 /// use event_sauce_axum::{LoginError, LoginStep, PendingLogin};
 ///
-/// async fn ask_for_the_next_step<U: UserAggregate, S: LoginState>(
+/// async fn ask_for_the_next_step<U: UserAggregate, S: Step<U>>(
 ///     pending: &PendingLogins<U>,
 ///     login: Login<U, S>,
 /// ) -> Result<LoginStep, LoginError> {
@@ -81,7 +81,7 @@ impl PendingLogin {
     ///
     /// Returns [`LoginError`] when the state cannot be encoded or the login
     /// store fails, answered as an outage.
-    pub async fn hold<U: UserAggregate, S: LoginState>(
+    pub async fn hold<U: UserAggregate, S: Step<U>>(
         pending: &PendingLogins<U>,
         login: Login<U, S>,
     ) -> Result<LoginStep, LoginError> {

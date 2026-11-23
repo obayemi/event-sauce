@@ -1,0 +1,37 @@
+error[E0277]: the trait bound `event_sauce_auth::Done: event_sauce_auth::Step<U>` is not satisfied
+ --> tests/ui/hold_a_finished_login.rs:6:41
+  |
+6 |     let _ = PendingLogin::hold(pending, login).await;
+  |             ------------------          ^^^^^ the trait `event_sauce_auth::Step<U>` is not implemented for `event_sauce_auth::Done`
+  |             |
+  |             required by a bound introduced by this call
+  |
+note: required by a bound in `PendingLogin::hold`
+ --> src/login/pending.rs
+  |
+  |     pub async fn hold<U: UserAggregate, S: Step<U>>(
+  |                                            ^^^^^^^ required by this bound in `PendingLogin::hold`
+
+error[E0277]: the trait bound `event_sauce_auth::Done: event_sauce_auth::Step<U>` is not satisfied
+ --> tests/ui/hold_a_finished_login.rs:6:13
+  |
+6 |     let _ = PendingLogin::hold(pending, login).await;
+  |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `event_sauce_auth::Step<U>` is not implemented for `event_sauce_auth::Done`
+  |
+note: required by a bound in `PendingLogin::hold`
+ --> src/login/pending.rs
+  |
+  |     pub async fn hold<U: UserAggregate, S: Step<U>>(
+  |                                            ^^^^^^^ required by this bound in `PendingLogin::hold`
+
+error[E0277]: the trait bound `event_sauce_auth::Done: event_sauce_auth::Step<U>` is not satisfied
+ --> tests/ui/hold_a_finished_login.rs:6:48
+  |
+6 |     let _ = PendingLogin::hold(pending, login).await;
+  |                                                ^^^^^ the trait `event_sauce_auth::Step<U>` is not implemented for `event_sauce_auth::Done`
+  |
+note: required by a bound in `PendingLogin::hold`
+ --> src/login/pending.rs
+  |
+  |     pub async fn hold<U: UserAggregate, S: Step<U>>(
+  |                                            ^^^^^^^ required by this bound in `PendingLogin::hold`
