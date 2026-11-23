@@ -25,7 +25,7 @@ use http::{header::SET_COOKIE, HeaderName, Request, StatusCode};
 use sqlx::PgPool;
 use tower::ServiceExt;
 
-use super::{App, EventSauceApp, UserAppBuilder};
+use super::{App, EncryptCookie, EventSauceApp, SessionCookie, SignCookie, UserAppBuilder};
 use crate::login::test_support::{registered, Member};
 use crate::{AuthSession, MaybeUser, DEFAULT_HEADER};
 
@@ -235,10 +235,14 @@ fn key() -> Key {
     Key::from(&[7; 64])
 }
 
-async fn session_cookie<C: CookieController + Sync>(
-    app: &TestApp,
+async fn session_cookie<K, C>(
+    app: &App<Member, Factor, InMemoryEventStore, K>,
     sessions: SessionManagerLayer<MemoryStore, C>,
-) -> String {
+) -> String
+where
+    K: SessionCookie<C>,
+    C: CookieController,
+{
     let router = app.layer(
         Router::new()
             .route("/login", post(login_and_whoami))
@@ -253,10 +257,18 @@ async fn session_cookie<C: CookieController + Sync>(
     Cookie::parse(set_cookie).unwrap().value().to_owned()
 }
 
-fn signed_by(key: &Key, value: &str) -> bool {
+fn jar_of(value: &str) -> CookieJar {
     let mut jar = CookieJar::new();
     jar.add_original(Cookie::new("id", value.to_owned()));
-    jar.signed(key).get("id").is_some()
+    jar
+}
+
+fn signed_by(key: &Key, value: &str) -> bool {
+    jar_of(value).signed(key).get("id").is_some()
+}
+
+fn encrypted_by(key: &Key, value: &str) -> bool {
+    jar_of(value).private(key).get("id").is_some()
 }
 
 #[tokio::test]
@@ -266,4 +278,48 @@ async fn the_layer_keeps_the_cookie_the_session_layer_signs() {
     let cookie = session_cookie(&assembled(builder()), sessions).await;
 
     assert!(signed_by(&key(), &cookie));
+}
+
+#[tokio::test]
+async fn the_app_signs_the_cookie_with_the_key_of_the_builder() {
+    let app = builder()
+        .sign_cookie(key())
+        .assemble(Arc::new(InMemoryEventStore::new()), Arc::new(NoLoginStore));
+
+    let cookie = session_cookie(&app, SessionManagerLayer::new(MemoryStore::default())).await;
+
+    assert!(signed_by(&key(), &cookie));
+}
+
+#[tokio::test]
+async fn the_app_encrypts_the_cookie_with_the_key_of_the_builder() {
+    let app = builder()
+        .encrypt_cookie(key())
+        .assemble(Arc::new(InMemoryEventStore::new()), Arc::new(NoLoginStore));
+
+    let cookie = session_cookie(&app, SessionManagerLayer::new(MemoryStore::default())).await;
+
+    assert!(encrypted_by(&key(), &cookie));
+}
+
+#[tokio::test]
+async fn the_last_cookie_key_set_on_the_builder_wins() {
+    let app = builder()
+        .encrypt_cookie(key())
+        .route(AlwaysDone)
+        .sign_cookie(key())
+        .assemble(Arc::new(InMemoryEventStore::new()), Arc::new(NoLoginStore));
+
+    let cookie = session_cookie(&app, SessionManagerLayer::new(MemoryStore::default())).await;
+
+    assert!(signed_by(&key(), &cookie));
+}
+
+#[test]
+fn a_cookie_key_prints_nothing_of_the_key() {
+    assert_eq!(format!("{:?}", SignCookie(key())), "SignCookie { .. }");
+    assert_eq!(
+        format!("{:?}", EncryptCookie(key())),
+        "EncryptCookie { .. }"
+    );
 }

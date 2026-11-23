@@ -659,6 +659,7 @@ login store migrations. It is idempotent.
 | first factor | `FirstFactor` over the given login method, routed by `AlwaysDone` | `.route(route)` |
 | logins | `Logins<U>` on the event store and `PendingLogins<U>` in the login store, sharing the user cache with the auth layer | none |
 | correlation | `CorrelationLayer` on `x-request-id` | `.correlation_header(HeaderName)` |
+| session cookie | the cookie of the session layer given to `app.layer` | `.sign_cookie(key)`, `.encrypt_cookie(key)` |
 
 `.route(route)` swaps the default `AlwaysDone`, which ends every login right
 after the first factor. `build` requires `R: Route<U>`, and `AlwaysDone` is a
@@ -677,6 +678,25 @@ layer, your session layer, then the `axum-login` layer, through the `AuthLayer`
 the app holds.
 The session layer stays an argument: the builder does not choose a session
 store for you.
+
+`.sign_cookie(key)` signs the session cookie with a `tower_sessions::cookie::Key`,
+and `.encrypt_cookie(key)` encrypts it. `app.layer` then takes a plaintext
+session layer and protects its cookie with the key; a layer that already
+signs or encrypts its cookie does not compile there. Without either call,
+`app.layer` keeps whatever cookie the session layer sets, so
+`SessionManagerLayer::new(store).with_signed(key)` works too. Load the key
+from a secret shared by every instance: a key generated at start ends every
+session on restart.
+
+```rust
+let app = EventSauceApp::postgres(pool)
+    .user::<Member, _>(PasswordLogin::new(Argon2Hasher::default()))
+    .sign_cookie(Key::from(&secret))   // at least 64 bytes
+    .build()
+    .await?;
+
+let router = app.layer(routes, SessionManagerLayer::new(store));
+```
 
 The app gives `app.store()` (a `Store<PostgresEventStore>`),
 `app.logins()`, `app.pending()`, `app.first_factor()` and `app.login_store()`

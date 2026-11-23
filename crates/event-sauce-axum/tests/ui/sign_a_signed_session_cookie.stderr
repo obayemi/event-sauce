@@ -1,0 +1,15 @@
+error[E0308]: mismatched types
+  --> tests/ui/sign_a_signed_session_cookie.rs:19:30
+   |
+19 |     app.layer(Router::new(), sessions)
+   |         -----                ^^^^^^^^ expected `SessionManagerLayer<_>`, found `SessionManagerLayer<MemoryStore, _>`
+   |         |
+   |         arguments to this method are incorrect
+   |
+   = note: expected struct `SessionManagerLayer<_, tower_sessions::service::PlaintextCookie>`
+              found struct `SessionManagerLayer<MemoryStore, tower_sessions::service::SignedCookie>`
+note: method defined here
+  --> src/app.rs
+   |
+   |     pub fn layer<St, Sess, C>(
+   |            ^^^^^
