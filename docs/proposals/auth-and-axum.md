@@ -1,13 +1,13 @@
 # Proposal: pluggable auth and axum integration
 
-Status: steps 1 to 20 of the build order (section 8) are **implemented**
+Status: steps 1 to 21 of the build order (section 8) are **implemented**
 on `feat/auth`. Steps 15 to 17 replaced the `ClaimAuthenticator`, `TwoFactor`
 and second-factor builder stage that the earlier steps shipped with the
 typestate logins of sections 3.4, 3.6, 4.2 and 4.4. Step 18 sealed the
 session behind `AuthSession<U>`. Step 19 added the error responses of
-helper 1 and step 20 the login-step glue of helper 2 (section 4.5). Steps 21
-to 23, the other three HTTP helpers of section 4.5, are **proposed** and not
-built yet. Where the code
+helper 1 and step 20 the login-step glue of helper 2 and step 21 the path loading of
+helper 3 (section 4.5). Steps 22 and 23, the other two HTTP helpers of
+section 4.5, are **proposed** and not built yet. Where the code
 below describe the code. Supersedes the
 "extract `event-sauce-auth` from saxy-p" plan in saxy-p's `PLAN.md`.
 
@@ -1367,9 +1367,9 @@ backend is crate-private, so `App` exposes neither it nor its type, and
 its `Debug` prints only the correlation layer. `App` is not `Clone` and has
 no public field, so nothing else of it reaches the backend.
 
-### 4.5 HTTP helpers (helpers 1 and 2 implemented, steps 21 to 23 proposed)
+### 4.5 HTTP helpers (helpers 1 to 3 implemented, steps 22 and 23 proposed)
 
-Status: helpers 1 and 2 are **implemented** (steps 19 and 20), helpers 3 to 5 are **proposed**, not built. The two examples and saxy-p repeat the same
+Status: helpers 1 to 3 are **implemented** (steps 19 to 21), helpers 4 and 5 are **proposed**, not built. The two examples and saxy-p repeat the same
 HTTP glue around the crate: mapping store and login errors to statuses,
 answering a login step, loading the aggregate a path names and checking who
 may see it, redirecting a browser to the login page, and building a command
@@ -1395,7 +1395,7 @@ has to be audited, and that is not clearly simpler.
 |---|---|---|---|
 | 1 | `StoreError`, `Split`, `SplitDomain`, `DeletedStatus`; `LoginError`, `SessionError: IntoResponse` | none; `login` for the login part | every app's own error-to-status table, and the 401s that hide outages |
 | 2 | `AuthSession::finish`, `PendingLogin::hold`, `LoginStep` | `login` | the open/hold/refused glue of every login handler |
-| 3 | `Found<A, S>`, `PathAggregate`; `Authorized<A, P, S>`, `Access<A>` | none; `login` for `Authorized` | `Path` + `load` + owner check in each handler, saxy-p's load guards |
+| 3 | `Found<A, S>`, `PathAggregate`; `Authorized<A, P, S>`, `Access<A>` (implemented) | none; `login` for `Authorized` | `Path` + `load` + owner check in each handler, saxy-p's load guards |
 | 4 | `LoginRedirect`, `AuthRejection::Redirect`, `ReturnTo` | `login`; `ReturnTo` needs none | saxy-p's `require_user`, `login_redirect`, `original_uri`, `SafeRedirect` |
 | 5 | `Acting<Ctx>`, `FromUser` | `login` | saxy-p's `Acting` and its second actor load |
 
@@ -1678,11 +1678,11 @@ As built, step 20 differs from the text above in three places:
   `(step, Redirect::to(..))` ends the pending login as well.
 
 
-#### Helper 3: `Found<A, S>` and `Authorized<A, P, S>`
+#### Helper 3: `Found<A, S>` and `Authorized<A, P, S>` (implemented)
 
 ```rust
 /// An aggregate that a path parameter names.
-pub trait PathAggregate: Aggregate {
+pub trait PathAggregate: Aggregate + 'static {
     /// The path parameter that holds its id.
     const PARAM: &'static str = "id";
     /// How a deleted one is answered.
@@ -1704,7 +1704,7 @@ pub enum FoundRejection {
 }
 
 /// Who may reach an aggregate of type `A`.
-pub trait Access<A: Aggregate>: Send + Sync + 'static {
+pub trait Access<A: Aggregate> {
     type User: UserAggregate;
     /// Answer for a user who may not: 404 hides that the aggregate exists.
     const DENIED: DeniedStatus = DeniedStatus::NotFound;
@@ -1727,6 +1727,14 @@ pub enum AccessRejection { Auth(AuthRejection), Found(FoundRejection), Denied(De
 
 `Found` and `PathAggregate` need no feature; `Access`, `Authorized` and
 `AccessRejection` are behind `login`.
+
+Implemented as written, with two differences: `Access` has no
+`Send + Sync + 'static` supertraits, because a policy is a marker that is
+never built and `Authorized` holds it as `PhantomData<fn() -> P>`, and
+`Authorized` passes the deleted status to the load directly (`404` when
+`P::DENIED` is `NotFound`, otherwise `A::DELETED`) instead of rewriting the
+rejection afterwards. The trybuild case `write_through_found.rs` is E0596 (a
+mutable borrow through a `Deref`), not E0594.
 
 `Authorized` checks, in this order, and answers the first failure:
 
@@ -1993,7 +2001,7 @@ Tests:
 | `event-sauce-macros` | `user` flag, `#[user(identity)]`/`#[user(active)]` field attributes, `Credentials::claims()` merged into `claims()` |
 | `event-sauce` facade | features `auth` (plus `auth-postgres`, `auth-moka`, `auth-redis`, `auth-reset`, `auth-totp`) and `axum` (plus `axum-login`, `axum-app`), all in `full`, re-exported as `event_sauce::auth` and `event_sauce::axum` |
 | `.github/workflows/ci.yml` | new `feature-matrix-auth-axum` job that lints each feature of `event-sauce-auth`, `event-sauce-axum` and the facade alone |
-| `event-sauce-axum` (steps 19 and 20 implemented, steps 21 to 23 proposed) | the helpers of section 4.5; the `login` feature also turns on `axum/original-uri` and adds `percent-encoding`, already in the tree through `axum` |
+| `event-sauce-axum` (steps 19 to 21 implemented, steps 22 and 23 proposed) | the helpers of section 4.5; the `login` feature also turns on `axum/original-uri` and adds `percent-encoding`, already in the tree through `axum` |
 
 ## 6. Migrating saxy-p
 
@@ -2231,7 +2239,7 @@ it in the type system (section 4.2) and deletes what it supersedes:
     `axum-login` session record, `renew` during a concurrent credential
     change, and an application's own `AuthnBackend`.
 
-Helpers 1 and 2 of section 4.5 (steps 19 and 20) are built, the other three are proposed.
+Helpers 1 to 3 of section 4.5 (steps 19 to 21) are built, the other two are proposed.
 Each step is its
 own commit in `event-sauce-axum`, test first (the unit, HTTP and trybuild
 cases its helper lists, seen failing for the right reason before the code),
@@ -2261,7 +2269,7 @@ with `CurrentUser`.
     multi-step flow and the `logout().await.unwrap()` of `docs/axum.md`,
     and the handlers of section 4.2. Adds the malformed-body test and the
     three trybuild cases.
-21. `Found<A, S>`, `PathAggregate`, `FoundRejection` (no feature), then
+21. Implemented. `Found<A, S>`, `PathAggregate`, `FoundRejection` (no feature), then
     `Access<A>`, `DeniedStatus`, `Authorized<A, P, S>`, `AccessRejection`
     (`login`). Moves `read` of `axum-crud` onto `Authorized` with an `Owner`
     policy and `tests/extractors.rs`'s `ticket_title` onto `Found`; adds a

@@ -7,7 +7,7 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use event_sauce::axum::{Registered, Repo};
+use event_sauce::axum::{Access, Authorized, PathAggregate, Registered, Repo};
 use event_sauce::postgres::PostgresEventStore;
 use event_sauce::prelude::*;
 use serde::Deserialize;
@@ -20,6 +20,22 @@ use crate::note::{Note, NoteCommands, NoteDeleteCommands, NoteId};
 use crate::projection::{self, NoteView};
 
 type Notes = Repo<Note, PostgresEventStore>;
+type Owned = Authorized<Note, Owner, PostgresEventStore>;
+
+impl PathAggregate for Note {}
+
+/// Only a registered member reads a note, and only the member who owns it:
+/// anybody else gets the `404` of a note that does not exist.
+pub struct Owner;
+
+impl Access<Note> for Owner {
+    type User = Member;
+    const REGISTERED: bool = true;
+
+    fn allows(note: &AggregateRoot<Note>, member: &AggregateRoot<Member>) -> bool {
+        note.ensure_owned_by(member).is_ok()
+    }
+}
 
 #[derive(Deserialize)]
 pub struct NoteForm {
@@ -62,14 +78,8 @@ pub async fn list(
     Ok(Json(projection::notes_of(&pool, member.id()).await?))
 }
 
-pub async fn read(
-    Repo(notes): Notes,
-    member: Registered<Member>,
-    Path(id): Path<NoteId>,
-) -> Result<Json<NoteView>, ApiError> {
-    let note = notes.load(id).await?;
-    note.ensure_owned_by(&member)?;
-    Ok(Json(NoteView::from(&note)))
+pub async fn read(note: Owned) -> Json<NoteView> {
+    Json(NoteView::from(&*note))
 }
 
 pub async fn replace(

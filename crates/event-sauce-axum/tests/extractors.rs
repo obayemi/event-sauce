@@ -12,7 +12,7 @@ use axum::http::{Method, Request, StatusCode};
 use axum::routing::{get, post};
 use axum::Router;
 use broken_store::BrokenStore;
-use event_sauce_axum::{Repo, Store, StoreError, UnitOfWork};
+use event_sauce_axum::{Found, PathAggregate, Repo, Store, UnitOfWork};
 use event_sauce_core::{
     aggregate_command, define_events, Aggregate, AggregateError, Entity, EntityId, EventStore,
     Repository, RetryPolicy, UnitOfWork as Work, UnitOfWorkCommand, UnitOfWorkError,
@@ -44,6 +44,8 @@ impl Aggregate for Ticket {
     type Error = TicketError;
     type DeletedState = Self;
 }
+
+impl PathAggregate for Ticket {}
 
 define_events! {
     enum TicketEvent for Ticket {
@@ -115,11 +117,8 @@ async fn open_ticket(
     ticket.entity_id().to_string()
 }
 
-async fn ticket_title<S: EventStore + 'static>(
-    Repo(tickets): Repo<Ticket, S>,
-    Path(id): Path<EntityId>,
-) -> Result<String, StoreError> {
-    Ok(tickets.load(id).await?.title.clone())
+async fn ticket_title<S: EventStore + 'static>(ticket: Found<Ticket, S>) -> String {
+    ticket.title.clone()
 }
 
 async fn ticket_exists(store: Store<InMemoryEventStore>, Path(id): Path<EntityId>) -> String {

@@ -3,6 +3,7 @@
 //! store.
 
 mod broken_store;
+mod note_fixture;
 mod support;
 mod user_fixture;
 
@@ -23,9 +24,12 @@ use event_sauce_auth::{
     CachedUserLoader, FirstFactor, LoginKey, LoginStore, LoginStoreError, LoginTtl, Logins,
     MokaUserCache, PasswordLogin, UserCache,
 };
-use event_sauce_axum::{AuthLayer, AuthSession, CurrentUser, MaybeUser, PendingLogin, Registered};
+use event_sauce_axum::{
+    AuthLayer, AuthSession, Authorized, CurrentUser, MaybeUser, PendingLogin, Registered, Store,
+};
 use event_sauce_core::{AggregateRoot, EntityId, EventStore, Repository};
 use event_sauce_memory::InMemoryEventStore;
+use note_fixture::{Note, NoteDeleteCommands, OpenOwner, Owner, RegisteredOwner};
 use serde::Deserialize;
 use support::Client;
 use tower_sessions::{MemoryStore, SessionManagerLayer};
@@ -67,6 +71,7 @@ impl LoginStore for MemoryLoginStore {
 struct AppState {
     flow: Flow,
     events: Arc<InMemoryEventStore>,
+    store: Store<InMemoryEventStore>,
 }
 
 #[derive(Deserialize)]
@@ -140,6 +145,20 @@ async fn registered(user: Registered<User>) -> String {
     user.entity_id().to_string()
 }
 
+type Owned<P> = Authorized<Note, P, InMemoryEventStore>;
+
+async fn note(note: Owned<Owner>) -> String {
+    note.owner.to_string()
+}
+
+async fn strict_note(note: Owned<OpenOwner>) -> String {
+    note.owner.to_string()
+}
+
+async fn registered_note(note: Owned<RegisteredOwner>) -> String {
+    note.user().entity_id().to_string()
+}
+
 struct World {
     events: Arc<InMemoryEventStore>,
     client: Client,
@@ -182,8 +201,12 @@ impl World {
             .route("/me", get(me))
             .route("/maybe", get(maybe))
             .route("/registered", get(registered))
+            .route("/notes/{id}", get(note))
+            .route("/notes/{id}/strict", get(strict_note))
+            .route("/notes/{id}/registered", get(registered_note))
             .with_state(AppState {
                 flow,
+                store: Store::from(events.clone()),
                 events: events.clone(),
             });
         let router = AuthLayer::new(loader).layer(router, sessions);
@@ -215,6 +238,22 @@ impl World {
             .modify(id, |user| user.deactivate())
             .await
             .unwrap();
+    }
+
+    async fn write_note(&self, owner: EntityId) -> EntityId {
+        let mut note = Note::write(owner).unwrap();
+        self.events
+            .repository::<Note>()
+            .save(&mut note)
+            .await
+            .unwrap();
+        note.entity_id()
+    }
+
+    async fn remove_note(&self, id: EntityId) {
+        let repository = self.events.repository::<Note>();
+        let mut removed = repository.load(id).await.unwrap().remove().unwrap();
+        repository.save_deleted(&mut removed).await.unwrap();
     }
 
     async fn status(&mut self, uri: &str) -> StatusCode {
@@ -841,4 +880,112 @@ async fn a_refused_step_clears_the_pending_cookie() {
 
     assert_eq!(wrong.status, StatusCode::UNAUTHORIZED);
     assert!(pending_cookie_of(&wrong).contains("Max-Age=0"));
+}
+
+#[tokio::test]
+async fn the_owner_reads_the_note_the_path_names() {
+    let mut world = World::new();
+    let owner = world.register(None).await;
+    let note = world.write_note(owner).await;
+    world.client.log_in(ADA, PASSWORD).await;
+
+    let reply = world.client.get(&format!("/notes/{note}")).await;
+
+    assert_eq!(
+        (reply.status, reply.body),
+        (StatusCode::OK, owner.to_string())
+    );
+}
+
+#[tokio::test]
+async fn somebody_elses_note_is_not_found_like_a_missing_one() {
+    let mut world = World::new();
+    world.register(None).await;
+    let theirs = world.write_note(EntityId::new()).await;
+    world.client.log_in(ADA, PASSWORD).await;
+
+    let other = world.client.get(&format!("/notes/{theirs}")).await;
+    let missing = world
+        .client
+        .get(&format!("/notes/{}", EntityId::new()))
+        .await;
+
+    assert_eq!(other.status, StatusCode::NOT_FOUND);
+    assert_eq!((other.status, other.body), (missing.status, missing.body));
+}
+
+#[tokio::test]
+async fn a_policy_may_answer_forbidden_instead() {
+    let mut world = World::new();
+    world.register(None).await;
+    let theirs = world.write_note(EntityId::new()).await;
+    world.client.log_in(ADA, PASSWORD).await;
+
+    let reply = world.client.get(&format!("/notes/{theirs}/strict")).await;
+
+    assert_eq!(reply.status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn nobody_logged_in_is_unauthorized_whether_or_not_the_note_exists() {
+    let mut world = World::new();
+    let note = world.write_note(EntityId::new()).await;
+
+    let existing = world.status(&format!("/notes/{note}")).await;
+    let missing = world.status(&format!("/notes/{}", EntityId::new())).await;
+
+    assert_eq!(existing, StatusCode::UNAUTHORIZED);
+    assert_eq!(missing, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn an_anonymous_user_is_forbidden_where_the_policy_wants_a_registered_one() {
+    let mut world = World::new();
+    world.client.post("/anonymous", None).await;
+    let note = world.write_note(EntityId::new()).await;
+
+    let reply = world.client.get(&format!("/notes/{note}/registered")).await;
+
+    assert_eq!(reply.status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn a_registered_user_reaches_the_note_under_a_registered_policy() {
+    let mut world = World::new();
+    let owner = world.register(None).await;
+    let note = world.write_note(owner).await;
+    world.client.log_in(ADA, PASSWORD).await;
+
+    let reply = world.client.get(&format!("/notes/{note}/registered")).await;
+
+    assert_eq!(
+        (reply.status, reply.body),
+        (StatusCode::OK, owner.to_string())
+    );
+}
+
+#[tokio::test]
+async fn a_deleted_note_is_hidden_by_a_policy_that_hides_existence() {
+    let mut world = World::new();
+    let owner = world.register(None).await;
+    let note = world.write_note(owner).await;
+    world.remove_note(note).await;
+    world.client.log_in(ADA, PASSWORD).await;
+
+    let reply = world.client.get(&format!("/notes/{note}")).await;
+
+    assert_eq!(reply.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn a_deleted_note_is_gone_under_a_policy_that_denies_openly() {
+    let mut world = World::new();
+    let owner = world.register(None).await;
+    let note = world.write_note(owner).await;
+    world.remove_note(note).await;
+    world.client.log_in(ADA, PASSWORD).await;
+
+    let reply = world.client.get(&format!("/notes/{note}/strict")).await;
+
+    assert_eq!(reply.status, StatusCode::GONE);
 }

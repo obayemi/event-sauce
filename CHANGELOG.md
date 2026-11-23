@@ -334,6 +334,20 @@ explicitly rather than gated behind a major version bump.
   `PendingLogin::set_cookie` is no longer public: `hold` replaces it. The
   examples and the login tests lose their `open_session` and `hold` helpers.
 
+- Path loading in `event-sauce-axum`. `Found<A, S>` takes the id from the
+  path parameter that `PathAggregate::PARAM` names (`"id"` by default), loads
+  the aggregate from the state's `Store<S>` once per request and derefs to its
+  `AggregateRoot`, read only: no `DerefMut`, no save, writes keep `Repo`. A
+  bad id is `400`, a route without the parameter `500`, a missing aggregate
+  `404`, a deleted one `404` or `410` after `PathAggregate::DELETED =
+  DeletedStatus::Gone`, a store failure `500`. With the `login` feature,
+  `Authorized<A, P, S>` also runs `P: Access<A>`, a policy over the aggregate
+  and the current user: nobody logged in is `401`, an anonymous identity under
+  `Access::REGISTERED` is `403`, and a user who may not is `404` by default
+  (hiding that the aggregate exists, and its deletion) or `403` with
+  `Access::DENIED = DeniedStatus::Forbidden`. The `read` route of `axum-crud`
+  and the `ticket_title` handler of the extractor tests move onto them.
+
 - Facade features `auth`, `auth-postgres`, `auth-moka`, `auth-redis`,
   `auth-reset` and `auth-totp` re-export `event-sauce-auth` as
   `event_sauce::auth`, and `axum`, `axum-login` and `axum-app` re-export

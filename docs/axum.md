@@ -13,6 +13,7 @@ methods, typestate logins) is in the [auth guide](auth.md).
 - [The Correlation Layer](#the-correlation-layer)
 - [State: Store, Repo and UnitOfWork](#state-store-repo-and-unitofwork)
 - [Answering Errors](#answering-errors)
+- [Loading What the Path Names](#loading-what-the-path-names)
 - [Login with axum-login](#login-with-axum-login)
   - [The Session](#the-session)
   - [Logging In and Out](#logging-in-and-out)
@@ -38,6 +39,8 @@ methods, typestate logins) is in the [auth guide](auth.md).
 - **`AuthSession`** opens an `axum-login` session from a finished login and
   from nothing else, **`AuthLayer`** installs it, and **`CurrentUser`**,
   **`MaybeUser`** and **`Registered`** hand the logged-in user to handlers.
+- **`Found`** loads the aggregate a path names, once per request and read
+  only, and **`Authorized`** also checks that the current user may reach it.
 - **`StoreError`** and **`LoginError`** answer the failures of a store and of a
   login with the right status and no detail.
 - **`EventSauceApp::postgres`** builds all of the above on one `PgPool`.
@@ -57,8 +60,8 @@ facade features nest:
 
 | Feature | Adds |
 |---|---|
-| `axum` | the correlation layer, the `Store`, `Repo` and `UnitOfWork` extractors and `StoreError` |
-| `axum-login` | `AuthLayer`, `AuthSession`, `PendingLogin`, `LoginStep`, `LoginError` and the user extractors; implies `auth` |
+| `axum` | the correlation layer, the `Store`, `Repo`, `UnitOfWork` and `Found` extractors and `StoreError` |
+| `axum-login` | `AuthLayer`, `AuthSession`, `PendingLogin`, `LoginStep`, `LoginError`, `Authorized` and the user extractors; implies `auth` |
 | `axum-app` | `EventSauceApp::postgres`; implies `axum-login` and `postgres` |
 
 Your application depends on `axum`, `axum-login` and `tower-sessions`
@@ -175,6 +178,75 @@ they found: an aggregate that already exists is a `409`, a missing one a
 `AlreadyCheckedOut`, `LeakedHandle` and `DeleteFailed` are `500`.
 
 `LoginError`, for the login handlers, is in [Refusing a Login](#refusing-a-login).
+
+## Loading What the Path Names
+
+A handler that reads one aggregate does not need `Path`, `load` and an error
+table. **`Found<A, S>`** extracts the id from the path parameter that
+`PathAggregate::PARAM` names (`"id"` by default), loads the aggregate from the
+state's `Store<S>` and derefs to its `AggregateRoot`:
+
+```rust
+impl PathAggregate for Note {}
+
+async fn read(note: Found<Note, PostgresEventStore>) -> String {
+    note.title.clone()
+}
+```
+
+| Failure | Status |
+|---|---|
+| the parameter is not an id | `400` |
+| the route has no such parameter | `500` |
+| missing | `404` |
+| deleted | `404`, or `410` when `PathAggregate::DELETED` is `DeletedStatus::Gone` |
+| the store failed | `500` |
+
+A nested route names its parameters on each aggregate: set `PARAM` to
+`"group_id"` on `Group` and to `"activity_id"` on `Activity`, and
+`/groups/{group_id}/activities/{activity_id}` needs no `Path` at all.
+
+`Found` is read only: it has no `DerefMut` and no way to save. Writes keep
+using `Repo::modify` or `execute`, which reload the aggregate and retry on
+conflicts, so a handler that checks access with `Found` and then writes loads
+twice. The loaded aggregate is kept in the request, so two extractors that
+ask for the same aggregate in the same store load it once.
+
+With the `login` feature, **`Authorized<A, P, S>`** adds the question of who
+may reach it. `P` is a marker type that implements `Access<A>`, a function of
+the aggregate and the current user:
+
+```rust
+struct Owner;
+
+impl Access<Note> for Owner {
+    type User = Member;
+    const REGISTERED: bool = true;
+
+    fn allows(note: &AggregateRoot<Note>, member: &AggregateRoot<Member>) -> bool {
+        note.ensure_owned_by(member).is_ok()
+    }
+}
+
+async fn read(note: Authorized<Note, Owner, PostgresEventStore>) -> String {
+    note.title.clone()
+}
+```
+
+`Authorized` checks, in this order, and answers the first failure: somebody is
+logged in (`401`), the identity is registered when `REGISTERED` is set (`403`),
+the path parameter and the load (as `Found`), and `Access::allows`. A user who
+does not pass is answered `404` by default, so a caller cannot tell a note it
+may not read from one that does not exist; set `const DENIED: DeniedStatus =
+DeniedStatus::Forbidden` for `403`. Nothing is loaded for a request without a
+user, so ids cannot be probed anonymously, and a policy that hides existence
+also hides deletions: a deleted aggregate is `404` whatever
+`PathAggregate::DELETED` says. The handler cannot run unless the user, the
+load and the check passed, so there is no guard layer whose order matters.
+
+`allows` is synchronous and sees one aggregate and the user. A check that needs
+a projection query or a second aggregate is the application's own extractor,
+built from `Found` and `CurrentUser`, which share the loaded aggregate.
 
 ## Login with axum-login
 
@@ -497,10 +569,11 @@ DATABASE_URL=postgres://postgres:postgres@localhost/postgres \
 
 Members register, log in and manage their own `Note`s with `POST` and
 `GET /notes`, and `GET`, `PUT`, `PATCH` and `DELETE /notes/{id}`. The
-handlers stay thin: `Repo<Note, _>` and `Registered<Member>` extract the
-repository and the member, and the member passes straight to the
-`@actor(Member)` commands, so ownership is the validation of the events and
-a foreign note answers `404`. `GET /notes` reads a Postgres projection (see
+handlers stay thin: `Authorized<Note, Owner, _>` reads a note for its owner
+only, `Repo<Note, _>` and `Registered<Member>` extract the repository and the
+member for the writes, and the member passes straight to the `@actor(Member)`
+commands, so ownership is the validation of the events and a foreign note
+answers `404`. `GET /notes` reads a Postgres projection (see
 the [projections guide](projections.md)) that a background task keeps up to
 date, and every event is stored with the request id. Its tests start a
 Postgres container, so they need Docker.
@@ -510,7 +583,7 @@ Postgres container, so they need Docker.
 | `event-sauce-axum` feature | Facade feature | Adds |
 |---|---|---|
 | `tracing` (default) | `axum` | the `request` tracing span |
-| `login` (default) | `axum-login` | `AuthLayer`, `AuthSession`, `PendingLogin`, `LoginStep`, `LoginError`, user extractors |
+| `login` (default) | `axum-login` | `AuthLayer`, `AuthSession`, `PendingLogin`, `LoginStep`, `LoginError`, `Authorized`, user extractors |
 | `app` (default) | `axum-app` | `EventSauceApp` and the Postgres defaults |
 
 Through the facade, `tracing` comes with `axum`. `app` implies `login`, the
@@ -544,6 +617,10 @@ let response = router.clone().oneshot(request).await?;
 4. **Cache users**, and snapshot the user aggregate; both cost nothing in
    correctness, because every read is version-checked.
 5. **Never `tokio::spawn` event work without carrying the context.**
+6. **Extract the aggregate a route names with `Found` or `Authorized`**
+   rather than `Path` and `load`, and keep `Repo` for the writes.
+   `Authorized` hides a foreign aggregate as `404` unless its policy says
+   otherwise.
 
 ## Related Documentation
 

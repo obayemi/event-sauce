@@ -11,6 +11,9 @@
 //! - [`StoreError`] answers a failed store operation with the status of its
 //!   kind and no detail, and [`SplitDomain`] hands the domain error of a
 //!   modify, an execute or a unit of work back to the application.
+//! - [`Found`] loads the aggregate a path names once per request, read only,
+//!   and with the `login` feature `Authorized` also checks that the current
+//!   user may reach it under an `Access` policy.
 //! - With the `login` feature, `AuthSession` opens an `axum-login` session
 //!   from a finished login and from nothing else: the backend underneath is
 //!   crate-private, so an application can neither name it nor obtain one.
@@ -31,22 +34,26 @@
 mod app;
 mod correlation;
 mod diagnostics;
+mod found;
 #[cfg(feature = "login")]
 mod login;
 mod repo;
 mod request_id;
 mod store;
 mod store_error;
+#[cfg(test)]
+mod test_ticket;
 mod unit_of_work;
 
 #[cfg(feature = "app")]
 pub use app::{App, AppBuilder, BuildError, EventSauceApp, UserAppBuilder};
 pub use correlation::{Correlation, CorrelationLayer, ResponseFuture, DEFAULT_HEADER};
+pub use found::{Found, FoundRejection, PathAggregate};
 pub use http::HeaderName;
 #[cfg(feature = "login")]
 pub use login::{
-    AuthLayer, AuthRejection, AuthSession, CurrentUser, LoginError, LoginStep, MaybeUser,
-    PendingLogin, Registered, SessionError,
+    Access, AccessRejection, AuthLayer, AuthRejection, AuthSession, Authorized, CurrentUser,
+    DeniedStatus, LoginError, LoginStep, MaybeUser, PendingLogin, Registered, SessionError,
 };
 pub use repo::Repo;
 pub use request_id::RequestId;

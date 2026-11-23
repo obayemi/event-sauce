@@ -4,6 +4,7 @@
 
 mod auth_layer;
 mod auth_session;
+mod authorized;
 mod backend;
 mod current_user;
 mod login_error;
@@ -16,6 +17,7 @@ pub(crate) mod test_support;
 
 pub use auth_layer::AuthLayer;
 pub use auth_session::{AuthSession, SessionError};
+pub use authorized::{Access, AccessRejection, Authorized, DeniedStatus};
 pub use current_user::{CurrentUser, MaybeUser, Registered};
 pub use login_error::LoginError;
 pub use login_step::LoginStep;

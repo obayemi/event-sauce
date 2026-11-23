@@ -1,0 +1,7 @@
+error[E0596]: cannot borrow data in dereference of `event_sauce_axum::Found<A, S>` as mutable
+ --> tests/ui/write_through_found.rs:5:36
+  |
+5 |     let _: &mut AggregateRoot<A> = &mut found;
+  |                                    ^^^^^^^^^^ cannot borrow as mutable
+  |
+  = help: trait `DerefMut` is required to modify through a dereference, but it is not implemented for `event_sauce_axum::Found<A, S>`

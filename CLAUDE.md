@@ -378,7 +378,7 @@ operation over several aggregates is a `UnitOfWorkCommand` (see
   defaults, `AuthLayer` and the `AuthSession` extractor for login sessions
   (`AuthSession::finish` and `PendingLogin::hold`, answering a `LoginStep`,
   end and continue a login), the
-  `Store`/`Repo`/`UnitOfWork` and `CurrentUser`/`MaybeUser`/`Registered`
+  `Store`/`Repo`/`UnitOfWork`/`Found`/`Authorized` and `CurrentUser`/`MaybeUser`/`Registered`
   extractors, `StoreError` and `LoginError` for the error responses, and
   `CorrelationLayer`
   so events carry the request id (see `docs/axum.md` and the `axum-auth`
@@ -390,6 +390,12 @@ operation over several aggregates is a `UnitOfWorkCommand` (see
   to keep the domain error) and `LoginError` for a login step, so a store
   outage is never answered as a bad login and no refusal tells an unknown
   user from a wrong password
+- A handler never writes `Path`, `load` and an owner check for the aggregate its
+  route names: it takes `Found<A, S>` (read only, loaded once per request;
+  `impl PathAggregate for A` names the path parameter and `410` for a deleted
+  one) or, behind a user, `Authorized<A, P, S>` with `P: Access<A>`, whose
+  denial is `404` unless the policy sets `DENIED = Forbidden`. Writes keep
+  `Repo::modify` or `execute`; there is no write path through either extractor
 - A login handler returns `Result<LoginStep, LoginError>`: `AuthSession::finish`
   for a `Complete` state and `PendingLogin::hold` for a state that waits, never
   a hand-built `204`/`202` or a `Set-Cookie` of the pending cookie. Resume a
