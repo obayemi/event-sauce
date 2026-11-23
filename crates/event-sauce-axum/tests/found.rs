@@ -230,7 +230,10 @@ async fn a_failing_store_is_a_server_error_not_an_unknown_aggregate() {
             store: Store::new(BrokenStore),
         });
 
-    let (status, _) = get_body(&app, &format!("/hidden/{}", EntityId::new())).await;
+    let (status, body) = get_body(&app, &format!("/hidden/{}", EntityId::new())).await;
 
-    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(
+        (status, body.as_str()),
+        (StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+    );
 }
