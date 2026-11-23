@@ -637,7 +637,7 @@ mod tests {
         agg2.apply(SimpleTestEvent::Created { value: 2 }).unwrap();
         ctx.commit(&mut agg2).await.unwrap();
 
-        assert!(store.get_events().is_empty());
+        assert_eq!(store.get_events(), Vec::<EventEnvelope>::new());
 
         ctx.flush().await.unwrap();
 
@@ -676,7 +676,7 @@ mod tests {
 
         ctx.flush().await.unwrap();
 
-        assert!(store.get_events().is_empty());
+        assert_eq!(store.get_events(), Vec::<EventEnvelope>::new());
     }
 
     #[tokio::test]

@@ -964,7 +964,7 @@ mod tests {
     #[test]
     fn mock_event_store_get_events_empty() {
         let store = MockEventStore::new();
-        assert!(store.get_events().is_empty());
+        assert_eq!(store.get_events(), Vec::<EventEnvelope>::new());
     }
 
     // --- SimpleTestEvent::dispatch_unchecked ---

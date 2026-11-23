@@ -4,6 +4,7 @@ error[E0423]: cannot initialize a tuple struct which contains private fields
 4 |     Advance(login).to(Done)
   |     ^^^^^^^
   |
+  = note: a struct named `Advance` exists in another namespace
 note: constructor is not visible here due to private fields
  --> src/login/flow.rs
   |

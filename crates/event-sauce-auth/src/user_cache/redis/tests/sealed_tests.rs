@@ -31,7 +31,7 @@ fn an_entry_may_have_an_empty_body() {
         .encode(),
     );
 
-    assert!(decoded.unwrap().body.is_empty());
+    assert_eq!(decoded.unwrap().body, b"");
 }
 
 #[test]

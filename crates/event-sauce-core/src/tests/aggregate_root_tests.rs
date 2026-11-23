@@ -568,7 +568,7 @@ fn test_set_pending_metadata_keeps_existing_causation_pair() {
         .clone()
         .unwrap();
     assert_eq!(metadata.causation_id, Some(own_cause));
-    assert!(metadata.causation_chain.is_empty());
+    assert_eq!(metadata.causation_chain, Vec::<uuid::Uuid>::new());
 }
 
 #[test]

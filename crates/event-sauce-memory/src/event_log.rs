@@ -545,10 +545,10 @@ mod tests {
         assert!(page.entries.is_empty());
 
         let types = query.distinct_aggregate_types().await.unwrap();
-        assert!(types.is_empty());
+        assert_eq!(types, Vec::<String>::new());
 
         let event_types = query.distinct_event_types().await.unwrap();
-        assert!(event_types.is_empty());
+        assert_eq!(event_types, Vec::<String>::new());
     }
 
     #[tokio::test]

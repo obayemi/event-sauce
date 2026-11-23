@@ -830,7 +830,7 @@ mod tests {
     use super::*;
     use crate::test_fixtures::{MockCheckpointStore, MockEventStore};
     use crate::{CheckpointStore, EventFilter};
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicIsize, AtomicUsize, Ordering};
 
     #[test]
     fn test_policy_runner_new() {
@@ -2369,7 +2369,7 @@ mod tests {
     }
 
     struct ReactPolicy {
-        failures: AtomicUsize,
+        failures: AtomicIsize,
     }
 
     #[async_trait::async_trait]
@@ -2390,11 +2390,7 @@ mod tests {
                 .apply(crate::test_fixtures::SimpleTestEvent::Created { value: 1 })
                 .unwrap();
             ctx.commit(&mut reaction).await?;
-            if self
-                .failures
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
-                .is_ok()
-            {
+            if self.failures.fetch_sub(1, Ordering::SeqCst) > 0 {
                 return Err(crate::Error::custom("transient"));
             }
             Ok(())
@@ -2413,14 +2409,14 @@ mod tests {
 
     async fn reaction_metadata(
         on_error: OnError,
-        failures: usize,
+        failures: isize,
     ) -> (EventEnvelope, crate::EventMetadata) {
         use crate::EventContext;
 
         let store = Arc::new(MockEventStore::new());
         let runner = PolicyRunner::new(Arc::clone(&store), test_checkpoint_store())
             .register(Arc::new(ReactPolicy {
-                failures: AtomicUsize::new(failures),
+                failures: AtomicIsize::new(failures),
             }))
             .on_error(on_error);
         let parent = parent_event();
@@ -2480,7 +2476,7 @@ mod tests {
         let store = Arc::new(MockEventStore::new());
         let runner = PolicyRunner::new(Arc::clone(&store), test_checkpoint_store()).register(
             Arc::new(ReactPolicy {
-                failures: AtomicUsize::new(0),
+                failures: AtomicIsize::new(0),
             }),
         );
         let metadata = crate::EventMetadata::new()
@@ -2499,7 +2495,7 @@ mod tests {
         let store = Arc::new(MockEventStore::new());
         let runner = PolicyRunner::new(Arc::clone(&store), test_checkpoint_store()).register(
             Arc::new(ReactPolicy {
-                failures: AtomicUsize::new(0),
+                failures: AtomicIsize::new(0),
             }),
         );
         let parent = test_envelope("TestEvent", "TestAggregate");

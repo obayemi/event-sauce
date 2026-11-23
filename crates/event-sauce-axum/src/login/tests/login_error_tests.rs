@@ -109,7 +109,7 @@ async fn every_outage_answers_a_server_error_and_leaves_the_pending_login_alone(
         let (status, cookies, body) = snapshot(outage.into_response()).await;
 
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
-        assert!(cookies.is_empty());
+        assert_eq!(cookies, Vec::<String>::new());
         assert_eq!(body, "internal error");
     }
 }
@@ -119,7 +119,7 @@ async fn a_session_failure_answers_a_server_error_with_no_detail() {
     let (status, cookies, body) = snapshot(session().into_response()).await;
 
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
-    assert!(cookies.is_empty());
+    assert_eq!(cookies, Vec::<String>::new());
     assert_eq!(body, "internal error");
 }
 

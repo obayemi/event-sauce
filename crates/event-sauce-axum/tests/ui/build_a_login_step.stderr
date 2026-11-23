@@ -4,6 +4,7 @@ error[E0423]: cannot initialize a tuple struct which contains private fields
 4 |     let _ = LoginStep(());
   |             ^^^^^^^^^
   |
+  = note: a struct named `LoginStep` exists in another namespace
 note: constructor is not visible here due to private fields
  --> src/login/login_step.rs
   |

@@ -160,7 +160,7 @@ fn test_metadata_deserialize_without_causation_chain() {
     let json = r#"{"correlation_id":null,"causation_id":null,"timestamp":"2024-01-01T00:00:00Z"}"#;
     let metadata: EventMetadata = serde_json::from_str(json).unwrap();
 
-    assert!(metadata.causation_chain.is_empty());
+    assert_eq!(metadata.causation_chain, Vec::<uuid::Uuid>::new());
 }
 
 #[test]
@@ -232,7 +232,7 @@ fn test_metadata_deserialize_without_new_fields() {
 
     assert_eq!(metadata.tenant, None);
     assert_eq!(metadata.command, None);
-    assert!(metadata.correlation_path.is_empty());
+    assert_eq!(metadata.correlation_path, Vec::<String>::new());
 }
 
 #[test]
@@ -273,7 +273,7 @@ fn test_fill_missing_from_drops_a_path_that_does_not_lead_with_the_receiver_id()
 
     receiver.fill_missing_from(&other);
 
-    assert!(receiver.correlation_path.is_empty());
+    assert_eq!(receiver.correlation_path, Vec::<String>::new());
 }
 
 #[test]
@@ -320,7 +320,7 @@ fn test_fill_missing_from_keeps_causation_pair_when_receiver_has_an_id() {
     receiver.fill_missing_from(&other);
 
     assert_eq!(receiver.causation_id, Some(id));
-    assert!(receiver.causation_chain.is_empty());
+    assert_eq!(receiver.causation_chain, Vec::<uuid::Uuid>::new());
 }
 
 #[test]

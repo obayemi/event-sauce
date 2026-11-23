@@ -116,7 +116,10 @@ fn push_expectation_sorts_a_stream_expectation() {
     });
 
     assert_eq!(commit.stream_expectations, vec![(stream_id, version)]);
-    assert!(commit.state_expectations.is_empty());
+    assert_eq!(
+        commit.state_expectations,
+        Vec::<(StreamId, AggregateVersion)>::new()
+    );
 }
 
 #[test]
@@ -131,5 +134,8 @@ fn push_expectation_sorts_a_state_expectation() {
     });
 
     assert_eq!(commit.state_expectations, vec![(stream_id, version)]);
-    assert!(commit.stream_expectations.is_empty());
+    assert_eq!(
+        commit.stream_expectations,
+        Vec::<(StreamId, AggregateVersion)>::new()
+    );
 }
