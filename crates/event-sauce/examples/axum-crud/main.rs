@@ -8,9 +8,10 @@
 //!   `EventSauceApp::postgres`, which wires the event store, the login
 //!   store, the user cache and the correlation layer.
 //! - `Note` is an aggregate whose events carry an actor: the member who
-//!   creates it, edits it or deletes it. Ownership is the actor validation
-//!   of the events, so another member's attempt fails with `404`, the same
-//!   answer as for a note that does not exist.
+//!   creates it, edits it or deletes it. `GET /notes/{id}` reads through
+//!   `Authorized<Note, Owner, _>`, whose `Owner` policy answers `404` to
+//!   another member, and the writes keep ownership as the actor validation
+//!   of the events: the same answer as for a note that does not exist.
 //! - `GET /notes` is served from a read model, a Postgres projection of the
 //!   `Note` events that a background task keeps up to date. The list lags
 //!   the writes by the projector's latency, while `GET /notes/{id}` reads
@@ -32,8 +33,8 @@
 //! | `DELETE /notes/{id}` | delete the note |
 //!
 //! Errors map to `401` (not logged in, wrong login), `404` (unknown, deleted
-//! or foreign note), `409` (email already registered, concurrent edit) and
-//! `422` (invalid input).
+//! or foreign note), `409` (email already registered, concurrent edit),
+//! `422` (invalid input) and `500` (a store failure, with no detail).
 //!
 //! Run it against a Postgres database:
 //! ```bash

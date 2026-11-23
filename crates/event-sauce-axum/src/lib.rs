@@ -17,15 +17,18 @@
 //! - With the `login` feature, `AuthSession` opens an `axum-login` session
 //!   from a finished login and from nothing else: the backend underneath is
 //!   crate-private, so an application can neither name it nor obtain one.
-//!   `AuthLayer` installs it, `AuthSession::finish` ends a login and
+//!   `AuthLayer` installs it, and `AuthSession::finish` ends a login while
 //!   `PendingLogin::hold` parks one that waits for its next step, both
-//!   answering a `LoginStep`, and `CurrentUser`, `MaybeUser` and `Registered`
+//!   answering a `LoginStep`.
+//! - With the `login` feature, `CurrentUser`, `MaybeUser` and `Registered`
 //!   hand the logged-in user to handlers, and `Acting` builds the command
-//!   context of that user from the application's `FromUser`. `LoginError` answers every refusal of a
-//!   login with the same `401` and every outage with a `500`.
-//! - `LoginRedirect` sends a browser that is not logged in to the login page
-//!   with the page it asked for, on the routes it is applied to, and
-//!   `ReturnTo` is the same-origin target a form carries back after the login.
+//!   context of that user from the application's `FromUser`.
+//! - With the `login` feature, `LoginError` answers every refusal of a login
+//!   with the same `401` and every outage with a `500`.
+//! - With the `login` feature, `LoginRedirect` sends a browser that is not
+//!   logged in to the login page with the page it asked for, on the routes
+//!   it is applied to. `ReturnTo`, the same-origin target a form carries back
+//!   after the login, needs no feature.
 //! - With the `app` feature, `EventSauceApp::postgres` builds the whole
 //!   stack, stores, cache, first factor and layers, on one pool.
 

@@ -230,7 +230,11 @@ axum and tower integration, behind the facade's `axum`, `axum-login` and
 
 - **CorrelationLayer** - Runs each request in an event context carrying its request id
 - **Store / Repo / UnitOfWork** - Extractors over the application state
-- **AuthLayer / AuthSession** - Login sessions over a sealed `axum-login` backend: a session opens only from a finished login, and ends when credentials change
+- **Found / Authorized** - Read-only loading of the aggregate a path names, with an `Access` policy deciding who may reach it
+- **StoreError / LoginError** - Error responses with the right status and no detail
+- **AuthLayer / AuthSession / LoginStep** - Login sessions over a sealed `axum-login` backend: a session opens only from a finished login, answers the step a login reached, and ends when credentials change
+- **CurrentUser / Registered / Acting** - The logged-in user and the command context built from it
+- **LoginRedirect / ReturnTo** - Browser redirect to the login page, with a same-origin return target
 - **EventSauceApp** - The Postgres stack wired in one builder
 
 ### event-sauce (facade)
