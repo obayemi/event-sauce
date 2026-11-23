@@ -11,8 +11,9 @@ use event_sauce_postgres::PostgresEventStore;
 use http::HeaderName;
 use serde::{de::DeserializeOwned, Serialize};
 use sqlx::PgPool;
+use tower_sessions::cookie::Key;
 
-use super::App;
+use super::{App, EncryptCookie, KeepCookie, SignCookie};
 use crate::{AuthLayer, CorrelationLayer, Store};
 
 const DEFAULT_CACHE_CAPACITY: u64 = 10_000;
@@ -96,6 +97,7 @@ impl AppBuilder {
             route: AlwaysDone,
             cache: CacheChoice::Moka(DEFAULT_CACHE_CAPACITY),
             correlation: CorrelationLayer::new(),
+            cookie: KeepCookie,
         }
     }
 }
@@ -120,7 +122,7 @@ impl<U: UserAggregate> CacheChoice<U> {
 ///
 /// The defaults are the ones of [`EventSauceApp`]. Every override is
 /// optional, and the last call on a setting wins.
-pub struct UserAppBuilder<U: UserAggregate, M, R = AlwaysDone> {
+pub struct UserAppBuilder<U: UserAggregate, M, R = AlwaysDone, K = KeepCookie> {
     pool: PgPool,
     event_store: Option<Arc<PostgresEventStore>>,
     login_schema: Option<String>,
@@ -128,9 +130,10 @@ pub struct UserAppBuilder<U: UserAggregate, M, R = AlwaysDone> {
     route: R,
     cache: CacheChoice<U>,
     correlation: CorrelationLayer,
+    cookie: K,
 }
 
-impl<U: UserAggregate, M, R> UserAppBuilder<U, M, R> {
+impl<U: UserAggregate, M, R, K> UserAppBuilder<U, M, R, K> {
     /// Uses `store` as the event store instead of a default one on the pool.
     ///
     /// It is migrated by [`build`](Self::build) like the default one.
@@ -190,7 +193,7 @@ impl<U: UserAggregate, M, R> UserAppBuilder<U, M, R> {
     /// `route` sends their users to the next step, so a login cannot skip a
     /// factor the application forgot.
     #[must_use]
-    pub fn route<R2: Route<U>>(self, route: R2) -> UserAppBuilder<U, M, R2> {
+    pub fn route<R2: Route<U>>(self, route: R2) -> UserAppBuilder<U, M, R2, K> {
         UserAppBuilder {
             pool: self.pool,
             event_store: self.event_store,
@@ -199,11 +202,48 @@ impl<U: UserAggregate, M, R> UserAppBuilder<U, M, R> {
             route,
             cache: self.cache,
             correlation: self.correlation,
+            cookie: self.cookie,
+        }
+    }
+
+    /// Signs the session cookie with `key` instead of keeping the cookie of
+    /// the session layer: a client still reads its session id, but a cookie
+    /// the key did not sign opens no session.
+    ///
+    /// [`App::layer`] then takes a plaintext session layer. Keep `key`
+    /// secret and the same on every instance, or their sessions do not carry
+    /// over.
+    #[must_use]
+    pub fn sign_cookie(self, key: Key) -> UserAppBuilder<U, M, R, SignCookie> {
+        self.with_cookie(SignCookie(key))
+    }
+
+    /// Encrypts the session cookie with `key` instead of keeping the cookie
+    /// of the session layer: a client can neither read its session id nor
+    /// present a cookie the key did not encrypt.
+    ///
+    /// [`App::layer`] then takes a plaintext session layer, and `key` is kept
+    /// as for [`sign_cookie`](Self::sign_cookie).
+    #[must_use]
+    pub fn encrypt_cookie(self, key: Key) -> UserAppBuilder<U, M, R, EncryptCookie> {
+        self.with_cookie(EncryptCookie(key))
+    }
+
+    fn with_cookie<K2>(self, cookie: K2) -> UserAppBuilder<U, M, R, K2> {
+        UserAppBuilder {
+            pool: self.pool,
+            event_store: self.event_store,
+            login_schema: self.login_schema,
+            method: self.method,
+            route: self.route,
+            cache: self.cache,
+            correlation: self.correlation,
+            cookie,
         }
     }
 }
 
-impl<U, M, R> UserAppBuilder<U, M, R>
+impl<U, M, R, K> UserAppBuilder<U, M, R, K>
 where
     U: UserAggregate,
     U::DeletedState: Serialize + DeserializeOwned,
@@ -215,7 +255,7 @@ where
         self,
         store: Arc<S>,
         login_store: Arc<dyn LoginStore>,
-    ) -> App<U, FirstFactor<M, R>, S> {
+    ) -> App<U, FirstFactor<M, R>, S, K> {
         let mut loader = CachedUserLoader::new(store.clone());
         let mut logins = Logins::new(store.clone());
         if let Some(cache) = self.cache.into_cache() {
@@ -229,6 +269,7 @@ where
             first_factor: Arc::new(FirstFactor::new(self.method, self.route)),
             login_store,
             correlation: self.correlation,
+            cookie: self.cookie,
         }
     }
 
@@ -242,7 +283,9 @@ where
     ///
     /// Returns [`BuildError`] when the login schema is invalid or a store
     /// cannot be built or migrated.
-    pub async fn build(self) -> Result<App<U, FirstFactor<M, R>, PostgresEventStore>, BuildError> {
+    pub async fn build(
+        self,
+    ) -> Result<App<U, FirstFactor<M, R>, PostgresEventStore, K>, BuildError> {
         let login_store = match &self.login_schema {
             Some(schema) => PostgresLoginStore::new(self.pool.clone()).with_schema(schema)?,
             None => PostgresLoginStore::new(self.pool.clone()),

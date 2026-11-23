@@ -213,6 +213,12 @@ explicitly rather than gated behind a major version bump.
   `with_private(key)` keeps working with the whole login layer. A plaintext
   session layer still fits unchanged.
 
+- `UserAppBuilder::sign_cookie(key)` and `encrypt_cookie(key)` sign or
+  encrypt the session cookie of the built `App`, whose `layer` then takes a
+  plaintext session layer. `App` and `UserAppBuilder` gain a cookie type
+  parameter defaulting to `KeepCookie`, which keeps the cookie of the
+  session layer as before.
+
 - `Identity<C>` implements `Default` as `Anonymous`, so `#[aggregate(user)]`
   works on an aggregate without an init event.
 

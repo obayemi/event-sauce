@@ -11,7 +11,7 @@ use event_sauce::auth::{AlwaysDone, Argon2Hasher, FirstFactor, Logins, PasswordL
 use event_sauce::axum::{EventSauceApp, Store};
 use event_sauce::postgres::PostgresEventStore;
 use sqlx::PgPool;
-use tower_sessions::{MemoryStore, SessionManagerLayer};
+use tower_sessions::{cookie::Key, MemoryStore, SessionManagerLayer};
 
 use crate::member::Member;
 use crate::projection::Projector;
@@ -62,7 +62,9 @@ fn routes() -> Router<AppState> {
 ///
 /// Sessions live in memory and their cookie is not marked `Secure`, which
 /// suits a local run. Behind TLS, use a shared session store and
-/// `with_secure(true)`.
+/// `with_secure(true)`. The cookie is signed with a key generated at start,
+/// so sessions end with the process: a deployment loads one fixed secret key
+/// shared by every instance instead.
 ///
 /// # Errors
 ///
@@ -72,6 +74,7 @@ pub async fn build(pool: PgPool, hasher: Argon2Hasher) -> anyhow::Result<Service
     let app = EventSauceApp::postgres(pool.clone())
         .user::<Member, _>(PasswordLogin::new(hasher.clone()))
         .event_store(projector.event_store())
+        .sign_cookie(Key::generate())
         .build()
         .await?;
     let state = AppState {

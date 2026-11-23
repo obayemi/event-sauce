@@ -30,7 +30,10 @@
 //!   it is applied to. `ReturnTo`, the same-origin target a form carries back
 //!   after the login, needs no feature.
 //! - With the `app` feature, `EventSauceApp::postgres` builds the whole
-//!   stack, stores, cache, first factor and layers, on one pool.
+//!   stack, stores, cache, first factor and layers, on one pool, and can sign
+//!   or encrypt the session cookie with a key.
+//! - `AuthLayer::layer` and `App::layer` take the application's session
+//!   layer whatever protects its cookie: plaintext, signed or encrypted.
 
 #![deny(missing_docs)]
 #![deny(unnameable_types)]
@@ -54,7 +57,10 @@ mod test_ticket;
 mod unit_of_work;
 
 #[cfg(feature = "app")]
-pub use app::{App, AppBuilder, BuildError, EventSauceApp, UserAppBuilder};
+pub use app::{
+    App, AppBuilder, BuildError, EncryptCookie, EventSauceApp, KeepCookie, SessionCookie,
+    SignCookie, UserAppBuilder,
+};
 pub use correlation::{Correlation, CorrelationLayer, ResponseFuture, DEFAULT_HEADER};
 pub use found::{Found, FoundRejection, PathAggregate};
 pub use http::HeaderName;

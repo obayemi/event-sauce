@@ -4,14 +4,16 @@
 use std::sync::Arc;
 
 use axum::Router;
-use axum_login::tower_sessions::{service::CookieController, SessionManagerLayer, SessionStore};
 use event_sauce_auth::{LoginStore, Logins, PendingLogins, UserAggregate};
+use tower_sessions::{service::CookieController, SessionManagerLayer, SessionStore};
 
 use crate::{AuthLayer, CorrelationLayer, Store};
 
 mod builder;
+mod cookie;
 
 pub use builder::{AppBuilder, BuildError, EventSauceApp, UserAppBuilder};
+pub use cookie::{EncryptCookie, KeepCookie, SessionCookie, SignCookie};
 
 /// A built application: the event store, the authentication layer and the
 /// pieces of a login, wired together.
@@ -22,16 +24,21 @@ pub use builder::{AppBuilder, BuildError, EventSauceApp, UserAppBuilder};
 /// [`first_factor`](Self::first_factor) and the verifiers of the later steps
 /// built from [`login_store`](Self::login_store), and apply
 /// [`layer`](Self::layer) to the router.
-pub struct App<U: UserAggregate, F, S> {
+///
+/// `K` is how [`layer`](Self::layer) protects the session cookie, chosen on
+/// the builder: [`KeepCookie`] by default, [`SignCookie`] or
+/// [`EncryptCookie`] with a key.
+pub struct App<U: UserAggregate, F, S, K = KeepCookie> {
     store: Store<S>,
     auth: AuthLayer<U>,
     logins: Logins<U>,
     first_factor: Arc<F>,
     login_store: Arc<dyn LoginStore>,
     correlation: CorrelationLayer,
+    cookie: K,
 }
 
-impl<U: UserAggregate, F, S> std::fmt::Debug for App<U, F, S> {
+impl<U: UserAggregate, F, S, K> std::fmt::Debug for App<U, F, S, K> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("App")
             .field("correlation", &self.correlation)
@@ -39,7 +46,7 @@ impl<U: UserAggregate, F, S> std::fmt::Debug for App<U, F, S> {
     }
 }
 
-impl<U: UserAggregate, F, S> App<U, F, S> {
+impl<U: UserAggregate, F, S, K> App<U, F, S, K> {
     /// The event store the application runs on.
     #[must_use]
     pub fn store(&self) -> Store<S> {
@@ -77,12 +84,15 @@ impl<U: UserAggregate, F, S> App<U, F, S> {
     /// Applies to `router`, outermost first:
     ///
     /// 1. the [`CorrelationLayer`] on the configured header;
-    /// 2. the `sessions` layer;
+    /// 2. the `sessions` layer, its cookie protected as `K` says;
     /// 3. the `axum-login` authentication layer, through the application's
     ///    [`AuthLayer`].
     ///
-    /// The session store and the session cookie stay the application's
-    /// choice, as with [`AuthLayer::layer`].
+    /// The session store stays the application's choice. With the default
+    /// [`KeepCookie`], so does the session cookie, as with
+    /// [`AuthLayer::layer`]. An app built with a cookie key takes a plaintext
+    /// session layer and protects its cookie with that key, so a session
+    /// layer that already protects its cookie does not compile.
     pub fn layer<St, Sess, C>(
         &self,
         router: Router<St>,
@@ -91,10 +101,11 @@ impl<U: UserAggregate, F, S> App<U, F, S> {
     where
         St: Clone + Send + Sync + 'static,
         Sess: SessionStore + Clone,
-        C: CookieController + Sync,
+        C: CookieController,
+        K: SessionCookie<C>,
     {
         self.auth
-            .layer(router, sessions)
+            .layer(router, self.cookie.protect(sessions))
             .layer(self.correlation.clone())
     }
 }
