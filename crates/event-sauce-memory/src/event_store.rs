@@ -1965,7 +1965,10 @@ mod tests {
                 .unwrap_err();
 
             assert!(err.is_claim_conflict());
-            assert!(store.all_events().is_empty());
+            assert_eq!(
+                store.all_events(),
+                Vec::<event_sauce_core::EventEnvelope>::new()
+            );
         }
 
         #[tokio::test]

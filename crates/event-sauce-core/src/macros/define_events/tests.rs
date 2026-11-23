@@ -2362,7 +2362,7 @@ mod encrypted_fields_tests {
             visit_count: 2,
             timestamp: Utc::now(),
         };
-        assert!(event.encrypted_fields().is_empty());
+        assert_eq!(event.encrypted_fields(), [""; 0]);
     }
 
     #[test]
@@ -2422,7 +2422,7 @@ mod encrypted_fields_tests {
             value: 42,
             timestamp: Utc::now(),
         };
-        assert!(event.encrypted_fields().is_empty());
+        assert_eq!(event.encrypted_fields(), [""; 0]);
     }
 }
 
@@ -2710,7 +2710,7 @@ mod delete_tests {
         };
         let deleted = event.delete(account);
         assert!(!deleted.active);
-        assert!(deleted.name.is_empty());
+        assert_eq!(deleted.name, "");
     }
 
     // --- EventApplicator tests ---
@@ -2819,7 +2819,7 @@ mod delete_tests {
             .apply_delete_with_actor(event, admin.entity_id())
             .unwrap();
         assert!(!deleted.active);
-        assert!(deleted.name.is_empty());
+        assert_eq!(deleted.name, "");
     }
 
     #[test]
@@ -2876,7 +2876,7 @@ mod delete_tests {
             .admin_delete_account(&admin, "policy".to_string())
             .unwrap();
         assert!(!deleted.active);
-        assert!(deleted.name.is_empty());
+        assert_eq!(deleted.name, "");
     }
 
     #[test]

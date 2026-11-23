@@ -287,7 +287,7 @@ fn without_the_user_flag_nothing_is_added_unless_claims_are_declared() {
 #[test]
 fn claims_alone_forward_to_the_aggregates_own_claims() {
     let (user_impl, claims) = expansion(false, true, &quote! { #[id] id: EntityId }).unwrap();
-    assert!(user_impl.is_empty());
+    assert_eq!(user_impl, "");
     assert_eq!(
         claims,
         "fnclaims(&self)->Vec<::core_crate::AggregateClaim>{self.aggregate_claims()}"

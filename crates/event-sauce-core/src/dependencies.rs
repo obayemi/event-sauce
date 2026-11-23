@@ -662,7 +662,7 @@ mod tests {
             .await
             .expect("a mismatched key is not an error");
 
-        assert!(roots.is_empty());
+        assert_eq!(roots, Vec::<EntityId>::new());
     }
 
     // ---- the key-clash guard ------------------------------------------------

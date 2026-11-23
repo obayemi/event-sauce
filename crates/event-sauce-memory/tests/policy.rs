@@ -13,7 +13,7 @@ use event_sauce_core::{
 };
 use event_sauce_memory::{InMemoryCheckpointStore, InMemoryEventStore};
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicIsize, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 // ============================================================================
@@ -2090,7 +2090,7 @@ async fn test_skip_with_commit_before_fail_does_not_leak_events() {
 /// `ConcurrencyConflict`, simulating a flush that races another writer.
 struct FlakyBatchStore<S> {
     inner: Arc<S>,
-    fail_times: AtomicUsize,
+    fail_times: AtomicIsize,
 }
 
 #[async_trait::async_trait]
@@ -2113,13 +2113,7 @@ impl<S: EventStore + 'static> EventStore for FlakyBatchStore<S> {
     }
 
     async fn append_batch(&self, commits: Vec<StreamCommit>) -> Result<()> {
-        if self
-            .fail_times
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
-                (n > 0).then(|| n - 1)
-            })
-            .is_ok()
-        {
+        if self.fail_times.fetch_sub(1, Ordering::SeqCst) > 0 {
             let version = AggregateVersion::initial();
             return Err(Error::concurrency_conflict(version, version));
         }
@@ -2161,7 +2155,7 @@ async fn test_on_error_retry_retries_a_conflicting_flush() {
 
     let flaky = Arc::new(FlakyBatchStore {
         inner: Arc::clone(&inner),
-        fail_times: AtomicUsize::new(1),
+        fail_times: AtomicIsize::new(1),
     });
 
     struct FlushConflictPolicy(Arc<AtomicUsize>);
