@@ -133,3 +133,21 @@ fn the_layer_installed_in_the_request_decides() {
         location("/login?return_to=%2Fa")
     );
 }
+
+#[test]
+#[should_panic(expected = "unreserved")]
+fn a_parameter_name_with_a_control_character_is_refused() {
+    let _ = LoginRedirect::to(LOGIN).param("next\n");
+}
+
+#[test]
+#[should_panic(expected = "unreserved")]
+fn a_parameter_name_with_a_reserved_character_is_refused() {
+    let _ = LoginRedirect::to(LOGIN).param("a&b");
+}
+
+#[test]
+#[should_panic(expected = "unreserved")]
+fn an_empty_parameter_name_is_refused() {
+    let _ = LoginRedirect::to(LOGIN).param("");
+}

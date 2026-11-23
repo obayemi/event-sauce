@@ -18,11 +18,15 @@ const UNRESERVED: &AsciiSet = &NON_ALPHANUMERIC
     .remove(b'_')
     .remove(b'~');
 
+fn is_unreserved(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~')
+}
+
 /// A layer that sends a browser that is not logged in to the login page.
 ///
 /// Apply it to the router of the HTML pages. The extractors of the login
-/// session, [`CurrentUser`](crate::CurrentUser), [`Registered`](crate::Registered)
-/// and [`Authorized`](crate::Authorized), then answer a request nobody is
+/// session, [`CurrentUser`](crate::CurrentUser), [`Registered`](crate::Registered),
+/// [`Authorized`](crate::Authorized) and [`Acting`](crate::Acting), then answer a request nobody is
 /// logged in for with a `303 See Other` to `{login}?{param}={original path
 /// and query}`, percent-encoded, instead of `401`. A router without the layer,
 /// a JSON API next to the pages for instance, keeps answering `401` and `403`
@@ -76,8 +80,19 @@ impl LoginRedirect {
 
     /// Names the query parameter that carries the page the request came from,
     /// `return_to` by default.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `name` is empty or holds a byte other than an unreserved
+    /// one (`A-Z a-z 0-9 - . _ ~`), because the name is written unencoded in
+    /// the `Location` header. The name is configuration, so it fails once,
+    /// when the router is built.
     #[must_use]
     pub fn param(self, name: &'static str) -> Self {
+        assert!(
+            !name.is_empty() && name.bytes().all(is_unreserved),
+            "a query parameter name holds only unreserved bytes"
+        );
         Self {
             param: name,
             ..self
@@ -111,7 +126,8 @@ impl LoginRedirect {
             self.param,
             utf8_percent_encode(from, UNRESERVED)
         );
-        HeaderValue::try_from(location).expect("a return target holds no control character")
+        HeaderValue::try_from(location)
+            .expect("an unreserved parameter name and an encoded target make a valid header")
     }
 
     pub(crate) fn refuse(&self, parts: &Parts, rejection: AuthRejection) -> AuthRejection {
@@ -120,12 +136,9 @@ impl LoginRedirect {
             AuthRejection::Forbidden => self.register.as_ref(),
             AuthRejection::MissingLayer | AuthRejection::Redirect { .. } => None,
         };
-        match page {
-            Some(page) => AuthRejection::Redirect {
-                location: self.location(page, parts),
-            },
-            None => rejection,
-        }
+        page.map_or(rejection, |page| AuthRejection::Redirect {
+            location: self.location(page, parts),
+        })
     }
 }
 

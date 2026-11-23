@@ -490,13 +490,15 @@ let app = Router::new().nest("/app", pages).nest("/api", api);
 
 | Extractor under `LoginRedirect` | Situation | Answer |
 |---|---|---|
-| `CurrentUser`, `Registered`, `Authorized` | nobody logged in | `303` to `/login?return_to=` and the page asked for, percent-encoded |
+| `CurrentUser`, `Registered`, `Authorized`, `Acting` | nobody logged in | `303` to `/login?return_to=` and the page asked for, percent-encoded |
 | `Registered`, `Authorized` with `REGISTERED` | anonymous identity | `303` to the `register_at` page with the same parameter, `403` when unset |
 | any | `AuthLayer` missing | `500`, never a redirect |
 | `MaybeUser` | any | never rejects for a missing user |
 
 The router without the layer, the JSON API above, keeps its `401` and `403` on
-the same `AuthLayer`. `.param("redirect_url")` renames the query parameter.
+the same `AuthLayer`. `.param("redirect_url")` renames the query parameter; a
+name that is empty or holds a byte other than `A-Z a-z 0-9 - . _ ~` panics when
+the router is built.
 The page asked for is axum's `OriginalUri`, because `nest` strips the mount
 prefix: a visitor of `/app/notes?x=1` is sent to
 `/login?return_to=%2Fapp%2Fnotes%3Fx%3D1`. An htmx app that needs
