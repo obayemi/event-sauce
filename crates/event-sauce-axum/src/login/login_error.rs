@@ -3,7 +3,9 @@
 use std::error::Error as StdError;
 
 use axum::response::{IntoResponse, Response};
-use event_sauce_auth::{AuthError, FinishError, PendingLoginError, Rejected, ResumeError};
+use event_sauce_auth::{
+    AuthError, EmailError, FinishError, PendingLoginError, Rejected, ResumeError,
+};
 use http::{header::SET_COOKIE, StatusCode};
 
 use crate::diagnostics;
@@ -31,7 +33,7 @@ enum LoginFailure {
 ///
 /// | Source | Answer |
 /// |---|---|
-/// | `AuthError::{InvalidCredentials, Inactive, Unknown}`, `Rejected::Mismatch`, `FinishError::{Inactive, CredentialsChanged}`, `ResumeError::{NotInProgress, Inactive, CredentialsChanged}`, [`LoginError::refused`] | `401` |
+/// | `AuthError::{InvalidCredentials, Inactive, Unknown}`, `EmailError`, `Rejected::Mismatch`, `FinishError::{Inactive, CredentialsChanged}`, `ResumeError::{NotInProgress, Inactive, CredentialsChanged}`, [`LoginError::refused`] | `401` |
 /// | every other `AuthError`, `Rejected`, `FinishError` and `ResumeError`, `PendingLoginError`, [`SessionError`] | `500` |
 ///
 /// An application that handles `AuthError::Unknown` itself, to sign the user
@@ -116,6 +118,12 @@ impl From<ResumeError> for LoginError {
             ResumeError::Store(error) => Self::unavailable(error),
             ResumeError::Pending(error) => Self::unavailable(error),
         }
+    }
+}
+
+impl From<EmailError> for LoginError {
+    fn from(_: EmailError) -> Self {
+        Self::refused()
     }
 }
 

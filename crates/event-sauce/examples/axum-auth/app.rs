@@ -77,7 +77,7 @@ async fn login(
     State(state): State<AppState>,
     Json(form): Json<LoginForm>,
 ) -> Result<LoginStep, LoginError> {
-    let email = Email::parse(&form.email).map_err(|_| LoginError::refused())?;
+    let email = Email::parse(&form.email)?;
     let attempt = PasswordAttempt::new(email, SecretString::from(form.password));
     let login = state.logins.begin(&state.first, attempt).await?;
     auth.finish(login).await

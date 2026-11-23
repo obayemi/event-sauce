@@ -3,7 +3,8 @@ use std::error::Error as _;
 use axum::response::{IntoResponse, Response};
 use axum_login::tower_sessions::session_store;
 use event_sauce_auth::{
-    AuthError, FinishError, HashError, LoginStoreError, PendingLoginError, Rejected, ResumeError,
+    AuthError, Email, FinishError, HashError, LoginId, LoginStoreError, PendingLoginError,
+    Rejected, ResumeError,
 };
 use event_sauce_core::Error;
 use http::{header::SET_COOKIE, StatusCode};
@@ -45,6 +46,7 @@ fn refusals() -> Vec<LoginError> {
         ResumeError::NotInProgress.into(),
         ResumeError::Inactive.into(),
         ResumeError::CredentialsChanged.into(),
+        Email::parse("not-an-email").unwrap_err().into(),
         LoginError::refused(),
     ]
 }

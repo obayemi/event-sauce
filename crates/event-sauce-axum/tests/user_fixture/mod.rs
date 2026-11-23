@@ -305,7 +305,7 @@ pub async fn login(
     State(flow): State<Flow>,
     Json(form): Json<LoginForm>,
 ) -> Result<LoginStep, LoginError> {
-    let email = Email::parse(&form.email).map_err(|_| LoginError::refused())?;
+    let email = Email::parse(&form.email)?;
     let attempt = PasswordAttempt::new(email, SecretString::from(form.password));
     match flow.logins.begin(&flow.first, attempt).await? {
         AfterPassword::Done(login) => auth.finish(login).await,

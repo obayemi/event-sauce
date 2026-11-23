@@ -59,7 +59,7 @@ pub async fn login(
     State(first): State<Arc<Factor>>,
     Json(form): Json<LoginForm>,
 ) -> Result<LoginStep, LoginError> {
-    let email = Email::parse(&form.email).map_err(|_| LoginError::refused())?;
+    let email = Email::parse(&form.email)?;
     let attempt = PasswordAttempt::new(email, SecretString::from(form.password));
     let login = logins.begin(&first, attempt).await?;
     auth.finish(login).await

@@ -353,7 +353,7 @@ async fn login(
     State(app): State<AppState>,
     Json(form): Json<LoginForm>,
 ) -> Result<LoginStep, LoginError> {
-    let email = Email::parse(&form.email).map_err(|_| LoginError::refused())?;
+    let email = Email::parse(&form.email)?;
     let attempt = PasswordAttempt::new(email, form.password.into());
     let login = app.logins.begin(&app.first, attempt).await?;
     auth.finish(login).await
@@ -385,7 +385,7 @@ A flow that signs a user up and logs them in at once uses
 
 | Failure | Status | Body | Pending cookie |
 |---|---|---|---|
-| a refusal: invalid credentials, an inactive or unknown user, a mismatch, a login not in progress, credentials changed during the login, or `LoginError::refused()` | `401` | `login refused` | cleared |
+| a refusal: invalid credentials, an inactive or unknown user, a malformed email, a mismatch, a login not in progress, credentials changed during the login, or `LoginError::refused()` | `401` | `login refused` | cleared |
 | an outage: a user store, login store, hasher, verifier or session failure | `500` | `internal error` | untouched |
 
 Every refusal answers the same bytes, so a client cannot tell an unknown
@@ -393,8 +393,8 @@ email from a wrong password or an inactive account. A `500` leaves the
 pending cookie alone: when the store failed before the pending login was
 taken, it is still there to retry, and when it failed after, the next
 attempt is refused and clears it. `LoginError::refused()` is for a refusal
-the application decides itself, such as a malformed email. `SessionError`
-answers a `500` on its own, for `logout` and `renew`.
+the application decides itself; a malformed `Email` converts into it with
+`?`. `SessionError` answers a `500` on its own, for `logout` and `renew`.
 
 An application that signs unknown users up, as in the federated flow of the
 [auth guide](auth.md), matches `AuthError::Unknown { attempt }` before the
@@ -523,7 +523,7 @@ async fn page_login(
     Query(query): Query<LoginQuery>,
     Json(form): Json<LoginForm>,
 ) -> Result<(LoginStep, ReturnTo), LoginError> {
-    let email = Email::parse(&form.email).map_err(|_| LoginError::refused())?;
+    let email = Email::parse(&form.email)?;
     let attempt = PasswordAttempt::new(email, form.password.into());
     let login = app.logins.begin(&app.first, attempt).await?;
     Ok((auth.finish(login).await?, query.return_to))
