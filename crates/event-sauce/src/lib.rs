@@ -124,7 +124,8 @@ pub mod auth {
 /// axum and tower integration: the correlation layer, the `Store`, `Repo` and
 /// `UnitOfWork` extractors, the `StoreError` response, and, behind
 /// `axum-login` and `axum-app`, the login session, the `LoginStep` and `LoginError`
-/// responses and the application builder.
+/// responses, the `LoginRedirect` layer and the application builder. `ReturnTo`, a
+/// same-origin redirect target, needs no feature beyond `axum`.
 #[cfg(feature = "axum")]
 pub mod axum {
     pub use event_sauce_axum::*;

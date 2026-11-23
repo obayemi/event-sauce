@@ -6,8 +6,8 @@ and second-factor builder stage that the earlier steps shipped with the
 typestate logins of sections 3.4, 3.6, 4.2 and 4.4. Step 18 sealed the
 session behind `AuthSession<U>`. Step 19 added the error responses of
 helper 1 and step 20 the login-step glue of helper 2 and step 21 the path loading of
-helper 3 (section 4.5). Steps 22 and 23, the other two HTTP helpers of
-section 4.5, are **proposed** and not built yet. Where the code
+helper 3 and step 22 the login redirect of helper 4 (section 4.5). Step 23, the last HTTP helper of
+section 4.5, is **proposed** and not built yet. Where the code
 below describe the code. Supersedes the
 "extract `event-sauce-auth` from saxy-p" plan in saxy-p's `PLAN.md`.
 
@@ -1367,9 +1367,9 @@ backend is crate-private, so `App` exposes neither it nor its type, and
 its `Debug` prints only the correlation layer. `App` is not `Clone` and has
 no public field, so nothing else of it reaches the backend.
 
-### 4.5 HTTP helpers (helpers 1 to 3 implemented, steps 22 and 23 proposed)
+### 4.5 HTTP helpers (helpers 1 to 4 implemented, step 23 proposed)
 
-Status: helpers 1 to 3 are **implemented** (steps 19 to 21), helpers 4 and 5 are **proposed**, not built. The two examples and saxy-p repeat the same
+Status: helpers 1 to 4 are **implemented** (steps 19 to 22), helper 5 is **proposed**, not built. The two examples and saxy-p repeat the same
 HTTP glue around the crate: mapping store and login errors to statuses,
 answering a login step, loading the aggregate a path names and checking who
 may see it, redirecting a browser to the login page, and building a command
@@ -1396,7 +1396,7 @@ has to be audited, and that is not clearly simpler.
 | 1 | `StoreError`, `Split`, `SplitDomain`, `DeletedStatus`; `LoginError`, `SessionError: IntoResponse` | none; `login` for the login part | every app's own error-to-status table, and the 401s that hide outages |
 | 2 | `AuthSession::finish`, `PendingLogin::hold`, `LoginStep` | `login` | the open/hold/refused glue of every login handler |
 | 3 | `Found<A, S>`, `PathAggregate`; `Authorized<A, P, S>`, `Access<A>` (implemented) | none; `login` for `Authorized` | `Path` + `load` + owner check in each handler, saxy-p's load guards |
-| 4 | `LoginRedirect`, `AuthRejection::Redirect`, `ReturnTo` | `login`; `ReturnTo` needs none | saxy-p's `require_user`, `login_redirect`, `original_uri`, `SafeRedirect` |
+| 4 | `LoginRedirect`, `AuthRejection::Redirect`, `ReturnTo` (implemented) | `login`; `ReturnTo` needs none | saxy-p's `require_user`, `login_redirect`, `original_uri`, `SafeRedirect` |
 | 5 | `Acting<Ctx>`, `FromUser` | `login` | saxy-p's `Acting` and its second actor load |
 
 #### Helper 1: error responses (implemented)
@@ -1833,7 +1833,7 @@ Tests:
   E0594; `authorize_without_access.rs`, `Authorized<Note, Owner, S>` where
   `Owner` implements `Access<Member>` only, is E0277.
 
-#### Helper 4: login redirect for HTML apps
+#### Helper 4: login redirect for HTML apps (implemented)
 
 ```rust
 /// Sends a browser that is not logged in to the login page, keeping where it was going.
@@ -1864,6 +1864,7 @@ impl ReturnTo {
     pub fn redirect(&self) -> Redirect;                  // 303
 }
 impl Default for ReturnTo;          // root
+impl fmt::Display for ReturnTo;     // the path
 impl<'de> Deserialize<'de> for ReturnTo; // any string; a target that is not local becomes root
 impl IntoResponse for ReturnTo;     // 303 to it
 ```
@@ -1909,6 +1910,16 @@ Decisions on the open points:
 After the login, an HTML handler answers
 `Ok((auth.finish(login).await?, form.return_to.redirect()))`, which keeps
 the cookie of helper 2.
+
+As built: `ReturnTo` holds a `Cow<'static, str>`, so `from_static` is a `const fn`
+that panics (at compile time in a `const`) with "not a local path"; its
+validator is one `const fn` over the bytes, which also refuses the C1 controls
+(`U+0080` to `U+009F`) that `char::is_control` refuses, a property test checks
+it against `parse`. `LoginRedirect::refuse` is crate-private; `CurrentUser`,
+`Registered` and `Authorized` call it on the rejection they would have
+answered, `Authorized` only after the session check, so `MissingLayer` is
+never redirected. The tests use `proptest` and `serde_urlencoded` as
+dev-dependencies and axum's `query` feature in the HTTP test.
 
 Code this deletes: nothing in the examples, which are JSON APIs. In saxy-p:
 `original_uri`, `login_redirect`, `require_user`, `require_registered_user`
@@ -2001,7 +2012,7 @@ Tests:
 | `event-sauce-macros` | `user` flag, `#[user(identity)]`/`#[user(active)]` field attributes, `Credentials::claims()` merged into `claims()` |
 | `event-sauce` facade | features `auth` (plus `auth-postgres`, `auth-moka`, `auth-redis`, `auth-reset`, `auth-totp`) and `axum` (plus `axum-login`, `axum-app`), all in `full`, re-exported as `event_sauce::auth` and `event_sauce::axum` |
 | `.github/workflows/ci.yml` | new `feature-matrix-auth-axum` job that lints each feature of `event-sauce-auth`, `event-sauce-axum` and the facade alone |
-| `event-sauce-axum` (steps 19 to 21 implemented, steps 22 and 23 proposed) | the helpers of section 4.5; the `login` feature also turns on `axum/original-uri` and adds `percent-encoding`, already in the tree through `axum` |
+| `event-sauce-axum` (steps 19 to 22 implemented, step 23 proposed) | the helpers of section 4.5; the `login` feature also turns on `axum/original-uri` and adds `percent-encoding`, already in the tree through `axum` |
 
 ## 6. Migrating saxy-p
 
@@ -2239,7 +2250,7 @@ it in the type system (section 4.2) and deletes what it supersedes:
     `axum-login` session record, `renew` during a concurrent credential
     change, and an application's own `AuthnBackend`.
 
-Helpers 1 to 3 of section 4.5 (steps 19 to 21) are built, the other two are proposed.
+Helpers 1 to 4 of section 4.5 (steps 19 to 22) are built, the last is proposed.
 Each step is its
 own commit in `event-sauce-axum`, test first (the unit, HTTP and trybuild
 cases its helper lists, seen failing for the right reason before the code),
@@ -2274,7 +2285,7 @@ with `CurrentUser`.
     (`login`). Moves `read` of `axum-crud` onto `Authorized` with an `Owner`
     policy and `tests/extractors.rs`'s `ticket_title` onto `Found`; adds a
     "Loading What the Path Names" section to `docs/axum.md`.
-22. `ReturnTo` (no feature), then `LoginRedirect` and
+22. Implemented. `ReturnTo` (no feature), then `LoginRedirect` and
     `AuthRejection::Redirect` (`login`, which turns on `axum/original-uri`
     and adds `percent-encoding`). `AuthRejection` loses `Copy` and
     `status` takes `&self`. Adds an "HTML Apps" section to `docs/axum.md`.

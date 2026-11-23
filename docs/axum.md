@@ -19,6 +19,7 @@ methods, typestate logins) is in the [auth guide](auth.md).
   - [Logging In and Out](#logging-in-and-out)
   - [Refusing a Login](#refusing-a-login)
   - [Guarding Routes](#guarding-routes)
+  - [HTML Apps: Redirecting to the Login Page](#html-apps-redirecting-to-the-login-page)
   - [Logins With Several Steps](#logins-with-several-steps)
   - [Sessions End When Credentials Change](#sessions-end-when-credentials-change)
 - [The App Builder](#the-app-builder)
@@ -43,6 +44,9 @@ methods, typestate logins) is in the [auth guide](auth.md).
   only, and **`Authorized`** also checks that the current user may reach it.
 - **`StoreError`** and **`LoginError`** answer the failures of a store and of a
   login with the right status and no detail.
+- **`LoginRedirect`** sends a browser that is not logged in to the login page
+  with the page it asked for, and **`ReturnTo`** is the same-origin target a
+  form carries back after the login.
 - **`EventSauceApp::postgres`** builds all of the above on one `PgPool`.
 
 ## Installation
@@ -402,9 +406,9 @@ to find the session `AuthLayer` installed:
 
 | Extractor | Yields | Rejection |
 |---|---|---|
-| `CurrentUser<U>` | the logged-in `AggregateRoot<U>` (via `Deref`) | `401` |
+| `CurrentUser<U>` | the logged-in `AggregateRoot<U>` (via `Deref`) | `401`, or `303` under `LoginRedirect` |
 | `MaybeUser<U>` | `Option` of the same | none, but `500` when the auth layer is missing |
-| `Registered<U>` | like `CurrentUser`, only when the identity is `Registered` | `401`, or `403` for an anonymous identity |
+| `Registered<U>` | like `CurrentUser`, only when the identity is `Registered` | `401`, or `403` for an anonymous identity (`303` under `LoginRedirect`) |
 
 ```rust
 async fn me(member: CurrentUser<Member>) -> String {
@@ -417,6 +421,66 @@ request does exactly one user load, or none on a cache hit. The yielded user
 is an `AggregateRoot<U>`, so it passes straight to `@actor(U)` commands.
 
 A missing `AuthLayer` is a wiring error, answered with `500`.
+
+### HTML Apps: Redirecting to the Login Page
+
+A browser that is not logged in expects the login page, not a bare `401`.
+`LoginRedirect` is a layer: apply it to the router of the pages and the
+extractors above answer with a `303 See Other` instead.
+
+```rust
+use event_sauce::axum::{LoginRedirect, ReturnTo};
+
+let pages = Router::new()
+    .route("/notes", get(notes))
+    .layer(
+        LoginRedirect::to(ReturnTo::from_static("/login"))
+            .register_at(ReturnTo::from_static("/register")),
+    );
+let app = Router::new().nest("/app", pages).nest("/api", api);
+```
+
+| Extractor under `LoginRedirect` | Situation | Answer |
+|---|---|---|
+| `CurrentUser`, `Registered`, `Authorized` | nobody logged in | `303` to `/login?return_to=` and the page asked for, percent-encoded |
+| `Registered`, `Authorized` with `REGISTERED` | anonymous identity | `303` to the `register_at` page with the same parameter, `403` when unset |
+| any | `AuthLayer` missing | `500`, never a redirect |
+| `MaybeUser` | any | never rejects for a missing user |
+
+The router without the layer, the JSON API above, keeps its `401` and `403` on
+the same `AuthLayer`. `.param("redirect_url")` renames the query parameter.
+The page asked for is axum's `OriginalUri`, because `nest` strips the mount
+prefix: a visitor of `/app/notes?x=1` is sent to
+`/login?return_to=%2Fapp%2Fnotes%3Fx%3D1`. An htmx app that needs
+`HX-Redirect` maps `AuthRejection::Redirect { location }` in its own error.
+
+After the login, the form carries the target back as a `ReturnTo`, a
+same-origin path that starts with `/` but not `//` and holds no `\` and no
+control character (browsers read `/\host` and `/<TAB>/host` as `//host`).
+`ReturnTo` deserializes leniently, a target that is not local, like an absent
+one, is `/`, so a forged value never fails the form and never leaves the
+site; `ReturnTo::parse` is the strict check. The cookie of the `LoginStep`
+stays in the answer:
+
+```rust
+#[derive(Deserialize)]
+struct LoginQuery {
+    #[serde(default)]
+    return_to: ReturnTo,
+}
+
+async fn page_login(
+    mut auth: AuthSession<Member>,
+    State(app): State<AppState>,
+    Query(query): Query<LoginQuery>,
+    Json(form): Json<LoginForm>,
+) -> Result<(LoginStep, ReturnTo), LoginError> {
+    let email = Email::parse(&form.email).map_err(|_| LoginError::refused())?;
+    let attempt = PasswordAttempt::new(email, form.password.into());
+    let login = app.logins.begin(&app.first, attempt).await?;
+    Ok((auth.finish(login).await?, query.return_to))
+}
+```
 
 ### Logins With Several Steps
 
@@ -583,7 +647,7 @@ Postgres container, so they need Docker.
 | `event-sauce-axum` feature | Facade feature | Adds |
 |---|---|---|
 | `tracing` (default) | `axum` | the `request` tracing span |
-| `login` (default) | `axum-login` | `AuthLayer`, `AuthSession`, `PendingLogin`, `LoginStep`, `LoginError`, `Authorized`, user extractors |
+| `login` (default) | `axum-login` | `AuthLayer`, `AuthSession`, `PendingLogin`, `LoginStep`, `LoginError`, `LoginRedirect`, `Authorized`, user extractors |
 | `app` (default) | `axum-app` | `EventSauceApp` and the Postgres defaults |
 
 Through the facade, `tracing` comes with `axum`. `app` implies `login`, the
@@ -621,6 +685,9 @@ let response = router.clone().oneshot(request).await?;
    rather than `Path` and `load`, and keep `Repo` for the writes.
    `Authorized` hides a foreign aggregate as `404` unless its policy says
    otherwise.
+7. **Put `LoginRedirect` on the routes of the pages only**, so a JSON API next
+   to them keeps its `401`, and take the target after the login as a
+   `ReturnTo`, never as a `String`.
 
 ## Related Documentation
 

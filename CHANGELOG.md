@@ -348,6 +348,24 @@ explicitly rather than gated behind a major version bump.
   `Access::DENIED = DeniedStatus::Forbidden`. The `read` route of `axum-crud`
   and the `ticket_title` handler of the extractor tests move onto them.
 
+- Login redirect in `event-sauce-axum`. `LoginRedirect::to(ReturnTo)` is a
+  layer for the router of an HTML app: under it `CurrentUser`, `Registered` and
+  `Authorized` answer a request nobody is logged in for with a `303` to
+  `{login}?return_to={original path and query}` (percent-encoded; `.param(..)`
+  renames the parameter) instead of `401`, and an anonymous identity where a
+  registered one is required with a `303` to `.register_at(..)` when set. The
+  page asked for is axum's `OriginalUri`, so a nested router keeps its prefix.
+  A router without the layer, a JSON API next to the pages, keeps `401` and
+  `403` on the same `AuthLayer`; `MaybeUser` and a missing `AuthLayer` are
+  never redirected. Configuration lives on the router, so the seal of the
+  session is untouched. `ReturnTo` (no feature) validates a same-origin path:
+  it starts with `/` but not `//` and holds no `\` and no control character,
+  and deserializes leniently (a target that is not local is `/`). A login form
+  answers `(auth.finish(login).await?, return_to)` to keep the cookie.
+  `AuthRejection` gains `Redirect { location }` and loses `Copy`, `status`
+  takes `&self`; the `login` feature turns on `axum/original-uri` and adds
+  `percent-encoding`, already in the tree.
+
 - Facade features `auth`, `auth-postgres`, `auth-moka`, `auth-redis`,
   `auth-reset` and `auth-totp` re-export `event-sauce-auth` as
   `event_sauce::auth`, and `axum`, `axum-login` and `axum-app` re-export

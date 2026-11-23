@@ -22,6 +22,9 @@
 //!   answering a `LoginStep`, and `CurrentUser`, `MaybeUser` and `Registered`
 //!   hand the logged-in user to handlers. `LoginError` answers every refusal of a
 //!   login with the same `401` and every outage with a `500`.
+//! - `LoginRedirect` sends a browser that is not logged in to the login page
+//!   with the page it asked for, on the routes it is applied to, and
+//!   `ReturnTo` is the same-origin target a form carries back after the login.
 //! - With the `app` feature, `EventSauceApp::postgres` builds the whole
 //!   stack, stores, cache, first factor and layers, on one pool.
 
@@ -39,6 +42,7 @@ mod found;
 mod login;
 mod repo;
 mod request_id;
+mod return_to;
 mod store;
 mod store_error;
 #[cfg(test)]
@@ -53,10 +57,12 @@ pub use http::HeaderName;
 #[cfg(feature = "login")]
 pub use login::{
     Access, AccessRejection, AuthLayer, AuthRejection, AuthSession, Authorized, CurrentUser,
-    DeniedStatus, LoginError, LoginStep, MaybeUser, PendingLogin, Registered, SessionError,
+    DeniedStatus, LoginError, LoginRedirect, LoginStep, MaybeUser, PendingLogin, Registered,
+    SessionError,
 };
 pub use repo::Repo;
 pub use request_id::RequestId;
+pub use return_to::ReturnTo;
 pub use store::Store;
 pub use store_error::{DeletedStatus, Split, SplitDomain, StoreError, StoreFailure};
 pub use unit_of_work::UnitOfWork;

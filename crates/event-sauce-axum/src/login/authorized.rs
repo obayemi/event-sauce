@@ -14,6 +14,7 @@ use http::StatusCode;
 
 use crate::found::load_path;
 use crate::login::auth_session::session_user;
+use crate::login::redirect::refuse;
 use crate::{AuthRejection, DeletedStatus, Found, FoundRejection, PathAggregate, Store};
 
 #[cfg(test)]
@@ -92,15 +93,16 @@ impl IntoResponse for AccessRejection {
 }
 
 fn admit<A, P>(
+    parts: &Parts,
     user: Option<Arc<AggregateRoot<P::User>>>,
 ) -> Result<Arc<AggregateRoot<P::User>>, AccessRejection>
 where
     A: Aggregate,
     P: Access<A>,
 {
-    let user = user.ok_or(AuthRejection::Unauthenticated)?;
+    let user = user.ok_or_else(|| refuse(parts, AuthRejection::Unauthenticated))?;
     if P::REGISTERED && user.identity().credentials().is_none() {
-        return Err(AuthRejection::Forbidden.into());
+        return Err(refuse(parts, AuthRejection::Forbidden).into());
     }
     Ok(user)
 }
@@ -138,8 +140,8 @@ where
 ///
 /// | Check | Failure | Status |
 /// |---|---|---|
-/// | somebody is logged in | nobody | `401` |
-/// | [`Access::REGISTERED`] and the user is registered | anonymous | `403` |
+/// | somebody is logged in | nobody | `401`, or a `303` under a [`LoginRedirect`](crate::LoginRedirect) |
+/// | [`Access::REGISTERED`] and the user is registered | anonymous | `403`, or a `303` to the registration page |
 /// | the path parameter of [`PathAggregate::PARAM`] | missing, not an id | `500`, `400` |
 /// | the aggregate loads | missing, deleted | `404`, or [`PathAggregate::DELETED`] for a deleted one when the policy denies with `403` |
 /// | [`Access::allows`] | no | [`Access::DENIED`]: `404` or `403` |
@@ -215,7 +217,7 @@ where
     type Rejection = AccessRejection;
 
     async fn from_request_parts(parts: &mut Parts, state: &St) -> Result<Self, AccessRejection> {
-        let user = admit::<A, P>(session_user::<P::User>(parts)?)?;
+        let user = admit::<A, P>(parts, session_user::<P::User>(parts)?)?;
         let root = load_path::<St, A, S>(parts, state, deleted_status::<A, P>(A::DELETED)).await?;
         permit::<A, P>(&root, &user)?;
         Ok(Self {

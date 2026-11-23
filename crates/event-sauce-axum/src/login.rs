@@ -10,6 +10,7 @@ mod current_user;
 mod login_error;
 mod login_step;
 mod pending;
+mod redirect;
 mod rejection;
 mod session_user;
 #[cfg(test)]
@@ -22,5 +23,6 @@ pub use current_user::{CurrentUser, MaybeUser, Registered};
 pub use login_error::LoginError;
 pub use login_step::LoginStep;
 pub use pending::PendingLogin;
+pub use redirect::LoginRedirect;
 pub use rejection::AuthRejection;
 pub(crate) use session_user::SessionUser;

@@ -14,8 +14,11 @@ use std::{
 
 use async_trait::async_trait;
 use axum::{
-    extract::{FromRef, State},
-    http::{header::SET_COOKIE, StatusCode},
+    extract::{FromRef, Query, State},
+    http::{
+        header::{LOCATION, SET_COOKIE},
+        StatusCode,
+    },
     routing::{get, post},
     Json, Router,
 };
@@ -25,7 +28,8 @@ use event_sauce_auth::{
     MokaUserCache, PasswordLogin, UserCache,
 };
 use event_sauce_axum::{
-    AuthLayer, AuthSession, Authorized, CurrentUser, MaybeUser, PendingLogin, Registered, Store,
+    AuthLayer, AuthSession, Authorized, CurrentUser, LoginError, LoginRedirect, LoginStep,
+    MaybeUser, PendingLogin, Registered, ReturnTo, Store,
 };
 use event_sauce_core::{AggregateRoot, EntityId, EventStore, Repository};
 use event_sauce_memory::InMemoryEventStore;
@@ -34,7 +38,7 @@ use serde::Deserialize;
 use support::Client;
 use tower_sessions::{MemoryStore, SessionManagerLayer};
 use user_fixture::{
-    change_password, cheap_hasher, login_routes, register, CodeIfEnrolled, Flow, User,
+    change_password, cheap_hasher, login_routes, register, CodeIfEnrolled, Flow, LoginForm, User,
     UserCommands, ADA, CODE, MAIL_CODE, PASSWORD,
 };
 
@@ -204,6 +208,7 @@ impl World {
             .route("/notes/{id}", get(note))
             .route("/notes/{id}/strict", get(strict_note))
             .route("/notes/{id}/registered", get(registered_note))
+            .nest("/app", pages())
             .with_state(AppState {
                 flow,
                 store: Store::from(events.clone()),
@@ -988,4 +993,196 @@ async fn a_deleted_note_is_gone_under_a_policy_that_denies_openly() {
     let reply = world.client.get(&format!("/notes/{note}/strict")).await;
 
     assert_eq!(reply.status, StatusCode::GONE);
+}
+
+#[derive(Deserialize)]
+struct Back {
+    #[serde(default)]
+    return_to: ReturnTo,
+}
+
+async fn page_login(
+    auth: AuthSession<User>,
+    state: State<Flow>,
+    Query(back): Query<Back>,
+    form: Json<LoginForm>,
+) -> Result<(LoginStep, ReturnTo), LoginError> {
+    Ok((
+        user_fixture::login(auth, state, form).await?,
+        back.return_to,
+    ))
+}
+
+fn pages() -> Router<AppState> {
+    Router::new()
+        .route("/login", post(page_login))
+        .route("/me", get(me))
+        .route("/maybe", get(maybe))
+        .route("/registered", get(registered))
+        .route("/notes/{id}", get(note))
+        .layer(
+            LoginRedirect::to(ReturnTo::from_static("/login"))
+                .register_at(ReturnTo::from_static("/register")),
+        )
+}
+
+fn redirected(reply: &support::Reply) -> Option<&str> {
+    reply
+        .headers
+        .get(LOCATION)
+        .map(|location| location.to_str().unwrap())
+}
+
+#[tokio::test]
+async fn a_visitor_of_a_page_is_sent_to_the_login_page_with_the_page_asked_for() {
+    let mut world = World::new();
+
+    let reply = world.client.get("/app/me?x=1").await;
+
+    assert_eq!(reply.status, StatusCode::SEE_OTHER);
+    assert_eq!(
+        redirected(&reply),
+        Some("/login?return_to=%2Fapp%2Fme%3Fx%3D1")
+    );
+}
+
+#[tokio::test]
+async fn a_visitor_of_a_page_is_sent_to_the_login_page_whether_or_not_the_note_exists() {
+    let mut world = World::new();
+    let note = world.write_note(EntityId::new()).await;
+
+    let existing = world.client.get(&format!("/app/notes/{note}")).await;
+    let missing_id = EntityId::new();
+    let missing = world.client.get(&format!("/app/notes/{missing_id}")).await;
+
+    assert_eq!(existing.status, StatusCode::SEE_OTHER);
+    assert_eq!(
+        redirected(&existing),
+        Some(format!("/login?return_to=%2Fapp%2Fnotes%2F{note}").as_str())
+    );
+    assert_eq!(missing.status, StatusCode::SEE_OTHER);
+}
+
+#[tokio::test]
+async fn the_json_api_next_to_the_pages_still_answers_unauthorized() {
+    let mut world = World::new();
+
+    let reply = world.client.get("/me").await;
+
+    assert_eq!(reply.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(redirected(&reply), None);
+}
+
+#[tokio::test]
+async fn an_anonymous_user_of_a_page_is_sent_to_the_registration_page() {
+    let mut world = World::new();
+    world.client.post("/anonymous", None).await;
+
+    let reply = world.client.get("/app/registered").await;
+
+    assert_eq!(reply.status, StatusCode::SEE_OTHER);
+    assert_eq!(
+        redirected(&reply),
+        Some("/register?return_to=%2Fapp%2Fregistered")
+    );
+}
+
+#[tokio::test]
+async fn an_anonymous_user_of_a_page_is_judged_by_the_policy_when_it_wants_no_registration() {
+    let mut world = World::new();
+    world.client.post("/anonymous", None).await;
+    let note = world.write_note(EntityId::new()).await;
+
+    let reply = world.client.get(&format!("/app/notes/{note}")).await;
+
+    assert_eq!(reply.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn a_page_with_an_optional_user_is_never_redirected() {
+    let mut world = World::new();
+
+    let reply = world.client.get("/app/maybe").await;
+
+    assert_eq!(
+        (reply.status, reply.body.as_str()),
+        (StatusCode::OK, "nobody")
+    );
+}
+
+#[tokio::test]
+async fn a_logged_in_user_reaches_the_page() {
+    let mut world = World::new();
+    let id = world.register(None).await;
+    world.client.log_in(ADA, PASSWORD).await;
+
+    let reply = world.client.get("/app/me").await;
+
+    assert_eq!((reply.status, reply.body), (StatusCode::OK, id.to_string()));
+}
+
+#[tokio::test]
+async fn a_page_without_the_auth_layer_is_a_server_error_not_a_redirect() {
+    let mut client = Client::new(
+        Router::new().nest(
+            "/app",
+            Router::new()
+                .route("/me", get(me))
+                .layer(LoginRedirect::to(ReturnTo::from_static("/login"))),
+        ),
+    );
+
+    let reply = client.get("/app/me").await;
+
+    assert_eq!(reply.status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(redirected(&reply), None);
+}
+
+#[tokio::test]
+async fn logging_in_from_a_page_goes_back_to_the_page_asked_for() {
+    let mut world = World::new();
+    let id = world.register(None).await;
+
+    let login = world
+        .client
+        .log_in_at("/app/login?return_to=%2Fapp%2Fme%3Fx%3D1", ADA, PASSWORD)
+        .await;
+    let me = world.client.get("/app/me").await;
+
+    assert_eq!(login.status, StatusCode::SEE_OTHER);
+    assert_eq!(redirected(&login), Some("/app/me?x=1"));
+    assert_eq!((me.status, me.body), (StatusCode::OK, id.to_string()));
+}
+
+#[tokio::test]
+async fn a_forged_return_target_goes_back_to_the_root() {
+    let mut world = World::new();
+    world.register(None).await;
+
+    for query in [
+        "return_to=%2F%2Fevil.com",
+        "return_to=https%3A%2F%2Fevil.com",
+        "",
+    ] {
+        let reply = world
+            .client
+            .log_in_at(&format!("/app/login?{query}"), ADA, PASSWORD)
+            .await;
+
+        assert_eq!(redirected(&reply), Some("/"), "{query}");
+    }
+}
+
+#[tokio::test]
+async fn a_refused_login_from_a_page_is_unauthorized_not_a_redirect() {
+    let mut world = World::new();
+    world.register(None).await;
+
+    let reply = world
+        .client
+        .log_in_at("/app/login?return_to=%2Fapp%2Fme", ADA, "wrong")
+        .await;
+
+    assert_eq!(reply.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(redirected(&reply), None);
 }

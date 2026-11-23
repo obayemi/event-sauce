@@ -72,6 +72,8 @@ http = "1.5"
 tower = { version = "0.5.3", default-features = false }
 axum-login = { version = "0.18.0", default-features = false }
 tower-sessions = { version = "0.14.0", default-features = false }
+percent-encoding = "2.3.2"
+serde_urlencoded = "0.7.1"
 
 # Encoding
 base64 = "0.22"
