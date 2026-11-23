@@ -7,7 +7,8 @@ use super::{EMAIL, PASSWORD};
 
 #[tokio::test]
 async fn a_visitor_is_refused_everywhere_but_the_front_door() {
-    let mut visitor = Harness::start().await.client;
+    let mut harness = Harness::start().await;
+    let visitor = &mut harness.client;
     let id = EntityId::new();
     let note = Some(json!({ "title": "t", "body": "b" }));
     let one = format!("/notes/{id}");
@@ -31,6 +32,10 @@ async fn a_visitor_is_refused_everywhere_but_the_front_door() {
         let reply = visitor.call(method.clone(), &uri, body).await;
         assert_eq!(reply.status, StatusCode::UNAUTHORIZED, "{method} {uri}");
     }
+    assert_eq!(
+        visitor.register(EMAIL, PASSWORD).await.status,
+        StatusCode::CREATED
+    );
 }
 
 #[tokio::test]
