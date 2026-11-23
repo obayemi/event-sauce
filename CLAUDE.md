@@ -405,8 +405,9 @@ operation over several aggregates is a `UnitOfWorkCommand` (see
   pending login in the handler body, after every extractor, never in an
   extractor: a malformed body would burn the single-use login
 - An HTML app puts `LoginRedirect` on the router of its pages, so
-  `CurrentUser`, `Registered` and `Authorized` redirect a browser that is not
-  logged in to the login page with the page it asked for (`OriginalUri`), and
+  `CurrentUser`, `Registered`, `Authorized` and `Acting` redirect a browser
+  that is not logged in to the login page with the page it asked for
+  (`OriginalUri`), and
   the JSON API on the same `AuthLayer` keeps its `401`. A redirect target that
   comes from a request is a `ReturnTo`, never a `String`: it refuses `//host`,
   schemes, `\` and control characters

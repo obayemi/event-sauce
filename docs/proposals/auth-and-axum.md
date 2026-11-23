@@ -1120,6 +1120,7 @@ pub struct AuthSession<U: UserAggregate> { /* inner: axum_login::AuthSession<Bac
 impl<U: UserAggregate> AuthSession<U> {
     pub fn user(&self) -> Option<&Arc<AggregateRoot<U>>>;
     pub async fn login(&mut self, user: Authenticated<U>) -> Result<(), SessionError>;
+    pub async fn finish<S: Complete>(&mut self, login: Login<U, S>) -> Result<LoginStep, LoginError>;
     pub async fn renew(&mut self) -> Result<Option<Arc<AggregateRoot<U>>>, SessionError>;
     pub async fn logout(&mut self) -> Result<Option<Arc<AggregateRoot<U>>>, SessionError>;
 }
@@ -1221,7 +1222,8 @@ hit. Because `CurrentUser` *is* an `AggregateRoot<U>`, it can be passed
 straight to `@actor(U)` commands. That removes saxy-p's second replay in
 `ActorGuard::resolve`.
 
-Login helper: `auth.login(authenticated)` replaces the nine hand-built
+Login helper: a handler ends a login with `auth.finish(login)`, which goes
+through `login`, and it replaces the nine hand-built
 `SessionUser { .. }` literals. Each of them now starts from
 `Logins::begin`, `Logins::sign_up` or `AuthSession::renew`.
 
@@ -1366,9 +1368,9 @@ backend is crate-private, so `App` exposes neither it nor its type, and
 its `Debug` prints only the correlation layer. `App` is not `Clone` and has
 no public field, so nothing else of it reaches the backend.
 
-### 4.5 HTTP helpers (helpers 1 to 4 implemented, step 23 proposed)
+### 4.5 HTTP helpers (implemented)
 
-Status: helpers 1 to 4 are **implemented** (steps 19 to 22), helper 5 is **proposed**, not built. The two examples and saxy-p repeat the same
+Status: helpers 1 to 5 are **implemented** (steps 19 to 23). The two examples and saxy-p repeat the same
 HTTP glue around the crate: mapping store and login errors to statuses,
 answering a login step, loading the aggregate a path names and checking who
 may see it, redirecting a browser to the login page, and building a command
@@ -1394,8 +1396,8 @@ has to be audited, and that is not clearly simpler.
 |---|---|---|---|
 | 1 | `StoreError`, `Split`, `SplitDomain`, `DeletedStatus`; `LoginError`, `SessionError: IntoResponse` | none; `login` for the login part | every app's own error-to-status table, and the 401s that hide outages |
 | 2 | `AuthSession::finish`, `PendingLogin::hold`, `LoginStep` | `login` | the open/hold/refused glue of every login handler |
-| 3 | `Found<A, S>`, `PathAggregate`; `Authorized<A, P, S>`, `Access<A>` (implemented) | none; `login` for `Authorized` | `Path` + `load` + owner check in each handler, saxy-p's load guards |
-| 4 | `LoginRedirect`, `AuthRejection::Redirect`, `ReturnTo` (implemented) | `login`; `ReturnTo` needs none | saxy-p's `require_user`, `login_redirect`, `original_uri`, `SafeRedirect` |
+| 3 | `Found<A, S>`, `PathAggregate`; `Authorized<A, P, S>`, `Access<A>` | none; `login` for `Authorized` | `Path` + `load` + owner check in each handler, saxy-p's load guards |
+| 4 | `LoginRedirect`, `AuthRejection::Redirect`, `ReturnTo` | `login`; `ReturnTo` needs none | saxy-p's `require_user`, `login_redirect`, `original_uri`, `SafeRedirect` |
 | 5 | `Acting<Ctx>`, `FromUser` | `login` | saxy-p's `Acting` and its second actor load |
 
 #### Helper 1: error responses (implemented)
@@ -1915,7 +1917,7 @@ that panics (at compile time in a `const`) with "not a local path"; its
 validator is one `const fn` over the bytes, which also refuses the C1 controls
 (`U+0080` to `U+009F`) that `char::is_control` refuses, a property test checks
 it against `parse`. `LoginRedirect::refuse` is crate-private; `CurrentUser`,
-`Registered` and `Authorized` call it on the rejection they would have
+`Registered`, `Authorized` and `Acting` call it on the rejection they would have
 answered, `Authorized` only after the session check, so `MissingLayer` is
 never redirected. The tests use `proptest` and `serde_urlencoded` as
 dev-dependencies and axum's `query` feature in the HTTP test.
@@ -1941,7 +1943,7 @@ Tests:
   `register_at`; `MaybeUser` is not redirected; without `AuthLayer` the
   answer is 500.
 
-#### Helper 5: `Acting<Ctx>`
+#### Helper 5: `Acting<Ctx>` (implemented)
 
 ```rust
 /// A command context built from the user who acts.
@@ -2018,7 +2020,7 @@ sits after "Guarding Routes", where the other extractors of the user are.
 | `event-sauce-macros` | `user` flag, `#[user(identity)]`/`#[user(active)]` field attributes, `Credentials::claims()` merged into `claims()` |
 | `event-sauce` facade | features `auth` (plus `auth-postgres`, `auth-moka`, `auth-redis`, `auth-reset`, `auth-totp`) and `axum` (plus `axum-login`, `axum-app`), all in `full`, re-exported as `event_sauce::auth` and `event_sauce::axum` |
 | `.github/workflows/ci.yml` | new `feature-matrix-auth-axum` job that lints each feature of `event-sauce-auth`, `event-sauce-axum` and the facade alone |
-| `event-sauce-axum` (steps 19 to 22 implemented, step 23 proposed) | the helpers of section 4.5; the `login` feature also turns on `axum/original-uri` and adds `percent-encoding`, already in the tree through `axum` |
+| `event-sauce-axum` (steps 19 to 23 implemented) | the helpers of section 4.5; the `login` feature also turns on `axum/original-uri` and adds `percent-encoding`, already in the tree through `axum` |
 
 ## 6. Migrating saxy-p
 
@@ -2052,7 +2054,8 @@ sits after "Guarding Routes", where the other extractors of the user are.
    This replaces the hand-rolled `get_profile_aggregate_unchecked` path,
    and the active check then applies to it.
 7. Replace the nine `auth_session.login(&SessionUser { .. })` sites with
-   `auth.login(authenticated)` on an `AuthSession<Profile>`. Each gets its
+   `auth.finish(login)` on an `AuthSession<Profile>`, or
+   `auth.login(authenticated)` where an `Authenticated` is already in hand. Each gets its
    `Authenticated` from a finished login: `begin` for password, Google
    and device link, `sign_up` for `AnonymousCreated` and Google sign-up,
    and `AuthSession::renew` after `AccountClaimed` or a password change
@@ -2181,7 +2184,7 @@ in section 4.5.
 
 ## 8. Build order
 
-Each step is its own commit, test first. Steps 1 to 17 are on
+Each step is its own commit, test first. Steps 1 to 23 are on
 `feat/auth`:
 
 1. `resolve_claim` in core and both backends.
@@ -2256,7 +2259,7 @@ it in the type system (section 4.2) and deletes what it supersedes:
     `axum-login` session record, `renew` during a concurrent credential
     change, and an application's own `AuthnBackend`.
 
-Helpers 1 to 4 of section 4.5 (steps 19 to 22) are built, the last is proposed.
+The helpers of section 4.5 are steps 19 to 23, all built.
 Each step is its
 own commit in `event-sauce-axum`, test first (the unit, HTTP and trybuild
 cases its helper lists, seen failing for the right reason before the code),
