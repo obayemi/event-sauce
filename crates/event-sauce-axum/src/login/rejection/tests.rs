@@ -30,6 +30,17 @@ fn a_missing_layer_is_a_server_error() {
     );
 }
 
+#[tokio::test]
+async fn a_missing_layer_answers_without_detail() {
+    let response = AuthRejection::MissingLayer.into_response();
+
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(&body[..], b"internal error");
+}
+
 #[test]
 fn a_redirect_is_see_other() {
     assert_eq!(redirect().status(), StatusCode::SEE_OTHER);

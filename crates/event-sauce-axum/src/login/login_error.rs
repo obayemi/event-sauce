@@ -131,11 +131,6 @@ impl From<SessionError> for LoginError {
     }
 }
 
-fn server_error(source: &(dyn StdError + 'static)) -> Response {
-    diagnostics::internal(source);
-    (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
-}
-
 impl IntoResponse for LoginError {
     fn into_response(self) -> Response {
         match self.0 {
@@ -145,14 +140,8 @@ impl IntoResponse for LoginError {
                 "login refused",
             )
                 .into_response(),
-            LoginFailure::Unavailable(source) => server_error(source.as_ref()),
+            LoginFailure::Unavailable(source) => diagnostics::internal_error(source.as_ref()),
         }
-    }
-}
-
-impl IntoResponse for SessionError {
-    fn into_response(self) -> Response {
-        server_error(&self)
     }
 }
 

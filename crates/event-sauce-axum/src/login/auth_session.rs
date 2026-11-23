@@ -5,11 +5,13 @@ use std::future::{ready, Future};
 use std::sync::Arc;
 
 use axum::extract::FromRequestParts;
+use axum::response::{IntoResponse, Response};
 use axum_login::{tower_sessions::session, AuthUser, AuthnBackend};
 use event_sauce_auth::{Authenticated, Complete, Login, UserAggregate};
 use event_sauce_core::AggregateRoot;
 use http::request::Parts;
 
+use crate::diagnostics;
 use crate::login::backend::Backend;
 use crate::login::rejection::AuthRejection;
 use crate::login::SessionUser;
@@ -30,6 +32,12 @@ fn session_error<U: UserAggregate>(error: axum_login::Error<Backend<U>>) -> Sess
     match error {
         axum_login::Error::Session(error) => SessionError::Session(error),
         axum_login::Error::Backend(error) => SessionError::Store(error),
+    }
+}
+
+impl IntoResponse for SessionError {
+    fn into_response(self) -> Response {
+        diagnostics::internal_error(&self)
     }
 }
 

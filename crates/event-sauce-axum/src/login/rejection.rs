@@ -52,6 +52,7 @@ impl IntoResponse for AuthRejection {
             Self::Redirect { location } => {
                 (StatusCode::SEE_OTHER, [(LOCATION, location)]).into_response()
             }
+            Self::MissingLayer => crate::diagnostics::internal_error(&self),
             other => (other.status(), other.to_string()).into_response(),
         }
     }

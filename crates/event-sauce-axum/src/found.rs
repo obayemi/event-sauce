@@ -98,10 +98,7 @@ impl FoundRejection {
 impl IntoResponse for FoundRejection {
     fn into_response(self) -> Response {
         match self {
-            Self::MissingParam(_) => {
-                diagnostics::internal(&self);
-                (self.status(), "internal error").into_response()
-            }
+            Self::MissingParam(_) => diagnostics::internal_error(&self),
             Self::BadId => (self.status(), "bad id").into_response(),
             Self::Store(store) => store.into_response(),
         }

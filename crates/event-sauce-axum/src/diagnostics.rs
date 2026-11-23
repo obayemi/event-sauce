@@ -2,6 +2,9 @@
 
 use std::error::Error;
 
+use axum::response::{IntoResponse, Response};
+use http::StatusCode;
+
 #[cfg(feature = "tracing")]
 pub(crate) fn internal(source: &(dyn Error + 'static)) {
     tracing::error!(error = source, "request failed");
@@ -9,6 +12,11 @@ pub(crate) fn internal(source: &(dyn Error + 'static)) {
 
 #[cfg(not(feature = "tracing"))]
 pub(crate) fn internal(_source: &(dyn Error + 'static)) {}
+
+pub(crate) fn internal_error(source: &(dyn Error + 'static)) -> Response {
+    internal(source);
+    (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+}
 
 #[cfg(feature = "tracing")]
 pub(crate) fn conflict(source: &(dyn Error + 'static)) {
