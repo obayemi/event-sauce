@@ -357,6 +357,17 @@ What stays outside the types:
   `AuthSession`, which read only the sealed backend's session.
 
 You choose the session store and the session layer. The crate does not.
+That includes the session cookie: `layer` takes the session layer with
+whatever protects its cookie, plaintext from `SessionManagerLayer::new`,
+signed with a key after `.with_signed(key)`, encrypted after
+`.with_private(key)` (`tower-sessions`' `signed` and `private` features).
+A signed cookie still shows the session id but refuses one the key did not
+sign; an encrypted one hides it too.
+
+```rust
+let session_layer = SessionManagerLayer::new(store).with_signed(key);
+let router = AuthLayer::new(loader).layer(routes, session_layer);
+```
 
 ### Logging In and Out
 

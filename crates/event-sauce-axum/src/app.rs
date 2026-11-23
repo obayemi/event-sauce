@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use axum::Router;
-use axum_login::tower_sessions::{SessionManagerLayer, SessionStore};
+use axum_login::tower_sessions::{service::CookieController, SessionManagerLayer, SessionStore};
 use event_sauce_auth::{LoginStore, Logins, PendingLogins, UserAggregate};
 
 use crate::{AuthLayer, CorrelationLayer, Store};
@@ -81,15 +81,17 @@ impl<U: UserAggregate, F, S> App<U, F, S> {
     /// 3. the `axum-login` authentication layer, through the application's
     ///    [`AuthLayer`].
     ///
-    /// The session store stays the application's choice.
-    pub fn layer<St, Sess>(
+    /// The session store and the session cookie stay the application's
+    /// choice, as with [`AuthLayer::layer`].
+    pub fn layer<St, Sess, C>(
         &self,
         router: Router<St>,
-        sessions: SessionManagerLayer<Sess>,
+        sessions: SessionManagerLayer<Sess, C>,
     ) -> Router<St>
     where
         St: Clone + Send + Sync + 'static,
         Sess: SessionStore + Clone,
+        C: CookieController + Sync,
     {
         self.auth
             .layer(router, sessions)

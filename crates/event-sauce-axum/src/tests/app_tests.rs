@@ -10,14 +10,18 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use axum_login::tower_sessions::{MemoryStore, SessionManagerLayer};
+use axum_login::tower_sessions::{
+    cookie::{Cookie, CookieJar, Key},
+    service::CookieController,
+    MemoryStore, SessionManagerLayer,
+};
 use event_sauce_auth::{
     Advance, AlwaysDone, Argon2Hasher, Done, Entered, FirstFactor, Login, LoginKey, LoginStore,
-    LoginStoreError, LoginTtl, PasswordLogin, Route,
+    LoginStoreError, LoginTtl, Logins, PasswordLogin, Route,
 };
 use event_sauce_core::{EventStore, Repository};
 use event_sauce_memory::InMemoryEventStore;
-use http::{HeaderName, Request, StatusCode};
+use http::{header::SET_COOKIE, HeaderName, Request, StatusCode};
 use sqlx::PgPool;
 use tower::ServiceExt;
 
@@ -124,10 +128,9 @@ async fn the_layer_echoes_the_configured_header() {
 
 async fn login_and_whoami(
     mut session: AuthSession<Member>,
-    State(app): State<Arc<TestApp>>,
+    State(logins): State<Logins<Member>>,
 ) -> String {
-    let authenticated = app
-        .logins()
+    let authenticated = logins
         .sign_up(registered())
         .await
         .unwrap()
@@ -152,7 +155,7 @@ async fn a_session_resolves_the_users_of_the_apps_store() {
     let router = app.layer(
         Router::new()
             .route("/login", post(login_and_whoami))
-            .with_state(app.clone()),
+            .with_state(app.logins()),
         SessionManagerLayer::new(MemoryStore::default()),
     );
 
@@ -226,4 +229,41 @@ async fn the_route_replaces_the_default_one() {
         .assemble(Arc::new(InMemoryEventStore::new()), Arc::new(NoLoginStore));
 
     let _: &Arc<FirstFactor<Method, StraightThrough>> = &app.first_factor();
+}
+
+fn key() -> Key {
+    Key::from(&[7; 64])
+}
+
+async fn session_cookie<C: CookieController + Sync>(
+    app: &TestApp,
+    sessions: SessionManagerLayer<MemoryStore, C>,
+) -> String {
+    let router = app.layer(
+        Router::new()
+            .route("/login", post(login_and_whoami))
+            .with_state(app.logins()),
+        sessions,
+    );
+    let response = router
+        .oneshot(Request::post("/login").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let set_cookie = response.headers()[SET_COOKIE].to_str().unwrap().to_owned();
+    Cookie::parse(set_cookie).unwrap().value().to_owned()
+}
+
+fn signed_by(key: &Key, value: &str) -> bool {
+    let mut jar = CookieJar::new();
+    jar.add_original(Cookie::new("id", value.to_owned()));
+    jar.signed(key).get("id").is_some()
+}
+
+#[tokio::test]
+async fn the_layer_keeps_the_cookie_the_session_layer_signs() {
+    let sessions = SessionManagerLayer::new(MemoryStore::default()).with_signed(key());
+
+    let cookie = session_cookie(&assembled(builder()), sessions).await;
+
+    assert!(signed_by(&key(), &cookie));
 }
