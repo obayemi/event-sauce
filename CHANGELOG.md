@@ -207,6 +207,20 @@ explicitly rather than gated behind a major version bump.
 
 ### Added
 
+- `event-sauce-auth` gains an `oauth` feature (facade feature `auth-oauth`):
+  `OAuthProvider` sends the browser to a consent page and turns the code it
+  comes back with into the `FederatedAccount` the provider vouches for, with
+  the `OAuthState`, `PkceVerifier` and `AuthorizationCode` a flow carries (the
+  state compares in constant time and no secret prints in `Debug`), and
+  `event-sauce-axum` gains an `oauth` feature (facade feature `axum-oauth`):
+  `OAuthSignIn` starts the flow and runs its callback, which checks the state
+  and the PKCE verifier, signs the account in through the TOTP code step its
+  route asks for, links it to the signed-in user (`start_link`, with a
+  `LinkProof` valid for ten minutes and for that flow only, used once) or
+  claims it for an anonymous one (`mark_claim`). The application keeps whose
+  account an identity is behind `OAuthAccounts` and renders every step through
+  `OAuthPages`.
+
 - `event-sauce-auth::ResetTokenHash::verify_until` checks a reset token against
   an absolute expiry, hash first and in constant time, and `event-sauce-axum`
   gains a `reset` feature (facade feature `axum-reset`): `PasswordReset` runs

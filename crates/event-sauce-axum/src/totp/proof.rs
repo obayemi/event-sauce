@@ -179,7 +179,7 @@ impl TotpProof {
     }
 }
 
-async fn renew<U: UserAggregate>(auth: &mut AuthSession<U>) {
+pub(crate) async fn renew<U: UserAggregate>(auth: &mut AuthSession<U>) {
     if let Err(error) = auth.renew().await {
         diagnostics::internal(&error);
     }

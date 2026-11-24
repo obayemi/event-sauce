@@ -22,4 +22,5 @@ mod challenge;
 mod proof;
 
 pub use challenge::{code_page, CodeRefusal, OpenError, Opened, TotpChallenge, TotpLoginPages};
+pub(crate) use proof::renew;
 pub use proof::{Enrolment, Proof, TotpProof};

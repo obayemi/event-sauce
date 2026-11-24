@@ -23,8 +23,8 @@
 //! Login for user aggregates sits under `auth` (feature `auth`, plus
 //! `auth-postgres`, `auth-moka`, `auth-redis`, `auth-oauth`, `auth-reset` and
 //! `auth-totp` for its optional parts), and the axum integration under `axum` (features
-//! `axum`, `axum-login`, `axum-throttle`, `axum-totp`, `axum-reset` and
-//! `axum-app`).
+//! `axum`, `axum-login`, `axum-throttle`, `axum-totp`, `axum-reset`,
+//! `axum-oauth` and `axum-app`).
 //!
 //! [`define_events!`](crate::define_events) still expands to
 //! `#[derive(Serialize, Deserialize)]` on the generated event structs, so a
@@ -139,6 +139,9 @@ pub mod auth {
 ///
 /// Behind `axum-reset`: `PasswordReset`, `PublicOrigin` and the traits the
 /// application answers a reset with.
+///
+/// Behind `axum-oauth`: `OAuthSignIn` and the traits the application answers
+/// an OAuth sign-in, link or claim with.
 ///
 /// Behind `axum-app`: the application builder.
 #[cfg(feature = "axum")]

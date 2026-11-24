@@ -25,3 +25,19 @@ pub(crate) fn conflict(source: &(dyn Error + 'static)) {
 
 #[cfg(not(feature = "tracing"))]
 pub(crate) fn conflict(_source: &(dyn Error + 'static)) {}
+
+#[cfg(all(feature = "tracing", feature = "oauth"))]
+pub(crate) fn refused(reason: &dyn std::fmt::Display) {
+    tracing::warn!(%reason, "sign-in refused");
+}
+
+#[cfg(all(not(feature = "tracing"), feature = "oauth"))]
+pub(crate) fn refused(_reason: &dyn std::fmt::Display) {}
+
+#[cfg(all(feature = "tracing", feature = "oauth"))]
+pub(crate) fn declined(error: Option<&str>) {
+    tracing::info!(error, "the provider answered without a code");
+}
+
+#[cfg(all(not(feature = "tracing"), feature = "oauth"))]
+pub(crate) fn declined(_error: Option<&str>) {}

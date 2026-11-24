@@ -85,6 +85,13 @@ axum-reset = [
     "auth-reset",
     "event-sauce-axum/reset",
 ]
+# `OAuthSignIn`: the HTTP side of an OAuth sign-in, link and claim; implies
+# `axum-totp` and `auth-oauth`.
+axum-oauth = [
+    "axum-totp",
+    "auth-oauth",
+    "event-sauce-axum/oauth",
+]
 # `EventSauceApp::postgres`, the whole stack on one pool; implies `postgres`.
 axum-app = [
     "axum-login",
@@ -132,6 +139,7 @@ full = [
     "axum-throttle",
     "axum-totp",
     "axum-reset",
+    "axum-oauth",
     "axum-app",
 ]
 

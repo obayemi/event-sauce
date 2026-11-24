@@ -45,6 +45,15 @@
 //!   aggregate behind `ResetAccounts`, sends the mail with `ResetMailer`, and
 //!   renders each step through `ResetPages`; a link is built from a configured
 //!   `PublicOrigin`, never from `Host`.
+//! - With the `oauth` feature, `OAuthSignIn` runs an OAuth sign-in with PKCE: it
+//!   starts the flow, checks the state and the verifier of its callback, and
+//!   signs the account the provider names in, through the TOTP code step its
+//!   route asks for. The same callback links the account to the signed-in user
+//!   (`start_link`, with the `LinkProof` of a code the application checked,
+//!   valid for ten minutes and for that flow only) or claims it for an
+//!   anonymous one (`mark_claim`). The application keeps every rule of whose
+//!   account it is behind `OAuthAccounts`, and renders each step through
+//!   `OAuthPages`.
 //! - With the `app` feature, `EventSauceApp::postgres` builds the whole
 //!   stack, stores, cache, first factor and layers, on one pool, and can sign
 //!   or encrypt the session cookie with a key.
@@ -65,6 +74,8 @@ mod diagnostics;
 mod found;
 #[cfg(feature = "login")]
 mod login;
+#[cfg(feature = "oauth")]
+mod oauth;
 #[cfg(feature = "throttle")]
 mod pages;
 mod repo;
@@ -97,6 +108,10 @@ pub use login::{
     Access, AccessRejection, Acting, AuthLayer, AuthRejection, AuthSession, Authorized,
     CurrentUser, DeniedStatus, FromUser, LoginError, LoginRedirect, LoginStep, MaybeUser,
     PendingLogin, Registered, SessionError,
+};
+#[cfg(feature = "oauth")]
+pub use oauth::{
+    CallbackError, LinkOutcome, LinkProof, OAuthAccounts, OAuthPages, OAuthSignIn, Returned,
 };
 #[cfg(feature = "throttle")]
 pub use pages::Pages;

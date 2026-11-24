@@ -26,6 +26,7 @@ methods, typestate logins) is in the [auth guide](auth.md).
 - [Throttling Sign-ins](#throttling-sign-ins)
 - [The TOTP Code of an HTML Login](#the-totp-code-of-an-html-login)
 - [Resetting a Password by Email](#resetting-a-password-by-email)
+- [OAuth Sign-in](#oauth-sign-in)
 - [The App Builder](#the-app-builder)
 - [A Runnable Example](#a-runnable-example)
 - [Feature Flags](#feature-flags)
@@ -77,6 +78,8 @@ facade features nest:
 | `axum-login` | `AuthLayer`, `AuthSession`, `PendingLogin`, `LoginStep`, `LoginError`, `LoginRedirect`, `Authorized`, `Acting`, `FromUser` and the user extractors; implies `auth` |
 | `axum-throttle` | `LoginThrottles`, `Backoff`, `Throttle`, `Throttled`, `ClientAddr` and `ClientIpSource` |
 | `axum-totp` | `TotpChallenge`, `TotpProof`, `Pages` and `TotpLoginPages`; implies `axum-login`, `axum-throttle` and `auth-totp` |
+| `axum-reset` | `PasswordReset`, `PublicOrigin`, `ResetAccounts`, `ResetMailer` and `ResetPages`; implies `axum-login`, `axum-throttle` and `auth-reset` |
+| `axum-oauth` | `OAuthSignIn`, `OAuthAccounts`, `OAuthPages`; implies `axum-totp` and `auth-oauth` |
 | `axum-app` | `EventSauceApp::postgres`; implies `axum-login` and `postgres` |
 
 Your application depends on `axum`, `axum-login` and `tower-sessions`
@@ -837,6 +840,83 @@ host and an optional port, and refuses everything else.
 `ResetTokenHash::verify_until` in the auth crate checks a token against an
 absolute expiry, for an application that stores when a reset ends.
 
+## OAuth Sign-in
+
+The `oauth` feature runs the HTTP side of an OAuth 2.0 sign-in with PKCE:
+`OAuthSignIn`. The provider is an `OAuthProvider` of the auth crate, over the
+HTTP client the application likes; the flow runs the steps and asks the
+application for everything that is its own. It implies `totp`, because the
+sign-in goes on through `TotpChallenge`: a route that never asks for a code
+skips the step.
+
+The application implements two traits:
+
+- `OAuthAccounts` decides whose account a provider identity is. `unknown` runs
+  once when no user holds the identity: link it to a user, create one, or
+  refuse (`Refusal` reaches the page). `reconcile` runs once before it, to
+  settle what the first lookup could not see; it does nothing by default.
+  `link` links the identity to the signed-in user with a `LinkProof` and
+  answers `Linked`, `NeedsCode` or `Failed`, and `claim` turns the signed-in
+  anonymous user into the account;
+- `OAuthPages`, a `Pages`, answers every step: `failed` with the
+  `CallbackError` (`State`, `Expired`, `Cancelled`, `Provider`, `Refused`,
+  `Session`) and the target of the flow, `not_session_user`,
+  `link_needs_code`, `returned` after a link or a claim, `code_step` and
+  `done`.
+
+```rust
+use std::sync::Arc;
+
+use event_sauce::auth::{Logins, TotpIfEnrolled};
+use event_sauce::axum::{OAuthSignIn, Returned, TotpChallenge};
+
+let oauth = OAuthSignIn::new(
+    Arc::new(google),                          // impl OAuthProvider
+    Arc::new(accounts),                        // impl OAuthAccounts
+    Logins::<User>::new(store),
+    TotpIfEnrolled,
+    challenge,                                 // TotpChallenge<User>
+);
+
+async fn login(State(oauth): State<Arc<Oauth>>, session: Session, Query(q): Query<Start>) -> Redirect {
+    oauth.start(&session, q.redirect_url.as_ref()).await
+}
+
+async fn callback(
+    State(oauth): State<Arc<Oauth>>,
+    mut auth: AuthSession<User>,
+    session: Session,
+    Query(returned): Query<Returned>,
+) -> Response {
+    oauth.callback(&Pages, &mut auth, &session, returned).await
+}
+```
+
+The callback keeps an order that matters. It takes the pending link of the
+session first, then checks the state against the flow's, so a refused state
+ends the flow and a replay finds nothing, then takes the verifier and the
+target. A callback without a code is a cancelled consent. Once the provider
+names the account:
+
+- a link started with this flow's state links the account to its user, when
+  that user is the one signed in; the application's `link` runs once and the
+  acting session is renewed, so the user's other sessions end;
+- otherwise a claim marked with `mark_claim` turns the signed-in anonymous
+  user into the account, when it is the one marked;
+- otherwise the account signs in: `begin`, then `reconcile` and `begin` again
+  when nobody holds it, then `unknown` and `begin` a last time, then the code
+  step of the route.
+
+`start_link(session, user, proof, return_to)` starts a flow for a link. The
+link is bound to that flow's state, works once, and a `LinkProof::Proved`
+counts for ten minutes. Pass `Proved` only for a code the application just
+checked, with `TotpProof::prove`.
+
+The state, the verifier, the target, the link and the claim live in the
+session record under keys the module owns, so the browser keeps its one
+cookie, and a flow in flight when the application restarts onto a version
+with other keys simply starts again.
+
 ## The App Builder
 
 With the `app` feature, `EventSauceApp` wires the common case on Postgres:
@@ -954,6 +1034,7 @@ Postgres container, so they need Docker.
 | `throttle` (default) | `axum-throttle` | `LoginThrottles`, `Backoff`, `Throttle`, `Throttled`, `ClientAddr`, `ClientIpSource` |
 | `totp` | `axum-totp` | `TotpChallenge`, `TotpProof`, `Pages`, `TotpLoginPages`; implies `login` and `throttle` |
 | `reset` | `axum-reset` | `PasswordReset`, `PublicOrigin`, `ResetAccounts`, `ResetMailer`, `ResetPages`, `PendingReset`, `Finished`; implies `login` and `throttle` |
+| `oauth` | `axum-oauth` | `OAuthSignIn`, `OAuthAccounts`, `OAuthPages`, `CallbackError`, `LinkOutcome`, `LinkProof`, `Returned`; implies `totp` |
 | `app` (default) | `axum-app` | `EventSauceApp` and the Postgres defaults |
 
 Through the facade, `tracing` comes with `axum`. `app` implies `login`, the
