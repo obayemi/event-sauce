@@ -207,6 +207,17 @@ explicitly rather than gated behind a major version bump.
 
 ### Added
 
+- `event-sauce-auth::otpauth_uri` builds the `otpauth://totp/` URI an
+  authenticator app reads for a `TotpSecret`, and `event-sauce-axum` gains a
+  `totp` feature (facade feature `axum-totp`): `TotpChallenge` opens the
+  session of a login that is done or parks one that waits for its TOTP code
+  in the session record, and `prove` ends it with the code, throttled per
+  user and client before the single-use login is taken, so a throttled login
+  stays waiting and a wrong code uses it up; `TotpProof` proves the code of a
+  signed-in user, enrols a key and runs a change of settings, renewing the
+  acting session. The application renders every step through `Pages` and
+  `TotpLoginPages`.
+
 - `event-sauce-axum` gains a `throttle` feature (default, facade feature
   `axum-throttle`): `LoginThrottles` slows password, second-factor and
   reset-request attempts down with growing delays and never locks anyone

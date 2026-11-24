@@ -22,7 +22,7 @@ use testcontainers_shared::postgres::{fresh_database, FreshDatabase};
 use tower_sessions::{MemoryStore, SessionManagerLayer};
 use user_fixture::{
     change_password, cheap_hasher, login_routes, register, CodeIfEnrolled, Flow, PasswordFactor,
-    User, ADA, CODE, MAIL_CODE, PASSWORD,
+    StepClient as _, User, ADA, CODE, MAIL_CODE, PASSWORD,
 };
 
 type Method = PasswordLogin<Argon2Hasher>;

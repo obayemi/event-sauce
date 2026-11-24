@@ -23,7 +23,7 @@
 //! Login for user aggregates sits under `auth` (feature `auth`, plus
 //! `auth-postgres`, `auth-moka`, `auth-redis`, `auth-reset` and `auth-totp`
 //! for its optional parts), and the axum integration under `axum` (features
-//! `axum`, `axum-login`, `axum-throttle` and `axum-app`).
+//! `axum`, `axum-login`, `axum-throttle`, `axum-totp` and `axum-app`).
 //!
 //! [`define_events!`](crate::define_events) still expands to
 //! `#[derive(Serialize, Deserialize)]` on the generated event structs, so a
@@ -132,6 +132,9 @@ pub mod auth {
 /// and `Acting` extractors.
 ///
 /// Behind `axum-throttle`: `LoginThrottles`, `Throttled` and `ClientAddr`.
+///
+/// Behind `axum-totp`: `TotpChallenge`, `TotpProof` and the `Pages` the
+/// application answers their steps with.
 ///
 /// Behind `axum-app`: the application builder.
 #[cfg(feature = "axum")]

@@ -24,6 +24,7 @@ methods, typestate logins) is in the [auth guide](auth.md).
   - [Logins With Several Steps](#logins-with-several-steps)
   - [Sessions End When Credentials Change](#sessions-end-when-credentials-change)
 - [Throttling Sign-ins](#throttling-sign-ins)
+- [The TOTP Code of an HTML Login](#the-totp-code-of-an-html-login)
 - [The App Builder](#the-app-builder)
 - [A Runnable Example](#a-runnable-example)
 - [Feature Flags](#feature-flags)
@@ -52,6 +53,8 @@ methods, typestate logins) is in the [auth guide](auth.md).
   form carries back after the login.
 - **`LoginThrottles`** slows sign-in attempts down with growing delays, and
   **`Throttled`** answers a refused one with `429` and a `Retry-After`.
+- **`TotpChallenge`** and **`TotpProof`** run the TOTP code of a sign-in and of
+  a change of settings, and the application renders every step.
 - **`EventSauceApp::postgres`** builds all of the above on one `PgPool`.
 
 ## Installation
@@ -72,6 +75,7 @@ facade features nest:
 | `axum` | the correlation layer, the `Store`, `Repo`, `UnitOfWork` and `Found` extractors, `StoreError` and `ReturnTo` |
 | `axum-login` | `AuthLayer`, `AuthSession`, `PendingLogin`, `LoginStep`, `LoginError`, `LoginRedirect`, `Authorized`, `Acting`, `FromUser` and the user extractors; implies `auth` |
 | `axum-throttle` | `LoginThrottles`, `Backoff`, `Throttle`, `Throttled`, `ClientAddr` and `ClientIpSource` |
+| `axum-totp` | `TotpChallenge`, `TotpProof`, `Pages` and `TotpLoginPages`; implies `axum-login`, `axum-throttle` and `auth-totp` |
 | `axum-app` | `EventSauceApp::postgres`; implies `axum-login` and `postgres` |
 
 Your application depends on `axum`, `axum-login` and `tower-sessions`
@@ -695,6 +699,71 @@ The tables live in the process: each replica throttles on its own, which
 suffices for a single instance, and multiplies the free failures and the
 delays by the number of replicas otherwise.
 
+## The TOTP Code of an HTML Login
+
+The `totp` feature runs the code step of a login whose route is
+`TotpIfEnrolled`, and the code proof of a user changing its own settings. It
+runs the steps and asks the application for every page and redirect, so the
+application keeps its templates, translations and URLs: a `Pages` value built
+per request by the handler answers each step, and may hold whatever the pages
+need (the state, the current user, a locale).
+
+```rust
+use axum::response::{IntoResponse, Redirect, Response};
+use event_sauce::axum::{CodeRefusal, Pages, ReturnTo, Throttled, TotpLoginPages};
+
+struct Html;
+
+impl Pages for Html {
+    type Response = Response;
+    type Error = Throttled;
+}
+
+impl TotpLoginPages for Html {
+    fn code_form(&self, refusal: Option<CodeRefusal>, return_to: &ReturnTo) -> Response {
+        format!("the code form for {return_to}, refused: {refusal:?}").into_response()
+    }
+
+    fn no_login_waiting(&self) -> Response {
+        Redirect::to("/login").into_response()
+    }
+
+    fn signed_in(&self, return_to: ReturnTo) -> Response {
+        return_to.into_response()
+    }
+}
+```
+
+`TotpChallenge::open` takes what the first factor yielded. A login that is
+done opens its session (`Opened::SignedIn`). One that waits for its code is
+parked in the `PendingLogins`, and its handle and user go into the session
+record (`Opened::AwaitingCode`): the browser keeps its one session cookie, and
+the pending login cookie of the JSON flow is not involved. The handler sends
+the browser to its own code page, then `code_page` shows the form while a
+login waits and `TotpChallenge::prove` ends it with the code:
+
+1. no waiting login: the form again, refused as `CodeRefusal::Invalid`;
+2. the user and the client are throttled, and a refusal is `Err(Throttled)`
+   with the login still waiting;
+3. the waiting login is taken out of the session, and used up whatever the
+   code: a wrong code means signing in again, and counts as a failure of the
+   user and of the client;
+4. a proved code opens the session and answers `signed_in`.
+
+`TotpProof` serves a user who is signed in. `prove` checks a code against the
+enrolled key, throttled, and counts nothing for a user without a key:
+`Proof::Proved`, `NotEnrolled` or `Refused`. `enrol` takes the base32 secret
+the user was shown and a code of it, runs your command with the key once the
+code matches, and `change` proves a code before it runs yours. Both renew the
+acting session, so the user's other sessions end and the browser that did it
+stays signed in. The commands are `async` closures, so the engine does not
+know your command type, and their error type is yours (`change` needs
+`From<Throttled>`).
+
+Share one `Totp` between the challenge and the proof, so a code is accepted
+once across both. `otpauth_uri` in the auth crate builds the URI an
+authenticator app reads.
+
 ## The App Builder
 
 With the `app` feature, `EventSauceApp` wires the common case on Postgres:
@@ -810,6 +879,7 @@ Postgres container, so they need Docker.
 | `tracing` (default) | `axum` | the `request` tracing span |
 | `login` (default) | `axum-login` | `AuthLayer`, `AuthSession`, `PendingLogin`, `LoginStep`, `LoginError`, `LoginRedirect`, `Authorized`, `Acting`, `FromUser`, user extractors |
 | `throttle` (default) | `axum-throttle` | `LoginThrottles`, `Backoff`, `Throttle`, `Throttled`, `ClientAddr`, `ClientIpSource` |
+| `totp` | `axum-totp` | `TotpChallenge`, `TotpProof`, `Pages`, `TotpLoginPages`; implies `login` and `throttle` |
 | `app` (default) | `axum-app` | `EventSauceApp` and the Postgres defaults |
 
 Through the facade, `tracing` comes with `axum`. `app` implies `login`, the

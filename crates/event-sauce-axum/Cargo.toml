@@ -28,6 +28,7 @@ login = [
     "axum/original-uri",
 ]
 throttle = ["axum/tokio"]
+totp = ["login", "throttle", "event-sauce-auth/totp", "dep:secrecy"]
 tracing = ["dep:tracing"]
 
 [dependencies]
@@ -39,6 +40,7 @@ event-sauce-core = { path = "../event-sauce-core", version = "0.1.0", default-fe
 event-sauce-postgres = { path = "../event-sauce-postgres", version = "0.1.0", features = ["unit-of-work"], optional = true }
 http.workspace = true
 percent-encoding = { workspace = true, optional = true }
+secrecy = { workspace = true, optional = true }
 serde.workspace = true
 sqlx = { workspace = true, optional = true }
 thiserror.workspace = true
@@ -52,7 +54,7 @@ argon2.workspace = true
 async-trait.workspace = true
 axum = { workspace = true, features = ["macros", "json", "query"] }
 chrono.workspace = true
-event-sauce-auth = { path = "../event-sauce-auth", version = "0.1.0", features = ["argon2", "moka"] }
+event-sauce-auth = { path = "../event-sauce-auth", version = "0.1.0", features = ["argon2", "moka", "totp"] }
 event-sauce-memory = { path = "../event-sauce-memory", version = "0.1.0", features = ["unit-of-work"] }
 event-sauce-postgres = { path = "../event-sauce-postgres", version = "0.1.0", features = ["unit-of-work"] }
 futures.workspace = true
@@ -64,12 +66,17 @@ sqlx.workspace = true
 testcontainers-shared.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time"] }
 tower = { workspace = true, features = ["util"] }
-tower-sessions = { workspace = true, features = ["memory-store", "private", "signed"] }
+tower-sessions = { workspace = true, features = ["axum-core", "memory-store", "private", "signed"] }
+totp-rs.workspace = true
 trybuild.workspace = true
 
 [[test]]
 name = "login"
 required-features = ["login"]
+
+[[test]]
+name = "totp"
+required-features = ["totp"]
 
 [[test]]
 name = "compile_fail"

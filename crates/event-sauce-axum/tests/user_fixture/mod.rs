@@ -22,6 +22,9 @@ use event_sauce_core::{
 };
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
+
+use crate::support::{Client, Reply};
 
 pub const ADA: &str = "ada@example.com";
 pub const PASSWORD: &str = "correct-horse";
@@ -339,4 +342,24 @@ pub fn login_routes() -> Router<Flow> {
         .route("/login", post(login))
         .route("/login/code", post(code))
         .route("/login/mail", post(mail))
+}
+
+/// The steps after the password of the fixture's login, as the client sends
+/// them.
+pub trait StepClient {
+    async fn send_code(&mut self, code: &str) -> Reply;
+
+    async fn send_mail(&mut self, code: &str) -> Reply;
+}
+
+impl StepClient for Client {
+    async fn send_code(&mut self, code: &str) -> Reply {
+        self.post("/login/code", Some(json!({ "code": code })))
+            .await
+    }
+
+    async fn send_mail(&mut self, code: &str) -> Reply {
+        self.post("/login/mail", Some(json!({ "code": code })))
+            .await
+    }
 }

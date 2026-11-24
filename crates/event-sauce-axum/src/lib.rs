@@ -33,6 +33,11 @@
 //!   growing delays and never locks it out, `Throttled` answers a refused
 //!   request with `429` and a `Retry-After`, and `ClientAddr` reads the
 //!   address of the client, from the socket or from a proxy header.
+//! - With the `totp` feature, `TotpChallenge` is the code step of a login whose
+//!   route asked for a TOTP code, `TotpProof` checks the code of a signed-in
+//!   user before it changes its own second factor, and the application renders
+//!   each step through `TotpLoginPages`, a `Pages`. An HTML login flow keeps
+//!   its in-between state in the session record, never in a cookie of its own.
 //! - With the `app` feature, `EventSauceApp::postgres` builds the whole
 //!   stack, stores, cache, first factor and layers, on one pool, and can sign
 //!   or encrypt the session cookie with a key.
@@ -53,6 +58,8 @@ mod diagnostics;
 mod found;
 #[cfg(feature = "login")]
 mod login;
+#[cfg(feature = "throttle")]
+mod pages;
 mod repo;
 mod request_id;
 mod return_to;
@@ -62,6 +69,8 @@ mod store_error;
 mod test_ticket;
 #[cfg(feature = "throttle")]
 mod throttle;
+#[cfg(feature = "totp")]
+mod totp;
 mod unit_of_work;
 
 #[cfg(feature = "app")]
@@ -80,6 +89,8 @@ pub use login::{
     CurrentUser, DeniedStatus, FromUser, LoginError, LoginRedirect, LoginStep, MaybeUser,
     PendingLogin, Registered, SessionError,
 };
+#[cfg(feature = "throttle")]
+pub use pages::Pages;
 pub use repo::Repo;
 pub use request_id::RequestId;
 pub use return_to::ReturnTo;
@@ -87,4 +98,9 @@ pub use store::Store;
 pub use store_error::{DeletedStatus, Split, SplitDomain, StoreError, StoreFailure};
 #[cfg(feature = "throttle")]
 pub use throttle::{Attempt, Backoff, Charge, LoginThrottles, Throttle, Throttled};
+#[cfg(feature = "totp")]
+pub use totp::{
+    code_page, CodeRefusal, Enrolment, OpenError, Opened, Proof, TotpChallenge, TotpLoginPages,
+    TotpProof,
+};
 pub use unit_of_work::UnitOfWork;

@@ -400,6 +400,18 @@ is rejected through `LoginStore::mark_once`; that replay protection writes
 nothing to the user's event stream. `Totp::with_clock` injects the `Clock`
 that picks the time step.
 
+`otpauth_uri(issuer, account, &secret)` builds the `otpauth://totp/` URI an
+authenticator app scans or opens, with the parameters `Totp` checks codes
+with (SHA-1, six digits, thirty seconds):
+
+```rust
+use event_sauce::auth::{otpauth_uri, TotpSecret};
+
+let secret = TotpSecret::generate();
+let uri = otpauth_uri("Example", "ada@example.com", &secret);
+assert!(uri.starts_with("otpauth://totp/Example:ada%40example.com?secret="));
+```
+
 ## The User Cache
 
 Loading the current user goes through `CachedUserLoader`:
@@ -466,7 +478,7 @@ the same byte stream, however their fields are split.
 | `moka` | `auth-moka` | `MokaUserCache` |
 | `redis` | `auth-redis` | `RedisLoginStore`, `RedisUserCache` |
 | `reset` | `auth-reset` | reset tokens |
-| `totp` | `auth-totp` | the `Totp` verifier, `NeedTotp` and `TotpIfEnrolled` |
+| `totp` | `auth-totp` | the `Totp` verifier, `NeedTotp`, `TotpIfEnrolled` and `otpauth_uri` |
 
 Through the facade, `auth` is the base, and every other feature implies it.
 

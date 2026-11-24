@@ -3,16 +3,13 @@
 //! store.
 
 mod broken_store;
+mod memory_login_store;
 mod note_fixture;
 mod support;
 mod user_fixture;
 
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
-};
+use std::sync::Arc;
 
-use async_trait::async_trait;
 use axum::{
     extract::{FromRef, Query, State},
     http::{
@@ -24,8 +21,7 @@ use axum::{
 };
 use broken_store::BrokenStore;
 use event_sauce_auth::{
-    CachedUserLoader, FirstFactor, LoginKey, LoginStore, LoginStoreError, LoginTtl, Logins,
-    MokaUserCache, PasswordLogin, UserCache,
+    CachedUserLoader, FirstFactor, Logins, MokaUserCache, PasswordLogin, UserCache,
 };
 use event_sauce_axum::{
     Acting, AuthLayer, AuthSession, Authorized, CurrentUser, FromUser, LoginError, LoginRedirect,
@@ -35,6 +31,7 @@ use event_sauce_core::{
     AggregateRoot, Command, CommandError, EntityId, EventStore, Repository, RetryPolicy, Root,
 };
 use event_sauce_memory::InMemoryEventStore;
+use memory_login_store::MemoryLoginStore;
 use note_fixture::{
     Note, NoteDeleteCommands, NoteError, NoteInitCommands, OpenOwner, Owner, RegisteredOwner,
 };
@@ -46,38 +43,9 @@ use tower_sessions::{
     MemoryStore, SessionManagerLayer,
 };
 use user_fixture::{
-    change_password, cheap_hasher, login_routes, register, CodeIfEnrolled, Flow, LoginForm, User,
-    UserCommands, ADA, CODE, MAIL_CODE, PASSWORD,
+    change_password, cheap_hasher, login_routes, register, CodeIfEnrolled, Flow, LoginForm,
+    StepClient as _, User, UserCommands, ADA, CODE, MAIL_CODE, PASSWORD,
 };
-
-#[derive(Default)]
-struct MemoryLoginStore {
-    entries: Mutex<HashMap<String, Vec<u8>>>,
-}
-
-#[async_trait]
-impl LoginStore for MemoryLoginStore {
-    async fn put(&self, key: &LoginKey, value: &[u8], _: LoginTtl) -> Result<(), LoginStoreError> {
-        self.entries
-            .lock()
-            .unwrap()
-            .insert(key.as_str().to_owned(), value.to_vec());
-        Ok(())
-    }
-
-    async fn take(&self, key: &LoginKey) -> Result<Option<Vec<u8>>, LoginStoreError> {
-        Ok(self.entries.lock().unwrap().remove(key.as_str()))
-    }
-
-    async fn mark_once(&self, key: &LoginKey, _: LoginTtl) -> Result<bool, LoginStoreError> {
-        Ok(self
-            .entries
-            .lock()
-            .unwrap()
-            .insert(key.as_str().to_owned(), Vec::new())
-            .is_none())
-    }
-}
 
 #[derive(Clone, FromRef)]
 struct AppState {

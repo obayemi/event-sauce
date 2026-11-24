@@ -428,6 +428,12 @@ operation over several aggregates is a `UnitOfWorkCommand` (see
   a hand-built `204`/`202` or a `Set-Cookie` of the pending cookie. Resume a
   pending login in the handler body, after every extractor, never in an
   extractor: a malformed body would burn the single-use login
+- An HTML login flow whose route asks for a TOTP code goes through
+  `TotpChallenge` and `TotpProof` (feature `totp`), which keep the waiting
+  login in the session record under a key the module owns, never in the
+  pending login cookie of the JSON flow, and answer every step through the
+  app's `TotpLoginPages`. An endpoint that checks a password or a code starts
+  an `Attempt` of `LoginThrottles` before it verifies
 - An HTML app puts `LoginRedirect` on the router of its pages, so
   `CurrentUser`, `Registered`, `Authorized` and `Acting` redirect a browser
   that is not logged in to the login page with the page it asked for

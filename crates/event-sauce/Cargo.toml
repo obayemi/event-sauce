@@ -67,6 +67,14 @@ axum-login = ["axum", "auth", "event-sauce-axum/login"]
 # `LoginThrottles`, `Throttled` and `ClientAddr`: growing delays for sign-in
 # endpoints.
 axum-throttle = ["axum", "event-sauce-axum/throttle"]
+# `TotpChallenge` and `TotpProof`: the TOTP code of a sign-in and of a change
+# of settings; implies `axum-login`, `axum-throttle` and `auth-totp`.
+axum-totp = [
+    "axum-login",
+    "axum-throttle",
+    "auth-totp",
+    "event-sauce-axum/totp",
+]
 # `EventSauceApp::postgres`, the whole stack on one pool; implies `postgres`.
 axum-app = [
     "axum-login",
@@ -111,6 +119,7 @@ full = [
     "axum",
     "axum-login",
     "axum-throttle",
+    "axum-totp",
     "axum-app",
 ]
 

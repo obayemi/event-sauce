@@ -99,14 +99,4 @@ impl Client {
     pub async fn log_in(&mut self, email: &str, password: &str) -> Reply {
         self.log_in_at("/login", email, password).await
     }
-
-    pub async fn send_code(&mut self, code: &str) -> Reply {
-        self.post("/login/code", Some(json!({ "code": code })))
-            .await
-    }
-
-    pub async fn send_mail(&mut self, code: &str) -> Reply {
-        self.post("/login/mail", Some(json!({ "code": code })))
-            .await
-    }
 }
