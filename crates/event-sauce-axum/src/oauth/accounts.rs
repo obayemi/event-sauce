@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use event_sauce_auth::FederatedAccount;
 use event_sauce_core::EntityId;
 
-pub use super::link::LinkProof;
+use super::link::LinkProof;
 
 #[cfg(test)]
 #[path = "tests/accounts_tests.rs"]

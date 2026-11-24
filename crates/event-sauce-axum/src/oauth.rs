@@ -45,8 +45,9 @@ use event_sauce_core::EntityId;
 use crate::return_to::ReturnTo;
 use crate::totp::TotpChallenge;
 
-pub use accounts::{LinkOutcome, LinkProof, OAuthAccounts};
+pub use accounts::{LinkOutcome, OAuthAccounts};
 pub use callback::Returned;
+pub use link::LinkProof;
 pub use pages::{CallbackError, OAuthPages};
 
 use link::PendingLink;
