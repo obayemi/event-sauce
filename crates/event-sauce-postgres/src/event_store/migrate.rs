@@ -323,7 +323,8 @@ mod tests {
     #[tokio::test]
     async fn test_migrate_creates_tables() {
         // Create a fresh database without running migrations
-        let (_container, connection_string) = crate::test_support::start_postgres_url().await;
+        let (_database, connection_string) =
+            testcontainers_shared::postgres::fresh_database().await;
 
         let pool = PgPool::connect(&connection_string).await.unwrap();
 
@@ -359,7 +360,8 @@ mod tests {
     #[tokio::test]
     async fn test_migrate_is_idempotent() {
         // Create a fresh database without running migrations
-        let (_container, connection_string) = crate::test_support::start_postgres_url().await;
+        let (_database, connection_string) =
+            testcontainers_shared::postgres::fresh_database().await;
 
         let pool = PgPool::connect(&connection_string).await.unwrap();
         let store = PostgresEventStore::new(pool.clone());
@@ -427,7 +429,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_migrate_converts_legacy_uuid_correlation_id_column() {
-        let (_container, connection_string) = crate::test_support::start_postgres_url().await;
+        let (_database, connection_string) =
+            testcontainers_shared::postgres::fresh_database().await;
         let pool = PgPool::connect(&connection_string).await.unwrap();
         sqlx::query(
             "CREATE TABLE public.events (

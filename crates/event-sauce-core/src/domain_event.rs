@@ -751,7 +751,7 @@ mod tests {
     #[test]
     fn test_event_type_accessible_without_instance() {
         let event_type = TestEventWithType::EVENT_TYPE;
-        assert!(!event_type.is_empty());
+        assert_ne!(event_type, "");
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -796,7 +796,7 @@ mod tests {
             id: "test-1".to_string(),
             timestamp,
         };
-        assert!(event.encrypted_fields().is_empty());
+        assert_eq!(event.encrypted_fields(), [""; 0]);
     }
 
     #[test]

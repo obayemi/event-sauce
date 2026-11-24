@@ -467,4 +467,5 @@ impl Default for EventMetadata {
 }
 
 #[cfg(test)]
+#[path = "tests/metadata_tests.rs"]
 mod tests;

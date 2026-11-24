@@ -183,4 +183,5 @@ where
 }
 
 #[cfg(test)]
+#[path = "tests/commands_tests.rs"]
 mod tests;

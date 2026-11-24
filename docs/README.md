@@ -20,6 +20,8 @@ events.
 - **[Events](events.md)** - Domain events and event modeling
 - **[Validation](validation.md)** - Event validation and business rules
 - **[Claims](claims.md)** - Cross-aggregate uniqueness constraints (e.g., unique emails)
+- **[Auth](auth.md)** - Credentials inside the user aggregate, login methods, typestate logins, user cache and password reset tokens
+- **[axum](axum.md)** - Correlation layer, `Store`/`Repo` extractors, `axum-login` sessions and the Postgres app builder
 
 ## Event Sourcing
 
@@ -56,6 +58,8 @@ The [`../crates/event-sauce/examples/`](../crates/event-sauce/examples/) directo
 11. **[projection-worker.rs](../crates/event-sauce/examples/projection-worker.rs)** - Running a postgres-backed projection in its own process, alongside other workers (requires `postgres` feature; needs Docker)
 12. **[commands.rs](../crates/event-sauce/examples/commands.rs)** - Typed lifecycle-aware commands run with `Repository::execute` (requires `memory` + `commands` features)
 13. **[unit-of-work.rs](../crates/event-sauce/examples/unit-of-work.rs)** - One atomic commit across an event-sourced order and a state-stored product (requires `memory` + `unit-of-work` features)
+14. **[axum-auth/](../crates/event-sauce/examples/axum-auth/main.rs)** - An axum app with a user aggregate, password login and a guarded route (requires `axum-login` feature; no Docker)
+15. **[axum-crud/](../crates/event-sauce/examples/axum-crud/main.rs)** - A full CRUD API with authentication on Postgres: password login, actor-validated notes, a projected list (requires `axum-app` feature; runs against a Postgres `DATABASE_URL`, its tests need Docker)
 
 ## Quick Links
 

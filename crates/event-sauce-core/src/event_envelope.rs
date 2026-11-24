@@ -136,4 +136,5 @@ impl EventEnvelope {
 }
 
 #[cfg(test)]
+#[path = "tests/event_envelope_tests.rs"]
 mod tests;

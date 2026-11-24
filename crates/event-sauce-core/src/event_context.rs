@@ -309,4 +309,5 @@ impl EventContext<Root> {
 }
 
 #[cfg(test)]
+#[path = "tests/event_context_tests.rs"]
 mod tests;

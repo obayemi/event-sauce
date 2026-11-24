@@ -187,4 +187,5 @@ impl EventColumns {
 }
 
 #[cfg(test)]
+#[path = "tests/row_tests.rs"]
 mod tests;

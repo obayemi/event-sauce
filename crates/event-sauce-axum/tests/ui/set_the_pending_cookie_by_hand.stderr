@@ -1,0 +1,10 @@
+error[E0624]: associated function `set_cookie` is private
+ --> tests/ui/set_the_pending_cookie_by_hand.rs:5:27
+  |
+5 |     let _ = PendingLogin::set_cookie::<Done>(event_sauce_auth::PendingLoginId::new());
+  |                           ^^^^^^^^^^ private associated function
+  |
+ ::: src/login/pending.rs
+  |
+  |     pub(super) fn set_cookie<S: LoginState>(id: PendingLoginId) -> String {
+  |     --------------------------------------------------------------------- private associated function defined here

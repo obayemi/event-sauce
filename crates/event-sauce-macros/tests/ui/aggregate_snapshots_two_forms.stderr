@@ -1,0 +1,5 @@
+error: `snapshots` takes exactly one of `every = N`, `always`, `never` or `with = "path"`
+ --> tests/ui/aggregate_snapshots_two_forms.rs:7:75
+  |
+7 | #[event_sauce_macros::aggregate(event = "TestEvent", error = "TestError", snapshots(always, never))]
+  |                                                                           ^^^^^^^^^

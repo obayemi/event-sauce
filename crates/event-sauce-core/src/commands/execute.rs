@@ -152,4 +152,5 @@ pub struct Executed<A: Aggregate> {
 }
 
 #[cfg(test)]
+#[path = "tests/execute_tests.rs"]
 mod tests;

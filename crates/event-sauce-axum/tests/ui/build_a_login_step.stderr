@@ -1,0 +1,20 @@
+error[E0423]: cannot initialize a tuple struct which contains private fields
+ --> tests/ui/build_a_login_step.rs:4:13
+  |
+4 |     let _ = LoginStep(());
+  |             ^^^^^^^^^
+  |
+  = note: a struct named `LoginStep` exists in another namespace
+note: constructor is not visible here due to private fields
+ --> src/login/login_step.rs
+  |
+  | pub struct LoginStep(Outcome);
+  |                      ^^^^^^^ private field
+help: you might have meant to use an associated function to build this type
+  |
+4 -     let _ = LoginStep(());
+4 +     let _ = LoginStep::opened();
+  |
+4 -     let _ = LoginStep(());
+4 +     let _ = LoginStep::waiting(_);
+  |

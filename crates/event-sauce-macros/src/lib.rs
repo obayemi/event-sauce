@@ -18,6 +18,8 @@ use quote::quote;
 use std::sync::OnceLock;
 use syn::{parse_macro_input, Attribute, Data, DeriveInput, Fields, Ident, Meta};
 
+mod snapshots;
+mod user;
 mod with_event_context;
 
 /// Path prefix the generated code uses to reach the core traits and types.
@@ -27,16 +29,23 @@ mod with_event_context;
 /// directly keep working, and either dependency may be renamed in `Cargo.toml`.
 fn core_path() -> proc_macro2::TokenStream {
     static RESOLVED: OnceLock<String> = OnceLock::new();
-    let name = RESOLVED.get_or_init(|| match crate_name("event-sauce") {
-        Ok(FoundCrate::Name(name)) => name,
-        Ok(FoundCrate::Itself) => "event_sauce".to_string(),
-        Err(_) => match crate_name("event-sauce-core") {
-            Ok(FoundCrate::Name(name)) => name,
-            _ => "event_sauce_core".to_string(),
-        },
+    let name = RESOLVED.get_or_init(|| {
+        imported_crate("event-sauce")
+            .or_else(|| imported_crate("event-sauce-core"))
+            .unwrap_or_else(|| "event_sauce_core".to_owned())
     });
     let ident = Ident::new(name, proc_macro2::Span::call_site());
     quote!(::#ident)
+}
+
+/// The identifier the calling crate imports `package` under, or `None` when
+/// it is not a dependency.
+pub(crate) fn imported_crate(package: &str) -> Option<String> {
+    match crate_name(package) {
+        Ok(FoundCrate::Name(name)) => Some(name),
+        Ok(FoundCrate::Itself) => Some(package.replace('-', "_")),
+        Err(_) => None,
+    }
 }
 
 /// Attributes for the #[aggregate(...)] container attribute
@@ -71,6 +80,16 @@ struct AggregateAttrs {
     /// and rebuilt from events.
     #[darling(default)]
     snapshot_version: Option<u32>,
+    /// Optional snapshot strategy for this aggregate, overriding the store default.
+    /// One of `snapshots(every = N)`, `snapshots(always)`, `snapshots(never)` or
+    /// `snapshots(with = "path::TO_STATIC")`. Generates `fn snapshot_strategy()`.
+    #[darling(default)]
+    snapshots: Option<snapshots::SnapshotDecl>,
+    /// When true, the aggregate is a login user. Fields marked `#[user(identity)]`
+    /// and `#[user(active)]` generate `UserAggregate`, and the credentials'
+    /// claims join `claims()`.
+    #[darling(default)]
+    user: darling::util::Flag,
 }
 
 /// Attributes for the #[event(...)] container attribute
@@ -1233,6 +1252,14 @@ fn extract_ref_param(param: &syn::FnArg) -> Result<(Ident, syn::Type), syn::Erro
 /// - `event = "..."` - The event enum type name
 /// - `error = "..."` - The error type name (optional, defaults to `()`)
 /// - `init` - Skip `DefaultEntity` and `Entity::new()`; aggregate uses init events
+/// - `snapshot_version = N` - Snapshot schema version; bump it when the serialized shape
+///   changes incompatibly
+/// - `snapshots(every = N | always | never | with = "path::TO_STATIC")` - generates
+///   `Aggregate::snapshot_strategy()`; a store `per_type_override` still wins
+/// - `user` - makes the aggregate a login user: needs one `#[user(identity)]` field of type
+///   `Identity<C>` and may mark one `#[user(active)]` bool field. Generates `UserAggregate`
+///   and adds the credentials' claims to `claims()`; requires `event-sauce-auth` (or the
+///   `event-sauce` facade with its `auth` feature)
 ///
 /// # Panics
 ///
@@ -1270,7 +1297,8 @@ pub fn aggregate(attr: TokenStream, item: TokenStream) -> TokenStream {
         .map(|f| f.ty.clone())
         .expect("ID field must exist (already validated)");
 
-    let cleaned_input = strip_id_attributes(&input);
+    let mut cleaned_input = strip_id_attributes(&input);
+    user::strip_user_markers(&mut cleaned_input);
     let event_type = Ident::new(&aggregate_attrs.event, proc_macro2::Span::call_site());
     let error_type = aggregate_error_token(aggregate_attrs.error.as_deref());
     let entity_impl = gen_entity_impl(
@@ -1286,19 +1314,23 @@ pub fn aggregate(attr: TokenStream, item: TokenStream) -> TokenStream {
     } else {
         quote! {}
     };
-    let claims_override = if aggregate_attrs.claims {
-        quote! {
-            fn claims(&self) -> Vec<#core::AggregateClaim> {
-                self.aggregate_claims()
-            }
-        }
-    } else {
-        quote! {}
+    let (user_impl, claims_override) = match user::expand(
+        aggregate_attrs.user.is_present(),
+        aggregate_attrs.claims,
+        aggregate_name,
+        named_fields,
+        &core,
+    ) {
+        Ok(generated) => generated,
+        Err(err) => return err.to_compile_error().into(),
     };
-    let snapshot_version_override = aggregate_attrs.snapshot_version.map_or_else(
-        || quote! {},
-        |v| quote! { fn snapshot_version() -> u32 { #v } },
-    );
+    let snapshot_version_override = aggregate_attrs
+        .snapshot_version
+        .map(|v| quote! { fn snapshot_version() -> u32 { #v } });
+    let snapshot_strategy_override = aggregate_attrs
+        .snapshots
+        .as_ref()
+        .map(|decl| decl.to_override(&core));
     let deleted_state_type = aggregate_attrs.deleted_state.as_deref().map_or_else(
         || quote! { type DeletedState = Self; },
         |ds| {
@@ -1312,6 +1344,8 @@ pub fn aggregate(attr: TokenStream, item: TokenStream) -> TokenStream {
 
         #entity_impl
 
+        #user_impl
+
         impl #core::Aggregate for #aggregate_name {
             type Event = #event_type;
             type Error = #error_type;
@@ -1321,6 +1355,7 @@ pub fn aggregate(attr: TokenStream, item: TokenStream) -> TokenStream {
             #is_encrypted_override
             #claims_override
             #snapshot_version_override
+            #snapshot_strategy_override
         }
 
         impl #aggregate_name {
@@ -1643,3 +1678,7 @@ fn extract_aggregate_id_type(attrs: &[Attribute]) -> Result<String, TokenStream>
 pub fn with_event_context(args: TokenStream, item: TokenStream) -> TokenStream {
     with_event_context::expand(&core_path(), &args.into(), item.into()).into()
 }
+
+#[cfg(test)]
+#[path = "tests/lib_tests.rs"]
+mod tests;

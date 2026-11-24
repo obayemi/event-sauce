@@ -386,16 +386,13 @@ mod tests {
             AggregateVersion, EventEnvelope, EventStore, EventVersion, StreamId,
         };
         use serde_json::json;
-        use testcontainers_modules::postgres::Postgres;
         use uuid::Uuid;
 
-        /// Starts a `PostgreSQL` testcontainer and returns a connection URL.
-        pub(crate) async fn start_test_db() -> (
-            String,
-            testcontainers_modules::testcontainers::ContainerAsync<Postgres>,
-        ) {
-            let (container, url) = crate::test_support::start_postgres_url().await;
-            (url, container)
+        /// Creates a fresh test database and returns its connection URL.
+        pub(crate) async fn start_test_db(
+        ) -> (String, testcontainers_shared::postgres::FreshDatabase) {
+            let (database, url) = testcontainers_shared::postgres::fresh_database().await;
+            (url, database)
         }
 
         pub(crate) fn create_test_envelope(aggregate_id: Uuid) -> EventEnvelope {
@@ -442,7 +439,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_setup_creates_working_backend() {
-        let (url, _container) = start_test_db().await;
+        let (url, _database) = start_test_db().await;
 
         let backend = PostgresBackend::setup(&url, "event_sauce")
             .await
@@ -454,7 +451,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_builder_with_defaults() {
-        let (url, _container) = start_test_db().await;
+        let (url, _database) = start_test_db().await;
 
         let backend = PostgresBackend::builder()
             .database_url(&url)
@@ -467,7 +464,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_builder_with_custom_schema() {
-        let (url, _container) = start_test_db().await;
+        let (url, _database) = start_test_db().await;
 
         let backend = PostgresBackend::builder()
             .database_url(&url)
@@ -481,7 +478,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_builder_with_snapshot_config() {
-        let (url, _container) = start_test_db().await;
+        let (url, _database) = start_test_db().await;
 
         let backend = PostgresBackend::builder()
             .database_url(&url)
@@ -498,7 +495,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_event_store_has_checkpoint_store() {
-        let (url, _container) = start_test_db().await;
+        let (url, _database) = start_test_db().await;
 
         let backend = PostgresBackend::setup(&url, "event_sauce")
             .await
@@ -509,7 +506,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_migrations_run_automatically() {
-        let (url, _container) = start_test_db().await;
+        let (url, _database) = start_test_db().await;
 
         let backend = PostgresBackend::setup(&url, "test_migrations")
             .await
@@ -534,7 +531,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_event_store_is_functional() {
-        let (url, _container) = start_test_db().await;
+        let (url, _database) = start_test_db().await;
 
         let backend = PostgresBackend::setup(&url, "event_sauce")
             .await
@@ -570,7 +567,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_checkpoint_store_is_functional() {
-        let (url, _container) = start_test_db().await;
+        let (url, _database) = start_test_db().await;
 
         let backend = PostgresBackend::setup(&url, "event_sauce")
             .await
@@ -593,7 +590,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_pool_is_accessible() {
-        let (url, _container) = start_test_db().await;
+        let (url, _database) = start_test_db().await;
 
         let backend = PostgresBackend::setup(&url, "event_sauce")
             .await
@@ -620,7 +617,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_builder_with_pool() {
-        let (url, _container) = start_test_db().await;
+        let (url, _database) = start_test_db().await;
 
         let pool = PgPool::connect(&url)
             .await
@@ -656,7 +653,7 @@ mod tests {
     /// lands, not just the checkpoint whose fence was rejected.
     #[tokio::test]
     async fn test_commit_fenced_rolls_back_the_whole_transaction_on_one_rejection() {
-        let (url, _container) = start_test_db().await;
+        let (url, _database) = start_test_db().await;
         let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
         let outbox = crate::PostgresPolicyOutbox::new(backend.pool().clone(), "event_sauce");
         outbox.migrate().await.unwrap();

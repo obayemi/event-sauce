@@ -1,7 +1,9 @@
 //! Configuration for snapshot behavior in event stores.
 //!
 //! This module provides [`SnapshotConfig`] which controls:
-//! - Default snapshot strategy for all aggregate types
+//! - Default snapshot strategy for aggregate types that have neither a per-type
+//!   override nor a strategy of their own; [`SnapshotConfig::resolve_strategy`]
+//!   defines the precedence
 //! - Per-aggregate-type strategy overrides
 //! - Whether snapshots are used during aggregate loading
 //!
@@ -36,8 +38,11 @@ use crate::snapshot_strategy::{AlwaysSnapshot, EveryNEvents, NeverSnapshot, Snap
 ///
 /// # Structure
 ///
-/// - **Default strategy**: Applied to all aggregate types unless overridden
-/// - **Per-type overrides**: Specific strategies for individual aggregate types
+/// - **Default strategy**: Applied to aggregate types that have neither a per-type
+///   override nor a strategy of their own; [`SnapshotConfig::resolve_strategy`]
+///   defines the precedence
+/// - **Per-type overrides**: Specific strategies for individual aggregate types,
+///   winning even over a strategy the aggregate declares
 /// - **Load behavior**: Whether to use snapshots when loading aggregates
 ///
 /// # Examples
@@ -139,8 +144,10 @@ impl SnapshotConfig {
 
     /// Returns the snapshot strategy for the specified aggregate type.
     ///
-    /// If a per-type override exists for the given type, it is returned.
-    /// Otherwise, the default strategy is returned.
+    /// Returns what the store configures for the type name: the per-type
+    /// override if one exists, otherwise the default strategy. It does not see
+    /// [`Aggregate::snapshot_strategy`](crate::Aggregate::snapshot_strategy);
+    /// commit uses [`resolve_strategy`](Self::resolve_strategy), which does.
     ///
     /// # Arguments
     ///
@@ -167,10 +174,47 @@ impl SnapshotConfig {
     /// ```
     #[must_use]
     pub fn strategy_for_type(&self, aggregate_type: &str) -> &dyn SnapshotStrategy {
-        self.per_type_strategies.get(aggregate_type).map_or_else(
-            || self.default_strategy.as_ref(),
-            std::convert::AsRef::as_ref,
-        )
+        self.resolve_strategy(aggregate_type, None)
+    }
+
+    /// Resolves the strategy that governs an aggregate type at commit time.
+    ///
+    /// Precedence, highest first:
+    /// 1. the per-type override configured on this store,
+    /// 2. `aggregate_strategy`, the strategy the aggregate declares itself
+    ///    (see [`Aggregate::snapshot_strategy`](crate::Aggregate::snapshot_strategy)),
+    /// 3. the store's default strategy.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use event_sauce_core::{SnapshotConfig, AlwaysSnapshot, NeverSnapshot, AggregateVersion};
+    ///
+    /// let config = SnapshotConfig::builder()
+    ///     .default_strategy(NeverSnapshot)
+    ///     .per_type_override("Order", NeverSnapshot)
+    ///     .build();
+    ///
+    /// let declared = config.resolve_strategy("User", Some(&AlwaysSnapshot));
+    /// assert!(declared.should_snapshot(AggregateVersion::new(1)));
+    ///
+    /// let overridden = config.resolve_strategy("Order", Some(&AlwaysSnapshot));
+    /// assert!(!overridden.should_snapshot(AggregateVersion::new(1)));
+    ///
+    /// let fallback = config.resolve_strategy("Cart", None);
+    /// assert!(!fallback.should_snapshot(AggregateVersion::new(1)));
+    /// ```
+    #[must_use]
+    pub fn resolve_strategy<'a>(
+        &'a self,
+        aggregate_type: &str,
+        aggregate_strategy: Option<&'a dyn SnapshotStrategy>,
+    ) -> &'a dyn SnapshotStrategy {
+        self.per_type_strategies
+            .get(aggregate_type)
+            .map(std::convert::AsRef::as_ref)
+            .or(aggregate_strategy)
+            .unwrap_or_else(|| self.default_strategy.as_ref())
     }
 
     /// Returns whether snapshots should be used when loading aggregates.
@@ -263,7 +307,7 @@ impl SnapshotConfigBuilder {
     /// Sets the default snapshot strategy.
     ///
     /// This strategy will be used for all aggregate types unless a per-type
-    /// override is specified.
+    /// override is set or the aggregate declares its own strategy.
     ///
     /// # Arguments
     ///
@@ -289,8 +333,8 @@ impl SnapshotConfigBuilder {
 
     /// Sets a per-type snapshot strategy override.
     ///
-    /// When multiple overrides are set for the same aggregate type,
-    /// the last one wins.
+    /// The override also wins over a strategy the aggregate declares. When
+    /// multiple overrides are set for the same aggregate type, the last one wins.
     ///
     /// # Arguments
     ///
@@ -561,5 +605,27 @@ mod tests {
         assert!(!config
             .default_strategy()
             .should_snapshot(AggregateVersion::new(99)));
+    }
+
+    #[test]
+    fn test_resolve_override_wins_over_aggregate_strategy() {
+        let config = SnapshotConfig::builder()
+            .default_strategy(NeverSnapshot)
+            .per_type_override("User", NeverSnapshot)
+            .build();
+
+        let strategy = config.resolve_strategy("User", Some(&AlwaysSnapshot));
+        assert!(!strategy.should_snapshot(AggregateVersion::new(1)));
+    }
+
+    #[test]
+    fn test_resolve_aggregate_strategy_wins_over_default() {
+        let config = SnapshotConfig::builder()
+            .default_strategy(NeverSnapshot)
+            .per_type_override("Order", NeverSnapshot)
+            .build();
+
+        let strategy = config.resolve_strategy("User", Some(&AlwaysSnapshot));
+        assert!(strategy.should_snapshot(AggregateVersion::new(1)));
     }
 }

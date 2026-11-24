@@ -101,4 +101,5 @@ impl<A: Aggregate + std::fmt::Debug + 'static> std::fmt::Debug for Tracked<'_, A
 }
 
 #[cfg(test)]
+#[path = "tests/tracked_tests.rs"]
 mod tests;

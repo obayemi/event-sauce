@@ -1,0 +1,37 @@
+error[E0283]: type annotations needed
+ --> tests/ui/generic_backend_handler.rs:7:50
+  |
+7 |     let _: Router = Router::new().route("/", get(handler));
+  |                                              --- ^^^^^^^ cannot infer type of the type parameter `B` declared on the function `handler`
+  |                                              |
+  |                                              required by a bound introduced by this call
+  |
+  = note: the type must implement `AuthnBackend`
+  = note: cannot satisfy `<_ as AuthnBackend>::User == _`
+note: required by a bound in `handler`
+ --> tests/ui/generic_backend_handler.rs:4:21
+  |
+4 | async fn handler<B: AuthnBackend + 'static>(_session: AuthSession<B>) {}
+  |                     ^^^^^^^^^^^^ required by this bound in `handler`
+note: required because it appears within the type `AuthSession<_>`
+ --> $CARGO/axum-login-$VERSION/src/session.rs
+  |
+  | pub struct AuthSession<Backend: AuthnBackend> {
+  |            ^^^^^^^^^^^
+  = note: required for `fn(AuthSession<_>) -> impl Future<Output = ()> {handler::<_>}` to implement `Handler<(axum_core::extract::private::ViaParts, AuthSession<_>), ()>`
+note: required by a bound in `axum::routing::get`
+ --> $CARGO/axum-$VERSION/src/routing/method_routing.rs
+  |
+  |             H: Handler<T, S>,
+  |                ^^^^^^^^^^^^^ required by this bound in `get`
+...
+  | top_level_handler_fn!(get, GET);
+  | -------------------------------
+  | |                     |
+  | |                     required by a bound in this function
+  | in this macro invocation
+  = note: this error originates in the macro `top_level_handler_fn` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: consider specifying a concrete type for the type parameter `B`
+  |
+7 |     let _: Router = Router::new().route("/", get(handler::</* Type */>));
+  |                                                         ++++++++++++++

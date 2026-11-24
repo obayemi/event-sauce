@@ -1,0 +1,19 @@
+error[E0599]: the method `build` exists for struct `UserAppBuilder<U, PasswordLogin<Argon2Hasher>>`, but its trait bounds were not satisfied
+  --> tests/ui/build_without_a_route.rs:14:10
+   |
+12 |       let _ = EventSauceApp::postgres(pool)
+   |  _____________-
+13 | |         .user::<U, _>(PasswordLogin::new(Argon2Hasher::default()))
+14 | |         .build()
+   | |         -^^^^^ method cannot be called on `UserAppBuilder<U, PasswordLogin<Argon2Hasher>>` due to unsatisfied trait bounds
+   | |_________|
+   |
+   |
+  ::: $WORKSPACE/crates/event-sauce-auth/src/login/first_factor.rs
+   |
+   |   pub struct AlwaysDone;
+   |   --------------------- doesn't satisfy `AlwaysDone: Route<U>`
+   |
+   = note: the following trait bounds were not satisfied:
+           `<U as UserAggregate>::Credentials: SingleFactor`
+           which is required by `AlwaysDone: Route<U>`

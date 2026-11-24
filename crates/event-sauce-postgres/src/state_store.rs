@@ -388,6 +388,7 @@ impl PostgresStateStore {
     ///
     /// Returns `Error::ConcurrencyConflict` if the row's version does not
     /// match `expected_version`.
+    #[cfg(feature = "unit-of-work")]
     pub(crate) async fn check_state_expectation_on(
         &self,
         conn: &mut PgConnection,
@@ -642,20 +643,21 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Mutex;
     use std::time::Duration;
-    use testcontainers_modules::postgres::Postgres;
     use uuid::Uuid;
 
     struct TestDb {
         pool: PgPool,
-        #[allow(dead_code)]
-        container: testcontainers_modules::testcontainers::ContainerAsync<Postgres>,
+        _database: testcontainers_shared::postgres::FreshDatabase,
     }
 
     impl TestDb {
         async fn new() -> Self {
-            let (container, url) = crate::test_support::start_postgres_url().await;
+            let (database, url) = testcontainers_shared::postgres::fresh_database().await;
             let pool = PgPool::connect(&url).await.expect("connect");
-            Self { pool, container }
+            Self {
+                pool,
+                _database: database,
+            }
         }
 
         fn store_builder(&self) -> PostgresStateStoreBuilder {
@@ -1632,6 +1634,14 @@ mod tests {
 
     /// A 300ms lock, truncated to whole seconds, would become 0s and let
     /// another worker reclaim immediately.
+    ///
+    /// The lock window is read back from the row rather than probed by
+    /// reclaiming mid-lock: `locked_until` and `updated_at` come from the
+    /// same `NOW()`, so their difference is the stored duration whatever the
+    /// round-trip latency, whereas a mid-lock probe depends on two queries
+    /// landing within 300ms of each other on the server. The expiry check
+    /// needs no such bound: the server cannot see less time pass between the
+    /// two claims than the client slept between them.
     #[tokio::test]
     async fn test_claim_lock_duration_has_millisecond_precision() {
         let db = TestDb::new().await;
@@ -1647,17 +1657,19 @@ mod tests {
             .await
             .unwrap();
 
-        tokio::time::sleep(Duration::from_millis(150)).await;
-        let still_locked = outbox
-            .claim_batch("worker-b", 10, Duration::from_secs(60))
-            .await
-            .unwrap();
-        assert!(
-            still_locked.is_empty(),
+        let lock_millis: i64 = sqlx::query_scalar(
+            "SELECT (EXTRACT(EPOCH FROM locked_until - updated_at) * 1000)::bigint
+             FROM event_sauce.state_outbox",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            lock_millis, 300,
             "a sub-second lock must not truncate to zero"
         );
 
-        tokio::time::sleep(Duration::from_millis(250)).await;
+        tokio::time::sleep(Duration::from_millis(400)).await;
         let now_reclaimable = outbox
             .claim_batch("worker-b", 10, Duration::from_secs(60))
             .await

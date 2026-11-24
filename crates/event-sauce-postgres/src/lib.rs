@@ -102,9 +102,6 @@ mod state_store;
 #[cfg(feature = "unit-of-work")]
 mod unit_of_work;
 
-#[cfg(test)]
-mod test_support;
-
 pub use backend::{PolicyDispatch, PostgresBackend, PostgresBackendBuilder};
 pub use checkpoint_store::{PostgresCheckpointStore, PostgresCheckpointStoreBuilder};
 pub use crypto_key_store::{PostgresCryptoKeyStore, PostgresCryptoKeyStoreBuilder};

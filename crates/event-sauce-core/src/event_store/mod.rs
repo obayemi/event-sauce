@@ -25,7 +25,7 @@ use futures::Stream;
 use uuid::Uuid;
 
 use crate::{
-    Aggregate, AggregateClaim, AggregateRoot, AggregateVersion, DeletedAggregateRoot,
+    Aggregate, AggregateClaim, AggregateRoot, AggregateVersion, DeletedAggregateRoot, EntityId,
     EventEnvelope, EventLogEntry, EventSourcedRepository, Position, Result, SnapshotConfig,
     StreamId,
 };
@@ -229,6 +229,25 @@ pub trait EventStore: Send + Sync {
         }
         Ok(max)
     }
+
+    /// Returns the aggregate currently holding `claim`, if any.
+    ///
+    /// Backends index claims by `(claim_type, claim_key) -> aggregate_id`, so
+    /// this is one indexed lookup that needs no plaintext projection of the
+    /// claimed value. PostgreSQL stores the SHA-256 of the key, while the
+    /// in-memory backend keys its in-process index by the JSON value. A claim
+    /// released by an aggregate (changed, dropped, or cleared on deletion) no
+    /// longer resolves.
+    ///
+    /// The method is required: it cannot be derived from the other
+    /// primitives, because the claim index is backend state. A store that
+    /// keeps no claim index answers `Ok(None)`, and a store wrapping another
+    /// one delegates to it.
+    ///
+    /// # Errors
+    ///
+    /// Returns a backend error if the lookup fails.
+    async fn resolve_claim(&self, claim: &AggregateClaim) -> Result<Option<EntityId>>;
 
     /// Gets the current version of a stream.
     async fn get_version(&self, stream_id: StreamId) -> Result<AggregateVersion>;
@@ -619,6 +638,13 @@ mod tests {
 
     #[async_trait]
     impl EventStore for ScriptedStreamStore {
+        async fn resolve_claim(
+            &self,
+            _claim: &crate::AggregateClaim,
+        ) -> Result<Option<crate::EntityId>> {
+            Ok(None)
+        }
+
         async fn append(
             &self,
             _stream_id: StreamId,

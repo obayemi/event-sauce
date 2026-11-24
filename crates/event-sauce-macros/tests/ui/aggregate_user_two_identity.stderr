@@ -1,0 +1,6 @@
+error: only one field may be marked `#[user(identity)]`
+  --> tests/ui/aggregate_user_two_identity.rs:13:5
+   |
+13 | /     #[user(identity)]
+14 | |     second: event_sauce_auth::Identity<event_sauce_auth::Password<event_sauce_auth::Email>>,
+   | |___________________________________________________________________________________________^

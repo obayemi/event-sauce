@@ -25,21 +25,43 @@ use sqlx::{PgConnection, PgPool};
 /// already serializes claim enforcement across the whole batch, so this
 /// ordering is not what protects it.
 fn hash_claims(claims: &[AggregateClaim]) -> Result<Vec<(&AggregateClaim, Vec<u8>)>> {
-    use sha2::{Digest, Sha256};
-
-    let mut hashed: Vec<(&AggregateClaim, Vec<u8>)> = Vec::with_capacity(claims.len());
-    for claim in claims {
-        let key_json = serde_json::to_string(&claim.claim_key)
-            .map_err(|e| Error::backend("Failed to serialize claim key", e))?;
-        let claim_hash = Sha256::digest(key_json.as_bytes()).to_vec();
-        hashed.push((claim, claim_hash));
-    }
+    let mut hashed = claims
+        .iter()
+        .map(|claim| Ok((claim, claim_hash(claim)?)))
+        .collect::<Result<Vec<_>>>()?;
     hashed.sort_by(|(a, a_hash), (b, b_hash)| {
         a.claim_type
             .cmp(b.claim_type)
             .then_with(|| a_hash.cmp(b_hash))
     });
     Ok(hashed)
+}
+
+/// SHA-256 of the claim key's JSON form: the value `aggregate_claims` indexes.
+fn claim_hash(claim: &AggregateClaim) -> Result<Vec<u8>> {
+    use sha2::{Digest, Sha256};
+
+    let key_json = serde_json::to_string(&claim.claim_key)
+        .map_err(|e| Error::backend("Failed to serialize claim key", e))?;
+    Ok(Sha256::digest(key_json.as_bytes()).to_vec())
+}
+
+/// Returns the aggregate holding `claim` in `claims_table`, if any, with one
+/// lookup on the `(claim_type, claim_hash)` unique index.
+pub(crate) async fn holder(
+    pool: &PgPool,
+    claims_table: &str,
+    claim: &AggregateClaim,
+) -> Result<Option<uuid::Uuid>> {
+    let query = format!(
+        "SELECT aggregate_id FROM {claims_table} WHERE claim_type = $1 AND claim_hash = $2"
+    );
+    sqlx::query_scalar(&query)
+        .bind(claim.claim_type)
+        .bind(claim_hash(claim)?)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| Error::backend("Failed to resolve claim", e))
 }
 
 /// Creates the shared `aggregate_claims` table and its index at `claims_table`.

@@ -101,4 +101,5 @@ fn boxed_async_body(block: &Block, core: &TokenStream, context: &TokenStream) ->
 }
 
 #[cfg(test)]
+#[path = "tests/with_event_context_tests.rs"]
 mod tests;

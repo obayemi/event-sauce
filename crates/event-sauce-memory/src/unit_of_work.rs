@@ -96,4 +96,5 @@ impl TransactionalStore for InMemoryTransactionalStore {
 }
 
 #[cfg(test)]
+#[path = "tests/unit_of_work_tests.rs"]
 mod tests;

@@ -1,0 +1,12 @@
+error[E0423]: cannot initialize a tuple struct which contains private fields
+ --> tests/ui/advance_constructor.rs:4:5
+  |
+4 |     Advance(login).to(Done)
+  |     ^^^^^^^
+  |
+  = note: a struct named `Advance` exists in another namespace
+note: constructor is not visible here due to private fields
+ --> src/login/flow.rs
+  |
+  | pub struct Advance<U: UserAggregate, S>(pub(crate) Login<U, S>);
+  |                                         ^^^^^^^^^^^^^^^^^^^^^^ private field

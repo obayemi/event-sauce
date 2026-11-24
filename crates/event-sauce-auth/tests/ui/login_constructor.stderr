@@ -1,0 +1,26 @@
+error[E0624]: associated function `resumed` is private
+ --> tests/ui/login_constructor.rs:7:12
+  |
+7 |       Login::resumed(user, [0; 32], chrono::Utc::now(), todo!(), Done)
+  |              ^^^^^^^ private associated function
+  |
+ ::: src/login/flow.rs
+  |
+  | /     pub(crate) fn resumed(
+  | |         user: Arc<AggregateRoot<U>>,
+  | |         fingerprint: [u8; 32],
+  | |         started_at: DateTime<Utc>,
+  | |         users: Arc<dyn Users<U>>,
+  | |         state: S,
+  | |     ) -> Self {
+  | |_____________- private associated function defined here
+
+warning: unreachable expression
+ --> tests/ui/login_constructor.rs:7:64
+  |
+7 |     Login::resumed(user, [0; 32], chrono::Utc::now(), todo!(), Done)
+  |                                                       -------  ^^^^ unreachable expression
+  |                                                       |
+  |                                                       any code following this expression is unreachable
+  |
+  = note: `#[warn(unreachable_code)]` (part of `#[warn(unused)]`) on by default

@@ -4,8 +4,8 @@
 
 use async_trait::async_trait;
 use event_sauce_core::{
-    AggregateVersion, Error, EventEnvelope, EventStore, Position, Result, Snapshot, SnapshotConfig,
-    StreamId,
+    AggregateClaim, AggregateVersion, EntityId, Error, EventEnvelope, EventStore, Position, Result,
+    Snapshot, SnapshotConfig, StreamId,
 };
 use futures::stream::Stream;
 use futures::TryStreamExt;
@@ -15,6 +15,9 @@ mod append;
 pub(crate) use append::PlannedBatch;
 mod builder;
 mod migrate;
+#[cfg(test)]
+#[path = "tests/resolve_claim_tests.rs"]
+mod resolve_claim_tests;
 mod row;
 pub(crate) use row::{EventRow, EVENT_COLUMNS};
 
@@ -477,6 +480,12 @@ impl EventStore for PostgresEventStore {
         Ok(Position::new(max))
     }
 
+    async fn resolve_claim(&self, claim: &AggregateClaim) -> Result<Option<EntityId>> {
+        let claims_table = self.qualify_table("aggregate_claims");
+        let holder = crate::claims::holder(&self.pool, &claims_table, claim).await?;
+        Ok(holder.map(EntityId::from))
+    }
+
     async fn get_version(&self, stream_id: StreamId) -> Result<AggregateVersion> {
         let events_table = self.qualify_table("events");
         Self::current_stream_version(&self.pool, &events_table, &stream_id).await
@@ -642,26 +651,25 @@ mod tests {
     use futures::StreamExt;
     use serde_json::json;
     use sqlx::PgPool;
-    use testcontainers_modules::postgres::Postgres;
     use uuid::Uuid;
 
-    /// Test database helper using testcontainers for isolated `PostgreSQL` testing.
+    /// Test database helper backed by its own database on the shared test server.
     ///
     /// `pub(super)`: also used by the `builder` and `migrate` submodules'
     /// own tests, which need the exact same real-migration setup.
     pub(super) struct TestDatabase {
         pool: PgPool,
-        #[allow(dead_code)]
-        container: testcontainers_modules::testcontainers::ContainerAsync<Postgres>,
+        _database: testcontainers_shared::postgres::FreshDatabase,
     }
 
     impl TestDatabase {
-        /// Creates a new test database with testcontainers, migrated with the
+        /// Creates a fresh database on the shared test server, migrated with the
         /// store's real [`PostgresEventStore::migrate`] rather than a
         /// hand-synced copy of its schema, so tests exercise the exact
         /// schema production gets.
         pub(super) async fn new() -> Result<Self> {
-            let (container, connection_string) = crate::test_support::start_postgres_url().await;
+            let (database, connection_string) =
+                testcontainers_shared::postgres::fresh_database().await;
 
             // Connect to database
             let pool = PgPool::connect(&connection_string)
@@ -676,7 +684,10 @@ mod tests {
                 .migrate()
                 .await?;
 
-            Ok(Self { pool, container })
+            Ok(Self {
+                pool,
+                _database: database,
+            })
         }
 
         pub(super) fn pool(&self) -> &PgPool {
@@ -726,7 +737,7 @@ mod tests {
     /// the same database concurrently.
     #[tokio::test]
     async fn test_concurrent_migrate_calls_do_not_crash() {
-        let (_container, url) = crate::test_support::start_postgres_url().await;
+        let (_database, url) = testcontainers_shared::postgres::fresh_database().await;
         let pool = PgPool::connect(&url).await.unwrap();
 
         let handles: Vec<_> = (0..8)
@@ -2419,7 +2430,7 @@ mod tests {
     /// forever for a connection the stream never releases.
     #[tokio::test]
     async fn test_process_pending_does_not_hold_a_connection_while_handlers_run() {
-        let (_container, url) = crate::test_support::start_postgres_url().await;
+        let (_database, url) = testcontainers_shared::postgres::fresh_database().await;
         let pool = sqlx::postgres::PgPoolOptions::new()
             .max_connections(1)
             .acquire_timeout(std::time::Duration::from_secs(5))

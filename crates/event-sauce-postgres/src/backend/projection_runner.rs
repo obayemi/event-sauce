@@ -551,7 +551,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_postgres_projection_atomic_success() {
-        let (url, _container) = start_test_db().await;
+        let (url, _database) = start_test_db().await;
         let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
         CountingProjection::migrate(backend.pool(), "event_sauce").await;
 
@@ -584,7 +584,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_postgres_projection_rolls_back_on_failure() {
-        let (url, _container) = start_test_db().await;
+        let (url, _database) = start_test_db().await;
         let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
         CountingProjection::migrate(backend.pool(), "event_sauce").await;
 
@@ -616,7 +616,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_postgres_projection_resumes_from_checkpoint() {
-        let (url, _container) = start_test_db().await;
+        let (url, _database) = start_test_db().await;
         let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
         CountingProjection::migrate(backend.pool(), "event_sauce").await;
 
@@ -661,7 +661,7 @@ mod tests {
     /// event of the (single-fetch) batch.
     #[tokio::test]
     async fn test_run_postgres_projection_checkpoint_advances_past_unmatched_tail() {
-        let (url, _container) = start_test_db().await;
+        let (url, _database) = start_test_db().await;
         let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
         CountingProjection::migrate(backend.pool(), "event_sauce").await;
 
@@ -802,7 +802,7 @@ mod tests {
     /// immediately and each event is handled exactly once.
     #[tokio::test]
     async fn test_gap_in_ids_does_not_reapply_event_in_single_run() {
-        let (url, _container) = start_test_db().await;
+        let (url, _database) = start_test_db().await;
         let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
         RecordingProjection::migrate(backend.pool(), "event_sauce").await;
 
@@ -907,7 +907,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_leased_projection_completes_under_lease() {
-        let (url, _container) = start_test_db().await;
+        let (url, _database) = start_test_db().await;
         let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
         CountingProjection::migrate(backend.pool(), "event_sauce").await;
 
@@ -970,7 +970,7 @@ mod tests {
     async fn test_run_leased_projection_renews_across_a_drain_longer_than_the_lease() {
         const EVENT_COUNT: u64 = 10;
 
-        let (url, _container) = start_test_db().await;
+        let (url, _database) = start_test_db().await;
         let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
         CountingProjection::migrate(backend.pool(), "event_sauce").await;
 
@@ -997,7 +997,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_leased_projection_checkpoint_advances_past_unmatched_tail() {
-        let (url, _container) = start_test_db().await;
+        let (url, _database) = start_test_db().await;
         let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
         CountingProjection::migrate(backend.pool(), "event_sauce").await;
 
@@ -1039,7 +1039,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_leased_projection_busy_when_lease_held() {
-        let (url, _container) = start_test_db().await;
+        let (url, _database) = start_test_db().await;
         let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
         CountingProjection::migrate(backend.pool(), "event_sauce").await;
 
@@ -1070,7 +1070,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_leased_projection_releases_on_exit() {
-        let (url, _container) = start_test_db().await;
+        let (url, _database) = start_test_db().await;
         let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
         CountingProjection::migrate(backend.pool(), "event_sauce").await;
 
@@ -1097,7 +1097,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_leased_projection_releases_on_failure() {
-        let (url, _container) = start_test_db().await;
+        let (url, _database) = start_test_db().await;
         let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
         CountingProjection::migrate(backend.pool(), "event_sauce").await;
 
@@ -1133,7 +1133,7 @@ mod tests {
     /// lease and enter its first idle sleep before checking it.
     #[tokio::test]
     async fn test_run_sticky_projection_holds_lease_across_idle_ticks() {
-        let (url, _container) = start_test_db().await;
+        let (url, _database) = start_test_db().await;
         let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
         CountingProjection::migrate(backend.pool(), "event_sauce").await;
 
@@ -1212,7 +1212,7 @@ mod tests {
     /// very next one.
     #[tokio::test]
     async fn test_run_sticky_projection_resumes_where_previous_tick_left_off() {
-        let (url, _container) = start_test_db().await;
+        let (url, _database) = start_test_db().await;
         let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
         CountingProjection::migrate(backend.pool(), "event_sauce").await;
 
@@ -1256,7 +1256,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_sticky_projection_rejects_idle_interval_too_close_to_lease_duration() {
-        let (url, _container) = start_test_db().await;
+        let (url, _database) = start_test_db().await;
         let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
         CountingProjection::migrate(backend.pool(), "event_sauce").await;
 
@@ -1341,7 +1341,7 @@ mod tests {
     /// already-landed transaction) stands.
     #[tokio::test]
     async fn test_run_leased_projection_lease_stolen_mid_drain_rolls_back_the_stolen_event() {
-        let (url, _container) = start_test_db().await;
+        let (url, _database) = start_test_db().await;
         let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
         CountingProjection::migrate(backend.pool(), "event_sauce").await;
 
@@ -1502,7 +1502,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_rebuild_resets_and_redrains() {
-        let (url, _container) = start_test_db().await;
+        let (url, _database) = start_test_db().await;
         let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
         RebuildProjection::migrate(backend.pool(), "event_sauce").await;
 
@@ -1570,7 +1570,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_rebuild_busy_when_leased() {
-        let (url, _container) = start_test_db().await;
+        let (url, _database) = start_test_db().await;
         let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
         RebuildProjection::migrate(backend.pool(), "event_sauce").await;
 
@@ -1632,7 +1632,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_rebuild_errors_when_reset_not_implemented() {
-        let (url, _container) = start_test_db().await;
+        let (url, _database) = start_test_db().await;
         let backend = PostgresBackend::setup(&url, "event_sauce").await.unwrap();
         NoResetProjection::migrate(backend.pool(), "event_sauce").await;
 

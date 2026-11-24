@@ -176,4 +176,5 @@ impl AtomicCommit {
 }
 
 #[cfg(test)]
+#[path = "tests/atomic_commit_tests.rs"]
 mod tests;

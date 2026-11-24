@@ -265,7 +265,7 @@ mod tests {
 
         let ciphertext = provider.encrypt(&key, b"", &[]).unwrap();
         let decrypted = provider.decrypt(&key, &ciphertext, &[]).unwrap();
-        assert!(decrypted.is_empty());
+        assert_eq!(decrypted, b"");
     }
 
     #[test]

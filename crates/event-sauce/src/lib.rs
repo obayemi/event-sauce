@@ -20,6 +20,12 @@
 //! event-sauce = { version = "0.1", features = ["postgres"] }
 //! ```
 //!
+//! Login for user aggregates sits under `auth` (feature `auth`, plus
+//! `auth-postgres`, `auth-moka`, `auth-redis`, `auth-oauth`, `auth-reset` and
+//! `auth-totp` for its optional parts), and the axum integration under
+//! `axum` (features `axum`, `axum-login`, `axum-throttle`, `axum-totp`,
+//! `axum-reset`, `axum-oauth` and `axum-app`).
+//!
 //! [`define_events!`](crate::define_events) still expands to
 //! `#[derive(Serialize, Deserialize)]` on the generated event structs, so a
 //! caller using it also needs `serde` with the `derive` feature. `pastey`,
@@ -105,6 +111,42 @@ pub mod memory {
 #[cfg(feature = "postgres")]
 pub mod postgres {
     pub use event_sauce_postgres::*;
+}
+
+/// Pluggable credentials, login methods and authentication for user
+/// aggregates.
+///
+/// `#[aggregate(user)]` expands to paths rooted here.
+#[cfg(feature = "auth")]
+pub mod auth {
+    pub use event_sauce_auth::*;
+}
+
+/// axum and tower integration.
+///
+/// Behind `axum`: the correlation layer, the `Store`, `Repo`, `UnitOfWork`
+/// and `Found` extractors, the `StoreError` response and `ReturnTo`, a
+/// same-origin redirect target.
+///
+/// Behind `axum-login`: the login session, `LoginStep` and `LoginError`, the
+/// `LoginRedirect` layer, and the `Authorized`, `CurrentUser`, `Registered`
+/// and `Acting` extractors.
+///
+/// Behind `axum-throttle`: `LoginThrottles`, `Throttled` and `ClientAddr`.
+///
+/// Behind `axum-totp`: `TotpChallenge`, `TotpProof` and the `Pages` the
+/// application answers their steps with.
+///
+/// Behind `axum-reset`: `PasswordReset`, `PublicOrigin` and the traits the
+/// application answers a reset with.
+///
+/// Behind `axum-oauth`: `OAuthSignIn` and the traits the application answers
+/// an OAuth sign-in, link or claim with.
+///
+/// Behind `axum-app`: the application builder.
+#[cfg(feature = "axum")]
+pub mod axum {
+    pub use event_sauce_axum::*;
 }
 
 /// Prelude module for convenient imports

@@ -228,4 +228,5 @@ impl<T: TransactionalStore> std::fmt::Debug for UnitOfWorkStore<T> {
 }
 
 #[cfg(test)]
+#[path = "tests/store_tests.rs"]
 mod tests;

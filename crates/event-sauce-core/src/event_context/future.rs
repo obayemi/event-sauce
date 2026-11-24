@@ -58,4 +58,5 @@ pub trait WithEventContextExt: Future + Sized {
 impl<F: Future> WithEventContextExt for F {}
 
 #[cfg(test)]
+#[path = "tests/future_tests.rs"]
 mod tests;

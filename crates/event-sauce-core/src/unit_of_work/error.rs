@@ -120,4 +120,5 @@ impl<E: AggregateError> From<CommandError<E>> for UnitOfWorkError {
 }
 
 #[cfg(test)]
+#[path = "tests/error_tests.rs"]
 mod tests;

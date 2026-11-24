@@ -39,11 +39,35 @@ RED → GREEN → REFACTOR → COMMIT
 #### Testing Standards
 
 **File Organization**:
+
+Unit tests are an inline `#[cfg(test)] mod tests { ... }` by default. When they
+are split out, they live in a `tests/` folder next to the source file, named
+`<module>_tests.rs` and wired with `#[path]`:
+
+```rust
+// src/aggregate_root.rs
+#[cfg(test)]
+#[path = "tests/aggregate_root_tests.rs"]
+mod tests;
+```
+
 ```
 src/
-  module.rs
-  module/
-    tests.rs        # Unit tests alongside code
+  aggregate_root.rs
+  tests/
+    aggregate_root_tests.rs # Unit tests of aggregate_root.rs
+  commands/
+    mod.rs
+    tests/
+      commands_tests.rs     # mod.rs is named after its module, not mod_tests.rs
+```
+
+A test module with child modules puts them in `tests/<module>_tests/` and
+declares each with an explicit `#[path = "<module>_tests/<name>.rs"]`.
+
+The crate-root `tests/` directory remains for integration tests:
+
+```
 tests/
   integration/
     feature_test.rs # Integration tests
@@ -348,6 +372,91 @@ operation over several aggregates is a `UnitOfWorkCommand` (see
 
 **Alternative**: For commands requiring complex logic, conditional validation, or custom error handling, implement methods manually (see `docs/getting-started.md`).
 
+### User Aggregates and HTTP Standards
+
+- A user that logs in is an aggregate marked `#[aggregate(..., user)]`,
+  with one `#[user(identity)] identity: Identity<C>` field and an optional
+  `#[user(active)]` field. `C` is a `Credentials` type: `Password<L>`,
+  `Federated`, `PasswordOrFederated<L>`, or the app's own (see
+  `docs/auth.md`)
+- Logins resolve users through claims (`EventStore::resolve_claim`), never
+  through a projection
+- A login is a typestate: `Logins::begin` runs a `FirstFactor` (a
+  `LoginMethod` and a `Route`) and yields a `Login<U, S>`; each state's
+  `Step` is the only way out of it, and only `Login::finish` on a `Complete`
+  state yields the `Authenticated<U>` a session is opened from. Model a new
+  factor as a new state with its own `Step`, never as a flag checked by the
+  handler; save a login between requests with `PendingLogins`
+- A session opens only through `event-sauce-axum`'s `AuthSession<U>::login`,
+  which takes only an `Authenticated<U>`. The `axum-login` backend and its
+  `SessionUser` stay `pub(crate)`: never export, alias or return them from a
+  public signature or name them in a public trait impl, never add a public
+  path to `axum_login::AuthSession` or a backend value, and keep
+  `#![deny(unnameable_types)]`. The `tests/ui` cases of the crate pin this.
+  What stays outside the types: a session record written by hand through
+  `tower_sessions::Session`, and an app's own `AuthnBackend`
+- A hot aggregate declares its snapshot strategy on the aggregate itself:
+  `#[aggregate(..., snapshots(every = N))]` (also `always`, `never`,
+  `with = "path"`); a store `per_type_override` still wins over it
+- HTTP apps use `event-sauce-axum`: `EventSauceApp` for the Postgres
+  defaults, `AuthLayer` and the `AuthSession` extractor for login sessions
+  (`AuthSession::finish` and `PendingLogin::hold`, answering a `LoginStep`,
+  end and continue a login), the
+  `Store`/`Repo`/`UnitOfWork`/`Found`/`Authorized` and `CurrentUser`/`MaybeUser`/`Registered`/`Acting`
+  extractors, `StoreError` and `LoginError` for the error responses, and
+  `CorrelationLayer`
+  so events carry the request id (see `docs/axum.md` and the `axum-auth`
+  and `axum-crud` examples)
+- An HTTP handler never writes its own status table for a failure: it returns
+  `event-sauce-axum`'s `StoreError` for a store failure (`404`, `409`, `500`,
+  and `410` only through `deleted_as(DeletedStatus::Gone)`; split a
+  `ModifyError`, `ExecuteError` or `UnitOfWorkError` with `SplitDomain::split`
+  to keep the domain error) and `LoginError` for a login step, so a store
+  outage is never answered as a bad login and no refusal tells an unknown
+  user from a wrong password
+- A handler never writes `Path`, `load` and an owner check for the aggregate its
+  route names: it takes `Found<A, S>` (read only, loaded once per request;
+  `impl PathAggregate for A` names the path parameter and `410` for a deleted
+  one) or, behind a user, `Authorized<A, P, S>` with `P: Access<A>`, whose
+  denial is `404` unless the policy sets `DENIED = Forbidden`. Writes keep
+  `Repo::modify` or `execute`; there is no write path through either extractor
+- A command context that holds the acting user implements `FromUser` and
+  reaches the handler as `Acting<Ctx>`, never rebuilt from `CurrentUser` and
+  never a second load of the user
+- A login handler returns `Result<LoginStep, LoginError>`: `AuthSession::finish`
+  for a `Complete` state and `PendingLogin::hold` for a state that waits, never
+  a hand-built `204`/`202` or a `Set-Cookie` of the pending cookie. Resume a
+  pending login in the handler body, after every extractor, never in an
+  extractor: a malformed body would burn the single-use login
+- An HTML login flow whose route asks for a TOTP code goes through
+  `TotpChallenge` and `TotpProof` (feature `totp`), which keep the waiting
+  login in the session record under a key the module owns, never in the
+  pending login cookie of the JSON flow, and answer every step through the
+  app's `TotpLoginPages`. An endpoint that checks a password or a code starts
+  an `Attempt` of `LoginThrottles` before it verifies
+- A reset by emailed link goes through `PasswordReset` (feature `reset`): the
+  reset state stays in the app's aggregate behind `ResetAccounts`, the link is
+  built from a configured `PublicOrigin` and never from `Host`, and the
+  session after a redeem opens through the flow's own private first factor,
+  never through a public voucher
+- An OAuth sign-in, link or claim goes through `OAuthSignIn` (feature
+  `oauth`): the state, the PKCE verifier, the target and the pending link live
+  in the session record under keys the module owns, the callback takes the
+  link and the claim, then the state, so any callback ends them and a refused
+  state ends the flow, and a link carries
+  its proof only until `LINK_PROOF_TTL` and works for its own flow's state
+  once. Whose account a provider identity is stays the app's, behind
+  `OAuthAccounts`; never set `LinkProof::Proved` for a code nobody checked
+- An HTML app puts `LoginRedirect` on the router of its pages, so
+  `CurrentUser`, `Registered`, `Authorized` and `Acting` redirect a browser
+  that is not logged in to the login page with the page it asked for
+  (`OriginalUri`), and
+  the JSON API on the same `AuthLayer` keeps its `401`. A redirect target that
+  comes from a request is a `ReturnTo`, never a `String`: it refuses `//host`,
+  schemes, `\` and control characters
+- New examples declare every facade feature they need in `required-features`,
+  so they build with `--no-default-features`
+
 ### Code Quality Checklist
 
 Before committing, ensure:
@@ -411,19 +520,37 @@ pub fn increment(&mut self, amount: i32) -> Result<(), CounterError> { ... }
 ### Crate Organization
 
 ```
-event-sauce/
-├── event-sauce-core/          # Core traits (no implementations) + Subscription system
-├── event-sauce-memory/        # In-memory implementation
-├── event-sauce-postgres/      # PostgreSQL implementation
-├── event-sauce-macros/        # Derive macros
-└── event-sauce/               # Facade crate
+crates/
+├── event-sauce-core/                # Core traits and their generic default implementations
+├── event-sauce-crypto/              # AES-256-GCM provider for crypto-shredding
+├── event-sauce-memory/              # In-memory backend
+├── event-sauce-postgres/            # PostgreSQL backend
+├── event-sauce-macros/              # Proc macros (#[aggregate], #[derive(AggregateId)], ...)
+├── event-sauce-auth/                # User aggregates, credentials, login, login stores, user cache
+├── event-sauce-axum/                # axum integration: correlation, extractors, sealed axum-login backend, app builder
+├── event-sauce-macro-surface-test/  # Checks the macros expand through the facade alone
+└── event-sauce/                     # Facade crate, re-exports everything behind features
+vendor/
+└── testcontainers-shared/           # Test-only: one testcontainers server per test binary, a slice per test
 ```
 
 ### Dependency Rules
 
 - `event-sauce-core` depends on: **Nothing** (only common utilities)
-- Backend crates depend on: `event-sauce-core` only
-- `event-sauce` depends on: All crates (re-exports)
+- `event-sauce-crypto` depends on: `event-sauce-core` only
+- Backend crates (`event-sauce-memory`, `event-sauce-postgres`) depend on:
+  `event-sauce-core` and `event-sauce-crypto` only
+- `event-sauce-auth` depends on: `event-sauce-core` only. Its Postgres and
+  Redis stores talk to `sqlx` and `redis` directly, never through a backend
+  crate
+- `event-sauce-axum` is the integration crate: `event-sauce-core` always,
+  `event-sauce-auth` behind `login`, `event-sauce-postgres` behind `app`. It
+  is the only non-facade crate allowed to depend on a backend
+- `event-sauce` depends on: All crates (re-exports, each behind a feature)
+- `vendor/` holds standalone, unpublished (`publish = false`) libraries that
+  are not about event sourcing. They are workspace members, and crates may
+  only take them as dev-dependencies (`testcontainers-shared` provides the
+  test servers shared across a test binary)
 - Use `workspace = true` for all dependencies
 
 ### Trait Design
@@ -560,37 +687,42 @@ pub enum EventStoreError {
 
 ### Testing Database Code
 
+Tests take their PostgreSQL and Redis from `testcontainers-shared`
+(`vendor/testcontainers-shared`, a dev-dependency): one server per test
+binary, started by the first test that asks for it and removed when the
+process exits, and a slice of it per test. Tests run in parallel; never
+start a container per test.
+
 ```rust
-// Common test setup
-pub struct TestDatabase {
-    pool: PgPool,
-    db_name: String,
-}
+use testcontainers_shared::{postgres::fresh_database, redis::fresh_redis};
 
-impl TestDatabase {
-    pub async fn new() -> Result<Self> {
-        let db_name = format!("test_event_sauce_{}", Uuid::new_v4());
-        // Create isolated database
-        // Run migrations
-        Ok(Self { pool, db_name })
-    }
-}
-
-impl Drop for TestDatabase {
-    fn drop(&mut self) {
-        // Cleanup database
-    }
-}
-
-// Usage in tests
 #[tokio::test]
-#[serial]  // Run database tests serially
 async fn test_postgres_store() {
-    let db = TestDatabase::new().await.unwrap();
-    let store = PostgresEventStore::new(db.pool());
+    // An empty database of its own, dropped with the guard.
+    let (_database, url) = fresh_database().await;
+    let pool = PgPool::connect(&url).await.unwrap();
+    let store = PostgresEventStore::new(pool);
+    // ... test ...
+}
+
+#[tokio::test]
+async fn test_redis_store() {
+    // A logical database of its own, flushed and released with the guard.
+    let (_redis, url) = fresh_redis();
+    let store = RedisLoginStore::connect(&url).await.unwrap();
     // ... test ...
 }
 ```
+
+A Redis logical database isolates keys and per-database commands only:
+pub/sub channels, `FLUSHALL`, `CONFIG SET` (keyspace notifications
+included), `SCRIPT`/`FUNCTION`, `SWAPDB` and `CLIENT KILL` are server-wide.
+
+A test whose side effects reach beyond its slice (creating databases or
+roles, any of those server-wide Redis commands, a custom container setup)
+starts a dedicated container with `postgres::start_postgres_url` or
+`redis::start_redis_url`, or with `start_with_retry` on a request built by
+`postgres::test_postgres` or `redis::test_redis`.
 
 ### Testing Async Code
 
@@ -654,10 +786,14 @@ The CI pipeline (`.github/workflows/ci.yml`) runs on pushes and PRs against
 9. **Core Feature Combinations** — `event-sauce-core` with each combination of
    `event-sourcing` / `state-store`, plus `commands`, `commands,state-store`,
    `commands,event-sourcing` and `unit-of-work`
+10. **Auth and axum Feature Combinations** — `event-sauce-auth`,
+    `event-sauce-axum` and the `event-sauce` facade with each of their
+    features alone and none by default
 
-PostgreSQL tests spin up their own containers via testcontainers, so the
-pipeline needs Docker (present on `ubuntu-latest`) rather than a database
-service.
+PostgreSQL and Redis tests share one testcontainers server of each per test
+binary (`testcontainers-shared`), each test getting its own database on it,
+so the pipeline needs Docker (present on `ubuntu-latest`) rather than a
+database service.
 
 ### Before Pushing
 

@@ -6,7 +6,10 @@
 
 use std::fmt::Debug;
 
-use crate::{AggregateClaim, AggregateError, AggregateType, DomainEvent, Entity, EventApplicator};
+use crate::{
+    AggregateClaim, AggregateError, AggregateType, DomainEvent, Entity, EventApplicator,
+    SnapshotStrategy,
+};
 
 /// Trait for event-sourced aggregates.
 ///
@@ -173,6 +176,67 @@ pub trait Aggregate: Entity + Into<Self::DeletedState> {
     #[must_use]
     fn snapshot_version() -> u32 {
         0
+    }
+
+    /// The aggregate's own snapshot strategy, if it declares one.
+    ///
+    /// When `Some`, it overrides the store's default strategy for this
+    /// aggregate type, but a per-type override configured on the store still
+    /// wins (see `SnapshotConfig::resolve_strategy`).
+    /// Only event-sourced commits (`EventStore::commit`) read the strategy;
+    /// state-stored aggregates ignore it.
+    ///
+    /// Defaults to `None`. Declare one with
+    /// `#[aggregate(..., snapshots(every = 50))]` (also `always`, `never` and
+    /// `with = "path::TO_STATIC"`) or by implementing manually.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use event_sauce_core::{
+    ///     Aggregate, AggregateError, DomainEvent, Entity, EntityId, EventApplicator,
+    ///     EventVersion, EveryNEvents, SnapshotStrategy,
+    /// };
+    /// use std::num::NonZeroU32;
+    ///
+    /// # #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+    /// # struct Counter { id: EntityId }
+    /// # #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+    /// # struct Bumped;
+    /// # #[derive(Debug, thiserror::Error)]
+    /// # #[error("counter error")]
+    /// # struct CounterError;
+    /// # impl AggregateError for CounterError {}
+    /// # impl Entity for Counter {
+    /// #     fn new(id: EntityId) -> Self { Self { id } }
+    /// #     fn entity_id(&self) -> EntityId { self.id }
+    /// # }
+    /// # impl DomainEvent for Bumped {
+    /// #     type Aggregate = Counter;
+    /// #     fn event_type(&self) -> &'static str { "Bumped" }
+    /// #     fn event_version(&self) -> EventVersion { EventVersion::new(1) }
+    /// #     fn occurred_at(&self) -> chrono::DateTime<chrono::Utc> { chrono::Utc::now() }
+    /// # }
+    /// # impl EventApplicator<Counter> for Bumped {
+    /// #     fn dispatch(&self, _: &mut Counter) -> Result<(), CounterError> { Ok(()) }
+    /// #     fn dispatch_unchecked(&self, _: &mut Counter) {}
+    /// # }
+    /// impl Aggregate for Counter {
+    ///     type Event = Bumped;
+    ///     type Error = CounterError;
+    ///     type DeletedState = Self;
+    ///
+    ///     fn snapshot_strategy() -> Option<&'static dyn SnapshotStrategy> {
+    ///         static STRATEGY: EveryNEvents = EveryNEvents::new(NonZeroU32::new(50).unwrap());
+    ///         Some(&STRATEGY)
+    ///     }
+    /// }
+    ///
+    /// assert!(Counter::snapshot_strategy().is_some());
+    /// ```
+    #[must_use]
+    fn snapshot_strategy() -> Option<&'static dyn SnapshotStrategy> {
+        None
     }
 }
 

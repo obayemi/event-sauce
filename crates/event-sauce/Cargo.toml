@@ -17,6 +17,8 @@ event-sauce-memory = { path = "../event-sauce-memory", version = "0.1.0", defaul
 event-sauce-postgres = { path = "../event-sauce-postgres", version = "0.1.0", default-features = false, optional = true }
 event-sauce-macros = { path = "../event-sauce-macros", version = "0.1.0", optional = true }
 event-sauce-crypto = { path = "../event-sauce-crypto", version = "0.1.0", optional = true }
+event-sauce-auth = { path = "../event-sauce-auth", version = "0.1.0", default-features = false, optional = true }
+event-sauce-axum = { path = "../event-sauce-axum", version = "0.1.0", default-features = false, optional = true }
 
 [features]
 default = ["macros", "memory", "event-sourcing", "state-store"]
@@ -36,6 +38,67 @@ event-sourcing = [
 state-store = [
     "event-sauce-core/state-store",
     "event-sauce-memory?/state-store",
+]
+# Pluggable credentials, login methods and authentication for user
+# aggregates, re-exported as `event_sauce::auth` with the Argon2 hasher.
+# `#[aggregate(user)]` expands to paths rooted there.
+auth = [
+    "dep:event-sauce-auth",
+    "event-sourcing",
+    "state-store",
+    "event-sauce-auth/argon2",
+]
+# `PostgresLoginStore`, the login store behind multi-step logins.
+auth-postgres = ["auth", "event-sauce-auth/postgres"]
+# `MokaUserCache`, the in-process cache of loaded users.
+auth-moka = ["auth", "event-sauce-auth/moka"]
+# `RedisLoginStore` and `RedisUserCache`.
+auth-redis = ["auth", "event-sauce-auth/redis"]
+# Password reset tokens.
+auth-reset = ["auth", "event-sauce-auth/reset"]
+# The OAuth provider vocabulary.
+auth-oauth = ["auth", "event-sauce-auth/oauth"]
+# The `Totp` second factor.
+auth-totp = ["auth", "event-sauce-auth/totp"]
+# The correlation layer and the `Store`, `Repo` and `UnitOfWork`
+# extractors, re-exported as `event_sauce::axum`.
+axum = ["dep:event-sauce-axum", "event-sourcing", "event-sauce-axum/tracing"]
+# `AuthLayer`, `AuthSession`, pending logins and the current-user
+# extractors; implies `auth`.
+axum-login = ["axum", "auth", "event-sauce-axum/login"]
+# `LoginThrottles`, `Throttled` and `ClientAddr`: growing delays for sign-in
+# endpoints.
+axum-throttle = ["axum", "event-sauce-axum/throttle"]
+# `TotpChallenge` and `TotpProof`: the TOTP code of a sign-in and of a change
+# of settings; implies `axum-login`, `axum-throttle` and `auth-totp`.
+axum-totp = [
+    "axum-login",
+    "axum-throttle",
+    "auth-totp",
+    "event-sauce-axum/totp",
+]
+# `PasswordReset`: the HTTP side of a password reset by emailed link; implies
+# `axum-login`, `axum-throttle` and `auth-reset`.
+axum-reset = [
+    "axum-login",
+    "axum-throttle",
+    "auth-reset",
+    "event-sauce-axum/reset",
+]
+# `OAuthSignIn`: the HTTP side of an OAuth sign-in, link and claim; implies
+# `axum-totp` and `auth-oauth`.
+axum-oauth = [
+    "axum-totp",
+    "auth-oauth",
+    "event-sauce-axum/oauth",
+]
+# `EventSauceApp::postgres`, the whole stack on one pool; implies `postgres`.
+axum-app = [
+    "axum-login",
+    "postgres",
+    "auth-postgres",
+    "auth-moka",
+    "event-sauce-axum/app",
 ]
 # Typed `Command`/`Root` aggregate-lifecycle handling and retry policies.
 commands = ["event-sauce-core/commands"]
@@ -64,10 +127,27 @@ full = [
     "dependencies",
     "commands",
     "unit-of-work",
+    "auth",
+    "auth-postgres",
+    "auth-moka",
+    "auth-redis",
+    "auth-oauth",
+    "auth-reset",
+    "auth-totp",
+    "axum",
+    "axum-login",
+    "axum-throttle",
+    "axum-totp",
+    "axum-reset",
+    "axum-oauth",
+    "axum-app",
 ]
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "test-util", "time"] }
+tokio = { workspace = true, features = ["macros", "net", "rt", "rt-multi-thread", "sync", "test-util", "time"] }
+axum = { workspace = true, features = ["http1", "json", "macros", "tokio"] }
+tower = { workspace = true, features = ["util"] }
+tower-sessions = { workspace = true, features = ["memory-store"] }
 anyhow.workspace = true
 chrono.workspace = true
 uuid.workspace = true
@@ -78,8 +158,11 @@ futures.workspace = true
 async-trait.workspace = true
 criterion = { workspace = true, features = ["html_reports"] }
 sqlx = { workspace = true, features = ["postgres"] }
+argon2.workspace = true
+secrecy.workspace = true
 testcontainers = "0.27"
 testcontainers-modules = { version = "0.15", features = ["postgres"] }
+testcontainers-shared.workspace = true
 trybuild = "1.0"
 
 [[example]]
@@ -129,3 +212,19 @@ required-features = ["unit-of-work", "memory"]
 [[test]]
 name = "unit_of_work_postgres"
 required-features = ["unit-of-work", "postgres"]
+
+[[test]]
+name = "facade_auth"
+required-features = ["auth", "memory"]
+
+[[example]]
+name = "axum-auth"
+path = "examples/axum-auth/main.rs"
+required-features = ["axum-login", "macros", "memory"]
+test = true
+
+[[example]]
+name = "axum-crud"
+path = "examples/axum-crud/main.rs"
+required-features = ["axum-app", "macros"]
+test = true

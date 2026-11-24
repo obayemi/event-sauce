@@ -1,0 +1,106 @@
+[package]
+name = "event-sauce-axum"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "axum and tower integration for event-sauce"
+keywords = ["event-sourcing", "axum", "tower", "correlation", "http"]
+categories = ["web-programming", "asynchronous"]
+
+[features]
+default = ["tracing", "login", "app", "throttle"]
+app = [
+    "login",
+    "dep:event-sauce-postgres",
+    "dep:sqlx",
+    "event-sauce-auth/postgres",
+    "event-sauce-auth/moka",
+    "dep:tower-sessions",
+]
+login = [
+    "dep:async-trait",
+    "dep:axum-login",
+    "dep:event-sauce-auth",
+    "dep:percent-encoding",
+    "axum/original-uri",
+]
+oauth = ["totp", "event-sauce-auth/oauth", "dep:chrono"]
+reset = [
+    "login",
+    "throttle",
+    "event-sauce-auth/reset",
+    "dep:chrono",
+    "dep:secrecy",
+    "dep:tokio",
+]
+throttle = ["axum/tokio"]
+totp = ["login", "throttle", "event-sauce-auth/totp", "dep:secrecy"]
+tracing = ["dep:tracing"]
+
+[dependencies]
+async-trait = { workspace = true, optional = true }
+axum.workspace = true
+axum-login = { workspace = true, optional = true }
+chrono = { workspace = true, optional = true }
+event-sauce-auth = { path = "../event-sauce-auth", version = "0.1.0", default-features = false, optional = true }
+event-sauce-core = { path = "../event-sauce-core", version = "0.1.0", default-features = false, features = ["event-sourcing", "unit-of-work"] }
+event-sauce-postgres = { path = "../event-sauce-postgres", version = "0.1.0", features = ["unit-of-work"], optional = true }
+http.workspace = true
+percent-encoding = { workspace = true, optional = true }
+secrecy = { workspace = true, optional = true }
+serde.workspace = true
+sqlx = { workspace = true, optional = true }
+thiserror.workspace = true
+tokio = { workspace = true, optional = true, features = ["rt"] }
+tower = { workspace = true }
+tower-sessions = { workspace = true, optional = true, features = ["private", "signed"] }
+tracing = { workspace = true, optional = true }
+uuid.workspace = true
+
+[dev-dependencies]
+argon2.workspace = true
+async-trait.workspace = true
+axum = { workspace = true, features = ["macros", "json", "query"] }
+chrono.workspace = true
+event-sauce-auth = { path = "../event-sauce-auth", version = "0.1.0", features = ["argon2", "moka", "oauth", "reset", "totp"] }
+event-sauce-memory = { path = "../event-sauce-memory", version = "0.1.0", features = ["unit-of-work"] }
+event-sauce-postgres = { path = "../event-sauce-postgres", version = "0.1.0", features = ["unit-of-work"] }
+futures.workspace = true
+proptest.workspace = true
+secrecy.workspace = true
+serde_json.workspace = true
+serde_urlencoded.workspace = true
+sqlx.workspace = true
+testcontainers-shared.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time"] }
+tower = { workspace = true, features = ["util"] }
+tower-sessions = { workspace = true, features = ["axum-core", "memory-store", "private", "signed"] }
+totp-rs.workspace = true
+trybuild.workspace = true
+
+[[test]]
+name = "login"
+required-features = ["login"]
+
+[[test]]
+name = "oauth"
+required-features = ["oauth"]
+
+[[test]]
+name = "reset"
+required-features = ["reset", "totp"]
+
+[[test]]
+name = "totp"
+required-features = ["totp"]
+
+[[test]]
+name = "compile_fail"
+required-features = ["app"]
+
+[[test]]
+name = "app"
+required-features = ["app"]
