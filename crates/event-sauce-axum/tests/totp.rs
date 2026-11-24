@@ -3,6 +3,8 @@
 //! event store.
 
 mod memory_login_store;
+#[path = "support/password.rs"]
+mod password;
 mod secured_user;
 mod support;
 

@@ -5,6 +5,8 @@
 mod broken_store;
 mod memory_login_store;
 mod note_fixture;
+#[path = "support/password.rs"]
+mod password;
 mod support;
 mod user_fixture;
 

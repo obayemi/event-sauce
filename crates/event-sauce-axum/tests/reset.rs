@@ -2,6 +2,8 @@
 //! memory store, the in-memory event store, an in-memory reset record and a
 //! mailer that reports what it sends.
 
+#[path = "support/password.rs"]
+mod password;
 mod secured_user;
 mod support;
 

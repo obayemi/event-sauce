@@ -2,6 +2,8 @@
 //! `PostgreSQL` container: the schemas it creates and the application it
 //! wires, driven through an axum router.
 
+#[path = "support/password.rs"]
+mod password;
 mod support;
 mod user_fixture;
 

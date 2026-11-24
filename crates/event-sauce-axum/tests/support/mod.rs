@@ -1,5 +1,5 @@
 //! A client that drives a router without a socket and keeps its cookies,
-//! shared by the login and app integration tests.
+//! shared by the integration tests.
 
 use std::collections::BTreeMap;
 
@@ -11,7 +11,7 @@ use axum::{
     },
     Router,
 };
-use serde_json::{json, Value};
+use serde_json::Value;
 use tower::ServiceExt;
 
 pub struct Reply {
@@ -89,14 +89,5 @@ impl Client {
 
     pub async fn post(&mut self, uri: &str, body: Option<Value>) -> Reply {
         self.request(Method::POST, uri, body).await
-    }
-
-    pub async fn log_in_at(&mut self, uri: &str, email: &str, password: &str) -> Reply {
-        self.post(uri, Some(json!({ "email": email, "password": password })))
-            .await
-    }
-
-    pub async fn log_in(&mut self, email: &str, password: &str) -> Reply {
-        self.log_in_at("/login", email, password).await
     }
 }
