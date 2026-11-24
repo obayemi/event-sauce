@@ -917,6 +917,39 @@ async fn a_claim_is_used_once() {
 }
 
 #[tokio::test]
+async fn a_cancelled_consent_ends_the_claim() {
+    let mut world = World::new();
+    let guest = World::guest(&mut world.client).await;
+    world.client.get("/claim").await;
+    let state = World::start(&mut world.client, "").await;
+    world
+        .client
+        .get(&format!(
+            "/oauth/callback?error=access_denied&state={state}"
+        ))
+        .await;
+
+    World::sign_in(&mut world.client, "grace").await;
+
+    assert_eq!(world.accounts.adopted.load(Ordering::SeqCst), 1);
+    assert_ne!(world.me().await.1, guest.to_string());
+}
+
+#[tokio::test]
+async fn a_link_ends_the_claim_marked_before_it() {
+    let mut world = World::new();
+    let guest = World::guest(&mut world.client).await;
+    world.client.get("/claim").await;
+    let state = location_state(world.client.get("/link").await);
+    World::come_back(&mut world.client, "ada", &state).await;
+
+    World::sign_in(&mut world.client, "grace").await;
+
+    assert_eq!(world.accounts.adopted.load(Ordering::SeqCst), 1);
+    assert_ne!(world.me().await.1, guest.to_string());
+}
+
+#[tokio::test]
 async fn a_claim_of_another_user_claims_nothing() {
     let mut world = World::new();
     let guest = World::guest(&mut world.client).await;

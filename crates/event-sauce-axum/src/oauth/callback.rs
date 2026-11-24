@@ -46,9 +46,10 @@ where
     /// The callback of a flow: links the account, claims for it, or signs it
     /// in, and answers with the application's page.
     ///
-    /// In this order: the link of the session is taken, then the state is
-    /// checked against the flow's (a refused state ends the flow), then the
-    /// verifier and the target are taken. A callback without a code is a
+    /// In this order: the link and the claim of the session are taken, so
+    /// that any callback ends them, then the state is checked against the
+    /// flow's (a refused state ends the flow), then the verifier and the
+    /// target are taken. A callback without a code is a
     /// cancelled consent. The provider then names the account, and
     ///
     /// - when a link started with this flow's state waits, it links the
@@ -66,6 +67,7 @@ where
         returned: Returned,
     ) -> Pg::Response {
         let link = take::<PendingLink>(session, flow::LINK).await;
+        let claim = take::<EntityId>(session, flow::CLAIM).await;
         let flow = match take_flow(session, &returned.state).await {
             Ok(flow) => flow,
             Err(error) => return pages.failed(error, None),
@@ -82,7 +84,7 @@ where
         if let Some(link) = link.filter(|link| link.answers(&returned.state)) {
             return self.link(pages, auth, &link, account, return_to).await;
         }
-        if let Some(user) = take::<EntityId>(session, flow::CLAIM).await {
+        if let Some(user) = claim {
             return self.claim(pages, auth, user, account, return_to).await;
         }
         self.sign_in(pages, auth, session, account, return_to.unwrap_or_default())

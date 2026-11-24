@@ -217,9 +217,9 @@ explicitly rather than gated behind a major version bump.
   and the PKCE verifier, signs the account in through the TOTP code step its
   route asks for, links it to the signed-in user (`start_link`, with a
   `LinkProof` valid for ten minutes and for that flow only, used once) or
-  claims it for an anonymous one (`mark_claim`). The application keeps whose
-  account an identity is behind `OAuthAccounts` and renders every step through
-  `OAuthPages`.
+  claims it for an anonymous one (`mark_claim`, ended by the next callback
+  whatever its outcome). The application keeps whose account an identity is
+  behind `OAuthAccounts` and renders every step through `OAuthPages`.
 
 - `event-sauce-auth::ResetTokenHash::verify_until` checks a reset token against
   an absolute expiry, hash first and in constant time, and `event-sauce-axum`

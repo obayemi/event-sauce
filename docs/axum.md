@@ -892,8 +892,9 @@ async fn callback(
 }
 ```
 
-The callback keeps an order that matters. It takes the pending link of the
-session first, then checks the state against the flow's, so a refused state
+The callback keeps an order that matters. It takes the pending link and the
+claim of the session first, so any callback ends them, a cancelled or refused
+one included, then checks the state against the flow's, so a refused state
 ends the flow and a replay finds nothing, then takes the verifier and the
 target. A callback without a code is a cancelled consent. Once the provider
 names the account:

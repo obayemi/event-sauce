@@ -442,7 +442,8 @@ operation over several aggregates is a `UnitOfWorkCommand` (see
 - An OAuth sign-in, link or claim goes through `OAuthSignIn` (feature
   `oauth`): the state, the PKCE verifier, the target and the pending link live
   in the session record under keys the module owns, the callback takes the
-  link, then the state, so a refused state ends the flow, and a link carries
+  link and the claim, then the state, so any callback ends them and a refused
+  state ends the flow, and a link carries
   its proof only until `LINK_PROOF_TTL` and works for its own flow's state
   once. Whose account a provider identity is stays the app's, behind
   `OAuthAccounts`; never set `LinkProof::Proved` for a code nobody checked
