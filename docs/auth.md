@@ -25,6 +25,7 @@ HTTP side (sessions, extractors, the app builder) is in the
   - [TOTP](#totp)
 - [The User Cache](#the-user-cache)
 - [Password Reset Tokens](#password-reset-tokens)
+- [OAuth Providers](#oauth-providers)
 - [Sessions and the Fingerprint](#sessions-and-the-fingerprint)
 - [Feature Flags](#feature-flags)
 - [Testing](#testing)
@@ -457,6 +458,28 @@ The token is 32 random bytes, base64url encoded, shown once. Only its
 SHA-256 goes into an event. The clock is a parameter, so verification is
 pure. Which address the token goes to, and how, is up to the app.
 
+## OAuth Providers
+
+The `oauth` feature adds the vocabulary of an OAuth 2.0 sign-in with PKCE, not
+an HTTP client. `OAuthProvider` is what the application implements over the
+client it likes: `authorize()` yields the consent-page `url` with the
+`OAuthState` and the `PkceVerifier` the callback checks it against, and
+`identify(code, verifier)` turns the `AuthorizationCode` the browser came back
+with into a `FederatedAccount<Profile>`: the `FederatedId` the provider
+vouches for, and the application's own `Profile` (the verified email, say,
+exactly as the provider gave it).
+
+```rust
+let authorization = provider.authorize();   // redirect to authorization.url
+// ... the callback, with the state it kept and the code it received ...
+let account = provider.identify(code, authorization.pkce_verifier).await?;
+let attempt = VerifiedFederated { id: account.id, email: None };
+```
+
+`OAuthState` compares in constant time and no secret of the module prints in
+`Debug`. `event-sauce-axum` runs the whole flow, see
+[axum.md](axum.md#oauth-sign-in).
+
 ## Sessions and the Fingerprint
 
 `Identity::session_fingerprint()` hashes every secret and identifier that
@@ -480,6 +503,7 @@ the same byte stream, however their fields are split.
 | `moka` | `auth-moka` | `MokaUserCache` |
 | `redis` | `auth-redis` | `RedisLoginStore`, `RedisUserCache` |
 | `reset` | `auth-reset` | reset tokens, `verify` and `verify_until` |
+| `oauth` | `auth-oauth` | `OAuthProvider`, `OAuthState`, `PkceVerifier`, `AuthorizationCode`, `Authorization` and `FederatedAccount` |
 | `totp` | `auth-totp` | the `Totp` verifier, `NeedTotp`, `TotpIfEnrolled` and `otpauth_uri` |
 
 Through the facade, `auth` is the base, and every other feature implies it.

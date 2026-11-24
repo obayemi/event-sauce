@@ -78,6 +78,8 @@ mod login_id;
 mod login_method;
 mod login_store;
 mod login_ttl;
+#[cfg(feature = "oauth")]
+mod oauth;
 mod password_hasher;
 #[cfg(feature = "reset")]
 mod reset;
@@ -110,6 +112,10 @@ pub use login_store::RedisLoginStore;
 pub use login_store::{InvalidSchemaName, PostgresLoginStore};
 pub use login_store::{LoginKey, LoginStore, LoginStoreError};
 pub use login_ttl::{LoginTtl, LoginTtlError};
+#[cfg(feature = "oauth")]
+pub use oauth::{
+    Authorization, AuthorizationCode, FederatedAccount, OAuthProvider, OAuthState, PkceVerifier,
+};
 #[cfg(feature = "argon2")]
 pub use password_hasher::Argon2Hasher;
 pub use password_hasher::{HashError, PasswordHasher};

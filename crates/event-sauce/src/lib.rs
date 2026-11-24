@@ -21,8 +21,8 @@
 //! ```
 //!
 //! Login for user aggregates sits under `auth` (feature `auth`, plus
-//! `auth-postgres`, `auth-moka`, `auth-redis`, `auth-reset` and `auth-totp`
-//! for its optional parts), and the axum integration under `axum` (features
+//! `auth-postgres`, `auth-moka`, `auth-redis`, `auth-oauth`, `auth-reset` and
+//! `auth-totp` for its optional parts), and the axum integration under `axum` (features
 //! `axum`, `axum-login`, `axum-throttle`, `axum-totp`, `axum-reset` and
 //! `axum-app`).
 //!

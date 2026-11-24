@@ -56,6 +56,8 @@ auth-moka = ["auth", "event-sauce-auth/moka"]
 auth-redis = ["auth", "event-sauce-auth/redis"]
 # Password reset tokens.
 auth-reset = ["auth", "event-sauce-auth/reset"]
+# The OAuth provider vocabulary.
+auth-oauth = ["auth", "event-sauce-auth/oauth"]
 # The `Totp` second factor.
 auth-totp = ["auth", "event-sauce-auth/totp"]
 # The correlation layer and the `Store`, `Repo` and `UnitOfWork`
@@ -122,6 +124,7 @@ full = [
     "auth-postgres",
     "auth-moka",
     "auth-redis",
+    "auth-oauth",
     "auth-reset",
     "auth-totp",
     "axum",
