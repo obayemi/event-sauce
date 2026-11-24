@@ -449,6 +449,8 @@ The `reset` feature adds the token primitives, not a delivery channel:
 let (token, hash) = ResetToken::issue();
 // send `token.as_str()` to the user once; store `hash` in an event
 hash.verify(&token, issued_at, now, ttl)?;
+// or, when the app stores when the reset ends rather than when it began
+hash.verify_until(&token, expires_at, now)?;
 ```
 
 The token is 32 random bytes, base64url encoded, shown once. Only its
@@ -477,7 +479,7 @@ the same byte stream, however their fields are split.
 | `postgres` (default) | `auth-postgres` | `PostgresLoginStore` |
 | `moka` | `auth-moka` | `MokaUserCache` |
 | `redis` | `auth-redis` | `RedisLoginStore`, `RedisUserCache` |
-| `reset` | `auth-reset` | reset tokens |
+| `reset` | `auth-reset` | reset tokens, `verify` and `verify_until` |
 | `totp` | `auth-totp` | the `Totp` verifier, `NeedTotp`, `TotpIfEnrolled` and `otpauth_uri` |
 
 Through the facade, `auth` is the base, and every other feature implies it.

@@ -17,7 +17,7 @@ use axum::{
 };
 use event_sauce_auth::{
     Argon2Hasher, CachedUserLoader, Email, FirstFactor, FixedClock, LoginId, Logins,
-    PasswordAttempt, PasswordLogin, Totp, TotpIfEnrolled, TotpSecret,
+    PasswordAttempt, PasswordHasher, PasswordLogin, Totp, TotpIfEnrolled, TotpSecret,
 };
 use event_sauce_axum::{
     code_page, AuthLayer, AuthSession, Backoff, ClientAddr, ClientIpSource, CodeRefusal,
@@ -30,7 +30,8 @@ use memory_login_store::MemoryLoginStore;
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use secrecy::SecretString;
 use secured_user::{
-    cheap_hasher, disable_totp, enroll_totp, register, totp_of, User, ADA, PASSWORD,
+    change_password, cheap_hasher, disable_totp, enroll_totp, register, totp_of, User, ADA,
+    PASSWORD,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -481,6 +482,23 @@ async fn credentials_changed_between_the_steps_refuse_the_code() {
     let id = world.register(Some(&key())).await;
     World::log_in(&mut world.client).await;
     enroll_totp(&world.events, id, &fresh_key()).await;
+
+    let reply = World::send_code(&mut world.client, &current_code()).await;
+
+    assert_eq!(reply.body, "code form Some(Invalid) /");
+    assert_eq!(world.status("/me").await, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn a_password_changed_between_the_steps_refuses_the_code() {
+    let mut world = World::new();
+    let id = world.register(Some(&key())).await;
+    World::log_in(&mut world.client).await;
+    let hash = cheap_hasher()
+        .hash(&SecretString::from("another-password"))
+        .await
+        .unwrap();
+    change_password(&world.events, id, &hash).await;
 
     let reply = World::send_code(&mut world.client, &current_code()).await;
 

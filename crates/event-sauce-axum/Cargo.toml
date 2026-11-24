@@ -27,6 +27,14 @@ login = [
     "dep:percent-encoding",
     "axum/original-uri",
 ]
+reset = [
+    "login",
+    "throttle",
+    "event-sauce-auth/reset",
+    "dep:chrono",
+    "dep:secrecy",
+    "dep:tokio",
+]
 throttle = ["axum/tokio"]
 totp = ["login", "throttle", "event-sauce-auth/totp", "dep:secrecy"]
 tracing = ["dep:tracing"]
@@ -35,6 +43,7 @@ tracing = ["dep:tracing"]
 async-trait = { workspace = true, optional = true }
 axum.workspace = true
 axum-login = { workspace = true, optional = true }
+chrono = { workspace = true, optional = true }
 event-sauce-auth = { path = "../event-sauce-auth", version = "0.1.0", default-features = false, optional = true }
 event-sauce-core = { path = "../event-sauce-core", version = "0.1.0", default-features = false, features = ["event-sourcing", "unit-of-work"] }
 event-sauce-postgres = { path = "../event-sauce-postgres", version = "0.1.0", features = ["unit-of-work"], optional = true }
@@ -44,6 +53,7 @@ secrecy = { workspace = true, optional = true }
 serde.workspace = true
 sqlx = { workspace = true, optional = true }
 thiserror.workspace = true
+tokio = { workspace = true, optional = true, features = ["rt"] }
 tower = { workspace = true }
 tower-sessions = { workspace = true, optional = true, features = ["private", "signed"] }
 tracing = { workspace = true, optional = true }
@@ -54,7 +64,7 @@ argon2.workspace = true
 async-trait.workspace = true
 axum = { workspace = true, features = ["macros", "json", "query"] }
 chrono.workspace = true
-event-sauce-auth = { path = "../event-sauce-auth", version = "0.1.0", features = ["argon2", "moka", "totp"] }
+event-sauce-auth = { path = "../event-sauce-auth", version = "0.1.0", features = ["argon2", "moka", "reset", "totp"] }
 event-sauce-memory = { path = "../event-sauce-memory", version = "0.1.0", features = ["unit-of-work"] }
 event-sauce-postgres = { path = "../event-sauce-postgres", version = "0.1.0", features = ["unit-of-work"] }
 futures.workspace = true
@@ -73,6 +83,10 @@ trybuild.workspace = true
 [[test]]
 name = "login"
 required-features = ["login"]
+
+[[test]]
+name = "reset"
+required-features = ["reset", "totp"]
 
 [[test]]
 name = "totp"

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use argon2::Params;
 use event_sauce_auth::{
     Argon2Hasher, Credentials, Email, Fingerprint, HasPassword, HasTotp, Identity, LoginId,
-    Password, PasswordHasher, TotpSecret, UserAggregate,
+    Password, PasswordHash, PasswordHasher, TotpSecret, UserAggregate,
 };
 use event_sauce_core::{
     aggregate_command, define_events, Aggregate, AggregateClaim, AggregateError, Entity, EntityId,
@@ -119,6 +119,15 @@ define_events! {
                 credentials.totp = None;
             }
         },
+
+        PasswordChanged {
+            hash: PasswordHash,
+        }
+        => |user, event| {
+            if let Identity::Registered(credentials) = &mut user.identity {
+                credentials.password.set_hash(event.hash.clone());
+            }
+        },
     }
 }
 
@@ -127,6 +136,7 @@ aggregate_command! {
         @clock @init fn register(credentials: Secured) -> RegisteredEvent { credentials };
         @clock fn enroll_totp(secret: TotpSecret) -> TotpEnrolledEvent { secret };
         @clock fn disable_totp() -> TotpDisabledEvent { };
+        @clock fn change_password(hash: PasswordHash) -> PasswordChangedEvent { hash };
     }
 }
 
@@ -178,4 +188,16 @@ pub async fn totp_of<S: EventStore + 'static>(store: &Arc<S>, id: EntityId) -> O
     user.identity()
         .credentials()
         .and_then(|credentials| credentials.totp.clone())
+}
+
+pub async fn change_password<S: EventStore + 'static>(
+    store: &Arc<S>,
+    id: EntityId,
+    hash: &PasswordHash,
+) {
+    store
+        .repository::<User>()
+        .modify(id, |user| user.change_password(hash.clone()))
+        .await
+        .unwrap();
 }

@@ -25,6 +25,7 @@ methods, typestate logins) is in the [auth guide](auth.md).
   - [Sessions End When Credentials Change](#sessions-end-when-credentials-change)
 - [Throttling Sign-ins](#throttling-sign-ins)
 - [The TOTP Code of an HTML Login](#the-totp-code-of-an-html-login)
+- [Resetting a Password by Email](#resetting-a-password-by-email)
 - [The App Builder](#the-app-builder)
 - [A Runnable Example](#a-runnable-example)
 - [Feature Flags](#feature-flags)
@@ -764,6 +765,78 @@ Share one `Totp` between the challenge and the proof, so a code is accepted
 once across both. `otpauth_uri` in the auth crate builds the URI an
 authenticator app reads.
 
+## Resetting a Password by Email
+
+The `reset` feature runs the HTTP side of a reset by emailed link:
+`PasswordReset`. Like the TOTP steps it runs the flow and asks the
+application for everything that is its own, so the application keeps its
+templates, its translations, its routes and the reset state in its own
+aggregate.
+
+The application implements three small traits:
+
+- `ResetAccounts` reads and changes the accounts: `holder` finds the user a
+  typed login names, `record` stores a reset for it (the application keeps
+  its cooldown and its validity there) and answers the address to mail, or
+  `None` to refuse, `pending` reads the reset a user waits for without using
+  it, `redeem` consumes it and sets the password atomically, and `link_path`
+  is the route of the link, shared with whoever else issues links;
+- `ResetMailer` sends the link. Its `Draft` is what the request prepared in
+  its own context, such as the email's translated texts, moved into the
+  background task that sends it, which has no request;
+- `ResetPages`, a `Pages`, answers every step: the request form, the same
+  answer to every request, the new-password form, the one error of an invalid
+  link, and where the browser goes after a reset.
+
+```rust
+use std::sync::Arc;
+
+use event_sauce::auth::{Argon2Hasher, Logins, TotpIfEnrolled};
+use event_sauce::axum::{LoginThrottles, PasswordReset, PublicOrigin};
+
+let reset = PasswordReset::new(
+    Arc::new(accounts),                       // impl ResetAccounts
+    Arc::new(mailer),                         // impl ResetMailer
+    Argon2Hasher::default(),
+    PublicOrigin::parse("https://app.example")?,
+    Logins::<User>::new(store),
+    TotpIfEnrolled,
+    Arc::new(LoginThrottles::default()),
+);
+```
+
+The flow in three handlers, each taking the values it needs and never the
+request body, so the application keeps its own form extractors and its own
+validation:
+
+1. `request(&pages, &client, login, draft)`, a plain function that spawns, counts the request against the
+   client, whatever the login, and answers `request_sent` at once. A spawned
+   task then finds the account, records a fresh token, builds the link and
+   sends it, and only logs what goes wrong: whether an account holds the
+   login never shows, in the answer or in its timing. It runs inside a tokio
+   runtime;
+2. `page(&pages, user, token)` shows the new-password form when the token
+   matches a live reset, without using it, and answers `invalid_link`
+   otherwise: one error for a token that is not one, another token, a used
+   reset, an expired one and no reset at all;
+3. `redeem(&pages, &mut auth, user, token, password)` hashes the password,
+   has `ResetAccounts::redeem` consume the reset and set it, and signs the
+   user in along the route the flow was built with. `TotpIfEnrolled` makes a
+   user with a second factor sign in again (`sign_in_again`), so a link in an
+   inbox never bypasses it. The application checks its form (the two
+   passwords match, the length) before it calls, so a form shown again never
+   uses the link up. The sign-in is done inside the crate: the first factor
+   is a private method only `redeem` can start, so no public call opens a
+   session for any user.
+
+A link is `PublicOrigin` and the application's path, never the `Host` of the
+request: anyone may ask for a reset, so a forged `Host` would mail a genuine
+token behind the attacker's link. `PublicOrigin::parse` accepts a scheme, a
+host and an optional port, and refuses everything else.
+
+`ResetTokenHash::verify_until` in the auth crate checks a token against an
+absolute expiry, for an application that stores when a reset ends.
+
 ## The App Builder
 
 With the `app` feature, `EventSauceApp` wires the common case on Postgres:
@@ -880,6 +953,7 @@ Postgres container, so they need Docker.
 | `login` (default) | `axum-login` | `AuthLayer`, `AuthSession`, `PendingLogin`, `LoginStep`, `LoginError`, `LoginRedirect`, `Authorized`, `Acting`, `FromUser`, user extractors |
 | `throttle` (default) | `axum-throttle` | `LoginThrottles`, `Backoff`, `Throttle`, `Throttled`, `ClientAddr`, `ClientIpSource` |
 | `totp` | `axum-totp` | `TotpChallenge`, `TotpProof`, `Pages`, `TotpLoginPages`; implies `login` and `throttle` |
+| `reset` | `axum-reset` | `PasswordReset`, `PublicOrigin`, `ResetAccounts`, `ResetMailer`, `ResetPages`, `PendingReset`, `Finished`; implies `login` and `throttle` |
 | `app` (default) | `axum-app` | `EventSauceApp` and the Postgres defaults |
 
 Through the facade, `tracing` comes with `axum`. `app` implies `login`, the

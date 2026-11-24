@@ -207,6 +207,20 @@ explicitly rather than gated behind a major version bump.
 
 ### Added
 
+- `event-sauce-auth::ResetTokenHash::verify_until` checks a reset token against
+  an absolute expiry, hash first and in constant time, and `event-sauce-axum`
+  gains a `reset` feature (facade feature `axum-reset`): `PasswordReset` runs
+  the HTTP side of a reset by emailed link. `request` throttles the client and
+  answers the same page at once, whatever the login, while a spawned task
+  finds the account, records a token and mails the link, built from a
+  configured `PublicOrigin` and never from `Host`; `page` checks a link
+  without using it, and every failure is one invalid link; `redeem` hashes the
+  password, has the application consume the reset and set it in one step, and
+  signs the user in along its route, so a user with a second factor signs in
+  again. The application keeps the reset in its own aggregate behind
+  `ResetAccounts`, sends the mail through `ResetMailer` and renders every step
+  through `ResetPages`.
+
 - `event-sauce-auth::otpauth_uri` builds the `otpauth://totp/` URI an
   authenticator app reads for a `TotpSecret`, and `event-sauce-axum` gains a
   `totp` feature (facade feature `axum-totp`): `TotpChallenge` opens the

@@ -434,6 +434,11 @@ operation over several aggregates is a `UnitOfWorkCommand` (see
   pending login cookie of the JSON flow, and answer every step through the
   app's `TotpLoginPages`. An endpoint that checks a password or a code starts
   an `Attempt` of `LoginThrottles` before it verifies
+- A reset by emailed link goes through `PasswordReset` (feature `reset`): the
+  reset state stays in the app's aggregate behind `ResetAccounts`, the link is
+  built from a configured `PublicOrigin` and never from `Host`, and the
+  session after a redeem opens through the flow's own private first factor,
+  never through a public voucher
 - An HTML app puts `LoginRedirect` on the router of its pages, so
   `CurrentUser`, `Registered`, `Authorized` and `Acting` redirect a browser
   that is not logged in to the login page with the page it asked for

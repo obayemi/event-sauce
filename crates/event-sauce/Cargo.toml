@@ -75,6 +75,14 @@ axum-totp = [
     "auth-totp",
     "event-sauce-axum/totp",
 ]
+# `PasswordReset`: the HTTP side of a password reset by emailed link; implies
+# `axum-login`, `axum-throttle` and `auth-reset`.
+axum-reset = [
+    "axum-login",
+    "axum-throttle",
+    "auth-reset",
+    "event-sauce-axum/reset",
+]
 # `EventSauceApp::postgres`, the whole stack on one pool; implies `postgres`.
 axum-app = [
     "axum-login",
@@ -120,6 +128,7 @@ full = [
     "axum-login",
     "axum-throttle",
     "axum-totp",
+    "axum-reset",
     "axum-app",
 ]
 

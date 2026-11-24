@@ -38,6 +38,13 @@
 //!   user before it changes its own second factor, and the application renders
 //!   each step through `TotpLoginPages`, a `Pages`. An HTML login flow keeps
 //!   its in-between state in the session record, never in a cookie of its own.
+//! - With the `reset` feature, `PasswordReset` runs a password reset by emailed
+//!   link: it throttles and answers the request at once whatever the login,
+//!   checks a link without using it, and redeems it, signing the user in along
+//!   the route it was built with. The application keeps the reset in its own
+//!   aggregate behind `ResetAccounts`, sends the mail with `ResetMailer`, and
+//!   renders each step through `ResetPages`; a link is built from a configured
+//!   `PublicOrigin`, never from `Host`.
 //! - With the `app` feature, `EventSauceApp::postgres` builds the whole
 //!   stack, stores, cache, first factor and layers, on one pool, and can sign
 //!   or encrypt the session cookie with a key.
@@ -62,6 +69,8 @@ mod login;
 mod pages;
 mod repo;
 mod request_id;
+#[cfg(feature = "reset")]
+mod reset;
 mod return_to;
 mod store;
 mod store_error;
@@ -93,6 +102,11 @@ pub use login::{
 pub use pages::Pages;
 pub use repo::Repo;
 pub use request_id::RequestId;
+#[cfg(feature = "reset")]
+pub use reset::{
+    Finished, InvalidOrigin, NewPasswordError, PasswordReset, PendingReset, PublicOrigin,
+    ResetAccounts, ResetMailer, ResetPages,
+};
 pub use return_to::ReturnTo;
 pub use store::Store;
 pub use store_error::{DeletedStatus, Split, SplitDomain, StoreError, StoreFailure};
