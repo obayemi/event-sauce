@@ -57,6 +57,9 @@ pub enum ResetError {
 ///     hash.verify(&presented, issued_at, issued_at + TimeDelta::hours(2), ttl),
 ///     Err(ResetError::Expired)
 /// );
+///
+/// let expires_at = issued_at + ttl;
+/// assert_eq!(hash.verify_until(&presented, expires_at, expires_at), Ok(()));
 /// # Ok::<(), event_sauce_auth::ResetTokenError>(())
 /// ```
 pub struct ResetToken(SecretString);
@@ -128,13 +131,44 @@ impl ResetTokenHash {
         now: DateTime<Utc>,
         ttl: TimeDelta,
     ) -> Result<(), ResetError> {
-        if !bool::from(self.0.ct_eq(&Self::of(token).0)) {
-            return Err(ResetError::Mismatch);
-        }
+        self.matches(token)?;
         if now - issued_at > ttl {
             return Err(ResetError::Expired);
         }
         Ok(())
+    }
+
+    /// Checks a presented token against this hash and an absolute expiry.
+    ///
+    /// For applications that store when a reset ends rather than when it
+    /// began. The token is valid through `expires_at` inclusive, the hash is
+    /// compared first in constant time, and a `now` before `expires_at`, from
+    /// clock skew between instances, counts as fresh.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ResetError::Mismatch`] when `token` is not the one this hash
+    /// was made from, and [`ResetError::Expired`] when it is but `now` is
+    /// past `expires_at`.
+    pub fn verify_until(
+        &self,
+        token: &ResetToken,
+        expires_at: DateTime<Utc>,
+        now: DateTime<Utc>,
+    ) -> Result<(), ResetError> {
+        self.matches(token)?;
+        if now > expires_at {
+            return Err(ResetError::Expired);
+        }
+        Ok(())
+    }
+
+    fn matches(&self, token: &ResetToken) -> Result<(), ResetError> {
+        if bool::from(self.0.ct_eq(&Self::of(token).0)) {
+            Ok(())
+        } else {
+            Err(ResetError::Mismatch)
+        }
     }
 }
 

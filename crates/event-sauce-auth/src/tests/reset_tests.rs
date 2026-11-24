@@ -92,6 +92,39 @@ fn a_wrong_token_reports_a_mismatch_even_after_expiry() {
 }
 
 #[test]
+fn a_token_is_valid_through_its_absolute_expiry_inclusive() {
+    let (token, hash) = ResetToken::issue();
+    let expires_at = instant(1_000);
+
+    assert_eq!(hash.verify_until(&token, expires_at, expires_at), Ok(()));
+    assert_eq!(
+        hash.verify_until(&token, expires_at, expires_at + TimeDelta::seconds(1)),
+        Err(ResetError::Expired)
+    );
+}
+
+#[test]
+fn a_token_before_its_expiry_is_valid_whatever_the_clock_skew() {
+    let (token, hash) = ResetToken::issue();
+
+    assert_eq!(
+        hash.verify_until(&token, instant(1_000), instant(0)),
+        Ok(())
+    );
+}
+
+#[test]
+fn a_wrong_token_reports_a_mismatch_even_past_the_absolute_expiry() {
+    let (_, hash) = ResetToken::issue();
+    let (other, _) = ResetToken::issue();
+
+    assert_eq!(
+        hash.verify_until(&other, instant(0), instant(1_000_000)),
+        Err(ResetError::Mismatch)
+    );
+}
+
+#[test]
 fn parsing_the_shown_token_gives_back_a_token_that_verifies() {
     let (token, hash) = ResetToken::issue();
 
