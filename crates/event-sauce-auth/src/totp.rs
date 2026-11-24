@@ -6,6 +6,7 @@
 
 use std::{fmt, sync::Arc, time::Duration};
 
+use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
 use secrecy::{ExposeSecret, SecretString};
 
 use crate::{
@@ -18,6 +19,39 @@ pub use steps::{NeedTotp, TotpIfEnrolled, TotpOrDone};
 pub use totp_rs::Secret as TotpSecret;
 
 const REPLAY_NAMESPACE: &str = "totp";
+
+const UNRESERVED: &AsciiSet = &NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'_')
+    .remove(b'.')
+    .remove(b'~');
+
+/// The `otpauth://totp/{issuer}:{account}?secret=..&issuer=..` URI an
+/// authenticator app reads, whether typed, scanned or opened as a link.
+///
+/// The issuer and the account are percent-encoded and the secret is base32,
+/// with the parameters [`Totp`] checks codes with: SHA-1, six digits, thirty
+/// seconds.
+///
+/// # Examples
+///
+/// ```
+/// use event_sauce_auth::{otpauth_uri, TotpSecret};
+///
+/// let secret = TotpSecret::try_from_base32("JBSWY3DPEHPK3PXP").unwrap();
+///
+/// assert_eq!(
+///     otpauth_uri("Example", "ada@example.com", &secret),
+///     "otpauth://totp/Example:ada%40example.com?secret=JBSWY3DPEHPK3PXP&issuer=Example",
+/// );
+/// ```
+#[must_use]
+pub fn otpauth_uri(issuer: &str, account: &str, secret: &TotpSecret) -> String {
+    let issuer = utf8_percent_encode(issuer, UNRESERVED);
+    let account = utf8_percent_encode(account, UNRESERVED);
+    let secret = secret.to_base32();
+    format!("otpauth://totp/{issuer}:{account}?secret={secret}&issuer={issuer}")
+}
 
 /// Credentials that may hold the shared secret of a TOTP second factor.
 ///

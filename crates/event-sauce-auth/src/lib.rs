@@ -54,7 +54,8 @@
 //! - `redis`: `RedisLoginStore` and `RedisUserCache`.
 //! - `moka`: `MokaUserCache`, an in-process user cache.
 //! - `reset`: `ResetToken` and `ResetTokenHash` for password resets.
-//! - `totp`: `Totp`, `NeedTotp`, `TotpIfEnrolled`, `HasTotp` and `TotpSecret`.
+//! - `totp`: `Totp`, `NeedTotp`, `TotpIfEnrolled`, `HasTotp`, `TotpSecret` and
+//!   `otpauth_uri`.
 //!
 //! # Examples
 //!
@@ -115,7 +116,7 @@ pub use password_hasher::{HashError, PasswordHasher};
 #[cfg(feature = "reset")]
 pub use reset::{ResetError, ResetToken, ResetTokenError, ResetTokenHash};
 #[cfg(feature = "totp")]
-pub use totp::{HasTotp, NeedTotp, Totp, TotpIfEnrolled, TotpOrDone, TotpSecret};
+pub use totp::{otpauth_uri, HasTotp, NeedTotp, Totp, TotpIfEnrolled, TotpOrDone, TotpSecret};
 pub use user::UserAggregate;
 #[cfg(feature = "moka")]
 pub use user_cache::MokaUserCache;

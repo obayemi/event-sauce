@@ -17,7 +17,7 @@ moka = ["dep:moka"]
 postgres = ["dep:sqlx"]
 reset = ["dep:base64", "dep:rand", "dep:subtle"]
 redis = ["dep:redis", "dep:zeroize"]
-totp = ["dep:totp-rs", "dep:hex"]
+totp = ["dep:totp-rs", "dep:hex", "dep:percent-encoding"]
 
 [dependencies]
 event-sauce-core = { path = "../event-sauce-core", version = "0.1.0" }
@@ -28,6 +28,7 @@ chrono.workspace = true
 email_address.workspace = true
 hex = { workspace = true, optional = true }
 moka = { workspace = true, optional = true }
+percent-encoding = { workspace = true, optional = true }
 phc.workspace = true
 rand = { workspace = true, optional = true }
 redis = { workspace = true, optional = true }

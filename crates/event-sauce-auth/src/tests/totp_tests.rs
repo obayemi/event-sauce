@@ -264,3 +264,15 @@ fn the_replay_key_is_the_lowercase_hex_digest_of_the_secret_and_the_step() {
         "totp:d2b3c25e318be0c985ecdd042683796b39789bf8b07f398f52e57f97e544a331:7"
     );
 }
+
+#[test]
+fn the_otpauth_uri_carries_issuer_account_and_secret() {
+    let secret = TotpSecret::try_from_base32("JBSWY3DPEHPK3PXP").unwrap();
+
+    let uri = otpauth_uri("Saxy-P", "ada@example.com", &secret);
+
+    assert_eq!(
+        uri,
+        "otpauth://totp/Saxy-P:ada%40example.com?secret=JBSWY3DPEHPK3PXP&issuer=Saxy-P"
+    );
+}
