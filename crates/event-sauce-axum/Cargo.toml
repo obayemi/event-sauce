@@ -11,7 +11,7 @@ keywords = ["event-sourcing", "axum", "tower", "correlation", "http"]
 categories = ["web-programming", "asynchronous"]
 
 [features]
-default = ["tracing", "login", "app"]
+default = ["tracing", "login", "app", "throttle"]
 app = [
     "login",
     "dep:event-sauce-postgres",
@@ -27,6 +27,7 @@ login = [
     "dep:percent-encoding",
     "axum/original-uri",
 ]
+throttle = ["axum/tokio"]
 tracing = ["dep:tracing"]
 
 [dependencies]

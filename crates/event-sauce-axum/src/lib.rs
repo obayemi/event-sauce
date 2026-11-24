@@ -29,6 +29,10 @@
 //!   logged in to the login page with the page it asked for, on the routes
 //!   it is applied to. `ReturnTo`, the same-origin target a form carries back
 //!   after the login, needs no feature.
+//! - With the `throttle` feature, `LoginThrottles` slows a sign-in down with
+//!   growing delays and never locks it out, `Throttled` answers a refused
+//!   request with `429` and a `Retry-After`, and `ClientAddr` reads the
+//!   address of the client, from the socket or from a proxy header.
 //! - With the `app` feature, `EventSauceApp::postgres` builds the whole
 //!   stack, stores, cache, first factor and layers, on one pool, and can sign
 //!   or encrypt the session cookie with a key.
@@ -42,6 +46,8 @@
 
 #[cfg(feature = "app")]
 mod app;
+#[cfg(feature = "throttle")]
+mod client_ip;
 mod correlation;
 mod diagnostics;
 mod found;
@@ -54,6 +60,8 @@ mod store;
 mod store_error;
 #[cfg(test)]
 mod test_ticket;
+#[cfg(feature = "throttle")]
+mod throttle;
 mod unit_of_work;
 
 #[cfg(feature = "app")]
@@ -61,6 +69,8 @@ pub use app::{
     App, AppBuilder, BuildError, EncryptCookie, EventSauceApp, KeepCookie, SessionCookie,
     SignCookie, UserAppBuilder,
 };
+#[cfg(feature = "throttle")]
+pub use client_ip::{ClientAddr, ClientIpSource};
 pub use correlation::{Correlation, CorrelationLayer, ResponseFuture, DEFAULT_HEADER};
 pub use found::{Found, FoundRejection, PathAggregate};
 pub use http::HeaderName;
@@ -75,4 +85,6 @@ pub use request_id::RequestId;
 pub use return_to::ReturnTo;
 pub use store::Store;
 pub use store_error::{DeletedStatus, Split, SplitDomain, StoreError, StoreFailure};
+#[cfg(feature = "throttle")]
+pub use throttle::{Attempt, Backoff, Charge, LoginThrottles, Throttle, Throttled};
 pub use unit_of_work::UnitOfWork;

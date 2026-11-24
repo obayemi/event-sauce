@@ -64,6 +64,9 @@ axum = ["dep:event-sauce-axum", "event-sourcing", "event-sauce-axum/tracing"]
 # `AuthLayer`, `AuthSession`, pending logins and the current-user
 # extractors; implies `auth`.
 axum-login = ["axum", "auth", "event-sauce-axum/login"]
+# `LoginThrottles`, `Throttled` and `ClientAddr`: growing delays for sign-in
+# endpoints.
+axum-throttle = ["axum", "event-sauce-axum/throttle"]
 # `EventSauceApp::postgres`, the whole stack on one pool; implies `postgres`.
 axum-app = [
     "axum-login",
@@ -107,6 +110,7 @@ full = [
     "auth-totp",
     "axum",
     "axum-login",
+    "axum-throttle",
     "axum-app",
 ]
 

@@ -23,6 +23,7 @@ methods, typestate logins) is in the [auth guide](auth.md).
   - [HTML Apps: Redirecting to the Login Page](#html-apps-redirecting-to-the-login-page)
   - [Logins With Several Steps](#logins-with-several-steps)
   - [Sessions End When Credentials Change](#sessions-end-when-credentials-change)
+- [Throttling Sign-ins](#throttling-sign-ins)
 - [The App Builder](#the-app-builder)
 - [A Runnable Example](#a-runnable-example)
 - [Feature Flags](#feature-flags)
@@ -49,6 +50,8 @@ methods, typestate logins) is in the [auth guide](auth.md).
 - **`LoginRedirect`** sends a browser that is not logged in to the login page
   with the page it asked for, and **`ReturnTo`** is the same-origin target a
   form carries back after the login.
+- **`LoginThrottles`** slows sign-in attempts down with growing delays, and
+  **`Throttled`** answers a refused one with `429` and a `Retry-After`.
 - **`EventSauceApp::postgres`** builds all of the above on one `PgPool`.
 
 ## Installation
@@ -68,6 +71,7 @@ facade features nest:
 |---|---|
 | `axum` | the correlation layer, the `Store`, `Repo`, `UnitOfWork` and `Found` extractors, `StoreError` and `ReturnTo` |
 | `axum-login` | `AuthLayer`, `AuthSession`, `PendingLogin`, `LoginStep`, `LoginError`, `LoginRedirect`, `Authorized`, `Acting`, `FromUser` and the user extractors; implies `auth` |
+| `axum-throttle` | `LoginThrottles`, `Backoff`, `Throttle`, `Throttled`, `ClientAddr` and `ClientIpSource` |
 | `axum-app` | `EventSauceApp::postgres`; implies `axum-login` and `postgres` |
 
 Your application depends on `axum`, `axum-login` and `tower-sessions`
@@ -633,6 +637,64 @@ The session that changes its own credentials ends with the others, unless the
 handler calls `auth.renew()` after the change, which logs the session in
 again with the new fingerprint.
 
+## Throttling Sign-ins
+
+`LoginThrottles` makes an account, or a client address, wait longer after
+each failure, and never locks it out: a key that waits is refused without
+being counted, so its delay never outgrows its cap, and a key with no failure
+for a while is forgotten. The first few failures are free.
+
+```rust
+use std::time::Instant;
+use event_sauce::axum::{ClientAddr, LoginThrottles, Throttled};
+
+fn check_password(
+    throttles: &LoginThrottles,
+    client: &ClientAddr,
+    email: &str,
+) -> Result<(), Throttled> {
+    let attempt = throttles.password(&email.trim().to_lowercase(), client, Instant::now())?;
+    // ... verify the password; on a wrong one, return and let the attempt stand
+    attempt.succeeded();
+    Ok(())
+}
+```
+
+An `Attempt` counts as a failure of its account and of its client from its
+start, so attempts sent together gain nothing over attempts sent in turn, and
+a refusal or an outage leaves it counted. Only `succeeded` takes it back: it
+forgets the account's failures and this attempt's count against the client,
+never the client's other failures.
+
+| Throttle | Counts | Default |
+|---|---|---|
+| `password(account, client, now)` | wrong passwords of one account from one client | 5 free, 1 s doubling to 60 s |
+| `second_factor(user, client, now)` | wrong codes of one user | 5 free, 1 s doubling to 15 min |
+| the client of both | every failure from one address | 20 free, 1 s doubling to 15 min |
+| `reset_request(client, now)` | reset links one address asks for | 5 free, 60 s doubling to 1 h |
+
+Each default is a `Backoff` constant (`LoginThrottles::PASSWORD`,
+`SECOND_FACTOR`, `CLIENT`, `RESET_REQUESTS`) replaced with `with_password`,
+`with_second_factor`, `with_client` and `with_reset_requests`. The account key
+of `password` is the application's: it normalises the spelling (case, blanks)
+before it asks, so every spelling of an account shares one count.
+
+`Throttled` is a `429` with a `Retry-After` of the wait in whole seconds,
+rounded up, and no body. An application that renders its own page wraps it
+and sets the header from `retry_after_secs()`.
+
+`ClientAddr` is the extractor of the client address. It reads
+`ClientIpSource` from the application state through `FromRef`: the socket peer
+by default (serve with `into_make_service_with_connect_info::<SocketAddr>()`),
+or a header a proxy in front of the app sets. `X-Forwarded-For` is read from
+its last entry, the one the proxy appended, and any other header whole, as a
+header is anyone's to write when no proxy owns it. An IPv6 client is counted
+by its `/64`.
+
+The tables live in the process: each replica throttles on its own, which
+suffices for a single instance, and multiplies the free failures and the
+delays by the number of replicas otherwise.
+
 ## The App Builder
 
 With the `app` feature, `EventSauceApp` wires the common case on Postgres:
@@ -747,6 +809,7 @@ Postgres container, so they need Docker.
 |---|---|---|
 | `tracing` (default) | `axum` | the `request` tracing span |
 | `login` (default) | `axum-login` | `AuthLayer`, `AuthSession`, `PendingLogin`, `LoginStep`, `LoginError`, `LoginRedirect`, `Authorized`, `Acting`, `FromUser`, user extractors |
+| `throttle` (default) | `axum-throttle` | `LoginThrottles`, `Backoff`, `Throttle`, `Throttled`, `ClientAddr`, `ClientIpSource` |
 | `app` (default) | `axum-app` | `EventSauceApp` and the Postgres defaults |
 
 Through the facade, `tracing` comes with `axum`. `app` implies `login`, the

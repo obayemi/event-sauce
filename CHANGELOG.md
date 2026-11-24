@@ -207,6 +207,16 @@ explicitly rather than gated behind a major version bump.
 
 ### Added
 
+- `event-sauce-axum` gains a `throttle` feature (default, facade feature
+  `axum-throttle`): `LoginThrottles` slows password, second-factor and
+  reset-request attempts down with growing delays and never locks anyone
+  out (an `Attempt` counts as a failure of its account and of its client
+  from its start, and only `succeeded` takes it back), `Backoff` and
+  `Throttle` are the primitives behind it, `Throttled` answers a refused
+  request with `429` and a `Retry-After`, and `ClientAddr`, read from the
+  socket peer or from a proxy header named by `ClientIpSource` through
+  `FromRef`, counts an IPv6 client by its `/64`. The state is in-process.
+
 - `AuthLayer::layer` and `App::layer` take a session layer with any cookie
   controller, so a session cookie signed with
   `SessionManagerLayer::with_signed(key)` or encrypted with
